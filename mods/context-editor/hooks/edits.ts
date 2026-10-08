@@ -1,0 +1,639 @@
+import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
+
+// [SP_CTX_01_02] One edit as the model asks for it through context_edit.
+export type Edit =
+  | { op: 'summarize'; tool_use_id: string; summary: string }
+  | { op: 'drop'; tool_use_id: string }
+  | { op: 'collapse'; from_index: number; to_index: number; summary: string }
+  | { op: 'rewrite'; index: number; text: string }
+  | { op: 'describe'; index: number; description: string }
+
+// [SP_CTX_01_03] Index-based edits carry fingerprints of the rows they named.
+export type QueuedEdit = Edit & { anchors?: string[] }
+
+// [SP_CTX_01_08] Whose media it is: a tool result or a person's prompt row.
+export type MediaOwner = { tool_use_id: string } | { row: number }
+
+// [SP_CTX_01_05]
+export type ApplyReport = {
+  applied: string[]
+  failed: string[]
+  charsBefore: number
+  charsAfter: number
+  originals: { edit: string; rows: SessionMessage[] }[]
+  mediaFiles: string[]
+}
+
+// [SP_CTX_01_12]
+export const MARK = '[context-editor]'
+export const OWN_TOOLS = 'mcp__context-editor__'
+export const BIG_ROW = 4000
+export const LIST_COUNT = 60
+export const MAX_LIST_COUNT = 200
+export const MAX_TEXT = 8000
+export const MAX_QUEUE_EDITS = 200
+
+export function ownerKey(owner: MediaOwner): string {
+  return 'tool_use_id' in owner ? `u:${owner.tool_use_id}` : `r:${owner.row}`
+}
+
+export function rowChars(row: SessionMessage): number {
+  let n = row.text.length
+  for (const u of row.toolUses) n += JSON.stringify(u.input ?? {}).length
+  for (const r of row.toolResults ?? []) n += r.text.length
+  return n
+}
+
+export function totalChars(rows: readonly SessionMessage[]): number {
+  return rows.reduce((n, r) => n + rowChars(r), 0)
+}
+
+export function fingerprint(row: SessionMessage): string {
+  const ids = [
+    ...row.toolUses.map(u => 'u:' + u.tool_use_id),
+    ...(row.toolResults ?? []).map(r => 'r:' + r.tool_use_id),
+  ].join(',')
+  return `${row.role}|${ids}|${row.text.slice(0, 160)}`
+}
+
+function oneLine(s: string, max: number): string {
+  const flat = s.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? flat.slice(0, max) + '…' : flat
+}
+
+function isEdited(row: SessionMessage): boolean {
+  return [row.text, ...(row.toolResults ?? []).map(r => r.text)].some(t => t.startsWith(MARK))
+}
+
+// Media sizes per owner key, for the listing.
+export type MediaSizes = ReadonlyMap<string, readonly { mediaType: string; bytes: number }[]>
+
+function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
+  return [
+    ...(row.toolResults ?? []).flatMap(r => media.get(ownerKey({ tool_use_id: r.tool_use_id })) ?? []),
+    ...(media.get(ownerKey({ row: index })) ?? []),
+  ]
+}
+
+// [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows.
+export function listRows(rows: readonly SessionMessage[], from: number, count: number, media: MediaSizes = new Map()): string {
+  if (rows.length === 0) return '0 rows.'
+  const start = Math.min(Math.max(0, Math.trunc(from)), rows.length - 1)
+  const size = Math.min(Math.max(1, Math.trunc(count)), MAX_LIST_COUNT)
+  const stop = Math.min(rows.length, start + size)
+  let before = 0
+  for (let i = 0; i < start; i++) before += rowChars(rows[i]!)
+  let mediaCount = 0
+  let mediaBytes = 0
+  for (const list of media.values())
+    for (const m of list) {
+      mediaCount++
+      mediaBytes += m.bytes
+    }
+  const lines: string[] = []
+  for (let i = start; i < stop; i++) {
+    const row = rows[i]!
+    const parts: string[] = []
+    if (row.text) parts.push(`text "${oneLine(row.text, 90)}"`)
+    for (const u of row.toolUses)
+      parts.push(`tool_use ${u.tool} id=${u.tool_use_id} input="${oneLine(JSON.stringify(u.input ?? {}), 70)}"`)
+    for (const r of row.toolResults ?? [])
+      parts.push(`tool_result id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
+    const own = rowMedia(row, i, media)
+    for (const m of own) parts.push(`media ${m.mediaType} ~${Math.ceil(m.bytes / 1024)}KB`)
+    const chars = rowChars(row)
+    const flags = (isEdited(row) ? '*' : '') + (chars >= BIG_ROW ? '!' : '') + (own.length ? '@' : '')
+    lines.push(`#${i}${flags} ${row.role} ${chars}c: ${parts.join(' | ') || '(empty)'}`)
+  }
+  const total = totalChars(rows)
+  const shown = rows.slice(start, stop).reduce((n, r) => n + rowChars(r), 0)
+  return [
+    `${rows.length} rows, ~${total} chars (~${Math.round(total / 4)} tokens), ${mediaCount} media (~${Math.ceil(mediaBytes / 1024)}KB). Showing #${start}..#${stop - 1} (oldest first), ~${shown} chars; ~${before} chars come before it.`,
+    `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media.${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
+    ...lines,
+  ].join('\n')
+}
+
+// [SP_CTX_02_05] Removes this plugin's own calls and their results. An own
+// pair whose result row also holds media of another pair, or a result outside
+// the API window, stays: rebuilding that row would drop media nobody archived.
+export function dropOwnCalls(
+  input: readonly SessionMessage[],
+  mediaOwners: ReadonlySet<string> = new Set(),
+  knownResults?: ReadonlySet<string>,
+): SessionMessage[] {
+  const own = new Set(input.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
+  const kept = new Set<string>()
+  for (const r of input) {
+    const results = r.toolResults ?? []
+    if (!results.some(t => own.has(t.tool_use_id))) continue
+    const risky = results.some(
+      t => !own.has(t.tool_use_id) && (mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id })) || (knownResults !== undefined && !knownResults.has(t.tool_use_id))),
+    )
+    if (risky) for (const t of results) if (own.has(t.tool_use_id)) kept.add(t.tool_use_id)
+  }
+  const ids = new Set([...own].filter(id => !kept.has(id)))
+  if (ids.size === 0) return [...input]
+  return input
+    .map(r => {
+      const hasUse = r.toolUses.some(u => ids.has(u.tool_use_id))
+      const hasResult = (r.toolResults ?? []).some(t => ids.has(t.tool_use_id))
+      if (!hasUse && !hasResult) return r
+      return plain(r, {
+        toolUses: r.toolUses.filter(u => !ids.has(u.tool_use_id)).map(stripUse),
+        toolResults: r.toolResults?.filter(t => !ids.has(t.tool_use_id)).map(stripResult),
+      })
+    })
+    .filter(r => r.handle !== undefined || !isEmpty(r))
+}
+
+function findToolUse(rows: readonly SessionMessage[], id: string): number {
+  return rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === id))
+}
+
+function findToolResult(rows: readonly SessionMessage[], id: string): number {
+  return rows.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === id))
+}
+
+// Every tool_use in rows[from..to] must have its result there too, and back.
+function pairingError(rows: readonly SessionMessage[], from: number, to: number): string | undefined {
+  const uses = new Set<string>()
+  const results = new Set<string>()
+  for (let i = from; i <= to; i++) {
+    for (const u of rows[i]!.toolUses) uses.add(u.tool_use_id)
+    for (const r of rows[i]!.toolResults ?? []) results.add(r.tool_use_id)
+  }
+  const orphans = [...[...uses].filter(id => !results.has(id)), ...[...results].filter(id => !uses.has(id))]
+  return orphans.length
+    ? `range #${from}..#${to} splits a tool call from its result (${orphans.join(', ')}); widen or narrow it`
+    : undefined
+}
+
+export function describeEdit(edit: Edit): string {
+  switch (edit.op) {
+    case 'summarize':
+    case 'drop':
+      return `${edit.op} ${edit.tool_use_id}`
+    case 'collapse':
+      return `collapse #${edit.from_index}..#${edit.to_index}`
+    case 'rewrite':
+    case 'describe':
+      return `${edit.op} #${edit.index}`
+  }
+}
+
+function textError(value: unknown, field: string): string | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return `${field} is required`
+  if (value.length > MAX_TEXT) return `${field} is too long (max ${MAX_TEXT} chars)`
+  return undefined
+}
+
+function isIndex(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value)
+}
+
+// [SP_CTX_02_03] Shape check of one raw edit; returns the edit or the reason.
+export function checkShape(raw: unknown): Edit | string {
+  if (typeof raw !== 'object' || raw === null) return 'edit must be an object'
+  const e = raw as Record<string, unknown>
+  switch (e.op) {
+    case 'summarize':
+      if (typeof e.tool_use_id !== 'string' || !e.tool_use_id) return 'tool_use_id is required'
+      return textError(e.summary, 'summary') ?? { op: 'summarize', tool_use_id: e.tool_use_id, summary: e.summary as string }
+    case 'drop':
+      if (typeof e.tool_use_id !== 'string' || !e.tool_use_id) return 'tool_use_id is required'
+      return { op: 'drop', tool_use_id: e.tool_use_id }
+    case 'collapse':
+      if (!isIndex(e.from_index)) return 'from_index is required'
+      if (!isIndex(e.to_index)) return 'to_index is required'
+      return textError(e.summary, 'summary') ?? { op: 'collapse', from_index: e.from_index, to_index: e.to_index, summary: e.summary as string }
+    case 'rewrite':
+      if (!isIndex(e.index)) return 'index is required'
+      return textError(e.text, 'text') ?? { op: 'rewrite', index: e.index, text: e.text as string }
+    case 'describe':
+      if (!isIndex(e.index)) return 'index is required'
+      return textError(e.description, 'description') ?? { op: 'describe', index: e.index, description: e.description as string }
+    default:
+      return `unknown op ${JSON.stringify(e.op)}`
+  }
+}
+
+// [SP_CTX_02_03] Checks raw edits against the conversation as it is now and
+// stamps the index-based ones with anchors. `hasMedia` answers whether a
+// person's prompt row has media ([SP_CTX_02_10]).
+export function prepare(
+  rows: readonly SessionMessage[],
+  raws: readonly unknown[],
+  hasMedia: (owner: MediaOwner) => boolean = () => false,
+): { queued: QueuedEdit[]; errors: string[] } {
+  const queued: QueuedEdit[] = []
+  const errors: string[] = []
+  raws.forEach((raw, n) => {
+    const edit = checkShape(raw)
+    if (typeof edit === 'string') {
+      errors.push(`edit ${n + 1}: ${edit}`)
+      return
+    }
+    const name = describeEdit(edit)
+    switch (edit.op) {
+      case 'summarize':
+      case 'drop':
+        if (findToolUse(rows, edit.tool_use_id) < 0 || findToolResult(rows, edit.tool_use_id) < 0)
+          return void errors.push(`${name}: no completed tool call with that id`)
+        queued.push(edit)
+        return
+      case 'collapse': {
+        const { from_index: from, to_index: to } = edit
+        if (!(from >= 0 && to >= from && to < rows.length))
+          return void errors.push(`${name}: indexes out of range (0..${rows.length - 1})`)
+        const bad = pairingError(rows, from, to)
+        if (bad) return void errors.push(`${name}: ${bad}`)
+        queued.push({ ...edit, anchors: [fingerprint(rows[from]!), fingerprint(rows[to]!)] })
+        return
+      }
+      case 'rewrite': {
+        const row = rows[edit.index]
+        if (!row) return void errors.push(`${name}: index out of range`)
+        if (row.role !== 'assistant' || row.toolUses.length > 0)
+          return void errors.push(`${name}: only an assistant text row can be rewritten; use collapse`)
+        queued.push({ ...edit, anchors: [fingerprint(row)] })
+        return
+      }
+      case 'describe': {
+        const row = rows[edit.index]
+        if (!row) return void errors.push(`${name}: index out of range`)
+        if (row.role !== 'user' || (row.toolResults ?? []).length > 0)
+          return void errors.push(`${name}: describe applies to a user prompt row; use summarize for tool results`)
+        if (!hasMedia({ row: edit.index })) return void errors.push(`${name}: no media found in that row`)
+        queued.push({ ...edit, anchors: [fingerprint(row)] })
+        return
+      }
+    }
+  })
+  return { queued, errors }
+}
+
+// The row an anchor names: at its old index if it is still there, else the
+// one row anywhere that matches.
+function locate(rows: readonly SessionMessage[], anchor: string, hint: number): number {
+  if (rows[hint] && fingerprint(rows[hint]!) === anchor) return hint
+  const hits = rows.flatMap((r, i) => (fingerprint(r) === anchor ? [i] : []))
+  return hits.length === 1 ? hits[0]! : -1
+}
+
+// A row without `handle` is rebuilt by the host from these fields alone.
+function plain(row: SessionMessage, patch: Partial<SessionMessage>): SessionMessage {
+  return {
+    role: row.role,
+    text: row.text,
+    toolUses: row.toolUses.map(stripUse),
+    toolResults: row.toolResults?.map(stripResult),
+    ...patch,
+  }
+}
+
+function stripUse(u: ToolUseSummary): ToolUseSummary {
+  return { tool_use_id: u.tool_use_id, tool: u.tool, input: u.input, text: u.text }
+}
+
+// An edited call: new id, and no copy of the result it no longer has.
+function editedUse(u: ToolUseSummary, id: string): ToolUseSummary {
+  return { tool_use_id: id, tool: u.tool, input: u.input }
+}
+
+function stripResult(r: ToolResultSummary): ToolResultSummary {
+  return { tool_use_id: r.tool_use_id, text: r.text, isError: r.isError }
+}
+
+// [SP_CTX_02_04] An edited call gets a new id. The suffix of an earlier edit
+// is replaced, never stacked.
+export function freshId(id: string): string {
+  const base = id.replace(/_ce[0-9a-z]+$/, '')
+  const rand = Math.floor(Math.random() * 36 ** 4).toString(36).padStart(4, '0')
+  return `${base}_ce${Date.now().toString(36)}${rand}`.replace(/[^A-Za-z0-9_-]/g, '')
+}
+
+function isEmpty(row: SessionMessage): boolean {
+  return !row.text && row.toolUses.length === 0 && !(row.toolResults ?? []).length
+}
+
+// The media owners an edit replaces, by key: the pair for summarize/drop,
+// every pair and row of a collapse span, the row for describe.
+function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: readonly number[]): string[] {
+  switch (edit.op) {
+    case 'summarize':
+    case 'drop':
+      return [ownerKey({ tool_use_id: edit.tool_use_id })]
+    case 'collapse':
+      return touched.flatMap(i => [
+        ...(rows[i]!.toolResults ?? []).map(r => ownerKey({ tool_use_id: r.tool_use_id })),
+        ownerKey({ row: i }),
+      ])
+    case 'describe':
+      return [ownerKey({ row: touched[0]! })]
+    case 'rewrite':
+      return []
+  }
+}
+
+// Keys of the media owners the queued edits would replace, resolved on
+// `rows`; the handler archives only their media ([SP_CTX_02_07]).
+export function replacedOwners(rows: readonly SessionMessage[], edits: readonly QueuedEdit[]): Set<string> {
+  const keys = new Set<string>()
+  for (const edit of edits) {
+    let touched: number[] = []
+    if (edit.op === 'collapse') {
+      const [a, b] = edit.anchors ?? []
+      const from = a ? locate(rows, a, edit.from_index) : edit.from_index
+      const to = b ? locate(rows, b, edit.to_index) : edit.to_index
+      if (from < 0 || to < from || to >= rows.length) continue
+      touched = Array.from({ length: to - from + 1 }, (_, k) => from + k)
+    } else if (edit.op === 'describe' || edit.op === 'rewrite') {
+      const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index) : edit.index
+      if (at < 0 || !rows[at]) continue
+      touched = [at]
+    }
+    for (const key of ownersOf(rows, edit, touched)) keys.add(key)
+  }
+  return keys
+}
+
+// [SP_CTX_01_08]
+export type MediaRef = { mediaType: string; bytes: number; data?: string }
+
+// [SP_CTX_02_10] What the Messages API form of the conversation holds beyond
+// the rows: media by owner key, the tool_use ids it shows (its window), and
+// how many prompt messages carry media that cannot be matched to a row while
+// [SP_CTX_DEC_06] is open. Pure.
+export function collectMedia(api: readonly unknown[]): {
+  found: Map<string, MediaRef[]>
+  knownResults: Set<string>
+  unmatchedPromptMedia: number
+} {
+  const found = new Map<string, MediaRef[]>()
+  const knownResults = new Set<string>()
+  let unmatchedPromptMedia = 0
+  const isMedia = (b: Record<string, unknown>) => b.type === 'image' || b.type === 'document'
+  for (const msg of api) {
+    const m = msg as { role?: unknown; content?: unknown }
+    if (!Array.isArray(m.content)) continue
+    const blocks = m.content as Record<string, unknown>[]
+    for (const block of blocks) {
+      if (block.type !== 'tool_result') continue
+      const id = String(block.tool_use_id)
+      knownResults.add(id)
+      if (!Array.isArray(block.content)) continue
+      for (const inner of block.content as Record<string, unknown>[]) {
+        if (!isMedia(inner)) continue
+        const key = ownerKey({ tool_use_id: id })
+        found.set(key, [...(found.get(key) ?? []), mediaRef(inner)])
+      }
+    }
+    if (m.role === 'user' && blocks.some(isMedia)) unmatchedPromptMedia += 1
+  }
+  return { found, knownResults, unmatchedPromptMedia }
+}
+
+function mediaRef(block: Record<string, unknown>): MediaRef {
+  const source = (block.source ?? {}) as Record<string, unknown>
+  const data = source.type === 'base64' && typeof source.data === 'string' ? source.data : undefined
+  const pad = data ? (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0) : 0
+  return {
+    mediaType: typeof source.media_type === 'string' ? source.media_type : String(block.type),
+    bytes: data ? Math.floor((data.length * 3) / 4) - pad : 0,
+    data,
+  }
+}
+
+export type ApplyOptions = {
+  // tool_use ids the API form shows; rows outside it keep their handle
+  knownResults?: ReadonlySet<string>
+  // prompt messages with media that no row could be matched to
+  unmatchedPromptMedia?: number
+}
+
+// [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
+// `media`: archived file paths by owner key; `mediaOwners`: keys of every
+// owner with media in the conversation.
+export function applyEdits(
+  input: readonly SessionMessage[],
+  edits: readonly QueuedEdit[],
+  archive: string,
+  media: ReadonlyMap<string, readonly string[]> = new Map(),
+  mediaOwners: ReadonlySet<string> = new Set(),
+  options: ApplyOptions = {},
+): { rows: SessionMessage[]; report: ApplyReport } {
+  const rows = [...input]
+  const report: ApplyReport = {
+    applied: [],
+    failed: [],
+    charsBefore: totalChars(input),
+    charsAfter: 0,
+    originals: [],
+    mediaFiles: [],
+  }
+  const note = archive ? ` (original: ${archive})` : ''
+  const mediaNote = (keys: readonly string[]) => {
+    const paths = keys.flatMap(k => media.get(k) ?? [])
+    return paths.length ? ` (media: ${paths.join(', ')})` : ''
+  }
+  const archived = (key: string) => (media.get(key) ?? []).length > 0
+  // Pairs this batch replaces with their media archived: a shared row may lose
+  // their media when it is rebuilt.
+  const batchPairs = new Set(
+    edits.flatMap(e => (e.op === 'summarize' || e.op === 'drop' ? [ownerKey({ tool_use_id: e.tool_use_id })] : [])),
+  )
+
+  // A pair edit conflicts only on its own pair and on rows a row edit takes;
+  // a row edit (collapse, rewrite, describe) takes its rows exclusively.
+  type Step = { edit: QueuedEdit; touched: number[]; pair?: string; hi: number; owners: string[]; run: () => void }
+  const plan: Step[] = []
+
+  for (const edit of edits) {
+    const name = describeEdit(edit)
+    let touched: number[]
+    let pair: string | undefined
+    let run: () => void
+    switch (edit.op) {
+      case 'summarize':
+      case 'drop': {
+        const useAt = findToolUse(rows, edit.tool_use_id)
+        const resAt = findToolResult(rows, edit.tool_use_id)
+        if (useAt < 0 || resAt < 0) {
+          report.failed.push(`${name}: call or result not found`)
+          continue
+        }
+        touched = [useAt, resAt]
+        pair = ownerKey({ tool_use_id: edit.tool_use_id })
+        // [SP_CTX_02_04] Outside the API window the media of a row is unknown.
+        const known = options.knownResults
+        if (known && (rows[resAt]!.toolResults ?? []).some(r => !known.has(r.tool_use_id))) {
+          report.failed.push(`${name}: outside the API window; media unknown`)
+          continue
+        }
+        // [SP_CTX_02_04] Rebuilding the result row drops every medium in it.
+        const others = (rows[resAt]!.toolResults ?? [])
+          .map(r => ownerKey({ tool_use_id: r.tool_use_id }))
+          .filter(k => k !== pair && mediaOwners.has(k) && !(batchPairs.has(k) && archived(k)))
+        if (others.length) {
+          report.failed.push(`${name}: row also holds media of ${others.map(k => k.slice(2)).join(', ')}; summarize it in the same batch`)
+          continue
+        }
+        run =
+          edit.op === 'summarize'
+            ? () => {
+                const id = freshId(edit.tool_use_id)
+                const use = rows[useAt]!
+                const res = rows[resAt]!
+                report.originals.push({ edit: name, rows: [use, res] })
+                rows[useAt] = plain(use, {
+                  toolUses: use.toolUses.map(u => (u.tool_use_id === edit.tool_use_id ? editedUse(u, id) : stripUse(u))),
+                })
+                rows[resAt] = plain(res, {
+                  toolResults: (res.toolResults ?? []).map(r =>
+                    r.tool_use_id === edit.tool_use_id
+                      ? { tool_use_id: id, isError: r.isError, text: `${MARK} summarized${note}${mediaNote([pair!])}: ${edit.summary}` }
+                      : stripResult(r),
+                  ),
+                })
+              }
+            : () => {
+                report.originals.push({ edit: name, rows: [rows[useAt]!, rows[resAt]!] })
+                const res = rows[resAt]!
+                rows[resAt] = plain(res, { toolResults: (res.toolResults ?? []).filter(r => r.tool_use_id !== edit.tool_use_id).map(stripResult) })
+                const use = rows[useAt]!
+                rows[useAt] = plain(use, { toolUses: use.toolUses.filter(u => u.tool_use_id !== edit.tool_use_id).map(stripUse) })
+              }
+        break
+      }
+      case 'collapse': {
+        const [a, b] = edit.anchors ?? []
+        const from = a ? locate(rows, a, edit.from_index) : edit.from_index
+        const to = b ? locate(rows, b, edit.to_index) : edit.to_index
+        if (from < 0 || to < from || to >= rows.length) {
+          report.failed.push(`${name}: the rows it named are no longer there`)
+          continue
+        }
+        const bad = pairingError(rows, from, to)
+        if (bad) {
+          report.failed.push(`${name}: ${bad}`)
+          continue
+        }
+        touched = Array.from({ length: to - from + 1 }, (_, k) => from + k)
+        const known = options.knownResults
+        if (known) {
+          const firstKnown = rows.findIndex(r => (r.toolResults ?? []).some(t => known.has(t.tool_use_id)))
+          const unknownResult = touched.some(i => (rows[i]!.toolResults ?? []).some(t => !known.has(t.tool_use_id)))
+          const earlyPrompt = touched.some(i => (firstKnown < 0 || i < firstKnown) && rows[i]!.role === 'user' && !(rows[i]!.toolResults ?? []).length)
+          if (unknownResult || earlyPrompt) {
+            report.failed.push(`${name}: outside the API window; media unknown`)
+            continue
+          }
+        }
+        // [SP_CTX_DEC_06] Prompt media cannot be matched to rows yet, so a
+        // span with a person's prompt row may hold media that cannot be archived.
+        if ((options.unmatchedPromptMedia ?? 0) > 0 && touched.some(i => rows[i]!.role === 'user' && !(rows[i]!.toolResults ?? []).length)) {
+          report.failed.push(`${name}: span may hold prompt media that cannot be archived; collapse a span without prompt rows`)
+          continue
+        }
+        const keys = ownersOf(rows, edit, touched)
+        run = () => {
+          const span = rows.slice(from, to + 1)
+          report.originals.push({ edit: name, rows: span })
+          const text = `${MARK} ${span.length} rows collapsed${note}${mediaNote(keys)}: ${edit.summary}`
+          // The carrier keeps roles and pairing valid around the span; it is
+          // never one of this plugin's own calls, which are dropped later.
+          const carrier = span.flatMap(r => r.toolUses).find(u => !u.tool.startsWith(OWN_TOOLS))
+          const id = carrier && freshId(carrier.tool_use_id)
+          const replacement: SessionMessage[] =
+            carrier && id
+              ? [
+                  { role: 'assistant', text: '', toolUses: [{ ...editedUse(carrier, id), input: {} }] },
+                  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, isError: false, text }] },
+                ]
+              : [{ role: span[0]!.role, text, toolUses: [] }]
+          rows.splice(from, span.length, ...replacement)
+        }
+        break
+      }
+      case 'rewrite':
+      case 'describe': {
+        const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index) : edit.index
+        if (at < 0 || !rows[at]) {
+          report.failed.push(`${name}: the row it named is no longer there`)
+          continue
+        }
+        touched = [at]
+        run = () => {
+          const row = rows[at]!
+          report.originals.push({ edit: name, rows: [row] })
+          const text =
+            edit.op === 'rewrite'
+              ? `${MARK} rewritten${note}: ${edit.text}`
+              : `${MARK} media replaced${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
+          rows[at] = plain(row, { text })
+        }
+        break
+      }
+    }
+    const owners = ownersOf(input, edit, touched)
+    if (owners.some(k => mediaOwners.has(k) && !archived(k))) {
+      report.failed.push(`${name}: media could not be archived`)
+      continue
+    }
+    plan.push({ edit, touched, pair, hi: Math.max(...touched), owners, run })
+  }
+
+  // Positions were resolved on the untouched list; applying from the end keeps
+  // every earlier position valid (pair edits never splice).
+  plan.sort((x, y) => y.hi - x.hi)
+  const anyRow = new Set<number>()
+  const exclusiveRow = new Set<number>()
+  const pairs = new Set<string>()
+  for (const step of plan) {
+    const conflict = step.pair
+      ? pairs.has(step.pair) || step.touched.some(i => exclusiveRow.has(i))
+      : step.touched.some(i => anyRow.has(i))
+    if (conflict) {
+      report.failed.push(`${describeEdit(step.edit)}: overlaps another edit`)
+      continue
+    }
+    step.run()
+    report.applied.push(describeEdit(step.edit))
+    for (const i of step.touched) {
+      anyRow.add(i)
+      if (!step.pair) exclusiveRow.add(i)
+    }
+    if (step.pair) pairs.add(step.pair)
+    for (const k of step.owners) report.mediaFiles.push(...(media.get(k) ?? []))
+  }
+
+  // [SP_CTX_DEC_02] A kept tool_result row is stored after the boundary still
+  // parented on the pre-compaction row, so it is rebuilt — unless it has media
+  // ([C_CTX_DEC_06]) or lies outside the API window, where its media is unknown.
+  const known = options.knownResults
+  const relinked = rows.map(r => {
+    const results = r.toolResults ?? []
+    if (r.handle === undefined || results.length === 0) return r
+    if (results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id })))) return r
+    if (known && !results.every(t => known.has(t.tool_use_id))) return r
+    return plain(r, {})
+  })
+  const out = relinked.filter(r => r.handle !== undefined || !isEmpty(r))
+  report.charsAfter = totalChars(out)
+  return { rows: out, report }
+}
+
+// [SP_CTX_01_05] The report as the model reads it.
+export function formatReport(r: ApplyReport, archive: string): string {
+  const saved = r.charsBefore - r.charsAfter
+  return [
+    `context-editor: applied ${r.applied.length} edit(s)${r.applied.length ? ': ' + r.applied.join('; ') : ''}.`,
+    r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : '',
+    `Conversation ~${r.charsBefore} -> ~${r.charsAfter} chars (~${Math.round(saved / 4)} tokens freed).`,
+    archive && r.originals.length ? `Originals archived at ${archive}.` : '',
+    r.mediaFiles.length ? `Media archived: ${r.mediaFiles.join(', ')}.` : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+}

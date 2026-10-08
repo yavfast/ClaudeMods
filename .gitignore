@@ -1,0 +1,4 @@
+.dev_flow/profile/
+.dev_flow/cache/
+.dev_flow/session_history/
+mods/*/.claude-plugin/types/

@@ -1,0 +1,7 @@
+# Tasks Directory Index
+
+Each file here is the shared working space for one feature or fix; the dashboard [`../active_context.md`](../active_context.md) is derived from these files.
+
+## Active Tasks
+
+- [task_C_CTX](task_C_CTX.md) — `claude-session-bd80217a` — `review` — Редактор контексту агента: концепт і специфікація

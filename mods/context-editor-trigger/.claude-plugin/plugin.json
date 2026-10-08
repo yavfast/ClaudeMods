@@ -1,0 +1,9 @@
+{
+  "name": "context-editor-trigger",
+  "version": "0.1.0",
+  "description": "Starts the compaction that applies context-editor's queued edits once a turn ends.",
+  "author": {
+    "name": "Alexandr Yavorsky",
+    "email": "alexandr.yavorsky@4shared.com"
+  }
+}
