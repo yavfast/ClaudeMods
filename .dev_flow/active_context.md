@@ -6,4 +6,4 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 | Task | Phase | Status | Contributors | Updated |
 |------|-------|--------|--------------|---------|
-| [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | review | in-progress | claude-session-bd80217a | 2026-10-08 21:26 |
+| [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan | in-progress | claude-session-bd80217a | 2026-10-08 21:35 |

@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-08 21:33
+> **Last updated:** 2026-10-08 21:36
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-bd80217a`
 > **Autonomy:** `checkpoints`
@@ -12,8 +12,8 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `spec` — Редактор контексту агента, [docs/context_editor.sp.md](../../docs/context_editor.sp.md) |
-| **Pipeline phase** | `verify` |
-| **Traceable ID** | `C_CTX` / `SP_CTX` |
+| **Pipeline phase** | `plan` |
+| **Traceable ID** | `C_CTX` / `SP_CTX` / `PL_CTX` |
 
 ## Intent
 
@@ -42,9 +42,13 @@
 - [x] Виправлення рев'ю раунду 3 (44 тести)
 - [x] Рев'ю раунд 4 зупинено на вимогу розробника: спершу перевірити основний функціонал наживо
 - [x] Verify: 3 основні живі сценарії pass на поточному коді (стиснення, drop+collapse+rewrite, нагадування з початку); сховище 700, архів 0600
-- [ ] **Next:** коміт основного функціоналу (за згодою розробника); медіа, теги, describe, C_CTX_DEC_09, resume — наступні етапи (PL_CTX)
+- [x] Коміт 7842616 (гілка feat/context-editor)
+- [x] План PL_CTX: фаза 1 DONE, фази 2–6, backlog
+- [x] Погодження дизайну: PL_CTX_DEC_02 = B (теги → медіа → describe), C_CTX_DEC_09 = A
+- [ ] **Next:** фаза 3 PL_CTX — теги (за командою розробника)
 
 **Activity:**
+- 21:36 — розробник: порядок фаз «Теги → медіа → describe»; DEC_09 «Прийняти вікно»
 - 21:33 — розробник: «спочатку перевірити основний функціонал… вторинний функціонал залиш на наступні етапи»; рев'ю раунд 4 зупинено; живі сценарії основного функціоналу pass
 - 21:26 — рев'ю раунд 3 FAIL (2 must, 5 should, 2 contested) → усе виправлено; contestedи (формулювання DEC_09, тести портів context_edit/DeliverReport) закрито виправленням, тож todo не створено
 - 21:13 — рев'ю раунд 2 FAIL (3 must, 8 should) → виправлено в коді й документах; новий C_CTX_DEC_09 (proposed) — залишкове вікно ≤15 с; SRP: порти CompactionIO/TriggerIO замість хост-моків у тестах
@@ -79,6 +83,7 @@
 |------|-------------|-----------------|
 | Concept | `docs/context_editor.concept.md` | ідея, обмеження хоста, рішення DEC_01–08 — `claude-session-bd80217a` |
 | Code | `mods/context-editor/`, `mods/context-editor-trigger/` | прототип; відстає від SP_CTX: немає тегів і describe — `claude-session-bd80217a` |
+| Plan | `docs/context_editor.plan.md` | фази, технологічні рішення, backlog — `claude-session-bd80217a` |
 | Spec | `docs/context_editor.sp.md` | структури, контракти, живі сценарії §05_03 — `claude-session-bd80217a` |
 
 ## Shared Activity Log
