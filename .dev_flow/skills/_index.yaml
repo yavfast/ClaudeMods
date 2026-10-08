@@ -1,0 +1,7 @@
+updated: 2026-10-08
+
+domains:
+  - path: claude-code/
+    description: API function hooks Claude Code для модів — події, сервіси `$`, обмеження хоста
+    topics: [claude-code, plugin, hooks, mod, session.compact, session.append, tool.call, prompt.submit]
+    applies_to: { paths: ["mods/**"], phases: [implement, fix, test, review, verify] }

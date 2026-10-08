@@ -271,6 +271,8 @@ test('the listing pages from the oldest row and flags big, edited and media rows
   expect(withMedia).toContain('#8@ user')
   expect(withMedia).toContain('media image/png ~2KB')
   expect(listRows([], 0, 10)).toBe('0 rows.')
+  const named = listRows(rows(), 0, 4, new Map(), new Map(), new Map([['a', 'c4']]))
+  expect(named).toContain('id=a (c4) input=')
 })
 
 test('own calls whose result row shares media or unknown results with another pair stay', async () => {

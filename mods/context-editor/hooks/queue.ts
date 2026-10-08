@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, MAX_QUEUE_EDITS, MAX_TEXT, prepare, type QueuedEdit } from './edits'
+import { checkShape, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -67,17 +67,21 @@ export function queueBytes(q: Queue): number {
 export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown }
 
 // [SP_CTX_02_02] The queue after a context_edit call, or why it is refused.
-// Pure: the caller reads the queue and the rows, and writes the result.
+// Pure: the caller reads the queue, the rows, the pinned targets and the
+// aliases, and writes the result. A `ref` is resolved here, before
+// PrepareEdits, so the queue keeps tool_use ids only ([SP_CTX_02_17]).
 export function queueEdits(
   q: Queue,
   rows: readonly SessionMessage[],
   args: EditArgs,
+  pinned: Pinned = NO_PINS,
+  resolve: RefResolver = NO_REFS,
 ): { queue: Queue; queued: number; errors: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.length > MAX_TEXT)
     return { deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` }
-  const { queued, errors } = prepare(rows, args.edits)
+  const { queued, errors } = prepare(rows, resolveEditRefs(args.edits, resolve), undefined, pinned)
   if (q.edits.length + queued.length > MAX_QUEUE_EDITS)
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
@@ -128,6 +132,8 @@ export async function contextEdit(
   io: QueueIO,
   rows: readonly SessionMessage[],
   args: EditArgs,
+  pinned: Pinned = NO_PINS,
+  resolve: RefResolver = NO_REFS,
 ): Promise<{ result: string } | { deny: string }> {
   let read = await io.readQueue()
   let notice = ''
@@ -137,7 +143,7 @@ export async function contextEdit(
     notice = `The unreadable queue (${read.reason}) was moved to ${moved}; its edits are not applied.\n`
     read = { state: 'missing', value: { ...EMPTY_QUEUE } }
   }
-  const out = queueEdits(read.value, rows, args)
+  const out = queueEdits(read.value, rows, args, pinned, resolve)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

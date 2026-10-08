@@ -56,7 +56,7 @@ export function fingerprint(row: SessionMessage): string {
   return `${row.role}|${ids}|${row.text.slice(0, 160)}`
 }
 
-function oneLine(s: string, max: number): string {
+export function oneLine(s: string, max: number): string {
   const flat = s.replace(/\s+/g, ' ').trim()
   return flat.length > max ? flat.slice(0, max) + '…' : flat
 }
@@ -76,7 +76,16 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
 }
 
 // [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows.
-export function listRows(rows: readonly SessionMessage[], from: number, count: number, media: MediaSizes = new Map()): string {
+// `tags`: the tag labels of each row index ([SP_CTX_01_09]); `aliases`: the
+// alias of each tool_use_id ([SP_CTX_01_13]).
+export function listRows(
+  rows: readonly SessionMessage[],
+  from: number,
+  count: number,
+  media: MediaSizes = new Map(),
+  tags: ReadonlyMap<number, readonly string[]> = new Map(),
+  aliases: ReadonlyMap<string, string> = new Map(),
+): string {
   if (rows.length === 0) return '0 rows.'
   const start = Math.min(Math.max(0, Math.trunc(from)), rows.length - 1)
   const size = Math.min(Math.max(1, Math.trunc(count)), MAX_LIST_COUNT)
@@ -96,20 +105,21 @@ export function listRows(rows: readonly SessionMessage[], from: number, count: n
     const parts: string[] = []
     if (row.text) parts.push(`text "${oneLine(row.text, 90)}"`)
     for (const u of row.toolUses)
-      parts.push(`tool_use ${u.tool} id=${u.tool_use_id} input="${oneLine(JSON.stringify(u.input ?? {}), 70)}"`)
+      parts.push(`tool_use ${u.tool} id=${u.tool_use_id}${aliases.has(u.tool_use_id) ? ` (${aliases.get(u.tool_use_id)})` : ''} input="${oneLine(JSON.stringify(u.input ?? {}), 70)}"`)
     for (const r of row.toolResults ?? [])
       parts.push(`tool_result id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
     const own = rowMedia(row, i, media)
     for (const m of own) parts.push(`media ${m.mediaType} ~${Math.ceil(m.bytes / 1024)}KB`)
     const chars = rowChars(row)
     const flags = (isEdited(row) ? '*' : '') + (chars >= BIG_ROW ? '!' : '') + (own.length ? '@' : '')
-    lines.push(`#${i}${flags} ${row.role} ${chars}c: ${parts.join(' | ') || '(empty)'}`)
+    const labels = tags.get(i) ?? []
+    lines.push(`#${i}${flags} ${row.role} ${chars}c: ${parts.join(' | ') || '(empty)'}${labels.length ? ' ' + labels.join(' ') : ''}`)
   }
   const total = totalChars(rows)
   const shown = rows.slice(start, stop).reduce((n, r) => n + rowChars(r), 0)
   return [
     `${rows.length} rows, ~${total} chars (~${Math.round(total / 4)} tokens), ${mediaCount} media (~${Math.ceil(mediaBytes / 1024)}KB). Showing #${start}..#${stop - 1} (oldest first), ~${shown} chars; ~${before} chars come before it.`,
-    `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media.${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
+    `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media. Tags: [pin] no edit may touch it, [disposable: note] replaced by its note at the next reminder threshold, [review] worth a look.${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
     ...lines,
   ].join('\n')
 }
@@ -192,10 +202,39 @@ function isIndex(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value)
 }
 
+// [SP_CTX_02_17] Resolves a call alias (or "last") to its tool_use_id.
+export type RefResolver = (ref: string) => string | undefined
+export const NO_REFS: RefResolver = () => undefined
+
+export const REF_HINT = 'marked calls carry a "[context-editor] id cN" line after their result'
+
+// [SP_CTX_02_03] A `ref` left on a summarize/drop edit: either beside a
+// tool_use_id, or one that did not resolve ([SP_CTX_02_17]).
+function refError(e: Record<string, unknown>): string | undefined {
+  if (e.ref === undefined) return undefined
+  if (e.tool_use_id !== undefined) return 'ref and tool_use_id are exclusive'
+  return `unknown ref ${typeof e.ref === 'string' ? e.ref : JSON.stringify(e.ref)} (${REF_HINT})`
+}
+
+// [SP_CTX_01_02] [SP_CTX_02_17] Raw edits with each resolvable `ref` of a
+// summarize/drop replaced by its tool_use_id, so the queue keeps ids only;
+// any other `ref` stays for checkShape to reject. Pure.
+export function resolveEditRefs(raws: readonly unknown[], resolve: RefResolver): unknown[] {
+  return raws.map(raw => {
+    if (typeof raw !== 'object' || raw === null) return raw
+    const { ref, ...rest } = raw as Record<string, unknown>
+    if ((rest.op !== 'summarize' && rest.op !== 'drop') || typeof ref !== 'string' || rest.tool_use_id !== undefined) return raw
+    const id = resolve(ref)
+    return id === undefined ? raw : { ...rest, tool_use_id: id }
+  })
+}
+
 // [SP_CTX_02_03] Shape check of one raw edit; returns the edit or the reason.
 export function checkShape(raw: unknown): Edit | string {
   if (typeof raw !== 'object' || raw === null) return 'edit must be an object'
   const e = raw as Record<string, unknown>
+  const badRef = e.op === 'summarize' || e.op === 'drop' ? refError(e) : undefined
+  if (badRef) return badRef
   switch (e.op) {
     case 'summarize':
       if (typeof e.tool_use_id !== 'string' || !e.tool_use_id) return 'tool_use_id is required'
@@ -218,13 +257,57 @@ export function checkShape(raw: unknown): Edit | string {
   }
 }
 
+// [SP_CTX_02_03] Targets carrying a `pin` tag, resolved on one row list:
+// pairs by tool_use_id and rows by index. Data, so prepare stays pure.
+export type Pinned = { ids: ReadonlySet<string>; rows: ReadonlySet<number> }
+export const NO_PINS: Pinned = { ids: new Set(), rows: new Set() }
+
+// The rows and pairs an edit changes, resolved on `rows` (anchors through
+// Locate); undefined when its target is not there.
+export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit): { rows: number[]; ids: string[] } | undefined {
+  switch (edit.op) {
+    case 'summarize':
+    case 'drop': {
+      const useAt = findToolUse(rows, edit.tool_use_id)
+      const resAt = findToolResult(rows, edit.tool_use_id)
+      return useAt < 0 || resAt < 0 ? undefined : { rows: [useAt, resAt], ids: [edit.tool_use_id] }
+    }
+    case 'collapse': {
+      const [a, b] = edit.anchors ?? []
+      const from = a ? locate(rows, a, edit.from_index) : edit.from_index
+      const to = b ? locate(rows, b, edit.to_index) : edit.to_index
+      if (from < 0 || to < from || to >= rows.length) return undefined
+      const span = Array.from({ length: to - from + 1 }, (_, k) => from + k)
+      const ids = span.flatMap(i => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...(rows[i]!.toolResults ?? []).map(r => r.tool_use_id)])
+      return { rows: span, ids: [...new Set(ids)] }
+    }
+    case 'rewrite':
+    case 'describe': {
+      const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index) : edit.index
+      return at < 0 || !rows[at] ? undefined : { rows: [at], ids: [] }
+    }
+  }
+}
+
+// [SP_CTX_02_03] Whether an edit would change a pinned pair or row: a pair
+// edit also changes both rows of its pair, a collapse every row and pair of
+// its span.
+export function touchesPin(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned): boolean {
+  const t = touchedBy(rows, edit)
+  return !!t && (t.rows.some(i => pinned.rows.has(i)) || t.ids.some(id => pinned.ids.has(id)))
+}
+
+export const PINNED = 'target is pinned; remove the pin with context_tag first'
+
 // [SP_CTX_02_03] Checks raw edits against the conversation as it is now and
 // stamps the index-based ones with anchors. `hasMedia` answers whether a
-// person's prompt row has media ([SP_CTX_02_10]).
+// person's prompt row has media ([SP_CTX_02_10]); `pinned` names the targets
+// no edit may touch.
 export function prepare(
   rows: readonly SessionMessage[],
   raws: readonly unknown[],
   hasMedia: (owner: MediaOwner) => boolean = () => false,
+  pinned: Pinned = NO_PINS,
 ): { queued: QueuedEdit[]; errors: string[] } {
   const queued: QueuedEdit[] = []
   const errors: string[] = []
@@ -235,47 +318,48 @@ export function prepare(
       return
     }
     const name = describeEdit(edit)
-    switch (edit.op) {
-      case 'summarize':
-      case 'drop':
-        if (findToolUse(rows, edit.tool_use_id) < 0 || findToolResult(rows, edit.tool_use_id) < 0)
-          return void errors.push(`${name}: no completed tool call with that id`)
-        queued.push(edit)
-        return
-      case 'collapse': {
-        const { from_index: from, to_index: to } = edit
-        if (!(from >= 0 && to >= from && to < rows.length))
-          return void errors.push(`${name}: indexes out of range (0..${rows.length - 1})`)
-        const bad = pairingError(rows, from, to)
-        if (bad) return void errors.push(`${name}: ${bad}`)
-        queued.push({ ...edit, anchors: [fingerprint(rows[from]!), fingerprint(rows[to]!)] })
-        return
-      }
-      case 'rewrite': {
-        const row = rows[edit.index]
-        if (!row) return void errors.push(`${name}: index out of range`)
-        if (row.role !== 'assistant' || row.toolUses.length > 0)
-          return void errors.push(`${name}: only an assistant text row can be rewritten; use collapse`)
-        queued.push({ ...edit, anchors: [fingerprint(row)] })
-        return
-      }
-      case 'describe': {
-        const row = rows[edit.index]
-        if (!row) return void errors.push(`${name}: index out of range`)
-        if (row.role !== 'user' || (row.toolResults ?? []).length > 0)
-          return void errors.push(`${name}: describe applies to a user prompt row; use summarize for tool results`)
-        if (!hasMedia({ row: edit.index })) return void errors.push(`${name}: no media found in that row`)
-        queued.push({ ...edit, anchors: [fingerprint(row)] })
-        return
-      }
-    }
+    const checked = checkTarget(rows, edit, hasMedia)
+    if (typeof checked === 'string') return void errors.push(`${name}: ${checked}`)
+    if (touchesPin(rows, checked, pinned)) return void errors.push(`${name}: ${PINNED}`)
+    queued.push(checked)
   })
   return { queued, errors }
 }
 
-// The row an anchor names: at its old index if it is still there, else the
-// one row anywhere that matches.
-function locate(rows: readonly SessionMessage[], anchor: string, hint: number): number {
+// [SP_CTX_02_03] The target rules of one well-formed edit; the queued edit or
+// the reason.
+function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (owner: MediaOwner) => boolean): QueuedEdit | string {
+  switch (edit.op) {
+    case 'summarize':
+    case 'drop':
+      if (findToolUse(rows, edit.tool_use_id) < 0 || findToolResult(rows, edit.tool_use_id) < 0)
+        return 'no completed tool call with that id'
+      return edit
+    case 'collapse': {
+      const { from_index: from, to_index: to } = edit
+      if (!(from >= 0 && to >= from && to < rows.length)) return `indexes out of range (0..${rows.length - 1})`
+      return pairingError(rows, from, to) ?? { ...edit, anchors: [fingerprint(rows[from]!), fingerprint(rows[to]!)] }
+    }
+    case 'rewrite': {
+      const row = rows[edit.index]
+      if (!row) return 'index out of range'
+      if (row.role !== 'assistant' || row.toolUses.length > 0) return 'only an assistant text row can be rewritten; use collapse'
+      return { ...edit, anchors: [fingerprint(row)] }
+    }
+    case 'describe': {
+      const row = rows[edit.index]
+      if (!row) return 'index out of range'
+      if (row.role !== 'user' || (row.toolResults ?? []).length > 0)
+        return 'describe applies to a user prompt row; use summarize for tool results'
+      if (!hasMedia({ row: edit.index })) return 'no media found in that row'
+      return { ...edit, anchors: [fingerprint(row)] }
+    }
+  }
+}
+
+// [SP_CTX_02_04] Locate: the row an anchor names, at its old index if it is
+// still there, else the one row anywhere that matches; -1 when none or many.
+export function locate(rows: readonly SessionMessage[], anchor: string, hint: number): number {
   if (rows[hint] && fingerprint(rows[hint]!) === anchor) return hint
   const hits = rows.flatMap((r, i) => (fingerprint(r) === anchor ? [i] : []))
   return hits.length === 1 ? hits[0]! : -1
@@ -341,19 +425,8 @@ function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: re
 export function replacedOwners(rows: readonly SessionMessage[], edits: readonly QueuedEdit[]): Set<string> {
   const keys = new Set<string>()
   for (const edit of edits) {
-    let touched: number[] = []
-    if (edit.op === 'collapse') {
-      const [a, b] = edit.anchors ?? []
-      const from = a ? locate(rows, a, edit.from_index) : edit.from_index
-      const to = b ? locate(rows, b, edit.to_index) : edit.to_index
-      if (from < 0 || to < from || to >= rows.length) continue
-      touched = Array.from({ length: to - from + 1 }, (_, k) => from + k)
-    } else if (edit.op === 'describe' || edit.op === 'rewrite') {
-      const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index) : edit.index
-      if (at < 0 || !rows[at]) continue
-      touched = [at]
-    }
-    for (const key of ownersOf(rows, edit, touched)) keys.add(key)
+    const touched = touchedBy(rows, edit)
+    if (touched) for (const key of ownersOf(rows, edit, touched.rows)) keys.add(key)
   }
   return keys
 }

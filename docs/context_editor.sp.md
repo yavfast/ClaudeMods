@@ -14,8 +14,8 @@
 
 ## Contents
 
-- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга, звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, константи
-- [02. Contracts](#SP_CTX_02) — перегляд, постановка правок, застосування, прибирання службових викликів, тригер, обробник компактизації, доставка звіту, нагадування, пошук медіа, тегування, автоправила, заміни з тегів, узгодження тегів, підготовка сховища
+- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга, звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, константи
+- [02. Contracts](#SP_CTX_02) — перегляд, постановка правок, застосування, прибирання службових викликів, тригер, обробник компактизації, доставка звіту, нагадування, пошук медіа, тегування, автоправила, заміни з тегів, узгодження тегів, підготовка сховища, позначка викликів і розв'язання псевдонімів
 - [03. Validation Rules](#SP_CTX_03) — що перевіряється для вводу агента і для результату застосування
 - [04. State Transitions](#SP_CTX_04) — життєвий цикл черги, окремої правки і тегу
 - [05. Verification Criteria](#SP_CTX_05) — модульні очікування, інваріанти, інтеграційні сценарії, граничні випадки
@@ -68,13 +68,13 @@ Invariants:
 
 | op | Поля | Значення |
 |----|------|----------|
-| `summarize` | `tool_use_id: string`, `summary: string` | Замінити результат виклику на `summary`; медіа цього результату замінюється разом з текстом |
-| `drop` | `tool_use_id: string` | Прибрати виклик і його результат разом з медіа |
+| `summarize` | `tool_use_id: string` або `ref: string`, `summary: string` | Замінити результат виклику на `summary`; медіа цього результату замінюється разом з текстом |
+| `drop` | `tool_use_id: string` або `ref: string` | Прибрати виклик і його результат разом з медіа |
 | `collapse` | `from_index: int`, `to_index: int`, `summary: string` | Замінити рядки `from_index..to_index` (включно) одним підсумком |
 | `rewrite` | `index: int`, `text: string` | Замінити текст рядка агента без викликів інструментів |
 | `describe` | `index: int`, `description: string` | Замінити медіа в рядку промпту людини описом; текст промпту зберігається дослівно |
 
-Обмеження: `summary`, `text`, `description` — непорожні після обрізання пробілів, не довші за MAX_TEXT. Індекси — позиції в переліку [SP_CTX_02_01](#SP_CTX_02_01).
+Обмеження: `summary`, `text`, `description` — непорожні після обрізання пробілів, не довші за MAX_TEXT. Для `summarize` і `drop` задається рівно одне з `tool_use_id` і `ref`; `ref` — псевдонім виклику або `last` ([SP_CTX_02_17](#SP_CTX_02_17)), у черзі правка зберігається вже з `tool_use_id`. Індекси — позиції в переліку [SP_CTX_02_01](#SP_CTX_02_01).
 
 ### 01_03. QueuedEdit  {#SP_CTX_01_03}
 
@@ -166,7 +166,7 @@ Invariants:
 
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
-| tags | list<Tag> | yes | `[]` | ≤ MAX_TAGS | Теги сесії |
+| tags | list<Tag> | yes | `[]` | ≤ MAX_TAGS; серіалізований файл ≤ MAX_QUEUE_BYTES | Теги сесії |
 | turn | int | yes | 0 | ≥ 0 | Кількість завершених ходів основної розмови |
 | firstPromptPinned | bool | yes | false | — | Правило R1 уже спрацювало |
 
@@ -180,7 +180,7 @@ Invariants:
 | R2 | двері `tool-result`, `size ≥ BIG_ROW`, інструмент з походження не з OWN_TOOLS, ціль без тегу | `review` на `{ tool_use_id }`, без терміну |
 | R3 | двері `tool-result`, інструмент з походження входить у SEARCH_TOOLS, ціль без тегу | `review` на `{ tool_use_id }`, `ttl_turns = SEARCH_TTL` |
 
-Правила не перезаписують наявний тег.
+Правила не перезаписують наявний тег і не додають тегу до повного реєстру (межі TAGS_FULL [SP_CTX_02_11](#SP_CTX_02_11)).
 
 ### 01_12. Constants  {#SP_CTX_01_12}
 
@@ -200,9 +200,22 @@ Invariants:
 | NUDGE_FIRST / NUDGE_STEP | 80 000 / 40 000 | Пороги нагадування, токени |
 | SEARCH_TOOLS | `Glob`, `Grep`, `WebSearch`, `ToolSearch` | Інструменти правила R3 |
 | SEARCH_TTL | 3 | Термін тегу R3, ходи |
+| ALIAS_PREFIX / MAX_ALIASES | `c` / 2000 | Префікс псевдоніма виклику / найбільше псевдонімів у реєстрі |
 | HEARTBEAT / READY_FRESH | 5 с / 15 с | Період запису готовності / найбільший вік, за якого тригер вважає редактор готовим; HEARTBEAT × 3 ≤ READY_FRESH |
 | TRIGGER_DELAY | 300 мс | Пауза між завершенням ходу і першим запитом компактизації |
 | TRIGGER_RETRIES | 20 × 500 мс | Повтори запиту, поки хост відхиляє його через хід, що триває |
+
+### 01_13. AliasRegistry  {#SP_CTX_01_13}
+
+Файл `<storage>/aliases.json`. Пише лише редактор, на власному послідовному ланцюжку.
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| next | int | yes | 1 | ≥ 1 | Номер наступного псевдоніма |
+| last | string? | no | — | ключ `map` | Останній виданий псевдонім |
+| map | map<string, string> | yes | `{}` | ≤ MAX_ALIASES записів; ключ `c<число>`, значення — `tool_use_id` | Псевдонім → виклик |
+
+Стани читання — як у Queue; `unreadable` (зокрема ключ не `c<число>`, число ключа ≥ `next`, порожнє значення, `last` поза `map`, більше MAX_ALIASES записів) не трактується як порожній реєстр: позначок немає, жоден `ref` не розв'язується. Коли записів стало б більше за MAX_ALIASES, найстаріші (з найменшим числом) видаляються. Якщо очищення ([SP_CTX_02_14](#SP_CTX_02_14)) прибирає псевдонім, названий у `last`, поле `last` видаляється: `last` не розв'язується до наступної позначки.
 
 ## 02. Contracts  {#SP_CTX_02}
 
@@ -218,7 +231,7 @@ Input:
 | from | int | no | типово 0; значення поза `0..len-1` обрізається до цих меж |
 | count | int | no | типово LIST_COUNT; обрізається до `1..MAX_LIST_COUNT` |
 
-Output: текст. Порожня розмова — `0 rows.`. Інакше заголовок: кількість рядків, загальний розмір (символи і ≈ токени як символи/4), кількість і сумарний розмір медіа, показаний діапазон, розмір рядків перед ним, легенда позначок, `Next page: from=<n>`, якщо далі є рядки. Далі по рядку: `#<index><flags> <role> <size>c: <частини> <теги>`, де `flags` — `*` (текст рядка або результату починається з MARK), `!` (size ≥ BIG_ROW), `@` (є медіа); частини — `text "<90 символів>"`, `tool_use <tool> id=<id> input="<70>"`, `tool_result id=<id>[ ERROR] "<70>"`, `media <mediaType> ~<KB>KB` через ` | `; теги — `[pin]`, `[disposable: "<40 символів нотатки>"]`, `[review]` (лише активний).
+Output: текст. Порожня розмова — `0 rows.`. Інакше заголовок: кількість рядків, загальний розмір (символи і ≈ токени як символи/4), кількість і сумарний розмір медіа, показаний діапазон, розмір рядків перед ним, легенда позначок, `Next page: from=<n>`, якщо далі є рядки. Далі по рядку: `#<index><flags> <role> <size>c: <частини> <теги>`, де `flags` — `*` (текст рядка або результату починається з MARK), `!` (size ≥ BIG_ROW), `@` (є медіа); частини — `text "<90 символів>"`, `tool_use <tool> id=<id>[ (<alias>)] input="<70>"`, `tool_result id=<id>[ ERROR] "<70>"`, `media <mediaType> ~<KB>KB` через ` | `; теги — `[pin]`, `[disposable: "<40 символів нотатки>"]`, `[review]` (лише активний).
 
 Errors:
 | Code | Condition | Guidance |
@@ -257,7 +270,8 @@ Processing logic (pseudocode):
         REQUIRE storage ready
         IF Queue state = unreadable: move the file aside (QUEUE_QUARANTINED) or deny (DENIED_QUEUE_READ); q = empty
         rows = read main conversation rows
-        (queued, errors) = PrepareEdits(rows, edits, TagRegistry)
+        edits = edits with each resolvable `ref` of summarize/drop replaced by its tool_use_id (ResolveRef, SP_CTX_02_17)
+        (queued, errors) = PrepareEdits(rows, edits, TagRegistry)   # реєстр unreadable → без перевірки pin; HandleCompaction відхилить кожну правку
         REQUIRE len(q.edits) + len(queued) <= MAX_QUEUE_EDITS AND size of the new file <= MAX_QUEUE_BYTES
         q.edits += queued; IF queued not empty: q.tagsOnly = false
         IF resume given: q.resume = resume
@@ -272,11 +286,12 @@ Purpose: перевірити правки на поточній розмові 
 | Правка | Приймається, якщо | Інакше (причина) |
 |--------|-------------------|------------------|
 | будь-яка | `op` — один з п'яти; обов'язкові поля варіанта присутні і мають свій тип; текстові поля непорожні і ≤ MAX_TEXT | `unknown op` / `<field> is required` / `<field> is too long` |
+| summarize, drop з `ref` | `ref` розв'язується ([SP_CTX_02_17](#SP_CTX_02_17)) | `unknown ref <ref>` / `ref and tool_use_id are exclusive` |
 | summarize, drop | існують і виклик, і результат з `tool_use_id` | `no completed tool call with that id` |
 | collapse | `0 ≤ from ≤ to < len` і діапазон містить кожен виклик разом з його результатом | `indexes out of range` / `range splits a tool call from its result` |
 | rewrite | рядок `index` існує, має роль `assistant`, не має викликів | `index out of range` / `only an assistant text row can be rewritten; use collapse` |
 | describe | рядок `index` існує, має роль `user`, не має результатів, має медіа за [SP_CTX_02_10](#SP_CTX_02_10) | `index out of range` / `describe applies to a user prompt row; use summarize for tool results` / `no media found in that row` |
-| будь-яка | ціль (пара, рядок, будь-який рядок або пара діапазону `collapse`) не має тегу `pin` | `target is pinned; remove the pin with context_tag first` |
+| будь-яка | ціль (пара разом з обома її рядками, рядок, будь-який рядок або пара діапазону `collapse`) не має тегу `pin` | `target is pinned; remove the pin with context_tag first` |
 
 ### 02_04. ApplyEdits  {#SP_CTX_02_04}
 
@@ -472,7 +487,7 @@ Processing logic (pseudocode):
         tokens = context size of the last model request
         level = tokens < NUDGE_FIRST ? -1 : floor((tokens - NUDGE_FIRST) / NUDGE_STEP)
         IF level <= nudged: nudged = min(nudged, level); RETURN result unchanged
-        IF storage unavailable OR Queue state != ok OR len(Queue.edits) > 0: RETURN result unchanged
+        IF storage unavailable OR Queue state = unreadable OR len(Queue.edits) > 0: RETURN result unchanged
         nudged = level
         freed = QueueTagReplacements()                       # SP_CTX_02_13
         IF tokens - freed < NUDGE_FIRST + level * NUDGE_STEP: RETURN result unchanged
@@ -515,8 +530,9 @@ TagRequest:
 |-------|------|----------|---------|-------------|-------------|
 | op | `add` \| `remove` | yes | — | — | Дія |
 | kind | `pin` \| `disposable` \| `review` | для `add` | — | — | Значення тегу |
-| tool_use_id | string? | рівно одне з двох | — | — | Ціль — пара виклику |
-| index | int? | рівно одне з двох | — | 0..len-1 | Ціль — рядок за індексом [SP_CTX_02_01](#SP_CTX_02_01) |
+| tool_use_id | string? | рівно одне з трьох | — | — | Ціль — пара виклику |
+| index | int? | рівно одне з трьох | — | 0..len-1 | Ціль — рядок за індексом [SP_CTX_02_01](#SP_CTX_02_01) |
+| ref | string? | рівно одне з трьох | — | псевдонім або `last` | Ціль — пара виклику за псевдонімом ([SP_CTX_02_17](#SP_CTX_02_17)) |
 | note | string? | для `disposable` | — | непорожній, ≤ MAX_TEXT | Нотатка-заміна |
 | ttl_turns | int? | no | — | ≥ 1; лише з `kind = review` | Термін |
 
@@ -532,12 +548,13 @@ Errors (рівень виклику позначено *, решта — рів�
 | DENIED_REGISTRY_WRITE* | реєстр не записався | причина в повідомленні |
 | BAD_OP | `op` не `add`/`remove` | — |
 | KIND_REQUIRED | `add` без коректного `kind` | — |
-| TARGET_REQUIRED | вказано обидва або жодного з `tool_use_id` / `index` | — |
+| TARGET_REQUIRED | вказано не рівно одне з `tool_use_id` / `index` / `ref` | — |
+| UNKNOWN_REF | `ref` не розв'язується | позначені виклики мають рядок `[context-editor] id …` |
 | TARGET_NOT_FOUND | немає пари з таким id або рядка з таким індексом | оновити перегляд |
 | NOTE_REQUIRED | `disposable` без коректного `note` | додати нотатку-заміну |
 | BAD_TARGET | `disposable` за індексом на рядок, що не є текстом агента без викликів | для результатів — тегувати за `tool_use_id` |
 | BAD_TTL | `ttl_turns` < 1 або не для `review` | — |
-| TAGS_FULL | реєстр уже має MAX_TAGS тегів | зняти непотрібні теги |
+| TAGS_FULL | новий тег (не заміна) при MAX_TAGS тегах у реєстрі, або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні теги |
 | NO_TAG | `remove` для цілі без тегу | — |
 
 Processing logic (pseudocode):
@@ -546,7 +563,8 @@ Processing logic (pseudocode):
         rows = read main conversation rows; reg = TagRegistry
         FOR req IN tags:
             validate (table above); on error → rejected += reason; CONTINUE
-            target = req.tool_use_id ? { tool_use_id } : { anchor: fingerprint(rows[req.index]), hint: req.index }
+            target = req.index given ? { anchor: fingerprint(rows[req.index]), hint: req.index }
+                                     : { tool_use_id: req.tool_use_id or ResolveRef(req.ref) }
             add: replace any tag on target with Tag(req, created_turn = reg.turn)
             remove: delete the tag on target
         write TagRegistry
@@ -568,7 +586,7 @@ Processing logic (pseudocode):
     ON turn completed (main loop, not aborted): TagRegistry.turn += 1
     ON hook failure: RETURN stored row unchanged
 
-Обробник ніколи не змінює і не відхиляє рядок.
+Обробник ніколи не змінює і не відхиляє рядок. Рядок R1 у переліку [SP_CTX_02_01](#SP_CTX_02_01) — останній рядок `user` без результатів, текст якого збігається з текстовими блоками промпту без урахування пробільних символів (або містить їх); не знайдено — R1 не спрацьовує і `firstPromptPinned` лишається `false`.
 
 ### 02_13. QueueTagReplacements  {#SP_CTX_02_13}
 
@@ -595,7 +613,7 @@ Processing logic (pseudocode):
 
 Purpose: тримати реєстр узгодженим з розмовою після застосування.
 
-Logic: у [SP_CTX_02_07](#SP_CTX_02_07) після ApplyEdits видалити теги, чиї цілі змінено (пари `summarize`/`drop`, пари й рядки діапазонів `collapse`, рядки `rewrite`/`describe`), і теги, чиї цілі не знайдено в новому списку рядків (за `tool_use_id` або Locate).
+Logic: у [SP_CTX_02_07](#SP_CTX_02_07) після ApplyEdits видалити псевдоніми змінених і зниклих пар з AliasRegistry, а також теги, чиї цілі змінено застосованими правками (пари `summarize`/`drop` разом з їхніми рядками, пари й рядки діапазонів `collapse`, рядки `rewrite`/`describe`), теги `disposable`, чия заміна (`summarize` пари з `summary = note` або `rewrite` з якорем цілі і `text = note`) була в пакеті — застосована чи відхилена ([SP_CTX_04_03](#SP_CTX_04_03)), і теги, чиї цілі не знайдено в новому списку рядків (за `tool_use_id` або Locate); якщо не застосовано жодної правки, новий список — рядки події. Тег рядка, що лишився, отримує новий індекс як `hint`. Збій запису реєстру не скасовує застосування.
 
 ### 02_15. PrepareStorage  {#SP_CTX_02_15}
 
@@ -612,6 +630,26 @@ Processing logic (pseudocode):
     EVERY HEARTBEAT: re-check the session_id as above; write editor-ready
 
 Медіа-файли пишуться командою хоста, що декодує base64 з потоку вводу у файл; файли лежать у каталозі сховища, доступному лише власникові.
+
+### 02_16. MarkCall  {#SP_CTX_02_16}
+
+Purpose: дати агенту псевдонім виклику, який варто редагувати.
+
+Processing logic (pseudocode):
+    ON tool call finished (main loop, not denied, tool not OWN_TOOLS, tool_use_id present):
+        IF len(result text) < BIG_ROW AND tool NOT IN SEARCH_TOOLS: no mark
+        IF storage unavailable OR AliasRegistry unreadable: no mark
+        alias = ALIAS_PREFIX + next; next += 1; map[alias] = tool_use_id; last = alias; trim to MAX_ALIASES
+        write AliasRegistry; IF the write fails: no mark            # псевдонім без запису не розв'язався б
+        RETURN result + additional context "[context-editor] id <alias>: use it as \"ref\" in context_tag / context_edit"
+
+Позначка і нагадування ([SP_CTX_02_09](#SP_CTX_02_09)) — один хук: рядок псевдоніма йде першим. Збій позначки не змінює результату інструменту. «Довжина тексту результату» — текст результату так, як його читає модель (поле `text` результату від хоста); у відповіді іншого хука без `text` — довжина серіалізованого `result`. Хук чекає запису реєстру перед поверненням результату, тож псевдонім, який бачить агент, уже розв'язується.
+
+### 02_17. ResolveRef  {#SP_CTX_02_17}
+
+Purpose: перетворити `ref` на `tool_use_id`.
+
+Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше або за відсутності запису — `unknown ref <ref>`. Розв'язання відбувається при постановці правки чи тегу; у черзі й реєстрі тегів зберігається `tool_use_id`. Виклик, що вийшов за вікно 4096 рядків, розв'язується, але правка відхиляється перевірками [SP_CTX_02_03](#SP_CTX_02_03).
 
 ## 03. Validation Rules  {#SP_CTX_03}
 
@@ -712,7 +750,13 @@ Processing logic (pseudocode):
 | AutoTag | R1, R2, R3 | перший промпт людини; Read 5000 символів; Grep | `pin`; `review`; `review` з `ttl_turns = 3`; другий промпт без тегу |
 | QueueTagReplacements | заміни з тегів | два `disposable` при порожній черзі | дві правки, `tagsOnly = true`; після context_edit — `false` |
 | Nudge | заміни достатньо | оцінка звільнення опускає нижче порогу | нагадування немає |
-| RebindTags | після застосування | тег на змінену пару і на незмінену | перший видалено, другий лишився |
+| RebindTags | після застосування | тег на змінену пару і на незмінену | перший видалено, другий лишився; псевдонім зміненої пари видалено |
+| MarkCall | великий вивід | Read 5000 символів | рядок `[context-editor] id c1`; `last = c1` |
+| MarkCall | малий вивід / службовий інструмент | Read 100 символів; `context_list` | без позначки |
+| MarkCall | реєстр нечитабельний | — | без позначки, результат не змінено |
+| ResolveRef | розв'язання | `last`, `c1`, `c99`, `ref` разом з `tool_use_id` | id; id; `unknown ref c99`; `ref and tool_use_id are exclusive` |
+| context_tag | ціль за `ref` | `{op: add, kind: disposable, ref: last, note}` | тег на пару останнього позначеного виклику |
+| AliasRegistry | межа | MAX_ALIASES + 1 позначок | найстаріший псевдонім видалено |
 | PrepareStorage | права | команда встановлення прав завершується з помилкою | сховище `unavailable`, інструменти відмовляють DENIED_STORAGE |
 | CollectMedia | медіа в результаті | `tool_result` з image base64 | власник `{tool_use_id}`, `data` присутні, `bytes` = довжина декодованих даних |
 | CollectMedia | медіа посиланням | `tool_result` з document `source.type = url` | MediaRef без `data`; правка, що його замінює, — `media could not be archived` |
@@ -726,7 +770,7 @@ Processing logic (pseudocode):
 | TriggerCompaction | відправка відхилена | `submit` падає | `lastSubmittedReportId` не змінюється, попередження |
 | TriggerCompaction | хост відмовляє | `compact` падає 20 разів | 20 очікувань по 500 мс; черга лишається |
 
-Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти), `mods/context-editor-trigger/tests/flush.test.ts` (TriggerCompaction через порти). Зв'язування портів з `$` (PrepareStorage, EditorReady через список інструментів) перевіряється живими сценаріями. Теги, describe і PromptMatch у прототипі не реалізовані (план PL_CTX).
+Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти), `mods/context-editor-trigger/tests/flush.test.ts` (TriggerCompaction через порти). Зв'язування портів з `$` (PrepareStorage, EditorReady через список інструментів) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag, AutoTag, QueueTagReplacements, Nudge, RebindTags, розбір реєстру, перелік з тегами) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). describe і PromptMatch не реалізовані (план PL_CTX).
 
 ### 05_02. Invariant Checks  {#SP_CTX_05_02}
 
@@ -753,8 +797,9 @@ Processing logic (pseudocode):
 | Документ у результаті інструменту | PDF | прочитати; summarize | те саме | not run |
 | Незмінене медіа | два скриншоти | summarize першого | другий агент бачить | not run |
 | Зображення в промпті людини | скриншот у промпті | describe | залежить від [SP_CTX_DEC_06](#SP_CTX_DEC_06) | blocked |
-| Автоматичне чищення з тегів | 5 файлів | агент ставить `disposable` з нотатками | на порозі заміни застосовано без нагадування | not run |
-| Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | not run |
+| Тег за псевдонімом | 5 файлів | після кожного Read агент ставить `disposable` з `ref: last`, без `context_list` | жодного `context_list`; теги на правильних викликах; заміни на порозі | pass (2026-10-08, фаза 7) |
+| Автоматичне чищення з тегів | 5 файлів | агент ставить `disposable` з нотатками | на порозі заміни застосовано без нагадування | pass (2026-10-08, фаза 3) |
+| Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | pass (2026-10-08, фаза 3) |
 | Відновлення сесії | «стиснення» завершено | `claude --resume <id>`, спитати KEY_0377 | «немає в контексті» | **fail** — [C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) |
 
 ### 05_04. Edge Cases and Boundaries  {#SP_CTX_05_04}
@@ -788,9 +833,9 @@ Processing logic (pseudocode):
 | Aspect | Rollback approach |
 |--------|-------------------|
 | Data/state changes | Розмови, змінені в поточних сесіях, лишаються зміненими до кінця сесії; після `--resume` хост повертає оригінали ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05)) |
-| Artifacts | Видалити `<HOME>/.claude/context-editor/` (черги, реєстри тегів, архіви, медіа-файли, файли готовності) |
+| Artifacts | Видалити `<HOME>/.claude/context-editor/` (черги, реєстри тегів і псевдонімів, архіви, медіа-файли, файли готовності) |
 | Dependent modules | Немає |
-| External contracts | Інструменти `context_list`, `context_edit`, `context_tag` зникають з наступного старту сесії; промпти й навички, що на них посилаються, треба прибрати |
+| External contracts | Рядки `[context-editor] id …` після результатів лишаються в розмові як текст без дії; інструменти `context_list`, `context_edit`, `context_tag` зникають з наступного старту сесії; промпти й навички, що на них посилаються, треба прибрати |
 
 Вимкнення: прибрати обидва розширення з `--plugin-dir` / `CLAUDE_CODE_PLUGIN_DIRS` або зі встановлених плагінів. Вимкнути лише редактор безпечно: без інструменту редактора в процесі тригер не запитує компактизацію, крім вікна ≤ 15 с після невдалого перезавантаження ([C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09)). Вимкнути лише тригер можна, але правки лишаться в черзі без застосування.
 
@@ -911,3 +956,8 @@ Processing logic (pseudocode):
 | 2026-10-08 | Рев'ю раунд 1: сховище з правами власника і готовність редактора (01_07, 02_15); пакетні поля черги і доставка звіту одним записувачем (01_04, 02_08, DEC_04); стани читання файлів; межі MAX_*; носій collapse без службових викликів; архів лише після запису; charsAfter після DropOwnCalls; обов'язкові поля правок; ApplyEdits з mediaOwners і перекриттям за множинами рядків; MARK першим у describe; таблиці ToolUse, ToolResult, TagRequest; повні помилки context_tag; джерела AutoTag; межа 4096 рядків; DEC_06 відкрите (PromptMatch); критерії для всіх контрактів |
 | 2026-10-08 | Рев'ю раунд 2: правки пар на спільних рядках застосовуються разом; відмова при медіа сусідньої пари і при незіставленому медіа в промптах; вікно API (knownResults); покинута компактизація; доставка звіту після входу промпту; карантин нечитабельної черги; MAX_QUEUE_BYTES; перевірка типів полів черги; готовність через список інструментів процесу, HEARTBEAT 5 с / READY_FRESH 15 с; помилки тригера; межі колекцій; критерії CollectMedia |
 | 2026-10-08 | Рев'ю раунд 3: DropOwnCalls зберігає службові пари поряд з медіа і поза вікном; правки поза вікном API відхиляються; носій collapse без input; без архіву оригіналів пакет не застосовується; сховище стежить за зміною session_id; гілка збою відповідає одразу; звіт прибирається за доставленим текстом; помилки DeliverReport; відхилений промпт продовження; стани черги в 04_01 |
+| 2026-10-08 | Фаза 3 (теги), уточнення за реалізацією: межа файлу реєстру MAX_QUEUE_BYTES і TAGS_FULL за нею (01_10, 02_11, 01_11); `pin` пари захищає і її рядки (02_03); context_edit при нечитабельному реєстрі ставить правки без перевірки `pin` (02_02); Nudge мовчить лише при `unreadable` черзі, а не при відсутньому файлі (02_09); як R1 знаходить рядок промпту (02_12); RebindTags видаляє `disposable`, чия заміна була в пакеті, і оновлює `hint` (02_14, узгоджено з 04_03); перелік модульних тестів тегів (05_01) |
+| 2026-10-08 | Живі сценарії фази 3 (теги): «Захист початкового завдання», «Автоматичне чищення з тегів» — pass |
+| 2026-10-08 | Псевдоніми викликів: AliasRegistry (01_13), MarkCall (02_16), ResolveRef (02_17), `ref` у правках і тегах, очищення псевдонімів у RebindTags |
+| 2026-10-08 | Фаза 7 (псевдоніми), уточнення за реалізацією: стани `unreadable` реєстру псевдонімів і видалення `last` при очищенні (01_13); крок ResolveRef перед PrepareEdits (02_02) і ціль за `ref` у псевдокоді context_tag (02_11); без запису реєстру позначки немає, що таке довжина тексту результату, хук чекає запису (02_16); модульні тести псевдонімів (05_01) |
+| 2026-10-08 | Живий сценарій «Тег за псевдонімом» — pass |

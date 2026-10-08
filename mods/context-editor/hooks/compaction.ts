@@ -1,6 +1,8 @@
 import type { SessionMessage } from 'claude-code'
-import { applyEdits, collectMedia, describeEdit, dropOwnCalls, formatReport, replacedOwners, totalChars } from './edits'
+import { pruneAliases, type AliasRegistry } from './aliases'
+import { applyEdits, collectMedia, describeEdit, dropOwnCalls, formatReport, PINNED, replacedOwners, totalChars, touchesPin, type QueuedEdit } from './edits'
 import { DEFAULT_RESUME, EMPTY_QUEUE, type Queue, type Read } from './queue'
+import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
 
 const EXT: Record<string, string> = {
   'image/png': 'png',
@@ -22,6 +24,12 @@ export type CompactionIO = {
   // true once the host abandoned the dispatch (interrupt, budget)
   isAborted: () => boolean
   toast: (text: string) => void
+  readTags: () => Promise<Read<TagRegistry>>
+  // [SP_CTX_02_14] runs `change` on the registry as it is then, on the
+  // registry's serial chain; leaves an unreadable registry alone
+  updateTags: (change: (reg: TagRegistry) => TagRegistry) => Promise<void>
+  // [SP_CTX_02_14] the same for the alias registry, on its own serial chain
+  updateAliases: (change: (reg: AliasRegistry) => AliasRegistry) => Promise<void>
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -34,10 +42,24 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const q = read.value
   if (!q.edits.length) return { skip: 'context-editor: no queued edits' }
 
+  // [SP_CTX_02_07] [SP_CTX_03_01] No edit touches a pinned target, however
+  // it was queued; without a readable registry no edit can be checked.
+  const tags = await io.readTags()
+  const refused: string[] = []
+  const edits: QueuedEdit[] = []
+  if (tags.state === 'unreadable') refused.push(...q.edits.map(e => `${describeEdit(e)}: tag registry unreadable`))
+  else {
+    const pinned = pinnedTargets(messages, tags.value)
+    for (const e of q.edits) {
+      if (touchesPin(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${PINNED}`)
+      else edits.push(e)
+    }
+  }
+
   const { found, knownResults, unmatchedPromptMedia } = collectMedia(await io.readApi())
   const mediaOwners = new Set(found.keys())
   const id = io.now()
-  const replaced = replacedOwners(messages, q.edits)
+  const replaced = replacedOwners(messages, edits)
   const media = new Map<string, string[]>()
   let n = 0
   // An owner whose media cannot all be written keeps none: applyEdits then
@@ -59,7 +81,8 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
 
   const options = { knownResults, unmatchedPromptMedia }
   const archive = `${io.dir}/${id}.json`
-  const applied = applyEdits(messages, q.edits, archive, media, mediaOwners, options)
+  const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
+  applied.report.failed.unshift(...refused)
   // [C_CTX_01_01] Originals never vanish: without their archive nothing applies.
   if (applied.report.originals.length && !(await io.writeArchive(archive, JSON.stringify(applied.report.originals)))) {
     if (io.isAborted()) return { skip: 'context-editor: compaction abandoned; the batch stays queued' }
@@ -67,7 +90,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
       {
         ...applied.report,
         applied: [],
-        failed: q.edits.map(e => `${describeEdit(e)}: originals could not be archived`),
+        failed: [...refused, ...edits.map(e => `${describeEdit(e)}: originals could not be archived`)],
         charsAfter: applied.report.charsBefore,
         mediaFiles: [],
       },
@@ -84,6 +107,15 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // An abandoned dispatch changes nothing: the batch stays queued for the
   // next turn, and the files written so far are only orphans in the archive.
   if (io.isAborted()) return { skip: 'context-editor: compaction abandoned; the batch stays queued' }
+
+  // [SP_CTX_02_14] Best effort: a stale tag only names a target that is gone.
+  // With nothing applied the conversation stays as it was.
+  const names = new Set(applied.report.applied)
+  const done = edits.filter(e => names.has(describeEdit(e)))
+  const after = done.length ? rows : messages
+  await io.updateTags(reg => rebindTags(reg, messages, after, done, q.edits)).catch(() => undefined)
+  // An alias of a changed or vanished pair has done its job: it no longer resolves.
+  await io.updateAliases(reg => pruneAliases(reg, messages, after, done)).catch(() => undefined)
 
   const text = formatReport(applied.report, archived)
   await io.writeQueue(reported(q, text, id))

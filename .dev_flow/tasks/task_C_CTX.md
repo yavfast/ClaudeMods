@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-08 21:36
+> **Last updated:** 2026-10-08 22:10
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-bd80217a`
 > **Autonomy:** `checkpoints`
@@ -12,7 +12,7 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `spec` — Редактор контексту агента, [docs/context_editor.sp.md](../../docs/context_editor.sp.md) |
-| **Pipeline phase** | `plan` |
+| **Pipeline phase** | `verify` |
 | **Traceable ID** | `C_CTX` / `SP_CTX` / `PL_CTX` |
 
 ## Intent
@@ -45,9 +45,12 @@
 - [x] Коміт 7842616 (гілка feat/context-editor)
 - [x] План PL_CTX: фаза 1 DONE, фази 2–6, backlog
 - [x] Погодження дизайну: PL_CTX_DEC_02 = B (теги → медіа → describe), C_CTX_DEC_09 = A
-- [ ] **Next:** фаза 3 PL_CTX — теги (за командою розробника)
+- [x] Фаза 3 PL_CTX — теги: реалізація (субагент), 61+6 тестів, tsc/validate/check-shared чисті; живі сценарії «pin першого промпту» і «автоматичне чищення з тегів» pass; навичка .dev_flow/skills/claude-code/plugin-hooks.md
+- [x] Фаза 7 PL_CTX — псевдоніми викликів (субагент): 77+6 тестів, перевірки чисті; живий сценарій «Тег за псевдонімом» pass
+- [ ] **Next:** коміт фаз 3 і 7 (за згодою розробника); далі фаза 2 — медіа наживо
 
 **Activity:**
+- 21:52 — фаза 3: агент не бачить tool_use_id власних викликів, тому кожен context_tag потребує context_list → backlog PL_CTX
 - 21:36 — розробник: порядок фаз «Теги → медіа → describe»; DEC_09 «Прийняти вікно»
 - 21:33 — розробник: «спочатку перевірити основний функціонал… вторинний функціонал залиш на наступні етапи»; рев'ю раунд 4 зупинено; живі сценарії основного функціоналу pass
 - 21:26 — рев'ю раунд 3 FAIL (2 must, 5 should, 2 contested) → усе виправлено; contestedи (формулювання DEC_09, тести портів context_edit/DeliverReport) закрито виправленням, тож todo не створено

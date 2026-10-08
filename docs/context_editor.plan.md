@@ -44,8 +44,9 @@
 
 - [x] [Phase 1 — Основний функціонал](#PL_CTX_P1)
 - [x] [Phase 6 — Залишкове вікно тригера](#PL_CTX_P6) (рішення A)
-- [ ] [Phase 3 — Теги (наступна)](#PL_CTX_P3)
-- [ ] [Phase 2 — Медіа в результатах інструментів](#PL_CTX_P2)
+- [x] [Phase 3 — Теги](#PL_CTX_P3)
+- [x] [Phase 7 — Псевдоніми викликів](#PL_CTX_P7)
+- [ ] [Phase 2 — Медіа в результатах інструментів (наступна)](#PL_CTX_P2)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
@@ -70,9 +71,25 @@
 
 Рев'ю: раунди 1–3 виправлено; раунд 4 зупинено на вимогу розробника перед живою перевіркою.
 
+### Phase 7 — Псевдоніми викликів [DONE]  {#PL_CTX_P7}
+
+**Depends on:** Phase 3; виконується перед фазою 2 ([PL_CTX_DEC_03](#PL_CTX_DEC_03))
+**Implements:** [SP_CTX_01_13](./context_editor.sp.md#SP_CTX_01_13), [02_16](./context_editor.sp.md#SP_CTX_02_16), [02_17](./context_editor.sp.md#SP_CTX_02_17); `ref` у [01_02](./context_editor.sp.md#SP_CTX_01_02), [02_03](./context_editor.sp.md#SP_CTX_02_03), [02_11](./context_editor.sp.md#SP_CTX_02_11); псевдоніми в [02_01](./context_editor.sp.md#SP_CTX_02_01) і [02_14](./context_editor.sp.md#SP_CTX_02_14); [C_CTX_03_05](./context_editor.concept.md#C_CTX_03_05)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки MarkCall, ResolveRef, context_tag «ціль за ref», AliasRegistry «межа», RebindTags (псевдонім); [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Тег за псевдонімом»
+
+| Що | Де |
+|----|----|
+| AliasRegistry, розбір, MarkCall, ResolveRef, очищення | новий `mods/context-editor/hooks/aliases.ts` (чиста логіка + порт) |
+| `ref` у правках | `edits.ts` (`checkShape`), `queue.ts` (розв'язання перед `prepare`) |
+| `ref` у тегах | `tags.ts`, схема `context_tag` у `register.ts` |
+| Позначка в спільному хуку з нагадуванням, ланцюжок `serial('aliases')` | `register.ts` |
+| Псевдоніми в переліку | `edits.ts` `listRows` |
+
+Код і модульні тести є (`tests/aliases.test.ts`). Лишилось: живий сценарій «Тег за псевдонімом» ([SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03)); перевірити наживо, що `e.tool_use_id` хука `tool.call` збігається з `tool_use_id` рядків розмови, а рядок `[context-editor] id cN` доходить до моделі після результату.
+
 ### Phase 2 — Медіа в результатах інструментів [IN PROGRESS]  {#PL_CTX_P2}
 
-**Depends on:** Phase 1; виконується після фази 3 ([PL_CTX_DEC_02](#PL_CTX_DEC_02))
+**Depends on:** Phase 1; виконується після фаз 3 і 7 ([PL_CTX_DEC_02](#PL_CTX_DEC_02), [PL_CTX_DEC_03](#PL_CTX_DEC_03))
 **Implements:** [SP_CTX_01_08](./context_editor.sp.md#SP_CTX_01_08), [SP_CTX_02_10](./context_editor.sp.md#SP_CTX_02_10) для результатів інструментів, медіа-частини [02_04](./context_editor.sp.md#SP_CTX_02_04), [02_05](./context_editor.sp.md#SP_CTX_02_05), [02_07](./context_editor.sp.md#SP_CTX_02_07); [C_CTX_DEC_06](./context_editor.concept.md#C_CTX_DEC_06)
 **Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки CollectMedia, «незмінений рядок з медіа», «медіа не заархівовано», «медіа сусідньої пари», «вікно API», DropOwnCalls «спільний рядок» (модульні — є); [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Скриншот у результаті інструменту», «Документ у результаті інструменту», «Незмінене медіа» — плюс: медіа-файл в архіві відкривається інструментом читання і має права 0600
 
@@ -80,7 +97,7 @@
 - живі сценарії зі скриншотом (PNG з написами), PDF і двома скриншотами, з яких стискається один;
 - перевірити наживо припущення: формат блоків `image`/`document` в API-поданні збігається з очікуваним `source.type = base64`; `stdin` у `$.process.run` приймає base64 кількох мегабайт;
 
-### Phase 3 — Теги [TODO]  {#PL_CTX_P3}
+### Phase 3 — Теги [DONE]  {#PL_CTX_P3}
 
 **Depends on:** Phase 1 (виконується перед фазою 2, [PL_CTX_DEC_02](#PL_CTX_DEC_02))
 **Implements:** [SP_CTX_01_09](./context_editor.sp.md#SP_CTX_01_09)–[01_11](./context_editor.sp.md#SP_CTX_01_11), [02_11](./context_editor.sp.md#SP_CTX_02_11)–[02_14](./context_editor.sp.md#SP_CTX_02_14), заміни з тегів у [02_09](./context_editor.sp.md#SP_CTX_02_09), перевірка `pin` у [02_03](./context_editor.sp.md#SP_CTX_02_03) і [02_07](./context_editor.sp.md#SP_CTX_02_07), теги в [02_01](./context_editor.sp.md#SP_CTX_02_01); [C_CTX_03_04](./context_editor.concept.md#C_CTX_03_04)
@@ -161,9 +178,29 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 **Rationale:** найшвидше до автоматичного чищення з тегів — можливості, якої ще немає; код медіа вже працює в модульних тестах і чекає живої перевірки у фазі 2.
 **Rejected because:** A — відкладає нову можливість заради перевірки наявного коду.
 
+### DEC_03 — Коли робити псевдоніми викликів  {#PL_CTX_DEC_03}
+
+> **Status:** resolved
+> **Date:** 2026-10-08
+
+**Question:** Реалізувати псевдоніми ([C_CTX_DEC_10](./context_editor.concept.md#C_CTX_DEC_10)) до чи після медіа?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — перед медіа (фаза 7 після фази 3) | теги одразу стають зручними; живі сценарії медіа вже спиратимуться на псевдоніми |
+| B — після медіа | медіа перевіряється раніше; теги довше потребують перегляду розмови |
+
+**Decision:** A — рішення розробника 2026-10-08.
+**Rationale:** знахідка живого сценарію фази 3 знижує цінність тегів, доки її не виправлено.
+**Rejected because:** B — довше тримає підтверджену незручність.
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
 | 2026-10-08 | Initial version: фаза 1 виконана й перевірена наживо; фази 2–6 і backlog |
 | 2026-10-08 | Погодження дизайну: PL_CTX_DEC_02 = B (теги перед медіа), C_CTX_DEC_09 = A (фаза 6 виконана рішенням) |
+| 2026-10-08 | Фаза 3 (теги) виконана: 61 + 6 модульних тестів, живі сценарії pass; навичка claude-code-plugin-hooks створена; backlog — ціль тегу без tool_use_id |
+| 2026-10-08 | Фаза 7 — псевдоніми викликів (перед медіа, PL_CTX_DEC_03); пункт backlog про ціль тегу без tool_use_id перенесено у фазу 7 |
+| 2026-10-08 | Фаза 7 виконана: 77 + 6 тестів; живий сценарій «Тег за псевдонімом» pass — жодного context_list, теги за c1..c5 |

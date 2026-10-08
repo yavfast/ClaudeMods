@@ -1,8 +1,9 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { failedQueue, handleCompaction, type CompactionIO } from '../hooks/compaction'
-import { prepare } from '../hooks/edits'
+import { fingerprint, prepare } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
+import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
 const BIG = 'x'.repeat(5000)
 const PNG = 'iVBORw0KGgo='
@@ -17,8 +18,8 @@ function conversation(): SessionMessage[] {
   ]
 }
 
-function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}) {
-  const written: { queue?: Queue; media: string[]; archive?: string; toasts: string[] } = { media: [], toasts: [] }
+function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}, tags: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }) {
+  const written: { queue?: Queue; media: string[]; archive?: string; toasts: string[]; tags?: TagRegistry } = { media: [], toasts: [] }
   const io: CompactionIO = {
     dir: '/s',
     now: () => 1000,
@@ -40,6 +41,11 @@ function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}) {
     },
     isAborted: () => false,
     toast: t => void written.toasts.push(t),
+    readTags: async () => tags,
+    updateTags: async change => {
+      if (tags.state !== 'unreadable') written.tags = change(tags.value)
+    },
+    updateAliases: async () => undefined,
     ...over,
   }
   return { io, written }
@@ -110,4 +116,43 @@ test('failedQueue drops the batch and keeps a failure report that does not resum
   expect(q.report).toContain('applying the edits failed (thrown)')
   expect(q.report).toContain('conversation was not changed')
   expect(q.reportResume).toBe(false)
+})
+
+test('a pin set after the edit was queued fails that edit at application; the rest applies', async () => {
+  const conv = conversation()
+  const pinned: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { anchor: fingerprint(conv[0]!), hint: 0 }, created_turn: 0 }] }
+  const batch = queued([
+    { op: 'collapse', from_index: 0, to_index: 2, summary: 'start' },
+    { op: 'drop', tool_use_id: 'a' },
+  ])
+  const { io, written } = harness(batch, {}, { state: 'ok', value: pinned })
+  const out = await handleCompaction(io, conv)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.queue!.report).toContain('collapse #0..#2: target is pinned; remove the pin with context_tag first')
+  expect(written.queue!.report).toContain('applied 1 edit(s): drop a')
+  expect(out.messages[0]!.text).toBe('task')
+})
+
+test('an unreadable tag registry fails every edit and changes nothing', async () => {
+  const { io, written } = harness(queued([{ op: 'drop', tool_use_id: 'a' }]), {}, { state: 'unreadable', reason: 'bad tag 1' })
+  const out = await handleCompaction(io, conversation())
+  expect('skip' in out && out.skip).toContain('no edit could be applied')
+  expect(written.queue!.report).toContain('drop a: tag registry unreadable')
+  expect(written.tags).toBeUndefined()
+})
+
+test('after an apply the tags of edited targets go and the others stay', async () => {
+  const conv = conversation()
+  const reg: TagRegistry = {
+    ...EMPTY_REGISTRY,
+    tags: [
+      { kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'pin', target: { anchor: fingerprint(conv[0]!), hint: 0 }, created_turn: 0 },
+    ],
+  }
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {}, { state: 'ok', value: reg })
+  const out = await handleCompaction(io, conv)
+  expect('messages' in out).toBe(true)
+  expect(written.tags!.tags.length).toBe(1)
+  expect(written.tags!.tags[0]!.kind).toBe('pin')
 })

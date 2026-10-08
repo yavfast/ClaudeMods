@@ -83,6 +83,14 @@ test('contextEdit quarantines an unreadable queue and continues with an empty on
   expect(log.written!.edits.length).toBe(1)
 })
 
+test('contextEdit queues an edit given by ref under its tool_use_id', async () => {
+  const { port, log } = io({ state: 'missing', value: { ...EMPTY_QUEUE } })
+  const out = await contextEdit(port, rows, { edits: [{ op: 'drop', ref: 'last' }, { op: 'drop', ref: 'c5' }] }, undefined, ref => (ref === 'last' ? 'a' : undefined))
+  expect('result' in out && out.result).toContain('Queued 1 edit(s)')
+  expect('result' in out && out.result).toContain('unknown ref c5')
+  expect(log.written!.edits).toEqual([{ op: 'drop', tool_use_id: 'a' }])
+})
+
 test('contextEdit refuses when the queue can neither be read nor moved, or cannot be written', async () => {
   const stuck = io({ state: 'unreadable', reason: 'x' }, { quarantine: async () => undefined })
   const a = await contextEdit(stuck.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })

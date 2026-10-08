@@ -1,0 +1,58 @@
+---
+skill: ClaudeCodePluginHooks
+domain: claude-code
+topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests]
+source: implementation
+updated: 2026-10-08
+kind: procedural
+promotion: candidate
+written_against: Claude Code 2.1.294
+state: current
+---
+
+# Моди Claude Code: поведінка хоста, яку треба знати
+
+## Applicability Boundary
+
+- **when_to_use:** пишете або змінюєте мод у `mods/` — хуки подій, виклики `$`, тести, живі сценарії.
+- **when_not:** класичні хуки `settings.json` (команди оболонки) — інший механізм.
+- **version_or_context_scope:** Claude Code 2.1.294; після оновлення хоста факти нижче перевірити заново (типи в `.claude-plugin/types/claude-code/index.d.ts`).
+- **promotion scope:** `candidate` — підтверджено одним модом (`context-editor`).
+
+## Context
+
+Типи хоста описують контракти, але кілька важливих поведінок видно лише наживо. Кожен пункт нижче коштував раунду налагодження або рев'ю в задачі `task_C_CTX`.
+
+## Key Concepts
+
+- **Хук — `($, e, next)`.** Без виклику `next` хук відповідає сам; `next({...e, x})` переписує вхід. Модуль не має Node і DOM — усе через `$`.
+- **Валідатор модуля** (`claude plugin validate`) вимагає, щоб `$` передавався лише у функції, оголошені на верхньому рівні того самого файлу; замикання всередині хука можуть викликати `$.x.y()`. Шаблони `tool.call` з `${...}` у матчері дають `tool=?` — матчер пишіть рядковим літералом.
+- **Хуки, що можуть відмовити** (`tool.call`, `prompt.submit`, `session.compact`, …), мають мати `.catch`; без нього збій хука пропускається і подія йде далі, як без хука.
+- **Тести** — `claude plugin test <mod>`, файли `tests/*.test.ts`, набір `claude-code/testing`. Імітувати весь `$` дорого: логіку виносимо за порти (див. `QueueIO`, `CompactionIO`, `TriggerIO`) і тестуємо як чисті функції.
+- **Типи без глобального `tsc`:** `npx -p typescript@5.6.3 tsc -p <tsconfig>` з типами з `.claude-plugin/types/` (генеруються хостом при завантаженні мода).
+
+## Usage in This Project
+
+- Застосування правок контексту через `session.compact`: `mods/context-editor/hooks/compaction.ts`, зв'язування — `mods/context-editor/hooks/register.ts`.
+- Запит компактизації з іншого плагіна: `mods/context-editor-trigger/hooks/flush.ts`.
+- Живий прогін: окремий `claude --plugin-dir …` у tmux (скрипт-драйвер у scratchpad сесії), журнал — `claude --debug`, `~/.claude/debug/<session>.txt`.
+
+## Pitfalls
+
+1. **Плагін не бачить власної компактизації.** Для `$.session.compact()` із плагіна хост пропускає хуки цього самого плагіна («skipped: re-entry»), і запускається справжнє підсумовування. Запит і обробник — у двох різних плагінах.
+2. **Не чекати `$.prompt.submit` у хуку `session.compact`.** Виклик завершується, коли стартує хід, а хід чекає кінця компактизації — взаємне блокування («Running PreCompact hooks…» без кінця).
+3. **Відмова промпту — це `{ drop }`, а не виняток.** І `next(e)` у `prompt.submit`, і `$.prompt.submit` резолвляться з `drop`; перевіряйте поле.
+4. **`session.compact` можна лише між ходами**: під час ходу виклик відхиляється — повторюйте після `turn.complete`.
+5. **Рядки, повернуті з `handle`, після межі компактизації посилаються на старі батьківські рядки.** Рядки з результатами інструментів перезбирайте без `handle`, якщо в них немає медіа.
+6. **Рядок без `handle` хост будує лише з тексту і блоків інструментів** — thinking-блоки й медіа в ньому зникають.
+7. **`claude --resume` не поважає компактизацію від обробника** (немає рядка-підсумку з `isCompactSummary`, як у вбудованої `/compact`): відновлена сесія бачить оригінали.
+8. **`/clear` і `/resume` у тому самому процесі змінюють `session_id` без `session.start`** — стан, прив'язаний до сесії, перевіряйте перед кожною операцією.
+9. **`$.fs.write` і `$.fs.read` мають межу 4 MiB**; великі файли пишіть через `$.process.run(['sh','-c','umask 077 && cat > "$1"','sh',path], { stdin })`. `$.fs` не задає права доступу — `chmod` через `$.process.run`.
+10. **`$.session.messages()` і `{ as: 'api' }`** віддають до 4096 останніх рядків/повідомлень; медіа видно лише в API-поданні.
+11. **`$.tool.list()`** показує інструменти поточного процесу — так один плагін перевіряє, що інший завантажений саме тут.
+12. **`.catch` має бюджет ~1 с**: не чекайте в ньому довгих ланцюжків — відповідайте одразу, решту робіть у фоні.
+
+## References
+
+- Типи хоста: `.claude-plugin/types/claude-code/index.d.ts` у теці мода (або bundled-копія навички `plugin-authoring`).
+- Задача й раунди рев'ю: `.dev_flow/tasks/task_C_CTX.md`.
