@@ -42,6 +42,9 @@ test('summarize rebuilds the pair under one fresh id and drops the copied result
   expect(out[3]!.toolResults![0]!.text.startsWith(MARK)).toBe(true)
   expect(out[3]!.toolResults![0]!.text).toContain('found A')
   expect(out[0]!.handle).toBe('h0')
+  // the text row before the rebuilt call, in the same stretch, is rebuilt too
+  expect(out[1]!.handle).toBeUndefined()
+  expect(out[1]!.text).toBe('I will search.')
   // untouched tool_result rows without media are rebuilt, never kept by handle
   expect(out[5]!.handle).toBeUndefined()
   expect(report.charsAfter < report.charsBefore - 4000).toBe(true)
@@ -85,8 +88,9 @@ test('a split response: summarize the first Read; the second Read\'s row is rebu
   const out = applyEdits(input, queued, '/arch.json', new Map(), new Set(['u:b']))
   expect(out.report.applied).toEqual(['summarize a'])
   const byId = (id: string) => out.rows.find(r => r.toolUses.some(u => u.tool_use_id === id))!
-  // before the first rebuilt row: kept
-  expect(out.rows[1]!.handle).toBe('t1')
+  // the text row before it, of the same response, is rebuilt too (content kept)
+  expect(out.rows[1]!.handle).toBeUndefined()
+  expect(out.rows[1]!.text).toBe('Reading both files.')
   expect(byId('b').handle).toBeUndefined()
   expect(byId('b').toolUses[0]!.input).toEqual({ q: 'b' })
   expect(out.rows.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'b'))!.handle).toBe('r5')
@@ -118,7 +122,25 @@ test('an interleaved response: summarize a and drop b; the emptied result row of
   expect(useOf('c').handle).toBeUndefined()
   // c's result holds media: kept with its handle
   expect(out.rows.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'c'))!.handle).toBe('rc')
-  expect(out.rows[1]!.handle).toBe('t1')
+  expect(out.rows[1]!.handle).toBeUndefined()
+})
+
+test('thinking before an edited call: the thinking-only row of the same response is rebuilt and goes', async () => {
+  // a thinking model writes one response as a thinking-only row, then the
+  // tool_use row; kept with its handle, the thinking row would pull the
+  // original call back on --resume (plugin-hooks pitfall 36)
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'read it', toolUses: [], handle: 'p0' },
+    { role: 'assistant', text: '', toolUses: [], handle: 'th1' },
+    use('a', 'Read', 'u2'),
+    result('a', BIG, 'r3'),
+  ]
+  const { queued } = prepare(input, [{ op: 'summarize', tool_use_id: 'a', summary: 'A says X' }])
+  const out = applyEdits(input, queued, '/arch.json')
+  expect(out.report.applied).toEqual(['summarize a'])
+  expect(out.rows.some(r => r.handle === 'th1')).toBe(false)
+  expect(out.rows.filter(r => r.role === 'assistant').every(r => r.handle === undefined)).toBe(true)
+  expect(out.rows.length).toBe(3)
 })
 
 test('a stretch without a rebuilt assistant row rebuilds nothing more', async () => {
@@ -128,13 +150,15 @@ test('a stretch without a rebuilt assistant row rebuilds nothing more', async ()
   const out = applyEdits(input, queued, '/arch.json', new Map(), new Set(['u:b']))
   expect(out.rows.slice(0, 4).map(r => r.handle)).toEqual(['p0', 't1', 'u2', 'u3'])
   expect(out.rows.some(r => r.handle === 'thinking6')).toBe(true)
-  expect(out.rows.find(r => r.handle === 't8')).toBeDefined()
+  // the second stretch holds the rebuilt pair of c: its text row is rebuilt too
+  expect(out.rows.find(r => r.handle === 't8')).toBeUndefined()
+  expect(out.rows.some(r => r.text === 'Later answer.')).toBe(true)
   // no edit at all: every assistant row keeps its handle
   const none = applyEdits(input, [], '', new Map(), new Set(['u:b']))
   expect(none.rows.filter(r => r.role === 'assistant').every(r => r.handle !== undefined)).toBe(true)
 })
 
-test('DropOwnCalls: an own call rebuilt out of a response rebuilds the later assistant rows of that stretch', async () => {
+test('DropOwnCalls: an own call rebuilt out of a response rebuilds every assistant row of that stretch', async () => {
   const input: SessionMessage[] = [
     { role: 'user', text: 'task', toolUses: [], handle: 'p0' },
     { role: 'assistant', text: 'Listing first.', toolUses: [], handle: 't1' },
@@ -143,7 +167,8 @@ test('DropOwnCalls: an own call rebuilt out of a response rebuilds the later ass
     { role: 'assistant', text: 'Done.', toolUses: [], handle: 't4' },
   ]
   const out = dropOwnCalls(input)
-  expect(out.map(r => r.handle)).toEqual(['p0', 't1', undefined, undefined, undefined])
+  expect(out.map(r => r.handle)).toEqual(['p0', undefined, undefined, undefined, undefined])
+  expect(out[1]!.text).toBe('Listing first.')
   expect(out[4]!.text).toBe('Done.')
 })
 

@@ -939,30 +939,39 @@ export function applyEdits(
 
 // [SP_CTX_02_04] The host merges assistant rows of one model response (one
 // `message.id`) when it builds a request, even across other rows; a rebuilt
-// row gets a synthetic id and splits the response, and a later row of it kept
-// with its handle is pulled back to the earlier message, leaving its tool_use
+// row gets a synthetic id and splits the response. A later row of it kept with
+// its handle is pulled back to the earlier message, leaving its tool_use
 // without the adjacent result ("Tool result missing"; plugin-hooks pitfall
-// 30). So in each stretch between prompt rows (a user row without results that
-// is not a result row a drop left empty),
-// every assistant row kept with a handle after the first rebuilt or inserted
-// assistant row is rebuilt too: its thinking blocks go, as in any rebuilt row,
-// and the caller drops it when that leaves it empty. Result rows keep their own
-// rule (media keeps the handle).
+// 30); an earlier one (a thinking-only row of a thinking model) pulls the
+// original tool_use and its result back on --resume (pitfalls 7b, 36). The
+// mod cannot see `message.id`, and a response never crosses a prompt row, so
+// in each stretch between prompt rows (a user row without results that is not
+// a result row a drop left empty) that holds a rebuilt or inserted assistant
+// row, every assistant row kept with a handle is rebuilt too: its thinking
+// blocks go, as in any rebuilt row, and the caller drops it when that leaves
+// it empty. Result rows keep their own rule (media keeps the handle).
 export function rebuildSplitResponses(rows: readonly SessionMessage[]): SessionMessage[] {
-  let split = false
-  return rows.map(r => {
-    if (r.role === 'user') {
-      // a prompt row ends the stretch; a result row a drop emptied is none
-      // (it goes later, with the other rebuilt rows left empty)
-      if (!(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))) split = false
-      return r
+  const out = [...rows]
+  let start = 0
+  const close = (end: number) => {
+    const stretch = out.slice(start, end)
+    if (stretch.some(r => r.role === 'assistant' && r.handle === undefined)) {
+      for (let i = start; i < end; i++) {
+        const r = out[i]!
+        if (r.role === 'assistant' && r.handle !== undefined) out[i] = plain(r, {})
+      }
     }
-    if (r.handle === undefined) {
-      split = true
-      return r
+  }
+  out.forEach((r, i) => {
+    // a prompt row ends the stretch; a result row a drop emptied is none
+    // (it goes later, with the other rebuilt rows left empty)
+    if (r.role === 'user' && !(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))) {
+      close(i)
+      start = i
     }
-    return split ? plain(r, {}) : r
   })
+  close(out.length)
+  return out
 }
 
 // [SP_CTX_01_05] FormatReport: the report as the model reads it. The size
