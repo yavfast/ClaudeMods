@@ -432,6 +432,15 @@ test('no reminder when the tag replacements bring the context below the threshol
   expect(below.calls.replace).toBe(0)
 })
 
+// [C_CTX_DEC_04] D: the next portion, not the whole conversation
+test('Nudge — the text asks for the next portion', async () => {
+  const text = (await nudge(nudgeIO(5_000).io, 90_000, { level: -1 })) ?? ''
+  expect(text).toContain('the next portion')
+  expect(text).toContain('not the whole conversation')
+  expect(text).toContain("Usually leave unchanged the person's messages, loaded rules and skills")
+  expect(text).not.toContain('verbatim')
+})
+
 // ---- [SP_CTX_02_14] RebindTags
 
 test('after an apply the tag of the edited pair goes, the tag of the untouched pair stays', async () => {

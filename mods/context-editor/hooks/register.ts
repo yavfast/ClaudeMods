@@ -85,9 +85,9 @@ Ops (items of "edits"; every field shown is required):
 
 Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first.
 
-Clean from the start of the conversation: the oldest processed spans go first, since attention degrades with length; prefer one large collapse of an early span over many small edits.
+Clean in steps, by your judgment: take the earliest span with processed or excess content (used tool outputs, repeated reads, dead ends, media already seen: describe it if the task allows) and compress only that. Usually keep the person's messages, loaded rules and skills still in use, and recent work.
 
-Summaries must keep every fact, number, URL and source you may still need: the originals leave your context (they are archived to files named in the summary, which you can Read). Batch edits in one call; edit only when it frees a lot, since each edit invalidates the prompt cache from the edited row on.`
+Summaries must keep every fact, number, URL and source you may still need: the originals leave your context (they are archived to files named in the summary, which you can Read). Batch edits in one call; edit only when it frees a lot, since each edit resets the prompt cache from that row on.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for the most recently marked call.' }

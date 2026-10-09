@@ -484,12 +484,13 @@ export type NudgeIO = {
   reviews: () => Promise<number>
 }
 
+// [SP_CTX_02_09] [C_CTX_DEC_04] D: the next portion, chosen by the agent.
 export function nudgeText(tokens: number, freed: number, reviews: number): string {
   return [
     `context-editor: the context is ~${Math.round(tokens / 1000)}k tokens.`,
     freed > 0 ? `Replacements from your disposable tags are queued (~${Math.round(freed / 1000)}k tokens freed when this turn ends), but that is not enough.` : '',
     reviews > 0 ? `${reviews} row(s) are tagged [review].` : '',
-    `Attention degrades as context grows, so clean it from the START of the conversation: call context_list (it lists the oldest rows first), then make ONE context_edit call that collapses or summarizes the earliest spans you have already processed (old tool outputs, screenshots and documents you have already looked at, finished sub-tasks, dead ends). Keep verbatim the user's original task and constraints, open questions and the decisions still in force. Then continue the task.`,
+    `Attention degrades as context grows, so free the next portion, starting from the START of the conversation: call context_list (it lists the oldest rows first), then make ONE context_edit call that compresses what in the earliest spans is already processed or excess (tool outputs you have used, repeated reads, finished sub-tasks, dead ends; screenshots and documents you have looked at, by a description if the task allows), not the whole conversation. Usually leave unchanged the person's messages, loaded rules and skills that apply to the task, open questions, the decisions in force and the recent work; what to compress is your call. Then continue the task.`,
   ]
     .filter(Boolean)
     .join(' ')
