@@ -10,7 +10,7 @@
 > **Depends on:** none
 > **Used by:** —
 >
-> План реалізації мода-редактора контексту: виконану фазу основного функціоналу і фази, що лишились — медіа в результатах інструментів, теги, дослідження зіставлення медіа в промптах, операція `describe`, рішення щодо залишкового вікна тригера. Читати перед початком роботи над будь-якою фазою.
+> План реалізації мода-редактора контексту: виконані фази (основний функціонал, теги, псевдоніми, медіа, поточна розмова, передача в нову сесію) і фази, що лишились — перехід на один плагін і шляхи, що працюють у будь-якому хості, дослідження зіставлення медіа в промптах, операція `describe`. Читати перед початком роботи над будь-якою фазою.
 
 ## Goal
 
@@ -20,25 +20,23 @@
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Хост і API | Claude Code ≥ 2.1.294, function hooks (плагіни з `hooks/hooks.json`) | єдиний механізм, що дає змінити збережені рядки ([C_CTX_DEC_01](./context_editor.concept.md#C_CTX_DEC_01)) |
+| Хост і API | Claude Code ≥ 2.1.295 (старіші не підтримуються — рішення розробника 2026-10-09), function hooks (плагіни з `hooks/hooks.json`); інтерактивний термінал і неінтерактивний хост з потоковим входом (розширення VS Code, `--input-format stream-json`); одноразовий `claude -p "<промпт>"` — поза обсягом | єдиний механізм, що дає змінити збережені рядки ([C_CTX_DEC_01](./context_editor.concept.md#C_CTX_DEC_01)); мод має працювати там, де його запускає розробник ([C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02)) |
 | Мова | TypeScript, ES-модулі | вимога хоста до модулів хуків |
-| Розбиття | два плагіни: `mods/context-editor`, `mods/context-editor-trigger` | [C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02) |
+| Розбиття | один плагін `mods/context-editor`; компактизація — `$.command.run({ command: 'compact', args })` (до фази 10 — два плагіни з тригером) | [C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02) C |
 | Модулі редактора | `hooks/edits.ts` (чиста логіка правок, перегляду, CollectMedia), `hooks/queue.ts` (черга, context_edit, доставка звіту через порт QueueIO), `hooks/compaction.ts` (обробник через порт CompactionIO), `hooks/register.ts` (зв'язування портів з `$`) | тестованість без імітації хоста ([PL_CTX_DEC_01](#PL_CTX_DEC_01)) |
-| Модулі тригера | `hooks/flush.ts` (логіка через порт TriggerIO), `hooks/register.ts` | те саме |
+| Запуск компактизації і передача | `hooks/flush.ts` (Flush через порт FlushIO), `hooks/handoff.ts` (BuildSeed, CheckSeed, CheckSeeded, RunHandoff через порт HandoffIO) | те саме |
 | Сховище | JSON-файли в `<HOME>/.claude/context-editor/<session_id>/`, каталог 700 | [SP_CTX_01_07](./context_editor.sp.md#SP_CTX_01_07) |
 | Команди хоста | `$.process.run` з argv: `sh -c` з позиційними аргументами (`mkdir`, `chmod`, `cat`, `base64 -d`), `mv` | права доступу і запис без межі 4 MiB; лише POSIX |
 | Тести | `claude plugin test <mod>` (`claude-code/testing`), файли `tests/*.test.ts` | вбудований набір хоста |
 | Типи | `tsc` з `npx -p typescript@5.6.3`, типи хоста з `.claude-plugin/types/` | у системі немає `tsc` |
-| Узгодженість двох модів | `scripts/check-shared.sh` | спільні константи без спільного коду |
-| Живі сценарії | окремий `claude --plugin-dir …` у tmux, керований скриптом-драйвером | відтворювано і видно людині через `tmux attach -r` |
+| Живі сценарії | окремий `claude --plugin-dir …` у tmux, керований скриптом-драйвером (`ce.sh`); неінтерактивний хост — `claude -p --input-format stream-json --output-format stream-json` драйвером `drive.sh` | відтворювано і видно людині через `tmux attach -r`; stream-json — так хост запускає розширення VS Code |
 
 ## Required Knowledge
 
 | Kind | Ref | Applies to | Note |
 |------|-----|-----------|------|
 | skill (create) | claude-code-plugin-hooks | Phase 3 | зафіксувати пастки хоста, знайдені в прототипі: розширення не бачить власної компактизації; `$.prompt.submit` всередині обробника компактизації блокує; `prompt.submit` повертає `{ drop }`, а не помилку; рядки з `handle` після межі посилаються на старі; `--resume` ігнорує компактизацію від обробника; `/clear` не викликає старту сесії; межа `$.fs.write` 4 MiB; `$.tool.list()` для перевірки процесу |
-
-Правил і навичок у `.dev_flow/` ще немає.
+| skill (update) | claude-code-plugin-hooks | Phase 10 | пункти 6–7 і 16–24: неінтерактивний хост без `/resume` і без `$.session.compact`; `command.run('compact')` з `trigger: 'manual'` викликає хуки ініціатора; засів очищеної сесії; рядок без `handle` і чужий `handle` гублять медіа; API-подання після `/compact`; команди мода без подій ходу, черга за походженням таймера, копії рядків у stream-json |
 
 ## Progress
 
@@ -49,10 +47,11 @@
 - [x] [Phase 2 — Медіа в результатах інструментів](#PL_CTX_P2)
 - [x] [Phase 8 — Поточна розмова, опис context_edit, архів без дубля медіа](#PL_CTX_P8)
 - [x] [Phase 9 — Передача в нову сесію](#PL_CTX_P9)
+- [ ] [Phase 10 — Один плагін, компактизація командою, передача засівом](#PL_CTX_P10)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
-Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02); номери фаз — незмінні ідентифікатори, а не черговість.
+Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02) і [PL_CTX_DEC_04](#PL_CTX_DEC_04); номери фаз — незмінні ідентифікатори, а не черговість.
 - [backlog] Збереження правок після `--resume`; налаштовувані пороги; поширення через маркетплейс
 
 ## Phases
@@ -139,6 +138,34 @@ Pseudocode sketch:
 - `tests/handoff.test.ts`: чисті функції й оркестрація через порт (успіх, обидва збої, повернення в стару сесію);
 - живі сценарії — драйвер `ce.sh`; збирач і перевірки спайку — `.dev_flow/cache/session-transcript/`.
 
+### Phase 10 — Один плагін, компактизація командою, передача засівом [TODO]  {#PL_CTX_P10}
+
+**Depends on:** Phase 9; спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md) (Entries 1–4); [C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02), [C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09), [C_CTX_DEC_11](./context_editor.concept.md#C_CTX_DEC_11)–[C_CTX_DEC_14](./context_editor.concept.md#C_CTX_DEC_14); виконується перед фазами 4 і 5 ([PL_CTX_DEC_04](#PL_CTX_DEC_04))
+**Implements:** преамбула [SP_CTX_02](./context_editor.sp.md#SP_CTX_02) (команди в черзі хоста, походження команди, лічильник ходів); [SP_CTX_01_05](./context_editor.sp.md#SP_CTX_01_05) (`mediaFiles` засіву), [01_06](./context_editor.sp.md#SP_CTX_01_06), [01_07](./context_editor.sp.md#SP_CTX_01_07), [01_12](./context_editor.sp.md#SP_CTX_01_12), [01_15](./context_editor.sp.md#SP_CTX_01_15) (`owner`, `handoffInFlight`, `handoffScheduled`, Due), вилучення [01_16](./context_editor.sp.md#SP_CTX_01_16), [01_17](./context_editor.sp.md#SP_CTX_01_17); [02_06](./context_editor.sp.md#SP_CTX_02_06) Flush, [02_07](./context_editor.sp.md#SP_CTX_02_07), [02_12](./context_editor.sp.md#SP_CTX_02_12) (копії рядків, лічильник ходів реєстру), [02_15](./context_editor.sp.md#SP_CTX_02_15), [02_18](./context_editor.sp.md#SP_CTX_02_18), [02_19](./context_editor.sp.md#SP_CTX_02_19)–[02_24](./context_editor.sp.md#SP_CTX_02_24), вилучення [02_25](./context_editor.sp.md#SP_CTX_02_25), [02_26](./context_editor.sp.md#SP_CTX_02_26); [03_02](./context_editor.sp.md#SP_CTX_03_02); [04_01](./context_editor.sp.md#SP_CTX_04_01), [04_04](./context_editor.sp.md#SP_CTX_04_04); [SP_CTX_DEC_04](./context_editor.sp.md#SP_CTX_DEC_04), [DEC_08](./context_editor.sp.md#SP_CTX_DEC_08), [DEC_09](./context_editor.sp.md#SP_CTX_DEC_09)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки Flush, Лічильник ходів, HandleCompaction, HandleSeed, AutoTag (копії рядків), BuildSeed, CheckSeed, CheckSeeded, PinSummary, RunHandoff, Due, HandoffCommand, context_handoff, cancelHandoff, CurrentRows «межа засіяної сесії», RecordBoundary, DeliverReport; [SP_CTX_05_02](./context_editor.sp.md#SP_CTX_05_02) «Справжнє підсумовування не запускається через мод», «Рядки команди несуть самопояснювальну мітку, і обробник бачить її ж», «Засіяна сесія переживає відновлення»; [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) — обов'язкові в обох хостах: «Завершення команди після обробника», «Мітка в розмові», «Команда людини»; нові: «Стиснення в неінтерактивному хості», «Мод вимкнено», «Передача засівом (термінал)», «Передача засівом (неінтерактивний хост)», «Передача довгої сесії після `/compact`», «Запасний шлях до очищення» (в обох хостах, без документа агента — перевіряє `$.model.fork` у stream-json), «Збій засіву після очищення»; повторний прогін в обох хостах — «Стиснення в межах сесії», «Три операції», «Нагадування з початку», «Скриншот у результаті інструменту», «Незмінене медіа», «Перегляд після компактизації», «Передача документом», «Автоматичне чищення з тегів», «Захист початкового завдання»; у терміналі — «Тег за псевдонімом»; [SP_CTX_05_04](./context_editor.sp.md#SP_CTX_05_04) рядки «Хост відхиляє команду компактизації», «Команда чекає кінця ходу», «Разовий `claude -p "<prompt>"`», «Передача після `--resume` відредагованої сесії», «Перезавантаження модуля посеред передачі», «Рядки, повернені компактизацією, у stream-json», «Передача, коли модель бачить не всі рядки», «Передача заповненої розмови», «Хід почався в новій сесії до засіву», «Запис старої черги після засіву не вдався», «`/compact` людини з текстом HANDOFF_MARKER». Плюс механічне: `claude plugin validate`, tsc, жодної згадки `context-editor-trigger`, `editor-ready`, `$.session.compact`, `FLUSH_RETRIES` у коді
+
+| Що | Де |
+|----|----|
+| Лічильник ходів основної розмови (`turns`, `inTurn`, `lastTurnAborted`), спільний для Flush, AutoTag і RunHandoff | новий `mods/context-editor/hooks/turns.ts` (чиста логіка + порт), тести `tests/turns.test.ts` |
+| Flush: логіка тригера переходить у редактор, порт FlushIO, одна спроба, без перевірки готовності | новий `mods/context-editor/hooks/flush.ts`, тести `tests/flush.test.ts` (з тригера) |
+| Запуск Flush з паузи після `turn.complete` (FLUSH_DELAY), `command.run('compact', MARKER)`; HandleCompaction за інструкцією (крім `precompute`); без `editor-ready` | `mods/context-editor/hooks/register.ts`, `compaction.ts`; `tests/compaction.test.ts` |
+| AutoTag пропускає рядки з `origin.kind = plugin` | `tags.ts`, `register.ts`; `tests/tags.test.ts` |
+| BuildSeed (повний і хвостовий режими, медіа по елементах, SEED_ROOM), CheckSeed, CheckSeeded, PinSummary, RunHandoff у новому порядку з `Deliver`, HandleSeed, `owner`/`handoffInFlight`, `/handoff` через Schedule(); HandoffIO без пошуку транскрипту, запису `.jsonl` і `/resume`; відмова команди хоста — у причинах | `mods/context-editor/hooks/handoff.ts`, `compaction.ts`, `queue.ts`, `register.ts`; `tests/handoff.test.ts` |
+| Межа: власна компактизація мода — `manual` з MARKER/HANDOFF_MARKER; межа засіяної сесії | `compaction.ts` (`observedBoundary`), `edits.ts` (`currentRows`), `register.ts`; `tests/boundary.test.ts` |
+| Константи (HANDOFF_MARKER, ROW_WINDOW, TRANSCRIPT_LINE, SUMMARY_OPENER, SEED_PROBE, SEED_ROOM, FLUSH_DELAY) | `queue.ts` / `handoff.ts` / `flush.ts` за місцем використання |
+| Вилучення тригера | видалити `mods/context-editor-trigger/` і `scripts/check-shared.sh` |
+| Документація поза `docs/` (propagate) | `CLAUDE.md` (один плагін, команди, пастки неінтерактивного хоста), кореневий `README.md` (опис тригера, команда запуску), драйвер `.dev_flow/cache/live-test/ce.sh` (один `--plugin-dir`) |
+| Навичка хоста | `.dev_flow/skills/claude-code/plugin-hooks.md`: `TriggerIO` → `FlushIO` у «Key Concepts»; «Usage in This Project» без `mods/context-editor-trigger` |
+
+Pseudocode sketch:
+    ON turn start (main loop): turns += 1; inTurn = true       # команди мода подій ходу не дають (спайк Entry 4)
+    ON turn complete (main loop): inTurn = false; lastTurnAborted = aborted; IF not aborted AND queue has edits AND no handoff: after FLUSH_DELAY — a turn since scheduling → no command (PERSON_MOVED: wait for the next completed turn, or reschedule if it already ended not aborted); else run /compact MARKER once (queued by the host until idle); a refusal → status line; else report + resume prompt once
+    ON compaction (not precompute): instructions = MARKER → HandleCompaction; = HANDOFF_MARKER → HandleSeed; any failure → skip
+    ON row appended: origin.kind = plugin → AutoTag skips it
+    RunHandoff(transcript): claim (in flight, owner for diagnostics) → PrepareSeed in the old session → Moved? defer : /clear → turn check → MovedSince check → /compact HANDOFF_MARKER → CheckSeeded → HandedOff first, then registries, PinSummary, Deliver; failure before clear → document; after clear → second clear only if the seed was taken, then document or notice via Deliver; any exception → Fail / guarded AfterClear / FailAfterClear; FINALLY not in flight
+
+Живий прогін у неінтерактивному хості — драйвер `.dev_flow/cache/handoff-long/drive.sh` (`--plugin-dir mods/context-editor`, `--model haiku`); наприкінці — повторна жива передача з VS Code (сесія розробника, розширення на актуальній версії), яка й виявила ваду.
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -157,7 +184,7 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 
 **Depends on:** рішення розробника щодо [C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09)
 **Implements:** C_CTX_DEC_09
-**Verify:** DEC_09 `resolved` (варіант A, розробник 2026-10-08); код не змінюється — готовність уже перевіряється за інструментом редактора в процесі і свіжістю файлу готовності
+**Verify:** DEC_09 `resolved` (варіант A, розробник 2026-10-08); код не змінюється — готовність уже перевіряється за інструментом редактора в процесі і свіжістю файлу готовності. 2026-10-09: DEC_09 переглянуто (C — один плагін); файл готовності прибирає [фаза 10](#PL_CTX_P10)
 
 ## Backlog
 
@@ -218,6 +245,23 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 **Rationale:** знахідка живого сценарію фази 3 знижує цінність тегів, доки її не виправлено.
 **Rejected because:** B — довше тримає підтверджену незручність.
 
+### DEC_04 — Коли переходити на один плагін  {#PL_CTX_DEC_04}
+
+> **Status:** resolved
+> **Date:** 2026-10-09
+
+**Question:** Об'єднати плагіни окремою фазою після виправлення компактизації і передачі чи одразу, однією фазою?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — окремою фазою після виправлення | менші кроки рев'ю; проміжний код для двох плагінів з командою компактизації, який потім видаляється |
+| B — одразу, однією фазою 10 | одна зміна без проміжного стану; ширше рев'ю і живі тести |
+
+**Decision:** B — розробник, 2026-10-09: «Об'єднати одразу». Фаза 10 виконується перед фазами 4 і 5: без неї мод не застосовує правок у VS Code.
+**Rationale:** проміжний код для двох плагінів не має споживача після фази.
+**Rejected because:** A — код, що живе одну фазу.
+
 ## Changelog
 
 | Date | Change |
@@ -232,3 +276,9 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-09 | Фаза 8 виконана: 91 + 6 тестів; живий сценарій «Перегляд після компактизації» pass; рев'ю раунд 4 FAIL → виправлено, раунд 5 PASS. Не спостерігалось наживо: автоматична компактизація посеред ходу |
 | 2026-10-09 | Фаза 9 — передача в нову сесію (C_CTX §3.6, SP_CTX 01_15–01_16, 02_19–02_24); пункт backlog про нову сесію став фазою |
 | 2026-10-09 | Фаза 9 виконана: 115 + 6 тестів; живі сценарії передачі pass; рев'ю раунди 6–8 FAIL → виправлено (останнє — механічне підтвердження і живий прогін) |
+| 2026-10-09 | Фаза 10 — один плагін, компактизація `command.run('compact')`, передача засівом очищеної сесії (спайк context_editor_handoff_long; C_CTX DEC_02, DEC_09, DEC_11–DEC_14; SP_CTX 02_06, 02_21–02_26); PL_CTX_DEC_04; технологічні рішення без тригера і `check-shared.sh` |
+| 2026-10-09 | Рев'ю раунд 9 (дизайн фази 10): Implements фази 10 — 01_05, 03_02; `observedBoundary` — у `compaction.ts`; propagate — кореневий README і навичка хоста; повторні сценарії — теги; одноразовий `-p` поза обсягом |
+| 2026-10-09 | Рев'ю раунд 10 і спайк Entry 4: фаза 10 — лічильник ходів (`turns.ts`), без прибирання мітки, AutoTag без копій, `owner`/in-flight передачі, Verify за новими критеріями; хост ≥ 2.1.295 |
+| 2026-10-09 | Рев'ю раунд 11: «Запасний шлях до очищення» — в обох хостах без документа агента |
+| 2026-10-09 | Рев'ю раунд 12: ескіз фази 10 — `inTurn` скидається після кожного ходу, перевірка перед командою, HandedOff першим після звірки; Implements 01_15 повний |
+| 2026-10-09 | Рев'ю раунд 14: Verify — ще два рядки 05_04; лічильник ходів з `lastTurnAborted` |
