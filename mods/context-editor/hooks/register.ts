@@ -11,8 +11,21 @@ import {
   type AliasIO,
   type AliasRegistry,
 } from './aliases'
-import { failedQueue, handleCompaction } from './compaction'
-import { collectMedia, listRows, LIST_COUNT, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, OWN_TOOLS, type RefResolver } from './edits'
+import { failedQueue, handleCompaction, observedBoundary } from './compaction'
+import {
+  collectMedia,
+  currentRows,
+  listRows,
+  LIST_COUNT,
+  MAX_QUEUE_EDITS,
+  MAX_TEXT,
+  NO_PINS,
+  NO_REFS,
+  OWN_TOOLS,
+  parseBoundary,
+  type Boundary,
+  type RefResolver,
+} from './edits'
 import { contextEdit, DEFAULT_RESUME, deliverReport, EMPTY_QUEUE, parseQueue, withoutReport, type Queue, type QueueIO, type Read } from './queue'
 import {
   activeReviews,
@@ -40,25 +53,23 @@ const TAG = 'context_tag'
 export const MARKER = `${PLUGIN}: apply queued edits`
 const HEARTBEAT_MS = 5_000
 
-const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time, with indexes, sizes, tool_use ids (with their call alias, e.g. (c3), when they have one), media, flags (* already edited, ! large, @ has media) and tags ([pin], [disposable: note], [review]), so you can choose what to compact with ${EDIT}. Call it right before ${EDIT}: indexes are positions in this listing. Only the latest 4096 rows are visible.`
+export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time, with indexes, sizes, tool_use ids (with their call alias, e.g. (c3), when they have one), media, flags (* already edited, ! large, @ has media) and tags ([pin], [disposable: note], [review]), so you can choose what to compact with ${EDIT}. Call it right before ${EDIT}: indexes are positions in this listing. Only the latest 4096 rows are visible.`
 
-const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have already processed (text, screenshots, images, documents), or dead-end steps and wrong conclusions, with compact summaries.
+export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have already processed (text, screenshots, images, documents), dead-end steps and wrong conclusions with compact summaries.
 
-Ops (each item of "edits"; every field shown is required):
-- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, including any image or document in it, with your summary of what mattered (describe the media too). Parallel calls whose results share a row: summarize the ones with media together in one batch.
-- {"op":"drop","tool_use_id" or "ref"}: remove a tool call and its result entirely (it was useless).
+Edits apply when your current turn ends, not at once: after this call, end your turn with a one-line status. Unless "resume" is false, the session then resumes by itself with "resume_prompt" (default: "${DEFAULT_RESUME}").
+
+Ops (items of "edits"; every field shown is required):
+- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls whose results share a row: summarize the ones with media in one batch.
+- {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a conclusion that turned out wrong.
 
-Calls worth editing (large outputs, search results) carry a line "[context-editor] id cN" right after their result: give "ref":"cN" instead of "tool_use_id" to target that call, or "ref":"last" for the most recently marked call, with no ${LIST} call needed.
-
-A target tagged [pin] cannot be edited; remove the pin with ${TAG} first.
+Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first.
 
 Clean from the start of the conversation: the oldest processed spans go first, since attention degrades with length; prefer one large collapse of an early span over many small edits.
 
-Rules: summaries must keep every fact, number, URL and source you may still need, since the originals leave your context (they are archived to files named in the summary, which you can Read later). Batch several edits in one call; edit only when it frees a lot, because each edit invalidates the prompt cache from the edited row on.
-
-The edits are applied when your current turn ends, not immediately. After calling this tool, end your turn at once with a one-line status. Unless "resume" is false, the session then resumes by itself with the "resume_prompt" text (default: "${DEFAULT_RESUME}").`
+Summaries must keep every fact, number, URL and source you may still need: the originals leave your context (they are archived to files named in the summary, which you can Read). Batch edits in one call; edit only when it frees a lot, since each edit invalidates the prompt cache from the edited row on.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for the most recently marked call.' }
@@ -87,7 +98,7 @@ const EDIT_SCHEMA = {
   required: ['edits'],
 }
 
-const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation ahead of time, at no token cost (tags live outside the conversation and show in ${LIST}). Each item of "tags" names its target by exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias) or "index" (a row in ${LIST}). Calls worth tagging (large outputs, search results) carry a line "[context-editor] id cN" right after their result: "ref":"cN" targets that call and "ref":"last" the most recently marked one, so you can tag right after reading, with no ${LIST} call.
+export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation ahead of time, at no token cost (tags live outside the conversation and show in ${LIST}). Each item of "tags" names its target by exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias) or "index" (a row in ${LIST}). Calls worth tagging (large outputs, search results) carry a line "[context-editor] id cN" right after their result: "ref":"cN" targets that call and "ref":"last" the most recently marked one, so you can tag right after reading, with no ${LIST} call.
 
 Kinds:
 - "pin": nothing may edit the target, neither you nor the automatic replacements. The person's first prompt is pinned for you.
@@ -126,6 +137,11 @@ const TAG_SCHEMA = {
 const storage: { dir?: string; sessionId?: string; reason: string } = { reason: 'not prepared yet' }
 // The threshold the model was last reminded at ([SP_CTX_02_09]).
 const nudged = { level: -1 }
+// [SP_CTX_02_18] The boundary file counts once this process wrote it: one
+// left by another process (a resumed session) may name rows the host restored.
+const boundary = { trusted: false }
+// [SP_CTX_02_18] What the conversation's start was when the agent last listed it.
+const listed: { key?: string } = {}
 // [SP_CTX_02] One serial chain per file: no two read-modify-writes overlap.
 const chains = new Map<string, Promise<unknown>>()
 
@@ -133,6 +149,31 @@ function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
   const next = (chains.get(key) ?? Promise.resolve()).then(work, work)
   chains.set(key, next.catch(() => undefined))
   return next
+}
+
+// [SP_CTX_02_18] The rows of the current conversation, the transcript from
+// the last compaction's head on, and a key that changes with that start.
+async function view($: EngineInterface): Promise<{ rows: readonly SessionMessage[]; key: string }> {
+  const transcript = await $.session.messages()
+  const dir = await ensureStorage($)
+  if (!dir || !boundary.trusted) return { rows: transcript, key: `${storage.sessionId}|` }
+  const text = await $.fs.read(`${dir}/boundary.json`).catch(() => undefined)
+  return { rows: currentRows(transcript, text === undefined ? undefined : parseBoundary(text)), key: `${storage.sessionId}|${text ?? ''}` }
+}
+
+async function conversation($: EngineInterface): Promise<readonly SessionMessage[]> {
+  return (await view($)).rows
+}
+
+// [SP_CTX_02_18] Indexes from a listing taken before the start moved name other rows.
+async function staleIndexes($: EngineInterface): Promise<boolean> {
+  return listed.key !== (await view($)).key
+}
+
+async function writeBoundary($: EngineInterface, b: Boundary): Promise<void> {
+  if (!storage.dir) return
+  await $.fs.write(`${storage.dir}/boundary.json`, JSON.stringify(b))
+  boundary.trusted = true
 }
 
 function queuePath(): string {
@@ -227,6 +268,8 @@ async function prepareStorage($: EngineInterface): Promise<void> {
   storage.dir = undefined
   storage.sessionId = await $.session.id()
   nudged.level = -1
+  boundary.trusted = false
+  listed.key = undefined
   const home = await $.env.get('HOME')
   if (!home) {
     storage.reason = 'HOME is not set'
@@ -296,7 +339,7 @@ function aliasIO($: EngineInterface): AliasIO {
 
 function tagIO($: EngineInterface): TagIO {
   return {
-    rows: () => $.session.messages(),
+    rows: () => conversation($),
     readTags: () => readTags($),
     writeTags: reg => writeTags($, reg),
     readQueue: () => readQueue($),
@@ -330,7 +373,7 @@ async function aliasNames($: EngineInterface) {
 // [SP_CTX_02_09]
 async function reviewCount($: EngineInterface): Promise<number> {
   const read = await readTags($)
-  return read.state === 'unreadable' ? 0 : activeReviews(await $.session.messages(), read.value)
+  return read.state === 'unreadable' ? 0 : activeReviews(await conversation($), read.value)
 }
 
 // [SP_CTX_02_09] The reminder after a tool call, if one is due.
@@ -377,23 +420,21 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__context-editor__context_list' }, async ($, e) => {
     if (e.agentId) return deny('only the main conversation can be listed and edited.')
     const args = e as unknown as { from?: number; count?: number }
-    const rows = await $.session.messages()
+    const { rows, key } = await view($)
     const { found } = collectMedia(await apiMessages($))
     const tagged = await labels($, rows)
     const named = await aliasNames($)
-    return {
-      result:
-        listRows(
-          rows,
-          typeof args.from === 'number' ? args.from : 0,
-          typeof args.count === 'number' ? args.count : LIST_COUNT,
-          found,
-          tagged.labels,
-          named.aliases,
-        ) +
-        tagged.note +
-        named.note,
-    }
+    const text = listRows(
+      rows,
+      typeof args.from === 'number' ? args.from : 0,
+      typeof args.count === 'number' ? args.count : LIST_COUNT,
+      found,
+      tagged.labels,
+      named.aliases,
+    )
+    // [SP_CTX_02_18] only a listing the agent receives renews its indexes
+    listed.key = key
+    return { result: text + tagged.note + named.note }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`listing failed: ${next.error.kind}`)))
 
   // [SP_CTX_02_02]
@@ -402,8 +443,8 @@ export const register: Register = on => {
     if (!(await ensureStorage($))) return deny(`storage unavailable: ${storage.reason}`)
     const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown }
     const out = await serial('queue', async () => {
-      const rows = await $.session.messages()
-      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($))
+      const { rows, key } = await view($)
+      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($), listed.key !== key)
     })
     return 'deny' in out ? deny(out.deny) : out
   }).catch(($, e, next) => (next.called ? next(e) : deny(`queueing failed: ${next.error.kind}`)))
@@ -413,7 +454,13 @@ export const register: Register = on => {
     const args = e as unknown as TagArgs
     const ready = e.agentId ? true : !!(await ensureStorage($))
     const out = await serial('tags', async () =>
-      contextTag(tagIO($), { agentId: e.agentId, tags: args.tags }, ready ? undefined : storage.reason, e.agentId ? NO_REFS : await resolver($)),
+      contextTag(
+        tagIO($),
+        { agentId: e.agentId, tags: args.tags },
+        ready ? undefined : storage.reason,
+        e.agentId ? NO_REFS : await resolver($),
+        !e.agentId && ready && (await staleIndexes($)),
+      ),
     )
     return 'deny' in out ? deny(out.deny) : { result: out.result }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`tagging failed: ${next.error.kind}`)))
@@ -465,6 +512,7 @@ export const register: Register = on => {
           readTags: () => readTags($),
           updateTags: change => updateTags($, change),
           updateAliases: change => updateAliases($, change),
+          writeBoundary: b => writeBoundary($, b),
         },
         e.messages,
       ),
@@ -480,6 +528,15 @@ export const register: Register = on => {
       }).catch(() => undefined)
     return { skip: `${PLUGIN}: applying the edits failed` }
   })
+
+  // [SP_CTX_02_18] Any other compaction of the main conversation that stands
+  // moves its start too; a precomputed one stands only when it is used.
+  on('session.compact', async ($, e, next) => {
+    const done = await next(e)
+    const b = observedBoundary(e, done, MARKER)
+    if (b && (await ensureStorage($))) await writeBoundary($, b).catch(() => undefined)
+    return done
+  }).catch(($, e, next) => next(e))
 
   // [SP_CTX_02_16] [SP_CTX_02_09] After any other tool call of the main loop:
   // the alias line of a call worth editing first, then the reminder. Neither

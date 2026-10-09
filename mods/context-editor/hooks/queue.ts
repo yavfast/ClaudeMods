@@ -76,12 +76,13 @@ export function queueEdits(
   args: EditArgs,
   pinned: Pinned = NO_PINS,
   resolve: RefResolver = NO_REFS,
+  staleIndexes = false,
 ): { queue: Queue; queued: number; errors: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.length > MAX_TEXT)
     return { deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` }
-  const { queued, errors } = prepare(rows, resolveEditRefs(args.edits, resolve), undefined, pinned)
+  const { queued, errors } = prepare(rows, resolveEditRefs(args.edits, resolve), undefined, pinned, staleIndexes)
   if (q.edits.length + queued.length > MAX_QUEUE_EDITS)
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
@@ -134,6 +135,7 @@ export async function contextEdit(
   args: EditArgs,
   pinned: Pinned = NO_PINS,
   resolve: RefResolver = NO_REFS,
+  staleIndexes = false,
 ): Promise<{ result: string } | { deny: string }> {
   let read = await io.readQueue()
   let notice = ''
@@ -143,7 +145,7 @@ export async function contextEdit(
     notice = `The unreadable queue (${read.reason}) was moved to ${moved}; its edits are not applied.\n`
     read = { state: 'missing', value: { ...EMPTY_QUEUE } }
   }
-  const out = queueEdits(read.value, rows, args, pinned, resolve)
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

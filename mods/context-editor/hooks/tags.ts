@@ -10,6 +10,7 @@ import {
   OWN_TOOLS,
   prepare,
   REF_HINT,
+  STALE_INDEXES,
   touchedBy,
   type Edit,
   type Pinned,
@@ -150,6 +151,7 @@ export type TagError =
   | 'TARGET_REQUIRED'
   | 'UNKNOWN_REF'
   | 'TARGET_NOT_FOUND'
+  | 'INDEXES_STALE'
   | 'NOTE_REQUIRED'
   | 'BAD_TARGET'
   | 'BAD_TTL'
@@ -166,6 +168,7 @@ export function applyTagRequests(
   rows: readonly SessionMessage[],
   raws: readonly unknown[],
   resolve: RefResolver = NO_REFS,
+  staleIndexes = false,
 ): TagOutcome {
   const tags = [...reg.tags]
   let size = bytes({ ...reg, tags })
@@ -194,6 +197,7 @@ export function applyTagRequests(
       target = { tool_use_id: id }
       if (!resolveTarget(rows, target)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
     } else {
+      if (staleIndexes) return reject('INDEXES_STALE', STALE_INDEXES)
       const index = r.index as number
       row = rows[index]
       if (!row) return reject('TARGET_NOT_FOUND', `index out of range (0..${rows.length - 1}); refresh context_list`)
@@ -239,6 +243,7 @@ export async function contextTag(
   args: TagArgs,
   storageDown?: string,
   resolve: RefResolver = NO_REFS,
+  staleIndexes = false,
 ): Promise<{ result: string } | { deny: string; code: TagDeny }> {
   if (args.agentId) return { code: 'DENIED_SUBAGENT', deny: "a subagent's context cannot be tagged; only the main conversation's." }
   if (!Array.isArray(args.tags) || args.tags.length === 0 || args.tags.length > MAX_TAGS)
@@ -247,7 +252,7 @@ export async function contextTag(
   const read = await io.readTags()
   if (read.state === 'unreadable')
     return { code: 'DENIED_REGISTRY_READ', deny: `the tag registry cannot be read (${read.reason}); it is left as it is.` }
-  const out = applyTagRequests(read.value, await io.rows(), args.tags, resolve)
+  const out = applyTagRequests(read.value, await io.rows(), args.tags, resolve, staleIndexes)
   if (out.added || out.removed) {
     try {
       await io.writeTags(out.registry)

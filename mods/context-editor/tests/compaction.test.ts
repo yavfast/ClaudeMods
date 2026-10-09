@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { failedQueue, handleCompaction, type CompactionIO } from '../hooks/compaction'
-import { fingerprint, prepare } from '../hooks/edits'
+import { archiveText, failedQueue, handleCompaction, MEDIA_DATA, observedBoundary, type CompactionIO } from '../hooks/compaction'
+import { boundaryOf, fingerprint, prepare, type Boundary } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
@@ -19,7 +19,7 @@ function conversation(): SessionMessage[] {
 }
 
 function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}, tags: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }) {
-  const written: { queue?: Queue; media: string[]; archive?: string; toasts: string[]; tags?: TagRegistry } = { media: [], toasts: [] }
+  const written: { queue?: Queue; media: string[]; archive?: string; archiveText?: string; toasts: string[]; tags?: TagRegistry; boundary?: Boundary } = { media: [], toasts: [] }
   const io: CompactionIO = {
     dir: '/s',
     now: () => 1000,
@@ -35,8 +35,9 @@ function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}, tags: Rea
       written.media.push(path)
       return true
     },
-    writeArchive: async path => {
+    writeArchive: async (path, text) => {
       written.archive = path
+      written.archiveText = text
       return true
     },
     isAborted: () => false,
@@ -46,6 +47,9 @@ function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}, tags: Rea
       if (tags.state !== 'unreadable') written.tags = change(tags.value)
     },
     updateAliases: async () => undefined,
+    writeBoundary: async b => {
+      written.boundary = b
+    },
     ...over,
   }
   return { io, written }
@@ -70,6 +74,31 @@ test('applies the batch: media archived, own calls dropped, charsAfter after the
   expect(q.resume).toBe(true)
   expect(q.report).toContain('Media archived: /s/1000/1.png')
   expect(q.report).toContain('-> ~')
+  expect(written.boundary).toEqual(boundaryOf(out.messages))
+})
+
+test('a batch that changes nothing leaves the boundary as it was', async () => {
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { writeArchive: async () => false })
+  await handleCompaction(io, conversation())
+  expect(written.boundary).toBeUndefined()
+})
+
+test('the archive keeps the paths of archived media in place of its data', async () => {
+  const data = 'A'.repeat(300)
+  const file = { type: 'image', file: { base64: data, type: 'image/png' } }
+  const use = { tool_use_id: 'a', tool: 'Read', input: {}, result: file }
+  const rows: SessionMessage[] = [
+    { role: 'assistant', text: '', toolUses: [use, { tool_use_id: 'b', tool: 'Read', input: {}, result: file }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: '', isError: false, result: file }, { tool_use_id: 'b', text: '', isError: false, result: file }] },
+  ]
+  const text = archiveText([{ edit: 'summarize a', rows }], new Map([['u:a', ['/s/1/1.png']]]))
+  const back = JSON.parse(text) as { rows: SessionMessage[] }[]
+  const note = '[media archived: /s/1/1.png]'
+  expect(back[0]!.rows[0]!.toolUses[0]!.result).toEqual({ type: 'image', file: { base64: note, type: 'image/png' } })
+  expect(back[0]!.rows[1]!.toolResults![0]!.result).toEqual({ type: 'image', file: { base64: note, type: 'image/png' } })
+  // a pair whose media was not archived keeps its data
+  expect(back[0]!.rows[0]!.toolUses[1]!.result).toEqual(file)
+  expect(text.split(data).length - 1).toBe(2)
 })
 
 test('a failed archive write refuses the whole batch and changes nothing', async () => {
@@ -155,4 +184,26 @@ test('after an apply the tags of edited targets go and the others stay', async (
   expect('messages' in out).toBe(true)
   expect(written.tags!.tags.length).toBe(1)
   expect(written.tags!.tags[0]!.kind).toBe('pin')
+})
+
+test('archiveText keeps long data that is not base64, even beside archived media', async () => {
+  const prose = 'word '.repeat(MEDIA_DATA)
+  const rows: SessionMessage[] = [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'X', input: {}, result: { data: prose, image: { base64: 'B'.repeat(MEDIA_DATA) } } }] },
+  ]
+  const back = JSON.parse(archiveText([{ edit: 'summarize a', rows }], new Map([['u:a', ['/s/1/1.png']]]))) as { rows: SessionMessage[] }[]
+  expect(back[0]!.rows[0]!.toolUses[0]!.result).toEqual({ data: prose, image: { base64: '[media archived: /s/1/1.png]' } })
+})
+
+test('observedBoundary: a standing compaction of the main conversation sets the boundary; the rest do not', async () => {
+  const rows = conversation()
+  const done = { messages: rows }
+  expect(observedBoundary({ trigger: 'manual' }, done, 'M')).toEqual(boundaryOf(rows))
+  expect(observedBoundary({ trigger: 'auto' }, done, 'M')).toEqual(boundaryOf(rows))
+  expect(observedBoundary({ trigger: 'plugin', instructions: 'other' }, done, 'M')).toEqual(boundaryOf(rows))
+  expect(observedBoundary({ trigger: 'plugin', instructions: 'M' }, done, 'M')).toBeUndefined()
+  expect(observedBoundary({ trigger: 'precompute' }, done, 'M')).toBeUndefined()
+  expect(observedBoundary({ trigger: 'auto', agentId: 'sub' }, done, 'M')).toBeUndefined()
+  expect(observedBoundary({ trigger: 'manual' }, { skip: 'off' }, 'M')).toBeUndefined()
+  expect(observedBoundary({ trigger: 'manual' }, { messages: [] }, 'M')).toBeUndefined()
 })

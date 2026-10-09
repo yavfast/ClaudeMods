@@ -3,7 +3,7 @@
 > **Code:** SP_CTX
 > **Status:** draft
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-08
+> **Updated:** 2026-10-09
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Depends on:** none
@@ -14,8 +14,8 @@
 
 ## Contents
 
-- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга, звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, константи
-- [02. Contracts](#SP_CTX_02) — перегляд, постановка правок, застосування, прибирання службових викликів, тригер, обробник компактизації, доставка звіту, нагадування, пошук медіа, тегування, автоправила, заміни з тегів, узгодження тегів, підготовка сховища, позначка викликів і розв'язання псевдонімів
+- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга, звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, межа поточної розмови, константи
+- [02. Contracts](#SP_CTX_02) — перегляд, постановка правок, застосування, прибирання службових викликів, тригер, обробник компактизації, доставка звіту, нагадування, пошук медіа, тегування, автоправила, заміни з тегів, узгодження тегів, підготовка сховища, позначка викликів і розв'язання псевдонімів, поточна розмова
 - [03. Validation Rules](#SP_CTX_03) — що перевіряється для вводу агента і для результату застосування
 - [04. State Transitions](#SP_CTX_04) — життєвий цикл черги, окремої правки і тегу
 - [05. Verification Criteria](#SP_CTX_05) — модульні очікування, інваріанти, інтеграційні сценарії, граничні випадки
@@ -119,7 +119,7 @@ Invariants:
 
 ### 01_06. Archive  {#SP_CTX_01_06}
 
-- Файл `<storage>/<reportId>.json` — `ApplyReport.originals` одного застосування. Шлях вписується в текст кожного зміненого рядка (`(original: <path>)`) лише тоді, коли файл записано.
+- Файл `<storage>/<reportId>.json` — `ApplyReport.originals` одного застосування. У `result` викликів і результатів пари, чиї медіа заархівовано окремими файлами, кожен рядок у алфавіті base64 довжиною ≥ MEDIA_DATA у полі `base64` або `data` замінено на `[media archived: <шляхи>]`; інші рядки, зокрема довгий текст у цих полях, лишаються: дані медіа не дублюються в JSON. Шлях вписується в текст кожного зміненого рядка (`(original: <path>)`) лише тоді, коли файл записано.
 - Медіа-файли: кожен замінений медіа-ресурс — файл `<storage>/<reportId>/<n>.<ext>` (`n` від 1 у межах застосування; `ext` за `mediaType`: `png`, `jpg`, `gif`, `webp`, `pdf`, інакше `bin`), записаний з декодованих даних. Шляхи вписуються в текст зміненого рядка (`(media: <path>, …)`); для `drop` — лише у звіт.
 - Зберігання: мод архіви не видаляє; їх обсяг обмежений сумою замінених даних сесії. Очищення — видаленням каталогу сховища ([SP_CTX_06_01](#SP_CTX_06_01)).
 
@@ -204,6 +204,9 @@ Invariants:
 | HEARTBEAT / READY_FRESH | 5 с / 15 с | Період запису готовності / найбільший вік, за якого тригер вважає редактор готовим; HEARTBEAT × 3 ≤ READY_FRESH |
 | TRIGGER_DELAY | 300 мс | Пауза між завершенням ходу і першим запитом компактизації |
 | TRIGGER_RETRIES | 20 × 500 мс | Повтори запиту, поки хост відхиляє його через хід, що триває |
+| HEAD_ROWS | 8 | Скільки перших рядків компактизації запам'ятовує Boundary |
+| MEDIA_DATA | 256 | Найкоротший рядок base64, який архів вважає даними медіа |
+| MAX_DESCRIPTION | 2048 | Найбільша довжина опису інструмента, яку хост передає моделі |
 
 ### 01_13. AliasRegistry  {#SP_CTX_01_13}
 
@@ -217,13 +220,26 @@ Invariants:
 
 Стани читання — як у Queue; `unreadable` (зокрема ключ не `c<число>`, число ключа ≥ `next`, порожнє значення, `last` поза `map`, більше MAX_ALIASES записів) не трактується як порожній реєстр: позначок немає, жоден `ref` не розв'язується. Коли записів стало б більше за MAX_ALIASES, найстаріші (з найменшим числом) видаляються. Якщо очищення ([SP_CTX_02_14](#SP_CTX_02_14)) прибирає псевдонім, названий у `last`, поле `last` видаляється: `last` не розв'язується до наступної позначки.
 
+### 01_14. Boundary  {#SP_CTX_01_14}
+
+Файл `<storage>/boundary.json`: початок поточної розмови після останньої компактизації основної розмови. Пише лише редактор ([SP_CTX_02_18](#SP_CTX_02_18)).
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| head | list<string> | yes | — | 1..HEAD_ROWS елементів | `fingerprint` перших рядків розмови, яку повернула компактизація |
+| count | int | yes | — | ≥ len(head) | Скільки рядків повернула компактизація |
+
+Стани читання: файл відсутній або `unreadable` — межі немає, поточна розмова — увесь транскрипт.
+
 ## 02. Contracts  {#SP_CTX_02}
 
 Усі читання-змінювання-запису файлу в редакторі проходять через одну послідовну чергу на файл: дві операції над одним файлом не перекриваються.
 
+«Рядки основної розмови» в контрактах нижче — поточна розмова за [SP_CTX_02_18](#SP_CTX_02_18), а не весь транскрипт. Опис кожного інструмента не довший за MAX_DESCRIPTION: довший хост обрізає, і модель не бачить його кінця.
+
 ### 02_01. context_list  {#SP_CTX_02_01}
 
-Purpose: інструмент агента; показує рядки основної розмови від найстарішого, сторінками.
+Purpose: інструмент агента; показує рядки основної розмови ([SP_CTX_02_18](#SP_CTX_02_18)) від найстарішого, сторінками.
 
 Input:
 | Parameter | Type | Required | Constraints |
@@ -269,7 +285,7 @@ Processing logic (pseudocode):
     FUNCTION context_edit(edits, resume?, resume_prompt?):
         REQUIRE storage ready
         IF Queue state = unreadable: move the file aside (QUEUE_QUARANTINED) or deny (DENIED_QUEUE_READ); q = empty
-        rows = read main conversation rows
+        rows = CurrentRows()                                           # SP_CTX_02_18
         edits = edits with each resolvable `ref` of summarize/drop replaced by its tool_use_id (ResolveRef, SP_CTX_02_17)
         (queued, errors) = PrepareEdits(rows, edits, TagRegistry)   # реєстр unreadable → без перевірки pin; HandleCompaction відхилить кожну правку
         REQUIRE len(q.edits) + len(queued) <= MAX_QUEUE_EDITS AND size of the new file <= MAX_QUEUE_BYTES
@@ -291,6 +307,7 @@ Purpose: перевірити правки на поточній розмові 
 | collapse | `0 ≤ from ≤ to < len` і діапазон містить кожен виклик разом з його результатом | `indexes out of range` / `range splits a tool call from its result` |
 | rewrite | рядок `index` існує, має роль `assistant`, не має викликів | `index out of range` / `only an assistant text row can be rewritten; use collapse` |
 | describe | рядок `index` існує, має роль `user`, не має результатів, має медіа за [SP_CTX_02_10](#SP_CTX_02_10) | `index out of range` / `describe applies to a user prompt row; use summarize for tool results` / `no media found in that row` |
+| collapse, rewrite, describe | межа поточної розмови не змінилась від останнього `context_list` у цьому процесі ([SP_CTX_02_18](#SP_CTX_02_18)) | `the conversation was compacted since your last context_list; call context_list again for current indexes` |
 | будь-яка | ціль (пара разом з обома її рядками, рядок, будь-який рядок або пара діапазону `collapse`) не має тегу `pin` | `target is pinned; remove the pin with context_tag first` |
 
 ### 02_04. ApplyEdits  {#SP_CTX_02_04}
@@ -444,6 +461,7 @@ Processing logic (pseudocode):
                       reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt }
         toast first 200 chars of text
         IF report.applied empty: RETURN skip "no edit could be applied"
+        RecordBoundary(rows)                                           # SP_CTX_02_18
         RETURN { messages: rows }
 
     ON handler failure:
@@ -551,6 +569,7 @@ Errors (рівень виклику позначено *, решта — рів�
 | TARGET_REQUIRED | вказано не рівно одне з `tool_use_id` / `index` / `ref` | — |
 | UNKNOWN_REF | `ref` не розв'язується | позначені виклики мають рядок `[context-editor] id …` |
 | TARGET_NOT_FOUND | немає пари з таким id або рядка з таким індексом | оновити перегляд |
+| INDEXES_STALE | ціль за `index`, а межа поточної розмови змінилась від останнього `context_list` у цьому процесі ([SP_CTX_02_18](#SP_CTX_02_18)) | оновити перегляд |
 | NOTE_REQUIRED | `disposable` без коректного `note` | додати нотатку-заміну |
 | BAD_TARGET | `disposable` за індексом на рядок, що не є текстом агента без викликів | для результатів — тегувати за `tool_use_id` |
 | BAD_TTL | `ttl_turns` < 1 або не для `review` | — |
@@ -560,7 +579,7 @@ Errors (рівень виклику позначено *, решта — рів�
 Processing logic (pseudocode):
     FUNCTION context_tag(tags):
         REQUIRE storage ready, TagRegistry state != unreadable
-        rows = read main conversation rows; reg = TagRegistry
+        rows = CurrentRows() (SP_CTX_02_18); reg = TagRegistry
         FOR req IN tags:
             validate (table above); on error → rejected += reason; CONTINUE
             target = req.index given ? { anchor: fingerprint(rows[req.index]), hint: req.index }
@@ -596,7 +615,7 @@ Output: `freed: int` — `(Σ size замінюваного − Σ довжин�
 
 Processing logic (pseudocode):
     FUNCTION QueueTagReplacements():
-        rows = read main conversation rows; reg = TagRegistry; q = Queue
+        rows = CurrentRows() (SP_CTX_02_18); reg = TagRegistry; q = Queue
         edits = []
         FOR tag IN reg.tags WHERE kind = disposable:
             { tool_use_id } AND pair exists → summarize(tool_use_id, tag.note)
@@ -650,6 +669,45 @@ Processing logic (pseudocode):
 Purpose: перетворити `ref` на `tool_use_id`.
 
 Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше або за відсутності запису — `unknown ref <ref>`. Розв'язання відбувається при постановці правки чи тегу; у черзі й реєстрі тегів зберігається `tool_use_id`. Виклик, що вийшов за вікно 4096 рядків, розв'язується, але правка відхиляється перевірками [SP_CTX_02_03](#SP_CTX_02_03).
+
+### 02_18. CurrentRows  {#SP_CTX_02_18}
+
+> **Criticality:** core
+
+Purpose: відрізати від транскрипту рядки, що лишились до останньої компактизації основної розмови.
+
+Читання розмови хоста повертає весь транскрипт: після кожної компактизації в ньому стоять рядки до межі, за ними — рядки, які повернула компактизація, далі нові. Вхід компактизації `e.messages` — лише хвіст після останньої межі. Позначки межі в рядках немає ([SP_CTX_DEC_07](#SP_CTX_DEC_07)).
+
+Processing logic (pseudocode):
+    FUNCTION RecordBoundary(rows):                 # rows — розмова, яку повернула компактизація основної розмови
+        IF rows empty: RETURN
+        write Boundary { head: [fingerprint(r) FOR r IN rows[0 .. min(len(rows), HEAD_ROWS))], count: len(rows) }
+        IF written: trusted = true                 # збій запису не зупиняє компактизацію: межа лишається попередньою
+
+    ON storage prepared (session start, session_id changed — SP_CTX_02_15): trusted = false; listedKey = none
+
+    ON compaction (any trigger):
+        result = next(e)
+        IF agentId present                          # компактизація субагента — не основна розмова
+           OR trigger = precompute                  # нічого не встановлює; стоїть лише при використанні через manual/auto
+           OR (trigger = plugin AND instructions = MARKER)   # власну межу пише HandleCompaction
+           OR result is skip: RETURN result
+        RecordBoundary(result.messages); RETURN result
+
+    FUNCTION CurrentRows():
+        transcript = read main conversation rows (the whole transcript, ≤ 4096 newest)
+        IF NOT trusted: RETURN transcript          # файл іншого процесу (--resume): хост міг повернути оригінали
+        b = read Boundary; IF absent or unreadable: RETURN transcript
+        p = the largest index such that fingerprint(transcript[p + k]) = b.head[k] for every k < len(b.head)
+            AND len(transcript) - p ≥ b.count
+        IF none: RETURN transcript                  # межа поза вікном 4096 або відбитки не збіглися
+        RETURN transcript[p ..]
+
+    FUNCTION Key(): session_id + (trusted ? raw text of the Boundary file : "")
+    context_list: listedKey = Key(), once the listing is built (a failed listing renews nothing)
+    context_edit, context_tag: index targets are refused (SP_CTX_02_03, SP_CTX_02_11) when listedKey ≠ Key()
+
+Без межі, без довіри або без збігу результат — увесь транскрипт: так само, як до запису межі. Межа міняється між переліком і правкою, коли компактизація (редактора, `/compact` або автоматична, зокрема посеред ходу) пройшла після `context_list`: тоді індекси, які тримає агент, називають інші рядки, і правки та теги за індексом відхиляються до нового переліку; цілі за `tool_use_id` і `ref` від індексів не залежать. Ключ пам'ятає лише останній перелік: індекси зі сторінки, отриманої до компактизації, після нового переліку іншої сторінки проходять цю перевірку; такі правки ловить лише пошук якорів при застосуванні (Locate). Межа записується до того, як хост прийме повернений список: якщо зовнішній хук іншого плагіна відкине або перепише результат, голова може не знайтися, і CurrentRows поверне весь транскрипт. Індекси переліку, перевірка правок, теги, закріплення й лічильник активних `review` працюють на поточній розмові, тож індекс з переліку відповідає позиції рядка в `e.messages` наступної компактизації.
 
 ## 03. Validation Rules  {#SP_CTX_03}
 
@@ -712,6 +770,17 @@ Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше аб
 
 | Contract | Scenario | Input | Expected outcome |
 |----------|----------|-------|------------------|
+| CurrentRows | без межі | транскрипт 9 рядків, Boundary відсутній | усі 9 рядків |
+| CurrentRows | після компактизації | старі 9 рядків, повернені 7, нові 3; Boundary з голови повернених | 10 рядків, починаючи з першого поверненого |
+| CurrentRows | дві компактизації | транскрипт з трьох сегментів, голови однакові | від останнього входження голови |
+| CurrentRows | межа поза вікном | голови в транскрипті немає | увесь транскрипт |
+| CurrentRows | замало рядків після збігу | збіг голови, але `len - p < count` | цей збіг не підходить |
+| RecordBoundary | запис | 12 повернених рядків | `head` — 8 відбитків, `count` 12 |
+| RecordBoundary | спостерігач | `manual`, `auto`, `plugin` з іншими інструкціями / `plugin` з MARKER, `precompute`, `agentId`, `skip`, порожній результат | межа / немає межі |
+| PrepareEdits, context_tag | застарілі індекси | межа змінилась після переліку; collapse, rewrite, тег за `index`, summarize за id | правки й тег за індексом відхилено, summarize і тег за id прийнято |
+| HandleCompaction | довгий текст у `data` | пара з заархівованим медіа і довгим текстом у `data` | текст лишається, замінено лише base64 |
+| HandleCompaction | архів без дубля медіа | summarize пари з PNG у `result` виклику і результату | у JSON архіву base64 замінено на `[media archived: …]`; інші поля без змін |
+| context_list, context_edit, context_tag | опис інструмента | описи трьох інструментів | кожен ≤ MAX_DESCRIPTION |
 | ApplyEdits | summarize | пара `a`, результат 5000 символів | рядки пари перезібрано, спільний id `a_ce…`, виклик без `text`, результат містить summary; рядки без результатів зберігають `handle` |
 | ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `4 rows collapsed`; наступний рядок не змінено |
 | ApplyEdits | collapse зі службовим викликом першим | діапазон, що починається з виклику `context_list` | носій — перший не службовий виклик; після DropOwnCalls підсумок присутній |
@@ -770,7 +839,7 @@ Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше аб
 | TriggerCompaction | відправка відхилена | `submit` падає | `lastSubmittedReportId` не змінюється, попередження |
 | TriggerCompaction | хост відмовляє | `compact` падає 20 разів | 20 очікувань по 500 мс; черга лишається |
 
-Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти), `mods/context-editor-trigger/tests/flush.test.ts` (TriggerCompaction через порти). Зв'язування портів з `$` (PrepareStorage, EditorReady через список інструментів) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag, AutoTag, QueueTagReplacements, Nudge, RebindTags, розбір реєстру, перелік з тегами) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). describe і PromptMatch не реалізовані (план PL_CTX).
+Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти), `mods/context-editor-trigger/tests/flush.test.ts` (TriggerCompaction через порти). Зв'язування портів з `$` (PrepareStorage, EditorReady через список інструментів) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag, AutoTag, QueueTagReplacements, Nudge, RebindTags, розбір реєстру, перелік з тегами) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). describe і PromptMatch не реалізовані (план PL_CTX).
 
 ### 05_02. Invariant Checks  {#SP_CTX_05_02}
 
@@ -793,13 +862,14 @@ Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше аб
 | Самостійне стиснення | ті самі 5 файлів | те саме | стискає кожен файл після читання; відповідь big2 | pass |
 | Дослідження з веб-пошуком | — | порівняння векторних БД | 10 правок, ~42.6k → ~22.9k символів | pass |
 | Редактор вимкнено | лише тригер; черга з правками у файлі | завершити хід | компактизації немає, попередження | not run |
-| Скриншот у результаті інструменту | PNG з написами | прочитати; summarize з описом | опис у контексті, медіа-файл в архіві відкривається | not run |
-| Документ у результаті інструменту | PDF | прочитати; summarize | те саме | not run |
-| Незмінене медіа | два скриншоти | summarize першого | другий агент бачить | not run |
+| Скриншот у результаті інструменту | PNG з написами | прочитати; summarize з описом | опис у контексті, медіа-файл в архіві відкривається | pass (2026-10-09, фаза 2) — деталі поза описом агент не знає; архівний PNG байт у байт з оригіналом, 0600, Read його відкриває |
+| Документ у результаті інструменту | PDF | прочитати; summarize | те саме | pass (2026-10-09, фаза 2) — блок `document`, `application/pdf`, base64; архівний PDF збігається з оригіналом, 0600 |
+| Незмінене медіа | два скриншоти | summarize першого | другий агент бачить | pass (2026-10-09, фаза 2) — деталі другого скриншота агент називає, рядок другого лишився з `@` |
 | Зображення в промпті людини | скриншот у промпті | describe | залежить від [SP_CTX_DEC_06](#SP_CTX_DEC_06) | blocked |
 | Тег за псевдонімом | 5 файлів | після кожного Read агент ставить `disposable` з `ref: last`, без `context_list` | жодного `context_list`; теги на правильних викликах; заміни на порозі | pass (2026-10-08, фаза 7) |
 | Автоматичне чищення з тегів | 5 файлів | агент ставить `disposable` з нотатками | на порозі заміни застосовано без нагадування | pass (2026-10-08, фаза 3) |
 | Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | pass (2026-10-08, фаза 3) |
+| Перегляд після компактизації | дві компактизації редактором і одна `/compact` | після кожної — `context_list` | у переліку лише поточна розмова, без копій старих рядків; правка за індексом з переліку застосовується до того самого рядка | pass (2026-10-09, фаза 8) — перелік 15 і 22 рядки при транскрипті 25 і 54; `rewrite` #5 змінив саме цей рядок; після `/compact` 7 рядків від підсумку хоста |
 | Відновлення сесії | «стиснення» завершено | `claude --resume <id>`, спитати KEY_0377 | «немає в контексті» | **fail** — [C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) |
 
 ### 05_04. Edge Cases and Boundaries  {#SP_CTX_05_04}
@@ -946,6 +1016,25 @@ Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше аб
 **Rejected because:** —
 **Resolution trigger:** research spike перед фазою медіа плану PL_CTX: зняти обидва подання розмови (і рядки події компактизації `e.messages`) з промптами людини з медіа і нагадуваннями, перевірити A і B та межі вікон усіх трьох подань; якщо A і B ненадійні — C.
 
+### DEC_07 — Як відрізати рядки до межі компактизації  {#SP_CTX_DEC_07}
+
+> **Status:** resolved
+> **Date:** 2026-10-09
+
+**Question:** Читання розмови хоста повертає весь транскрипт, разом із рядками до кожної компактизації, і межі не позначає. Як знайти початок поточної розмови?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — запам'ятати відбитки перших рядків, які повернула компактизація (Boundary), і брати транскрипт від їх останнього входження | працює для кожної компактизації основної розмови, яку бачать хуки редактора; без запису або за розбіжності відбитків — увесь транскрипт, як раніше |
+| B — зіставити транскрипт з API-поданням, у якому старих рядків уже немає | API-подання нормалізоване (нагадування як текстові блоки, підсумок замість старих рядків); однозначного зіставлення рядків немає — та сама проблема, що в DEC_06 |
+| C — рахувати рядки, додані після компактизації | `session.append` не бачить рядків компактизації, а читання розмови не містить вкладень і сповіщень: лічильники не збігаються |
+
+**Decision:** A
+**Rationale:** спайк 2026-10-09 (Claude Code 2.1.295): при трьох компактизаціях — двох редактором і одній `/compact` — `e.messages` дорівнював хвосту транскрипту після останньої межі, а повернені рядки стояли в наступному читанні суцільним блоком з тими самими відбитками. Розробник погодив підхід, запропонований після живих сценаріїв фази 2 («Виправ всі виявлені проблеми»).
+**Rejected because:** B — немає однозначного зіставлення рядків; C — лічильники хоста не узгоджені між подіями й читанням.
+**Resolution trigger:** —
+
 ## Changelog
 
 | Date | Change |
@@ -961,3 +1050,6 @@ Logic: `last` → `map[last]`; `c<число>` → `map[ref]`; інакше аб
 | 2026-10-08 | Псевдоніми викликів: AliasRegistry (01_13), MarkCall (02_16), ResolveRef (02_17), `ref` у правках і тегах, очищення псевдонімів у RebindTags |
 | 2026-10-08 | Фаза 7 (псевдоніми), уточнення за реалізацією: стани `unreadable` реєстру псевдонімів і видалення `last` при очищенні (01_13); крок ResolveRef перед PrepareEdits (02_02) і ціль за `ref` у псевдокоді context_tag (02_11); без запису реєстру позначки немає, що таке довжина тексту результату, хук чекає запису (02_16); модульні тести псевдонімів (05_01) |
 | 2026-10-08 | Живий сценарій «Тег за псевдонімом» — pass |
+| 2026-10-09 | Живі сценарії «Скриншот у результаті інструменту», «Документ у результаті інструменту», «Незмінене медіа» — pass (фаза 2) |
+| 2026-10-09 | Поточна розмова: Boundary (01_14), CurrentRows і RecordBoundary (02_18), DEC_07; HEAD_ROWS, MAX_DESCRIPTION; архів без дубля base64 медіа (01_06); модульні очікування й живий сценарій «Перегляд після компактизації» |
+| 2026-10-09 | Рев'ю раунд 4: precompute і субагенти в 02_18; межа іншого процесу без довіри; правки й теги за застарілими індексами відхиляються (02_03, 02_11); MEDIA_DATA і алфавіт base64 в архіві (01_06, 01_12) |

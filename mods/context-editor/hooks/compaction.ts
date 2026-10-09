@@ -1,6 +1,21 @@
 import type { SessionMessage } from 'claude-code'
 import { pruneAliases, type AliasRegistry } from './aliases'
-import { applyEdits, collectMedia, describeEdit, dropOwnCalls, formatReport, PINNED, replacedOwners, totalChars, touchesPin, type QueuedEdit } from './edits'
+import {
+  applyEdits,
+  boundaryOf,
+  collectMedia,
+  describeEdit,
+  dropOwnCalls,
+  formatReport,
+  ownerKey,
+  PINNED,
+  replacedOwners,
+  totalChars,
+  touchesPin,
+  type ApplyReport,
+  type Boundary,
+  type QueuedEdit,
+} from './edits'
 import { DEFAULT_RESUME, EMPTY_QUEUE, type Queue, type Read } from './queue'
 import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
 
@@ -11,6 +26,10 @@ const EXT: Record<string, string> = {
   'image/webp': 'webp',
   'application/pdf': 'pdf',
 }
+
+// [SP_CTX_01_06] A base64 string this long under `base64` or `data` is media data.
+export const MEDIA_DATA = 256
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
 
 // What HandleCompaction needs from the host; register.ts binds it to `$`.
 export type CompactionIO = {
@@ -30,6 +49,8 @@ export type CompactionIO = {
   updateTags: (change: (reg: TagRegistry) => TagRegistry) => Promise<void>
   // [SP_CTX_02_14] the same for the alias registry, on its own serial chain
   updateAliases: (change: (reg: AliasRegistry) => AliasRegistry) => Promise<void>
+  // [SP_CTX_02_18] best effort: a failed write leaves the previous boundary
+  writeBoundary: (b: Boundary) => Promise<void>
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -84,7 +105,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
   applied.report.failed.unshift(...refused)
   // [C_CTX_01_01] Originals never vanish: without their archive nothing applies.
-  if (applied.report.originals.length && !(await io.writeArchive(archive, JSON.stringify(applied.report.originals)))) {
+  if (applied.report.originals.length && !(await io.writeArchive(archive, archiveText(applied.report.originals, media)))) {
     if (io.isAborted()) return { skip: 'context-editor: compaction abandoned; the batch stays queued' }
     const text = formatReport(
       {
@@ -121,7 +142,50 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   await io.writeQueue(reported(q, text, id))
   io.toast(text.slice(0, 200))
   if (applied.report.applied.length === 0) return { skip: 'context-editor: no edit could be applied' }
+  const boundary = boundaryOf(rows)
+  if (boundary) await io.writeBoundary(boundary).catch(() => undefined)
   return { messages: rows }
+}
+
+// [SP_CTX_02_18] The boundary another compaction of the main conversation
+// sets once it stands: none for a subagent's, a precomputed one (it stands
+// only when used, through manual or auto), the editor's own (`marker`; its
+// handler records it) or a skipped one.
+export function observedBoundary(
+  e: { agentId?: string; trigger: string; instructions?: string },
+  done: { skip?: string; messages?: readonly SessionMessage[] },
+  marker: string,
+): Boundary | undefined {
+  if (e.agentId || e.trigger === 'precompute' || (e.trigger === 'plugin' && e.instructions === marker)) return undefined
+  if (done.skip !== undefined || !done.messages) return undefined
+  return boundaryOf(done.messages)
+}
+
+// [SP_CTX_01_06] The archive's JSON. A pair whose media went to files of its
+// own keeps their paths in place of the media data, not a second copy.
+export function archiveText(originals: ApplyReport['originals'], media: ReadonlyMap<string, string[]>): string {
+  const strip = (id: string, result: unknown) => {
+    const paths = media.get(ownerKey({ tool_use_id: id })) ?? []
+    return paths.length ? withoutMediaData(result, `[media archived: ${paths.join(', ')}]`) : result
+  }
+  return JSON.stringify(
+    originals.map(o => ({
+      ...o,
+      rows: o.rows.map(r => ({
+        ...r,
+        toolUses: r.toolUses.map(u => ('result' in u ? { ...u, result: strip(u.tool_use_id, u.result) } : u)),
+        ...(r.toolResults ? { toolResults: r.toolResults.map(t => ('result' in t ? { ...t, result: strip(t.tool_use_id, t.result) } : t)) } : {}),
+      })),
+    })),
+  )
+}
+
+function withoutMediaData(value: unknown, note: string): unknown {
+  if (Array.isArray(value)) return value.map(v => withoutMediaData(v, note))
+  if (!value || typeof value !== 'object') return value
+  return Object.fromEntries(
+    Object.entries(value).map(([k, v]) => [k, (k === 'base64' || k === 'data') && typeof v === 'string' && v.length >= MEDIA_DATA && BASE64.test(v) ? note : withoutMediaData(v, note)]),
+  )
 }
 
 // The queue once a batch was handled: the batch cleared, its report added

@@ -3,7 +3,7 @@
 > **Code:** PL_CTX
 > **Status:** in-progress
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-08
+> **Updated:** 2026-10-09
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Specification:** [SP_CTX](./context_editor.sp.md)
@@ -46,7 +46,8 @@
 - [x] [Phase 6 — Залишкове вікно тригера](#PL_CTX_P6) (рішення A)
 - [x] [Phase 3 — Теги](#PL_CTX_P3)
 - [x] [Phase 7 — Псевдоніми викликів](#PL_CTX_P7)
-- [ ] [Phase 2 — Медіа в результатах інструментів (наступна)](#PL_CTX_P2)
+- [x] [Phase 2 — Медіа в результатах інструментів](#PL_CTX_P2)
+- [x] [Phase 8 — Поточна розмова, опис context_edit, архів без дубля медіа](#PL_CTX_P8)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
@@ -87,15 +88,15 @@
 
 Код і модульні тести є (`tests/aliases.test.ts`). Лишилось: живий сценарій «Тег за псевдонімом» ([SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03)); перевірити наживо, що `e.tool_use_id` хука `tool.call` збігається з `tool_use_id` рядків розмови, а рядок `[context-editor] id cN` доходить до моделі після результату.
 
-### Phase 2 — Медіа в результатах інструментів [IN PROGRESS]  {#PL_CTX_P2}
+### Phase 2 — Медіа в результатах інструментів [DONE]  {#PL_CTX_P2}
 
 **Depends on:** Phase 1; виконується після фаз 3 і 7 ([PL_CTX_DEC_02](#PL_CTX_DEC_02), [PL_CTX_DEC_03](#PL_CTX_DEC_03))
 **Implements:** [SP_CTX_01_08](./context_editor.sp.md#SP_CTX_01_08), [SP_CTX_02_10](./context_editor.sp.md#SP_CTX_02_10) для результатів інструментів, медіа-частини [02_04](./context_editor.sp.md#SP_CTX_02_04), [02_05](./context_editor.sp.md#SP_CTX_02_05), [02_07](./context_editor.sp.md#SP_CTX_02_07); [C_CTX_DEC_06](./context_editor.concept.md#C_CTX_DEC_06)
 **Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки CollectMedia, «незмінений рядок з медіа», «медіа не заархівовано», «медіа сусідньої пари», «вікно API», DropOwnCalls «спільний рядок» (модульні — є); [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Скриншот у результаті інструменту», «Документ у результаті інструменту», «Незмінене медіа» — плюс: медіа-файл в архіві відкривається інструментом читання і має права 0600
 
-Код і модульні тести вже є. Лишилось:
-- живі сценарії зі скриншотом (PNG з написами), PDF і двома скриншотами, з яких стискається один;
-- перевірити наживо припущення: формат блоків `image`/`document` в API-поданні збігається з очікуваним `source.type = base64`; `stdin` у `$.process.run` приймає base64 кількох мегабайт;
+Код і модульні тести вже є. Живі сценарії «Скриншот…», «Документ…», «Незмінене медіа» — pass (2026-10-09); тестові файли — `.dev_flow/cache/live-test/make-media.sh`. Припущення підтверджено наживо:
+- блоки `image` і `document` в API-поданні мають `source.type = base64` — заархівовано всі медіа сценаріїв, жодного «media could not be archived»;
+- `stdin` у `$.process.run` приймає кілька мегабайт: архів одного застосування 6.2 МБ записано через `writeText`. До `writeMedia` більше ~0.7 МБ base64 не доходить: Read перекодовує великі зображення в JPEG до ~0.5 МБ, а великий PDF віддає сторінками-JPEG, не документом.
 
 ### Phase 3 — Теги [DONE]  {#PL_CTX_P3}
 
@@ -114,6 +115,16 @@ Pseudocode sketch:
     ON row appended (main loop): stored = next(row); apply R1..R3 to the registry on its serial chain
     ON nudge threshold: freed = QueueTagReplacements(); nudge only if tokens - freed stays above the threshold
     ON compaction: drop edits touching `pin`; after ApplyEdits: RebindTags
+
+### Phase 8 — Поточна розмова, опис context_edit, архів без дубля медіа [DONE]  {#PL_CTX_P8}
+
+**Depends on:** Phase 2 (знахідки її живих сценаріїв)
+**Implements:** [SP_CTX_01_14](./context_editor.sp.md#SP_CTX_01_14), [SP_CTX_02_18](./context_editor.sp.md#SP_CTX_02_18), [SP_CTX_DEC_07](./context_editor.sp.md#SP_CTX_DEC_07), запис межі в [02_07](./context_editor.sp.md#SP_CTX_02_07), архів [01_06](./context_editor.sp.md#SP_CTX_01_06), MAX_DESCRIPTION ([01_12](./context_editor.sp.md#SP_CTX_01_12))
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки CurrentRows, RecordBoundary, «архів без дубля медіа», «опис інструмента»; [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Перегляд після компактизації»; регрес — «Скриншот у результаті інструменту»
+
+- `edits.ts`: `boundaryOf`, `currentRows` (чисті); `compaction.ts`: `archiveText` і запис межі через порт `CompactionIO.writeBoundary`;
+- `register.ts`: одне читання поточної розмови для `context_list`, `context_edit`, тегів, закріплень і лічильника `review`; хук запису межі для компактизацій не редактора; коротший опис `context_edit`, експорт описів для тесту.
+- рев'ю раунд 4: правки й теги за індексом з переліку, зробленого до зміни межі, відхиляються; межа іншого процесу не довіряється; предикат спостерігача — чиста `observedBoundary`; архів замінює лише рядки в алфавіті base64.
 
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
 
@@ -204,3 +215,6 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-08 | Фаза 3 (теги) виконана: 61 + 6 модульних тестів, живі сценарії pass; навичка claude-code-plugin-hooks створена; backlog — ціль тегу без tool_use_id |
 | 2026-10-08 | Фаза 7 — псевдоніми викликів (перед медіа, PL_CTX_DEC_03); пункт backlog про ціль тегу без tool_use_id перенесено у фазу 7 |
 | 2026-10-08 | Фаза 7 виконана: 77 + 6 тестів; живий сценарій «Тег за псевдонімом» pass — жодного context_list, теги за c1..c5 |
+| 2026-10-09 | Фаза 2 виконана: три живі сценарії медіа pass, обидва припущення підтверджено; backlog — старі рядки в перегляді, обрізаний опис context_edit, подвійний base64 в архіві |
+| 2026-10-09 | Фаза 8: три знахідки фази 2 з backlog стали фазою (рішення розробника — виправити всі); спайк межі компактизації → SP_CTX_DEC_07 |
+| 2026-10-09 | Фаза 8 виконана: 91 + 6 тестів; живий сценарій «Перегляд після компактизації» pass; рев'ю раунд 4 FAIL → виправлено, раунд 5 PASS. Не спостерігалось наживо: автоматична компактизація посеред ходу |

@@ -32,6 +32,9 @@ export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
 export const MAX_TEXT = 8000
 export const MAX_QUEUE_EDITS = 200
+export const HEAD_ROWS = 8
+// The longest tool description the host passes to the model; it cuts the rest.
+export const MAX_DESCRIPTION = 2048
 
 export function ownerKey(owner: MediaOwner): string {
   return 'tool_use_id' in owner ? `u:${owner.tool_use_id}` : `r:${owner.row}`
@@ -54,6 +57,40 @@ export function fingerprint(row: SessionMessage): string {
     ...(row.toolResults ?? []).map(r => 'r:' + r.tool_use_id),
   ].join(',')
   return `${row.role}|${ids}|${row.text.slice(0, 160)}`
+}
+
+// [SP_CTX_01_14] Where the current conversation starts: the head of the rows
+// the last compaction returned.
+export type Boundary = { head: string[]; count: number }
+
+// [SP_CTX_02_18] The boundary a compaction's returned rows set; none for no rows.
+export function boundaryOf(rows: readonly SessionMessage[]): Boundary | undefined {
+  return rows.length ? { head: rows.slice(0, HEAD_ROWS).map(fingerprint), count: rows.length } : undefined
+}
+
+// [SP_CTX_01_14] Undefined for anything but a well-formed Boundary.
+export function parseBoundary(text: string): Boundary | undefined {
+  try {
+    const b = JSON.parse(text) as Partial<Boundary> | null
+    const head = b?.head
+    if (!Array.isArray(head) || head.length < 1 || head.length > HEAD_ROWS || !head.every(h => typeof h === 'string')) return undefined
+    if (typeof b!.count !== 'number' || !Number.isInteger(b!.count) || b!.count < head.length) return undefined
+    return { head, count: b!.count }
+  } catch {
+    return undefined
+  }
+}
+
+// [SP_CTX_02_18] The transcript from the last place the boundary's head
+// starts with at least `count` rows from there; the whole transcript when the
+// head is not found (no boundary, out of the window, fingerprints differ).
+export function currentRows(transcript: readonly SessionMessage[], b: Boundary | undefined): readonly SessionMessage[] {
+  if (!b) return transcript
+  const prints = transcript.map(fingerprint)
+  for (let p = transcript.length - b.count; p >= 0; p--) {
+    if (b.head.every((h, k) => prints[p + k] === h)) return transcript.slice(p)
+  }
+  return transcript
 }
 
 export function oneLine(s: string, max: number): string {
@@ -206,6 +243,9 @@ function isIndex(value: unknown): value is number {
 export type RefResolver = (ref: string) => string | undefined
 export const NO_REFS: RefResolver = () => undefined
 
+// [SP_CTX_02_18] Why an index from an earlier listing is refused.
+export const STALE_INDEXES = 'the conversation was compacted since your last context_list; call context_list again for current indexes'
+
 export const REF_HINT = 'marked calls carry a "[context-editor] id cN" line after their result'
 
 // [SP_CTX_02_03] A `ref` left on a summarize/drop edit: either beside a
@@ -308,6 +348,8 @@ export function prepare(
   raws: readonly unknown[],
   hasMedia: (owner: MediaOwner) => boolean = () => false,
   pinned: Pinned = NO_PINS,
+  // [SP_CTX_02_18] the indexes the agent holds may name other rows now
+  staleIndexes = false,
 ): { queued: QueuedEdit[]; errors: string[] } {
   const queued: QueuedEdit[] = []
   const errors: string[] = []
@@ -318,6 +360,7 @@ export function prepare(
       return
     }
     const name = describeEdit(edit)
+    if (staleIndexes && (edit.op === 'collapse' || edit.op === 'rewrite' || edit.op === 'describe')) return void errors.push(`${name}: ${STALE_INDEXES}`)
     const checked = checkTarget(rows, edit, hasMedia)
     if (typeof checked === 'string') return void errors.push(`${name}: ${checked}`)
     if (touchesPin(rows, checked, pinned)) return void errors.push(`${name}: ${PINNED}`)
