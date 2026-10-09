@@ -314,6 +314,7 @@ test('after an apply the tag and alias of the changed pair go; those of the unto
       written.aliases = change(start)
     },
     writeBoundary: async () => undefined,
+    hostId: () => undefined,
   }
   const out = await handleCompaction(io, conv)
   if (!('messages' in out)) throw new Error(out.skip)
@@ -343,6 +344,7 @@ test('a failed alias update does not undo the apply', async () => {
       throw new Error('disk full')
     },
     writeBoundary: async () => undefined,
+    hostId: () => undefined,
   }
   const out = await handleCompaction(io, conv)
   expect('messages' in out).toBe(true)

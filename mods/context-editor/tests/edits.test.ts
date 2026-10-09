@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, collectMedia, dropOwnCalls, formatReport, freshId, listRows, MARK, ownerKey, prepare, replacedOwners } from '../hooks/edits'
+import { applyEdits, collectMedia, dropOwnCalls, formatReport, freshId, listRows, MARK, ownerKey, prepare, replacedOwners, ROW_WINDOW } from '../hooks/edits'
 
 const BIG = 'x'.repeat(5000)
 
@@ -400,20 +400,47 @@ test('own calls whose result row shares media or unknown results with another pa
   expect(plainRow[1]!.toolResults!.map(r => r.tool_use_id)).toEqual(['shot'])
 })
 
-test('pair edits and collapses outside the API window are refused', async () => {
+const OUTSIDE = 'outside the API window; media unknown'
+
+test('ApplyEdits — правка поза вікном: a summarize whose result row has an id outside knownResults; a collapse with such a row; a collapse with a prompt before the first known result when apiTruncated', async () => {
   const input = rows()
-  const pairs = applyEdits(input, prepare(input, [{ op: 'summarize', tool_use_id: 'a', summary: 's' }]).queued, '', new Map(), new Set(), {
-    knownResults: new Set(['b', 'c']),
-  })
-  expect(pairs.report.failed[0]).toContain('outside the API window')
-  const span = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).queued, '', new Map(), new Set(), {
-    knownResults: new Set(['b', 'c']),
-  })
-  expect(span.report.failed[0]).toContain('outside the API window')
-  const inside = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 6, to_index: 8, summary: 's' }]).queued, '', new Map(), new Set(), {
-    knownResults: new Set(['a', 'b', 'c']),
-  })
+  const apply = (edit: unknown, options: Parameters<typeof applyEdits>[5]) => applyEdits(input, prepare(input, [edit]).queued, '', new Map(), new Set(), options)
+  const pair = apply({ op: 'summarize', tool_use_id: 'a', summary: 's' }, { knownResults: new Set(['b', 'c']) })
+  expect(pair.report.failed).toEqual([`summarize a: ${OUTSIDE}`])
+  const unknownRow = apply({ op: 'collapse', from_index: 2, to_index: 5, summary: 's' }, { knownResults: new Set(['b', 'c']) })
+  expect(unknownRow.report.failed).toEqual([`collapse #2..#5: ${OUTSIDE}`])
+  const early = apply({ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }, { knownResults: new Set(['b', 'c']), apiTruncated: true })
+  expect(early.report.failed).toEqual([`collapse #0..#1: ${OUTSIDE}`])
+  const inside = apply({ op: 'collapse', from_index: 6, to_index: 8, summary: 's' }, { knownResults: new Set(['a', 'b', 'c']), apiTruncated: true })
   expect(inside.report.applied.length).toBe(1)
+})
+
+test('ApplyEdits — промпт перед першою парою, повне подання: the person\'s prompt and the first pair collapse when the API form is whole', async () => {
+  const input = rows()
+  const res = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 0, to_index: 3, summary: 's' }]).queued, '', new Map(), new Set(), {
+    knownResults: new Set(['a', 'b', 'c']),
+    apiTruncated: false,
+  })
+  expect(res.report.applied).toEqual(['collapse #0..#3'])
+  expect(res.report.failed).toEqual([])
+})
+
+test('ApplyEdits — промпт перед першою парою, обрізане подання: the same collapse when the API form fills its window is refused', async () => {
+  const input = rows()
+  const res = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 0, to_index: 3, summary: 's' }]).queued, '', new Map(), new Set(), {
+    knownResults: new Set(['a', 'b', 'c']),
+    apiTruncated: true,
+  })
+  expect(res.report.failed).toEqual([`collapse #0..#3: ${OUTSIDE}`])
+  expect(res.report.applied).toEqual([])
+})
+
+test('CollectMedia — apiTruncated: 4096 / 4095 / 4094 messages of the API form give true / true / false (ROW_WINDOW − 1)', async () => {
+  const of = (n: number) => collectMedia(Array.from({ length: n }, () => ({ role: 'user', content: 'x' }))).apiTruncated
+  expect(ROW_WINDOW).toBe(4096)
+  expect(of(4096)).toBe(true)
+  expect(of(4095)).toBe(true)
+  expect(of(4094)).toBe(false)
 })
 
 test('a collapse carrier keeps no copy of the first call input', async () => {
@@ -433,8 +460,22 @@ test('the report names what applied, what failed and where the originals are', a
     { op: 'drop', tool_use_id: 'c' },
     { op: 'drop', tool_use_id: 'nope' },
   ])
-  const text = formatReport(report, '/archive.json')
+  const text = formatReport(report, '/archive.json', 'compaction')
   expect(text).toContain('applied 1 edit(s): drop c')
   expect(text).toContain('Originals archived at /archive.json')
-  expect(formatReport(report, '')).not.toContain('Originals archived')
+  expect(formatReport(report, '', 'compaction')).not.toContain('Originals archived')
+})
+
+// [SP_CTX_01_05]
+test('FormatReport — форми: compaction without an applied edit / seed with nothing / an applied edit', async () => {
+  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], mediaFiles: [] }
+  const none = formatReport({ ...empty, failed: ['x'] }, '/a.json', 'compaction')
+  expect(none).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: x.')
+  expect(none).not.toContain('Conversation ~')
+  expect(none).not.toContain('tokens freed')
+  expect(formatReport(empty, '/a.json', 'seed')).toBe('')
+  expect(formatReport({ ...empty, failed: ['x'] }, '/a.json', 'seed')).toBe('context-editor: no queued edit was applied. Not applied: x.')
+  const done = formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'seed')
+  expect(done).toBe('context-editor: applied 1 edit(s): y. Conversation ~100 -> ~60 chars (~10 tokens freed).')
+  expect(formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'compaction')).toContain('Conversation ~100 -> ~60 chars (~10 tokens freed).')
 })

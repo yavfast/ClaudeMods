@@ -13,17 +13,25 @@ import {
 } from './aliases'
 import { compactionFailure, compactionRoute, failedQueue, handleCompaction, observedBoundary } from './compaction'
 import {
+  afterPrepare,
   collectMedia,
-  currentRows,
+  HOST_ID_WAIT_MS,
   listRows,
   LIST_COUNT,
   MAX_QUEUE_EDITS,
   MAX_TEXT,
+  newHostIdMemo,
+  newHostToken,
   NO_PINS,
   NO_REFS,
   OWN_TOOLS,
-  parseBoundary,
+  parseHostId,
+  peekHostId,
+  readView,
+  recordBoundary,
+  startHostId,
   type Boundary,
+  type BoundaryMemory,
   type RefResolver,
 } from './edits'
 import { enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
@@ -165,9 +173,12 @@ const TAG_SCHEMA = {
 const storage: { dir?: string; sessionId?: string; reason: string } = { reason: 'not prepared yet' }
 // The threshold the model was last reminded at ([SP_CTX_02_09]).
 const nudged = { level: -1 }
-// [SP_CTX_02_18] The boundary file counts once this process wrote it: one
-// left by another process (a resumed session) may name rows the host restored.
-const boundary = { trusted: false }
+// [SP_CTX_01_14] The identity of the host process, read once per module
+// instance. [SP_CTX_02_18] [SP_CTX_DEC_10] A boundary counts when this host
+// process wrote it, or this instance in this session (ownBoundary): one left
+// by another process (a resumed session) may name rows the host restored.
+const hostId = newHostIdMemo()
+const ownBoundary: BoundaryMemory = {}
 // [SP_CTX_02_18] What the conversation's start was when the agent last listed it.
 const listed: { key?: string } = {}
 // [SP_CTX_02] The turn counter of the main conversation.
@@ -185,14 +196,48 @@ function serial<T>(key: string, work: () => Promise<T>): Promise<T> {
   return next
 }
 
+// [SP_CTX_01_14] HOST_ENV: the token of the host process, set once when the
+// process has none (the validator takes the name only as a literal), and the
+// pid of `claude` as the parent of the command's shell.
+async function readHostIdOnce($: EngineInterface): Promise<string | undefined> {
+  let token = await $.env.get('CONTEXT_EDITOR_HOST')
+  if (!token) {
+    token = newHostToken()
+    await $.env.set('CONTEXT_EDITOR_HOST', token)
+  }
+  const ran = await $.process.run(['sh', '-c', 'echo $PPID'])
+  return ran.exitCode === 0 ? parseHostId(token, ran.stdout) : undefined
+}
+
+// [SP_CTX_01_14] Readers await the identity, so its read is bounded: after
+// HOST_ID_WAIT_MS it counts as not read (absent) and no path waits longer.
+async function readHostId($: EngineInterface): Promise<string | undefined> {
+  return Promise.race([readHostIdOnce($), $.clock.sleep(HOST_ID_WAIT_MS).then(() => undefined)])
+}
+
+// [SP_CTX_01_14] The one read of this module instance, started on first use.
+function hostIdOf($: EngineInterface): Promise<string | undefined> {
+  return startHostId(hostId, () => readHostId($))
+}
+
+async function readBoundaryText($: EngineInterface, dir: string): Promise<string | undefined> {
+  if (!(await $.fs.exists(`${dir}/boundary.json`))) return undefined
+  return $.fs.read(`${dir}/boundary.json`).catch(() => undefined)
+}
+
 // [SP_CTX_02_18] The rows of the current conversation, the transcript from
 // the last compaction's head on, and a key that changes with that start.
-async function view($: EngineInterface): Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[]; key: string }> {
-  const transcript = await $.session.messages()
-  const dir = await ensureStorage($)
-  if (!dir || !boundary.trusted) return { transcript, rows: transcript, key: `${storage.sessionId}|` }
-  const text = await $.fs.read(`${dir}/boundary.json`).catch(() => undefined)
-  return { transcript, rows: currentRows(transcript, text === undefined ? undefined : parseBoundary(text)), key: `${storage.sessionId}|${text ?? ''}` }
+function view($: EngineInterface): Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[]; key: string }> {
+  return readView({
+    hostId: () => hostIdOf($),
+    messages: () => $.session.messages(),
+    storage: async () => {
+      const dir = await ensureStorage($)
+      return { sessionId: storage.sessionId, dir }
+    },
+    readBoundary: dir => readBoundaryText($, dir),
+    own: () => ownBoundary.own,
+  })
 }
 
 async function conversation($: EngineInterface): Promise<readonly SessionMessage[]> {
@@ -204,10 +249,11 @@ async function staleIndexes($: EngineInterface): Promise<boolean> {
   return listed.key !== (await view($)).key
 }
 
+// [SP_CTX_02_18] RecordBoundary's write; once written it is the own boundary.
 async function writeBoundary($: EngineInterface, b: Boundary): Promise<void> {
-  if (!storage.dir) return
-  await $.fs.write(`${storage.dir}/boundary.json`, JSON.stringify(b))
-  boundary.trusted = true
+  const dir = storage.dir
+  if (!dir) return
+  await recordBoundary(ownBoundary, text => $.fs.write(`${dir}/boundary.json`, text), b)
 }
 
 function queuePath(): string {
@@ -223,13 +269,18 @@ function aliasesPath(): string {
 }
 
 // [SP_CTX_01_13]
-async function readAliases($: EngineInterface): Promise<Read<AliasRegistry>> {
-  if (!(await $.fs.exists(aliasesPath()))) return { state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }
+async function readAliasesAt($: EngineInterface, dir: string): Promise<Read<AliasRegistry>> {
+  const path = `${dir}/aliases.json`
+  if (!(await $.fs.exists(path))) return { state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }
   try {
-    return parseAliases(await $.fs.read(aliasesPath()))
+    return parseAliases(await $.fs.read(path))
   } catch (err) {
     return { state: 'unreadable', reason: String(err) }
   }
+}
+
+function readAliases($: EngineInterface): Promise<Read<AliasRegistry>> {
+  return readAliasesAt($, storage.dir!)
 }
 
 async function writeAliases($: EngineInterface, reg: AliasRegistry): Promise<void> {
@@ -315,11 +366,15 @@ async function quarantineQueue($: EngineInterface): Promise<string | undefined> 
 
 // [SP_CTX_02_15] Owner-only storage for the current session. No ready file:
 // the module that runs the compaction command also handles it ([C_CTX_DEC_09]).
-async function prepareStorage($: EngineInterface): Promise<void> {
+// `inCompaction`: called from a compaction handler, which never waits for hostId.
+async function prepareStorage($: EngineInterface, inCompaction = false): Promise<void> {
+  // [SP_CTX_01_14] started here or in session.start, whichever comes first; not awaited
+  void hostIdOf($)
+  const prev = storage.sessionId
   storage.dir = undefined
   storage.sessionId = await $.session.id()
   nudged.level = -1
-  boundary.trusted = false
+  ownBoundary.own = undefined
   listed.key = undefined
   const home = await $.env.get('HOME')
   if (!home) {
@@ -337,12 +392,30 @@ async function prepareStorage($: EngineInterface): Promise<void> {
     return
   }
   storage.dir = dir
+  // [SP_CTX_02_18] a switch in this process (/clear, /resume): the new
+  // session's boundary this process wrote no longer names the rows read here
+  await afterPrepare({
+    prev,
+    now: storage.sessionId,
+    inCompaction,
+    wait: () => hostIdOf($),
+    peek: () => peekHostId(hostId),
+    read: () => readBoundaryText($, dir),
+    write: text => $.fs.write(`${dir}/boundary.json`, text),
+    remove: () => removeFile($, `${dir}/boundary.json`),
+    toast: text => $.ui.toast(text),
+  })
+}
+
+async function removeFile($: EngineInterface, path: string): Promise<void> {
+  const ran = await $.process.run(['rm', '-f', '--', path])
+  if (ran.exitCode !== 0) throw new Error(ran.stderr.trim() || `rm: exit ${ran.exitCode}`)
 }
 
 // [SP_CTX_01_07] /clear or /resume in the same process change the session
 // without a session start: the storage follows the current session.
-async function ensureStorage($: EngineInterface): Promise<string | undefined> {
-  if (storage.sessionId !== (await $.session.id())) await prepareStorage($)
+async function ensureStorage($: EngineInterface, inCompaction = false): Promise<string | undefined> {
+  if (storage.sessionId !== (await $.session.id())) await prepareStorage($, inCompaction)
   return storage.dir
 }
 
@@ -449,17 +522,23 @@ function handoffIO($: EngineInterface): HandoffIO {
     remove: async path => {
       await $.process.run(['rm', '-rf', '--', path])
     },
-    copyRegistries: async (from, to) => {
-      const ran = await $.process.run([
-        'sh',
-        '-c',
-        'umask 077; for f in tags.json aliases.json; do if [ -f "$1/$f" ]; then cp "$1/$f" "$2/$f" || exit 1; fi; done',
-        'sh',
-        from,
-        to,
-      ])
-      if (ran.exitCode !== 0) throw new Error(ran.stderr.trim() || `exit ${ran.exitCode}`)
-    },
+    // [SP_CTX_02_21] the storage folders are owner-only (700)
+    carryTags: (from, to, change) =>
+      serial('tags', async () => {
+        const read = await readTagsAt($, from)
+        if (read.state === 'missing') return 'missing'
+        if (read.state === 'unreadable') throw new Error(`the tag registry of the old session cannot be read (${read.reason})`)
+        await $.fs.write(`${to}/tags.json`, JSON.stringify(change(read.value)))
+        return 'carried'
+      }),
+    carryAliases: (from, to, change) =>
+      serial('aliases', async () => {
+        const read = await readAliasesAt($, from)
+        if (read.state === 'missing') return 'missing'
+        if (read.state === 'unreadable') throw new Error(`the alias registry of the old session cannot be read (${read.reason})`)
+        await $.fs.write(`${to}/aliases.json`, JSON.stringify(change(read.value)))
+        return 'carried'
+      }),
     // [C_CTX_DEC_13] one attempt; the host's refusal is never swallowed: it rejects with its text
     runCommand: async (command, args) => {
       await $.command.run({ command, args: args ?? '' })
@@ -482,8 +561,9 @@ function seedIO($: EngineInterface): SeedIO {
   return {
     sessionId: () => $.session.id(),
     recordBoundary: async b => {
-      if (await ensureStorage($)) await writeBoundary($, b)
+      if (await ensureStorage($, true)) await writeBoundary($, b)
     },
+    hostId: () => peekHostId(hostId),
   }
 }
 
@@ -547,6 +627,8 @@ function deny(reason: string) {
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // [SP_CTX_01_14] the identity's one read starts here or in the first PrepareStorage
+    void hostIdOf($)
     await $.tool.register({
       name: LIST,
       description: LIST_DESCRIPTION,
@@ -683,15 +765,16 @@ export const register: Register = on => {
     if (route === 'pass') {
       const done = await next(e)
       try {
-        const b = observedBoundary(e, done)
-        if (b && (await ensureStorage($))) await writeBoundary($, b)
+        // [SP_CTX_01_14] a compaction handler never waits for hostId
+        const b = observedBoundary(e, done, peekHostId(hostId))
+        if (b && (await ensureStorage($, true))) await writeBoundary($, b)
       } catch {
         // a failed write leaves the previous boundary; the compaction stands
       }
       return done
     }
     if (route === 'seed') return handleSeed(seedIO($), handoff, e.messages)
-    const dir = await ensureStorage($)
+    const dir = await ensureStorage($, true)
     if (!dir) return { skip: `${PLUGIN}: storage unavailable` }
     return serial('queue', () =>
       handleCompaction(
@@ -709,6 +792,7 @@ export const register: Register = on => {
           updateTags: change => updateTags($, change),
           updateAliases: change => updateAliases($, change),
           writeBoundary: b => writeBoundary($, b),
+          hostId: () => peekHostId(hostId),
         },
         e.messages,
       ),

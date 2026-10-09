@@ -1,7 +1,20 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction, HANDOFF_MARKER, type CompactionIO } from '../hooks/compaction'
-import { boundaryOf, currentRows, fingerprint, MARK, prepare, type Boundary } from '../hooks/edits'
+import { parseAliases, refResolver, type AliasRegistry } from '../hooks/aliases'
+import {
+  boundaryOf,
+  boundaryView,
+  currentRows,
+  fingerprint,
+  MARK,
+  prepare,
+  recordBoundary,
+  resolveEditRefs,
+  totalChars,
+  type Boundary,
+  type BoundaryMemory,
+} from '../hooks/edits'
 import {
   awaitSeeded,
   buildSeed,
@@ -24,6 +37,7 @@ import {
   SEED_POLL_MS,
   SEED_ROOM,
   SEED_WAIT_MS,
+  seedReportTail,
   startHandoff,
   SUMMARY_OPENER,
   TRANSCRIPT_LINE,
@@ -333,6 +347,48 @@ test('BuildSeed — вікно посеред пари: orphan results go, the f
   expect('refuse' in out && out.refuse).toBe('EMPTY')
 })
 
+// a context_list pair among the rows: DropOwnCalls changes the size without any edit
+function withListing(): SessionMessage[] {
+  const rows = conversation()
+  return [
+    ...rows.slice(0, 2),
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'l', tool: 'mcp__context-editor__context_list', input: {} }], handle: 'hl' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'l', text: 'x'.repeat(3000), isError: false }], handle: 'hr' },
+    ...rows.slice(2),
+  ]
+}
+
+const listingApi = () => [...api(), { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'l', content: 'listing' }] }]
+
+test('BuildSeed — засів без правок: an empty queue, or every edit failed, with a context_list call among the rows; the new session\'s report has no size line; without failed edits no sentence about edits at all', async () => {
+  const rows = withListing()
+  const empty = host({ rows, api: listingApi() })
+  expect(await runHandoff(empty.io, empty.s.mem, 0)).toBe('transcript')
+  expect(empty.s.submitted[0]).toBe('context-editor: this session continues old (transcript).\n\ngo on')
+  const failing = host({ rows, api: listingApi() })
+  failing.s.queues.set('/s/old', { ...failing.oldQueue(), edits: [{ op: 'drop', tool_use_id: 'gone' }] })
+  expect(await runHandoff(failing.io, failing.s.mem, 0)).toBe('transcript')
+  expect(failing.s.submitted[0]).toBe(
+    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found.\n\ngo on',
+  )
+  for (const text of [empty.s.submitted[0]!, failing.s.submitted[0]!]) {
+    expect(text).not.toContain('Conversation ~')
+    expect(text).not.toContain('tokens freed')
+  }
+})
+
+test('BuildSeed — засів з правками: charsBefore is the visible rows, charsAfter is after ApplyEdits and DropOwnCalls, before the CarryNote of the untouched media pair and the head', async () => {
+  const rows = withListing()
+  const seed = built((await seedOf({ rows, transcript: rows, api: listingApi() }, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out)
+  expect(seed.visible).toEqual(rows)
+  expect(seed.report.charsBefore).toBe(totalChars(rows))
+  const note = carryNote([{ mediaType: 'image/png', bytes: 8, data: PNG }], [`${FOLDER}/1.png`])
+  expect(seed.report.charsAfter).toBe(totalChars(seed.rows) - note.length)
+  const text = seedReportTail({ report: seed.report, archive: '/s/old/1.json' })
+  expect(text.startsWith('\ncontext-editor: applied 1 edit(s): summarize a.')).toBe(true)
+  expect(text).toContain(`Conversation ~${totalChars(rows)} -> ~${seed.report.charsAfter} chars`)
+})
+
 test('BuildSeed: an unreadable tag registry fails every edit; a pinned target is refused', async () => {
   const unreadable = built((await seedOf({ tags: { state: 'unreadable', reason: 'x' } }, [{ op: 'drop', tool_use_id: 'c' }])).out)
   expect(unreadable.report.failed).toEqual(['drop c: tag registry unreadable'])
@@ -390,6 +446,8 @@ function pendingSeed(over: Partial<HandoffSeed> = {}): HandoffSeed {
     file: '/s/old/1/seed.json',
     archive: '',
     report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], mediaFiles: [] },
+    visible: [],
+    edits: [],
     fromSummary: false,
     unmatchedPromptMedia: 0,
     new: 'new',
@@ -398,20 +456,37 @@ function pendingSeed(over: Partial<HandoffSeed> = {}): HandoffSeed {
   }
 }
 
-function seedHarness(session: string) {
+// RecordBoundary as register.ts binds it: the written text is the own boundary
+function seedHarness(session: string, host?: string) {
   const recorded: Boundary[] = []
-  const io: SeedIO = { sessionId: async () => session, recordBoundary: async b => void recorded.push(b) }
-  return { io, recorded }
+  const mem: BoundaryMemory = {}
+  const files = new Map<string, string>()
+  const io: SeedIO = {
+    sessionId: async () => session,
+    recordBoundary: async b => {
+      recorded.push(b)
+      await recordBoundary(mem, async t => void files.set(session, t), b)
+    },
+    hostId: () => host,
+  }
+  return { io, recorded, mem, files }
 }
 
-test('HandleSeed — засів: the seeded rows in place of the /clear row; taken; the boundary recorded in the new session', async () => {
-  const mem = newHandoffMemory('i')
-  mem.pending = pendingSeed()
-  const { io, recorded } = seedHarness('new')
-  const out = await handleSeed(io, mem, [CLEAR_ROW])
-  expect('messages' in out && out.messages).toEqual(mem.pending.rows)
-  expect(mem.pending.taken).toBe(true)
-  expect(recorded).toEqual([boundaryOf(mem.pending.rows)!])
+test('HandleSeed — засів: the seeded rows in place of the /clear row; taken; the boundary recorded in the new session with host = hostId and as the own boundary', async () => {
+  for (const host of ['tok:42', undefined]) {
+    const mem = newHandoffMemory('i')
+    mem.pending = pendingSeed()
+    const { io, recorded, mem: bm, files } = seedHarness('new', host)
+    const out = await handleSeed(io, mem, [CLEAR_ROW])
+    expect('messages' in out && out.messages).toEqual(mem.pending.rows)
+    expect(mem.pending.taken).toBe(true)
+    expect(recorded).toEqual([boundaryOf(mem.pending.rows, host)!])
+    expect(recorded[0]!.host).toBe(host)
+    expect(bm.own).toBe(files.get('new'))
+    // trusted in this instance either way: by host, or as its own boundary
+    const transcript = [CLEAR_ROW, ...mem.pending.rows, ...commandRows(HANDOFF_MARKER)]
+    expect(boundaryView(transcript, files.get('new'), host, bm.own).rows[0]).toBe(transcript[1])
+  }
 })
 
 test('HandleSeed — відмови: no seed / not the new session / the new session already has a turn; taken stays false', async () => {
@@ -440,12 +515,15 @@ test('HandleSeed — інша сесія: a session the person opened is SKIP_NO
 test('CurrentRows — межа засіяної сесії: /clear rows, the seeded rows, the command rows; the boundary from HandleSeed starts at the first seeded row', async () => {
   const mem = newHandoffMemory('i')
   mem.pending = pendingSeed()
-  const { io, recorded } = seedHarness('new')
+  const { io, recorded, mem: bm, files } = seedHarness('new', 'tok:42')
   await handleSeed(io, mem, [CLEAR_ROW])
   const transcript = [CLEAR_ROW, ...mem.pending.rows, ...commandRows(HANDOFF_MARKER)]
   const cur = currentRows(transcript, recorded[0])
   expect(cur.length).toBe(mem.pending.rows.length + 2)
   expect(cur[0]).toBe(transcript[1])
+  // the same through CurrentRows' trust: by host, and by the own boundary
+  expect(boundaryView(transcript, files.get('new'), 'tok:42', undefined).rows).toEqual(cur)
+  expect(boundaryView(transcript, files.get('new'), undefined, bm.own).rows).toEqual(cur)
 })
 
 // ---- [SP_CTX_02_21] PinSummary
@@ -550,6 +628,7 @@ function host(o: HostOpts = {}) {
     boundaries: new Map<string, Boundary>(),
     queues: new Map<string, Queue>([['/s/old', { ...EMPTY_QUEUE, edits: prepare(rows, o.edits ?? []).queued, handoff: handoff(o.h) }]]),
     tags: new Map<string, TagRegistry>(),
+    aliases: new Map<string, AliasRegistry>(),
     files: new Map<string, string>(),
     removed: [] as string[],
     log: [] as string[],
@@ -566,7 +645,7 @@ function host(o: HostOpts = {}) {
   let chain: Promise<unknown> = Promise.resolve()
   const dir = (id = s.session) => `/s/${id}`
   const read =<T>(v: T | undefined, empty: T): Read<T> => (v === undefined ? { state: 'missing', value: empty } : { state: 'ok', value: v })
-  const seedIO: SeedIO = { sessionId: async () => s.session, recordBoundary: async b => void s.boundaries.set(s.session, b) }
+  const seedIO: SeedIO = { sessionId: async () => s.session, recordBoundary: async b => void s.boundaries.set(s.session, b), hostId: () => undefined }
   // the host's /compact HANDOFF_MARKER: the handler's rows replace the session's, the command rows follow
   const handler = async () => {
     const before = s.sessions.get(s.session) ?? []
@@ -632,10 +711,19 @@ function host(o: HostOpts = {}) {
       s.removed.push(path)
       for (const k of [...s.files.keys()]) if (k === path || k.startsWith(`${path}/`)) s.files.delete(k)
     },
-    copyRegistries: async (from, to) => {
+    // read in the old storage, changed, written into the new one
+    carryTags: async (from, to, change) => {
       s.log.push('copy')
       const t = s.tags.get(from)
-      if (t) s.tags.set(to, t)
+      if (!t) return 'missing'
+      s.tags.set(to, change(t))
+      return 'carried'
+    },
+    carryAliases: async (from, to, change) => {
+      const a = s.aliases.get(from)
+      if (!a) return 'missing'
+      s.aliases.set(to, change(a))
+      return 'carried'
     },
     runCommand: async (command, args) => {
       s.commands.push(args ? `${command} ${args}` : command)
@@ -864,7 +952,7 @@ test('RunHandoff — хід у новій сесії: a turn began after clear a
     if (c === 'compact') {
       s.commands.push(`compact ${a}`)
       turnStarted(s.turns)
-      const out = await handleSeed({ sessionId: async () => s.session, recordBoundary: async () => undefined }, s.mem, [CLEAR_ROW, text('user', 'hi'), text('assistant', 'hello')])
+      const out = await handleSeed({ sessionId: async () => s.session, recordBoundary: async () => undefined, hostId: () => undefined }, s.mem, [CLEAR_ROW, text('user', 'hi'), text('assistant', 'hello')])
       expect('skip' in out && out.skip).toBe('context-editor: the new session already has a turn')
       return
     }
@@ -912,7 +1000,7 @@ test('RunHandoff — хід одразу після /clear: inTurn after clear; 
 
 test('RunHandoff — людина активна перед відправкою: seeded, but a turn began before the report went; it waits in the new queue', async () => {
   const { io, s } = host()
-  io.copyRegistries = async () => void turnStarted(s.turns)
+  io.carryTags = async () => (turnStarted(s.turns), 'missing')
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
   expect(s.submitted).toEqual([])
   expect(s.queues.get('/s/new')!.report).toContain('this session continues old (transcript)')
@@ -1077,10 +1165,11 @@ test('RunHandoff: after /clear the status line follows the current session\'s qu
   expect(await runHandoff(done.io, done.s.mem, 0)).toBe('transcript')
   expect(done.s.statuses).toEqual([undefined])
   const waiting = host({ h: { resume: false } })
-  const copy = waiting.io.copyRegistries
-  waiting.io.copyRegistries = async (from, to) => {
-    await copy(from, to)
+  const carry = waiting.io.carryTags
+  waiting.io.carryTags = async (from, to, change) => {
+    const out = await carry(from, to, change)
     waiting.s.queues.set('/s/new', { ...EMPTY_QUEUE, edits: prepare(conversation(), [{ op: 'drop', tool_use_id: 'c' }]).queued })
+    return out
   }
   expect(await runHandoff(waiting.io, waiting.s.mem, 0)).toBe('transcript')
   expect(waiting.s.statuses).toEqual(['1 context edit(s) queued'])
@@ -1129,14 +1218,99 @@ test('RunHandoff — resume false, запасні тексти: the document aft
   }
 })
 
-test('RunHandoff — теги й псевдоніми: copied into the new storage before the prompt; a failed copy is a sentence in the report, the seed stays', async () => {
+const aliasesOf = (map: Record<string, string>): AliasRegistry => ({ next: 10, map })
+
+test('RunHandoff — теги й псевдоніми: carried into the new storage before the prompt and brought in line by RebindTags; a failed write is a sentence in the report, the seed stays', async () => {
   const { io, s } = host()
-  io.copyRegistries = async () => {
-    throw new Error('cp: no space')
-  }
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'b' }, created_turn: 0 }] })
+  s.aliases.set('/s/old', aliasesOf({ c4: 'b' }))
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
-  expect(s.submitted[0]).toContain('Tags and aliases were not carried over.')
-  expect(s.toasts.join()).toContain('step registries failed: cp: no space')
+  expect(s.tags.get('/s/new')!.tags.map(t => t.kind)).toEqual(['review'])
+  expect(s.aliases.get('/s/new')!.map).toEqual({ c4: 'b' })
+  expect(s.submitted[0]).not.toContain('Tags and aliases were not carried over.')
+  // a write that fails
+  const failing = host()
+  failing.s.tags.set('/s/old', { ...EMPTY_REGISTRY })
+  failing.io.carryTags = async () => {
+    throw new Error('no space')
+  }
+  expect(await runHandoff(failing.io, failing.s.mem, 0)).toBe('transcript')
+  expect(failing.s.submitted[0]).toContain('Tags and aliases were not carried over.')
+  expect(failing.s.toasts.join()).toContain('step registries failed: no space')
+  // registries the old session lacks: nothing written, no sentence
+  const bare = host()
+  expect(await runHandoff(bare.io, bare.s.mem, 0)).toBe('transcript')
+  expect(bare.s.tags.has('/s/new')).toBe(false)
+  expect(bare.s.aliases.has('/s/new')).toBe(false)
+  expect(bare.s.submitted[0]).not.toContain('Tags and aliases')
+})
+
+test('RunHandoff — псевдонім зміненої пари: c3 → a, summarize a applied in the seed; in the new session ref c3 is UNKNOWN_REF, not TARGET_NOT_FOUND', async () => {
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  s.aliases.set('/s/old', aliasesOf({ c3: 'a', c4: 'b' }))
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  const reg = s.aliases.get('/s/new')!
+  expect(reg.map).toEqual({ c4: 'b' })
+  const read = parseAliases(JSON.stringify(reg))
+  const seeded = s.sessions.get('new')!
+  const out = prepare(seeded, resolveEditRefs([{ op: 'summarize', ref: 'c3', summary: 'x' }], refResolver(read)))
+  expect(out.queued).toEqual([])
+  expect(out.errors[0]).toContain('unknown ref c3')
+})
+
+test('RunHandoff — тег на зміненій парі: review on pair a, summarize a applied in the seed; no tag in the new registry, as after a compaction', async () => {
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }] })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.tags.get('/s/new')!.tags).toEqual([])
+})
+
+test('RunHandoff — disposable з заміною в пакеті засіву: disposable on b with note N and summarize b with summary N — applied, or refused by a pin; no tag in the new registry', async () => {
+  const N = 'a screenshot of X'
+  const disposable = { kind: 'disposable' as const, target: { tool_use_id: 'b' }, note: N, created_turn: 0 }
+  const applied = host({ edits: [{ op: 'summarize', tool_use_id: 'b', summary: N }] })
+  applied.s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [disposable] })
+  expect(await runHandoff(applied.io, applied.s.mem, 0)).toBe('transcript')
+  expect(applied.s.submitted[0]).toContain(`summarize b`)
+  expect(applied.s.tags.get('/s/new')!.tags).toEqual([])
+  // refused: a pin on the result row of b (the batch s.edits is taken before the pin check)
+  const rows = conversation()
+  const pinned = host({ rows, edits: [{ op: 'summarize', tool_use_id: 'b', summary: N }] })
+  const pin = { kind: 'pin' as const, target: { anchor: fingerprint(rows[5]!), hint: 5 }, created_turn: 0 }
+  pinned.s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [disposable, pin] })
+  expect(await runHandoff(pinned.io, pinned.s.mem, 0)).toBe('transcript')
+  expect(pinned.s.submitted[0]).toContain('summarize b: target is pinned')
+  expect(pinned.s.tags.get('/s/new')!.tags.map(t => t.kind)).toEqual(['pin'])
+})
+
+test('RunHandoff — збій узгодження реєстру: RebindTags throws; the tag registry is not written into the new session; the aliases still are; the sentence once', async () => {
+  const { io, s } = host()
+  // a tag RebindTags cannot walk (the pin check before it skips a review)
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: null as unknown as TagRegistry['tags'][number]['target'], created_turn: 0 }] })
+  s.aliases.set('/s/old', aliasesOf({ c4: 'b' }))
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.tags.has('/s/new')).toBe(false)
+  expect(s.aliases.get('/s/new')!.map).toEqual({ c4: 'b' })
+  expect(s.submitted[0]!.split('Tags and aliases were not carried over.').length).toBe(2)
+})
+
+test('RunHandoff — незмінена пара: c4 and a pin on pair b, no edit of b; in the new session ref c4 resolves to b and the pin stays', async () => {
+  const { io, s } = host({ edits: [{ op: 'drop', tool_use_id: 'c' }] })
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { tool_use_id: 'b' }, created_turn: 0 }] })
+  s.aliases.set('/s/old', aliasesOf({ c4: 'b' }))
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(refResolver(parseAliases(JSON.stringify(s.aliases.get('/s/new')!)))('c4')).toBe('b')
+  expect(s.tags.get('/s/new')!.tags).toEqual([{ kind: 'pin', target: { tool_use_id: 'b' }, created_turn: 0 }])
+})
+
+test('RunHandoff — пара поза засівом: a tag and an alias on a pair whose rows stayed before the summary (fromSummary); both go', async () => {
+  const { io, s } = host({ rows: compacted(), api: compactedApi() })
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }, { kind: 'review', target: { tool_use_id: 'b' }, created_turn: 0 }] })
+  s.aliases.set('/s/old', aliasesOf({ c1: 'a', c2: 'b' }))
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.aliases.get('/s/new')!.map).toEqual({ c2: 'b' })
+  // the review on b stays; PinSummary adds the pin of the summary row
+  expect(s.tags.get('/s/new')!.tags.map(t => ('tool_use_id' in t.target ? `${t.kind} ${t.target.tool_use_id}` : t.kind))).toEqual(['review b', 'pin'])
 })
 
 test('RunHandoff — покинутий запуск із засівом: running, stale, a seed.json with id ≥ at: dropped with "not re-run"; nothing', async () => {

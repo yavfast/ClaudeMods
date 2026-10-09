@@ -41,7 +41,7 @@ Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a di
 
 Faking the whole host `$` is expensive, so the logic sits in pure modules behind small IO interfaces, and `register.ts` binds those interfaces to `$`:
 
-- `hooks/edits.ts`: edit, listing and media logic (pure).
+- `hooks/edits.ts`: edit, listing and media logic (pure), and the compaction boundary: CurrentRows (`ViewIO`), the host process identity and which boundary to trust.
 - `hooks/queue.ts` (`QueueIO`): the queue, `context_edit`, and delivering the report.
 - `hooks/compaction.ts` (`CompactionIO`): the markers, which branch a compaction takes, applying queued edits inside `session.compact`, and the boundary observer.
 - `hooks/flush.ts` (`FlushIO`): running the compaction command after a turn and the resume prompt.
@@ -60,14 +60,14 @@ Code comments and commit subjects cite IDs from `docs/`: `C_CTX_*` (concept), `S
 
 `.dev_flow/skills/claude-code/plugin-hooks.md` lists host pitfalls found by testing live, against Claude Code 2.1.294–2.1.295 (older hosts are not supported). Read it before changing hooks. The ones you hit most often:
 
-- A hook has the shape `($, e, next)`. If it never calls `next`, it answers the event itself. Modules have no Node or DOM APIs, so everything goes through `$`. The validator allows `$` to be passed only to functions declared at the top level of the same file. A `tool.call` matcher must be a string or regex literal (no template strings: `${...}` in a matcher gives `tool=?`). One module may register an event without a matcher only once (e.g. one `session.compact` hook).
+- A hook has the shape `($, e, next)`. If it never calls `next`, it answers the event itself. Modules have no Node or DOM APIs, so everything goes through `$`. The validator allows `$` to be passed only to functions declared at the top level of the same file. A `tool.call` matcher must be a string or regex literal (no template strings: `${...}` in a matcher gives `tool=?`). One module may register an event without a matcher only once (e.g. one `session.compact` hook). `$.env.get` and `$.env.set` take the variable's name only as a string literal (the validator lists the names), so `'CONTEXT_EDITOR_HOST'` is spelled out at each call.
 - Hooks that can refuse (`tool.call`, `prompt.submit`, `session.compact`) need `.catch`. Without one, a failing hook is skipped and the event goes on. `.catch` has a budget of about 1 s. In `session.compact`, the `.catch` must return `{ skip }` for the mod's own instructions, so that a failure never falls through to a real summarizing compaction.
 - Never await `$.prompt.submit` inside a `session.compact` hook: it deadlocks. A refused prompt resolves with `{ drop }`. It does not throw.
 - `$.command.run` queues a command until the session is idle and returns after the work (`compact` once the handler answered, `clear` once `$.session.id()` is new). Its refusal is final. It refuses a call from a timer made inside a `tool.call` hook. The mod's own `/clear` and `/compact` raise no `prompt.submit`, `turn.start` or `turn.complete`.
 - The non-interactive host (VS Code, SDK, stream-json) has no `/resume` for `$.command.run`, and `$.session.compact` always fails there; `clear` and `compact` work. In a one-shot `claude -p "<prompt>"`, every `$.command.*` after the last turn fails with "no session is bound in this process".
 - In stream-json every row a compaction handler returns passes through `session.append` again with `origin.kind = 'plugin'`; in the terminal those rows and the command's rows bypass `session.append`.
 - A row without `handle`, or with a `handle` from another session, loses its media and thinking blocks.
-- A compaction runs only between turns; a command started mid-turn waits for the turn's end, and a turn may start meanwhile, so recheck the turn counter after each command. `/clear` and `/resume` change `session_id` without a `session.start`, so check the session before each storage operation.
+- A compaction runs only between turns; a command started mid-turn waits for the turn's end, and a turn may start meanwhile, so recheck the turn counter after each command. `/clear` and `/resume` change `session_id` without a `session.start`, so check the session before each storage operation. The read of the conversation is "originals + copies" only in the host process that ran the compaction; after `--resume` or `/resume` it is the loaded chain. So `boundary.json` is trusted by host process: it carries `host` = `<CONTEXT_EDITOR_HOST token>:<ppid>` (one read per module instance, awaited by readers, only peeked by compaction handlers), or this module instance wrote it in this session; a session switch in the same process strips `host` from the new session's boundary (SP_CTX_DEC_10).
 - `$.fs.read` and `$.fs.write` are capped at 4 MiB. Write larger files through `$.process.run(['sh','-c','umask 077 && cat > "$1"','sh',path], { stdin })`.
 
 ## Live testing

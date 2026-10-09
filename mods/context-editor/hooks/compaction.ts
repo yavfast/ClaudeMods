@@ -96,6 +96,9 @@ export type CompactionIO = {
   updateAliases: (change: (reg: AliasRegistry) => AliasRegistry) => Promise<void>
   // [SP_CTX_02_18] best effort: a failed write leaves the previous boundary
   writeBoundary: (b: Boundary) => Promise<void>
+  // [SP_CTX_01_14] hostId if its read has ended, else absent: a compaction
+  // handler never waits for it nor starts a process
+  hostId: () => string | undefined
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -111,12 +114,12 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   if (q.handoff) return { skip: 'context-editor: handoff pending' }
 
   const { edits, refused } = screenPinned(messages, q.edits, await io.readTags())
-  const { found, knownResults, unmatchedPromptMedia } = collectMedia(await io.readApi())
+  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(await io.readApi())
   const mediaOwners = new Set(found.keys())
   const id = io.now()
   const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.dir}/${id}`, io.writeMedia)
 
-  const options = { knownResults, unmatchedPromptMedia }
+  const options = { knownResults, unmatchedPromptMedia, apiTruncated }
   const archive = `${io.dir}/${id}.json`
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
   applied.report.failed.unshift(...refused)
@@ -132,6 +135,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
         mediaFiles: [],
       },
       '',
+      'compaction',
     )
     await io.writeQueue(reported(q, text, id))
     io.toast(text.slice(0, 200))
@@ -154,11 +158,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // An alias of a changed or vanished pair has done its job: it no longer resolves.
   await io.updateAliases(reg => pruneAliases(reg, messages, after, done)).catch(() => undefined)
 
-  const text = formatReport(applied.report, archived)
+  // [SP_CTX_01_05] without an applied edit: "not changed", no size line
+  const text = formatReport(applied.report, archived, 'compaction')
   await io.writeQueue(reported(q, text, id))
   io.toast(text.slice(0, 200))
   if (applied.report.applied.length === 0) return { skip: 'context-editor: no edit could be applied' }
-  const boundary = boundaryOf(rows)
+  // [SP_CTX_02_18] RecordBoundary: with `host` only when hostId is already read
+  const boundary = boundaryOf(rows, io.hostId())
   if (boundary) await io.writeBoundary(boundary).catch(() => undefined)
   return { messages: rows }
 }
@@ -167,14 +173,15 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
 // sets once it stands: none for a subagent's, a precomputed one (it stands
 // only when used, through manual or auto), the mod's own (MARKER and
 // HANDOFF_MARKER under any trigger; HandleCompaction and HandleSeed record
-// those) or a skipped one.
+// those) or a skipped one. `host`: hostId if already read ([SP_CTX_01_14]).
 export function observedBoundary(
   e: { agentId?: string; trigger: string; instructions?: string },
   done: { skip?: string; messages?: readonly SessionMessage[] },
+  host?: string,
 ): Boundary | undefined {
   if (e.agentId || e.trigger === 'precompute' || isOwnInstruction(e.instructions)) return undefined
   if (done.skip !== undefined || !done.messages) return undefined
-  return boundaryOf(done.messages)
+  return boundaryOf(done.messages, host)
 }
 
 // [SP_CTX_01_06] The archive's JSON. A pair whose media went to files of its

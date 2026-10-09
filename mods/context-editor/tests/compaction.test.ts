@@ -12,7 +12,19 @@ import {
   observedBoundary,
   type CompactionIO,
 } from '../hooks/compaction'
-import { boundaryOf, fingerprint, prepare, type Boundary } from '../hooks/edits'
+import {
+  boundaryOf,
+  fingerprint,
+  newHostIdMemo,
+  peekHostId,
+  prepare,
+  recordBoundary,
+  startHostId,
+  totalChars,
+  type Boundary,
+  type BoundaryMemory,
+  type QueuedEdit,
+} from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
@@ -61,6 +73,7 @@ function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}, tags: Rea
     writeBoundary: async b => {
       written.boundary = b
     },
+    hostId: () => undefined,
     ...over,
   }
   return { io, written }
@@ -118,7 +131,8 @@ test('a failed archive write refuses the whole batch and changes nothing', async
   expect('skip' in out && out.skip).toContain('originals could not be archived')
   expect(written.queue!.edits).toEqual([])
   expect(written.queue!.report).toContain('summarize a: originals could not be archived')
-  expect(written.queue!.report).toContain('applied 0 edit(s)')
+  expect(written.queue!.report!.startsWith('context-editor: no edit was applied; the conversation was not changed.')).toBe(true)
+  expect(written.queue!.report).not.toContain('tokens freed')
 })
 
 test('media that cannot be written blocks the edit and keeps the media row', async () => {
@@ -248,4 +262,65 @@ test('HandleCompaction — збій гілки засіву: skip "seeding faile
 test('the markers explain themselves to the model', async () => {
   expect(MARKER).toBe('context-editor: apply queued edits')
   expect(HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation')
+})
+
+// ---- [SP_CTX_01_05] the honest report, [SP_CTX_01_14] hostId in the handler
+
+test('HandleCompaction — жодної правки: every edit of the batch failed (its target is gone): skip, a "not changed" report without the size line, no boundary', async () => {
+  const gone: QueuedEdit = { op: 'drop', tool_use_id: 'gone' }
+  const { io, written } = harness({ state: 'ok', value: { ...EMPTY_QUEUE, edits: [gone] } })
+  const out = await handleCompaction(io, conversation())
+  expect('skip' in out && out.skip).toBe('context-editor: no edit could be applied')
+  expect(written.queue!.report).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: drop gone: call or result not found.')
+  expect(written.queue!.report).not.toContain('tokens freed')
+  expect(written.queue!.report).not.toContain('Conversation ~')
+  expect(written.boundary).toBeUndefined()
+})
+
+test('HandleCompaction — правки застосовано: the report carries the size line', async () => {
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]))
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  const before = totalChars(conversation())
+  const after = totalChars(out.messages)
+  expect(written.queue!.report).toContain(`Conversation ~${before} -> ~${after} chars (~${Math.round((before - after) / 4)} tokens freed).`)
+})
+
+test('RecordBoundary — host (HandleCompaction): with hostId read the boundary carries it; without it, none', async () => {
+  for (const host of ['tok:7', undefined]) {
+    const { io, written } = harness(queued([{ op: 'drop', tool_use_id: 'a' }]), { hostId: () => host })
+    const out = await handleCompaction(io, conversation())
+    if (!('messages' in out)) throw new Error(out.skip)
+    expect(written.boundary).toEqual(boundaryOf(out.messages, host))
+    expect(written.boundary!.host).toBe(host)
+  }
+})
+
+test('hostId — ще не прочитано: a compaction handler writes the boundary while the hostId promise runs: no wait, no new read, no host; the written text is the own boundary', async () => {
+  const memo = newHostIdMemo()
+  let reads = 0
+  void startHostId(memo, () => {
+    reads++
+    return new Promise<string | undefined>(() => undefined)
+  })
+  const mem: BoundaryMemory = {}
+  const files: string[] = []
+  const { io, written } = harness(queued([{ op: 'drop', tool_use_id: 'a' }]), {
+    hostId: () => peekHostId(memo),
+    writeBoundary: async b => {
+      written.boundary = b
+      await recordBoundary(mem, async t => void files.push(t), b)
+    },
+  })
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.boundary!.host).toBeUndefined()
+  expect(reads).toBe(1)
+  expect(mem.own).toBe(files[0])
+  // the observer of another compaction: the same, without host
+  expect(observedBoundary({ trigger: 'manual' }, { messages: out.messages }, peekHostId(memo))).toEqual(boundaryOf(out.messages))
+  // a peek starts nothing on a memo never started
+  const fresh = newHostIdMemo()
+  expect(peekHostId(fresh)).toBeUndefined()
+  expect(fresh.promise).toBeUndefined()
 })

@@ -33,6 +33,11 @@ export const MAX_LIST_COUNT = 200
 export const MAX_TEXT = 8000
 export const MAX_QUEUE_EDITS = 200
 export const HEAD_ROWS = 8
+// The most rows a read of the conversation gives, and the most messages of its API form.
+export const ROW_WINDOW = 4096
+// [SP_CTX_01_14] The longest the identity's read may take before it counts as
+// not read (absent); bounds every reader that awaits it.
+export const HOST_ID_WAIT_MS = 2000
 // The longest tool description the host passes to the model; it cuts the rest.
 export const MAX_DESCRIPTION = 2048
 
@@ -60,24 +65,193 @@ export function fingerprint(row: SessionMessage): string {
 }
 
 // [SP_CTX_01_14] Where the current conversation starts: the head of the rows
-// the last compaction returned.
-export type Boundary = { head: string[]; count: number }
+// the last compaction returned, and the host process that wrote it.
+export type Boundary = { head: string[]; count: number; host?: string }
 
-// [SP_CTX_02_18] The boundary a compaction's returned rows set; none for no rows.
-export function boundaryOf(rows: readonly SessionMessage[]): Boundary | undefined {
-  return rows.length ? { head: rows.slice(0, HEAD_ROWS).map(fingerprint), count: rows.length } : undefined
+// [SP_CTX_02_18] The boundary a compaction's returned rows set; none for no
+// rows. `host` is hostId when it is known; a compaction handler passes it
+// only once the identity has been read, never waiting for it.
+export function boundaryOf(rows: readonly SessionMessage[], host?: string): Boundary | undefined {
+  if (!rows.length) return undefined
+  const b: Boundary = { head: rows.slice(0, HEAD_ROWS).map(fingerprint), count: rows.length }
+  return host === undefined ? b : { ...b, host }
 }
 
-// [SP_CTX_01_14] Undefined for anything but a well-formed Boundary.
+// [SP_CTX_01_14] Undefined for anything but a well-formed Boundary. A `host`
+// that is not a string is ignored: the boundary reads as written without one.
 export function parseBoundary(text: string): Boundary | undefined {
   try {
     const b = JSON.parse(text) as Partial<Boundary> | null
     const head = b?.head
     if (!Array.isArray(head) || head.length < 1 || head.length > HEAD_ROWS || !head.every(h => typeof h === 'string')) return undefined
     if (typeof b!.count !== 'number' || !Number.isInteger(b!.count) || b!.count < head.length) return undefined
-    return { head, count: b!.count }
+    return typeof b!.host === 'string' ? { head, count: b!.count, host: b!.host } : { head, count: b!.count }
   } catch {
     return undefined
+  }
+}
+
+// [SP_CTX_01_14] ParseHostId: "<token>:<ppid>" when the command printed only
+// decimal digits (whitespace aside) and the token is not empty. Pure.
+export function parseHostId(token: string | undefined, stdout: string): string | undefined {
+  const pid = stdout.trim()
+  return token && /^[0-9]+$/.test(pid) ? `${token}:${pid}` : undefined
+}
+
+// [SP_CTX_01_14] The value of HOST_ENV a module sets when the host process has
+// none: at least 16 characters of [0-9a-z].
+export function newHostToken(): string {
+  let token = ''
+  while (token.length < 20) token += Math.floor(Math.random() * 36).toString(36)
+  return token
+}
+
+// [SP_CTX_01_14] The identity of the host process: one read per module
+// instance, started by session.start or the first PrepareStorage, whichever
+// comes first. Readers outside a compaction await it; compaction handlers
+// only peek.
+export type HostIdMemo = { promise?: Promise<string | undefined>; settled: boolean; value?: string }
+
+export function newHostIdMemo(): HostIdMemo {
+  return { settled: false }
+}
+
+// [SP_CTX_01_14] Starts the read once and returns its one promise; a failed
+// read (the env call or the command) is no identity.
+export function startHostId(memo: HostIdMemo, read: () => Promise<string | undefined>): Promise<string | undefined> {
+  if (!memo.promise) {
+    memo.promise = read().then(
+      value => {
+        memo.settled = true
+        memo.value = value
+        return value
+      },
+      () => {
+        memo.settled = true
+        return undefined
+      },
+    )
+  }
+  return memo.promise
+}
+
+// [SP_CTX_01_14] For compaction handlers: the identity once its read has
+// ended, else absent. Never waits and never starts a read.
+export function peekHostId(memo: HostIdMemo): string | undefined {
+  return memo.settled ? memo.value : undefined
+}
+
+// [SP_CTX_02_18] ownBoundary: the text of the boundary this module instance
+// wrote in the current session; reset on load and when storage is prepared.
+export type BoundaryMemory = { own?: string }
+
+// [SP_CTX_02_18] RecordBoundary's write: once written, the text is this
+// instance's own boundary. A failed write rejects and leaves `own` as it was.
+export async function recordBoundary(mem: BoundaryMemory, write: (text: string) => Promise<void>, b: Boundary): Promise<string> {
+  const text = JSON.stringify(b)
+  await write(text)
+  mem.own = text
+  return text
+}
+
+// [SP_CTX_02_18] [SP_CTX_DEC_10] Trusted(b): written by this host process, or
+// by this module instance in this session (the way left when hostId is absent).
+export function isTrustedBoundary(b: Boundary, raw: string, hostId: string | undefined, own: string | undefined): boolean {
+  return (b.host !== undefined && hostId !== undefined && b.host === hostId) || raw === own
+}
+
+// [SP_CTX_02_18] CurrentRows and the boundary part of Key() from one read of
+// the boundary file: the whole transcript and "" without a trusted boundary.
+export function boundaryView(
+  transcript: readonly SessionMessage[],
+  raw: string | undefined,
+  hostId: string | undefined,
+  own: string | undefined,
+): { rows: readonly SessionMessage[]; mark: string } {
+  const b = raw === undefined ? undefined : parseBoundary(raw)
+  if (!b || !isTrustedBoundary(b, raw!, hostId, own)) return { rows: transcript, mark: '' }
+  return { rows: currentRows(transcript, b), mark: raw! }
+}
+
+// What CurrentRows needs from the host; register.ts binds it to `$`.
+export type ViewIO = {
+  // awaits the one hostId promise, starting it if it is not started
+  hostId: () => Promise<string | undefined>
+  messages: () => Promise<readonly SessionMessage[]>
+  // [SP_CTX_02_15] the storage of the current session, prepared for it
+  storage: () => Promise<{ sessionId?: string; dir?: string }>
+  readBoundary: (dir: string) => Promise<string | undefined>
+  // ownBoundary, read once the storage is prepared
+  own: () => string | undefined
+}
+
+// [SP_CTX_02_18] CurrentRows and Key(): the identity awaited first (a tool or
+// prompt path, without the ~1 s budget), then the transcript and one read of
+// the boundary for both.
+export async function readView(io: ViewIO): Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[]; key: string }> {
+  const hostId = await io.hostId()
+  const transcript = await io.messages()
+  const st = await io.storage()
+  if (!st.dir) return { transcript, rows: transcript, key: `${st.sessionId}|` }
+  const raw = await io.readBoundary(st.dir)
+  const { rows, mark } = boundaryView(transcript, raw, hostId, io.own())
+  return { transcript, rows, key: `${st.sessionId}|${mark}` }
+}
+
+// [SP_CTX_02_15] A switch of session in this process (/clear, /resume), not
+// the first prepare after the module loaded.
+export function sessionSwitched(prev: string | undefined, now: string | undefined): boolean {
+  return prev !== undefined && prev !== now
+}
+
+// [SP_CTX_02_18] The boundary text without `host` when this process wrote it;
+// undefined when there is nothing to rewrite.
+export function withoutHost(raw: string | undefined, hostId: string | undefined): string | undefined {
+  const b = raw === undefined ? undefined : parseBoundary(raw)
+  if (!b || b.host === undefined || hostId === undefined || b.host !== hostId) return undefined
+  return JSON.stringify({ head: b.head, count: b.count })
+}
+
+// What the boundary step of PrepareStorage needs; register.ts binds it to `$`.
+export type AfterPrepareIO = {
+  // the session id this instance had before this prepare (none after load) and now
+  prev?: string
+  now?: string
+  // called from a compaction handler: never wait for hostId
+  inCompaction: boolean
+  // awaits the one hostId promise
+  wait: () => Promise<string | undefined>
+  // hostId if its read has ended, else absent
+  peek: () => string | undefined
+  // the new session's boundary file; undefined when there is none
+  read: () => Promise<string | undefined>
+  write: (text: string) => Promise<void>
+  remove: () => Promise<void>
+  toast: (text: string) => void
+}
+
+// [SP_CTX_02_15] [SP_CTX_02_18] The boundary step of PrepareStorage. After a
+// session switch in this process (not the first prepare after load) the read
+// is the loaded chain (/resume), so the new session's boundary that this
+// process wrote loses its `host`. Outside a compaction hostId is awaited;
+// inside one it is the value if read, else absent. A failed rewrite removes
+// the file (without a boundary the whole transcript, which after /resume is
+// right); if that fails too, a toast. Never throws; true when untrusted.
+export async function afterPrepare(io: AfterPrepareIO): Promise<boolean> {
+  if (!sessionSwitched(io.prev, io.now)) return false
+  try {
+    const id = io.inCompaction ? io.peek() : await io.wait()
+    const next = withoutHost(await io.read(), id)
+    if (next === undefined) return false
+    try {
+      await io.write(next)
+    } catch {
+      await io.remove()
+    }
+    return true
+  } catch (err) {
+    io.toast(`context-editor: the boundary of the resumed session could not be untrusted: ${err instanceof Error ? err.message : String(err)}`)
+    return false
   }
 }
 
@@ -492,11 +666,15 @@ export type MediaRef = { mediaType: string; bytes: number; data?: string }
 // [SP_CTX_02_10] What the Messages API form of the conversation holds beyond
 // the rows: media by owner key, the tool_use ids it shows (its window), and
 // how many prompt messages carry media that cannot be matched to a row while
-// [SP_CTX_DEC_06] is open. Pure.
+// [SP_CTX_DEC_06] is open, and whether the read gave as many messages as it
+// can (`apiTruncated`: older ones may lie outside it; minus one since the form
+// starts with a user message and the host may drop a leading assistant one;
+// plugin-hooks pitfall 10). Pure.
 export function collectMedia(api: readonly unknown[]): {
   found: Map<string, MediaRef[]>
   knownResults: Set<string>
   unmatchedPromptMedia: number
+  apiTruncated: boolean
 } {
   const found = new Map<string, MediaRef[]>()
   const knownResults = new Set<string>()
@@ -519,7 +697,7 @@ export function collectMedia(api: readonly unknown[]): {
     }
     if (m.role === 'user' && blocks.some(isMedia)) unmatchedPromptMedia += 1
   }
-  return { found, knownResults, unmatchedPromptMedia }
+  return { found, knownResults, unmatchedPromptMedia, apiTruncated: api.length >= ROW_WINDOW - 1 }
 }
 
 function mediaRef(block: Record<string, unknown>): MediaRef {
@@ -538,6 +716,9 @@ export type ApplyOptions = {
   knownResults?: ReadonlySet<string>
   // prompt messages with media that no row could be matched to
   unmatchedPromptMedia?: number
+  // [SP_CTX_02_10] the API form is cut by the read window: rows before the
+  // first known result may lie outside it
+  apiTruncated?: boolean
 }
 
 // [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
@@ -652,7 +833,11 @@ export function applyEdits(
         if (known) {
           const firstKnown = rows.findIndex(r => (r.toolResults ?? []).some(t => known.has(t.tool_use_id)))
           const unknownResult = touched.some(i => (rows[i]!.toolResults ?? []).some(t => !known.has(t.tool_use_id)))
-          const earlyPrompt = touched.some(i => (firstKnown < 0 || i < firstKnown) && rows[i]!.role === 'user' && !(rows[i]!.toolResults ?? []).length)
+          // [SP_CTX_02_04] a prompt before the first known result may lie
+          // outside the API form only when that form is cut by its window
+          const earlyPrompt =
+            !!options.apiTruncated &&
+            touched.some(i => (firstKnown < 0 || i < firstKnown) && rows[i]!.role === 'user' && !(rows[i]!.toolResults ?? []).length)
           if (unknownResult || earlyPrompt) {
             report.failed.push(`${name}: outside the API window; media unknown`)
             continue
@@ -780,12 +965,23 @@ export function rebuildSplitResponses(rows: readonly SessionMessage[]): SessionM
   })
 }
 
-// [SP_CTX_01_05] The report as the model reads it.
-export function formatReport(r: ApplyReport, archive: string): string {
+// [SP_CTX_01_05] FormatReport: the report as the model reads it. The size
+// line is there if and only if an edit applied; without one a compaction
+// changed nothing (its handler answers skip) and a seed differs from the
+// visible rows only by normalizing, so "freed" would be untrue. A seed with
+// neither applied nor failed edits has no report at all ("").
+export type ReportKind = 'compaction' | 'seed'
+
+export function formatReport(r: ApplyReport, archive: string, kind: ReportKind): string {
+  const notApplied = r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : ''
+  if (!r.applied.length) {
+    if (kind === 'compaction') return ['context-editor: no edit was applied; the conversation was not changed.', notApplied].filter(Boolean).join(' ')
+    return notApplied ? `context-editor: no queued edit was applied. ${notApplied}` : ''
+  }
   const saved = r.charsBefore - r.charsAfter
   return [
-    `context-editor: applied ${r.applied.length} edit(s)${r.applied.length ? ': ' + r.applied.join('; ') : ''}.`,
-    r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : '',
+    `context-editor: applied ${r.applied.length} edit(s): ${r.applied.join('; ')}.`,
+    notApplied,
     `Conversation ~${r.charsBefore} -> ~${r.charsAfter} chars (~${Math.round(saved / 4)} tokens freed).`,
     archive && r.originals.length ? `Originals archived at ${archive}.` : '',
     r.mediaFiles.length ? `Media archived: ${r.mediaFiles.join(', ')}.` : '',

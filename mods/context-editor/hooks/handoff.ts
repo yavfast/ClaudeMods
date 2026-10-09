@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { pruneAliases, type AliasRegistry } from './aliases'
 import { archiveText, HANDOFF_MARKER, mediaExt, screenPinned, type CompactionOutcome } from './compaction'
 import {
   applyEdits,
@@ -15,6 +16,7 @@ import {
   ownerKey,
   rebuild,
   replacedOwners,
+  ROW_WINDOW,
   totalChars,
   touchedBy,
   type ApplyReport,
@@ -23,15 +25,16 @@ import {
   type QueuedEdit,
 } from './edits'
 import { DEFAULT_RESUME, MAX_DOCUMENT, type HandoffRequest, type Queue, type Read } from './queue'
-import { EMPTY_REGISTRY, MAX_TAGS, type Tag, type TagRegistry } from './tags'
+import { EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
+
+export { ROW_WINDOW }
 
 // [SP_CTX_01_12]
 export const HANDOFF_DELAY_MS = 1_000
 export const HANDOFF_STALE_MS = 120_000
 export const HANDOFF_PROMPT =
   "Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Do not call any tools: answer with the document text only. Plain text, no preamble."
-export const ROW_WINDOW = 4096
 export const SEED_ROOM = 16
 export const SEED_PROBE = 80
 export const SEED_WAIT_MS = 2_000
@@ -58,6 +61,12 @@ export type HandoffSeed = {
   file: string
   archive: string
   report: ApplyReport
+  // the rows BuildSeed applied the edits to (with the old session's handles;
+  // memory only): "before" for RebindTags in the registry step
+  visible: readonly SessionMessage[]
+  // the batch BuildSeed took, before the pin check: "the batch" for
+  // RebindTags; the applied ones are those whose label is in report.applied
+  edits: readonly QueuedEdit[]
   fromSummary: boolean
   unmatchedPromptMedia: number
   new?: string
@@ -141,6 +150,8 @@ export type SeedRefusal = 'WINDOW_FULL' | 'NO_SUMMARY' | 'SUMMARY_NOT_FOUND' | '
 export type BuiltSeed = {
   rows: SessionMessage[]
   report: ApplyReport
+  // the rows passed to ApplyEdits
+  visible: readonly SessionMessage[]
   fromSummary: boolean
   unmatchedPromptMedia: number
   // archived paths by owner key, for the archive's JSON ([SP_CTX_01_06])
@@ -229,7 +240,7 @@ function normalize(seed: SessionMessage[]): SessionMessage[] {
 // the queued edits. Pure but for writing media files through `writeMedia`.
 export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse: SeedRefusal; reason: string }> {
   const { transcript, rows, api } = input
-  const { found, knownResults, unmatchedPromptMedia } = collectMedia(api)
+  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(api)
   const hidden =
     rows.some(r => results(r).some(t => !knownResults.has(t.tool_use_id))) ||
     rows.some((r, i) => i > 0 && r.role === 'user' && r.text.trim().startsWith(SUMMARY_OPENER))
@@ -239,11 +250,12 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   let visible: readonly SessionMessage[]
   if (!hidden) {
     // the model sees every row; a full window without a boundary may be cut
-    if (rows.length === transcript.length && transcript.length === ROW_WINDOW) return { refuse: 'WINDOW_FULL', reason: WINDOW_FULL }
+    if (rows.length === transcript.length && transcript.length >= ROW_WINDOW) return { refuse: 'WINDOW_FULL', reason: WINDOW_FULL }
     visible = rows
   } else {
-    // after a built-in compaction whose boundary this process did not record
-    if (api.length === ROW_WINDOW || transcript.length === ROW_WINDOW) return { refuse: 'WINDOW_FULL', reason: WINDOW_FULL }
+    // after a built-in compaction whose boundary this process did not record;
+    // a result may have left a read window, not the model's view
+    if (apiTruncated || transcript.length >= ROW_WINDOW) return { refuse: 'WINDOW_FULL', reason: WINDOW_FULL }
     const first = firstApiMessage(api[0])
     if (first.role !== 'user' || first.hasResult || !first.text.trim().startsWith(SUMMARY_OPENER))
       return { refuse: 'NO_SUMMARY', reason: 'the model does not see every row, and what it sees does not start with a compaction summary' }
@@ -292,12 +304,15 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
 
   // every medium already lies in a file and no seeded row keeps a handle,
   // so ApplyEdits needs no media owners
-  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia })
+  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia, apiTruncated })
   const report = applied.report
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
   const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))))
-  let seed = dropOwnCalls(applied.rows, new Set(), knownResults).map(r => {
+  const kept = dropOwnCalls(applied.rows, new Set(), knownResults)
+  // [SP_CTX_01_05] "freed" counts the edits only: before CarryNote and the head
+  report.charsAfter = totalChars(kept)
+  let seed = kept.map(r => {
     const carried = results(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
     if (!carried) return rebuild(r)
     return {
@@ -319,11 +334,10 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   if (seed.length > ROW_WINDOW - SEED_ROOM)
     return { refuse: 'SEED_TOO_LONG', reason: `the seed has ${seed.length} rows; at most ${ROW_WINDOW - SEED_ROOM} fit the new session's read window` }
   report.mediaFiles = [...items.values()].flatMap(paths => paths.filter((p): p is string => p !== undefined))
-  report.charsAfter = totalChars(seed)
   // [SP_CTX_01_17] a summary head from the API form, or CurrentRows that already
   // start with the summary row (a resumed session after /compact)
   const fromSummary = head !== undefined || seed[0]!.text.trim().startsWith(SUMMARY_OPENER)
-  return { rows: seed, report, fromSummary, unmatchedPromptMedia, media }
+  return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media }
 }
 
 // ---- [SP_CTX_02_23] CheckSeed
@@ -404,8 +418,11 @@ export async function awaitSeeded(
 
 export type SeedIO = {
   sessionId: () => Promise<string>
-  // [SP_CTX_02_18] RecordBoundary in the storage of the current session; best effort
+  // [SP_CTX_02_18] RecordBoundary in the storage of the current session, which
+  // then is this instance's own boundary; best effort
   recordBoundary: (b: Boundary) => Promise<void>
+  // [SP_CTX_01_14] hostId if its read has ended, else absent; never waits
+  hostId: () => string | undefined
 }
 
 // [SP_CTX_02_26] The seed branch of the compaction handler: the seeded rows
@@ -417,7 +434,8 @@ export async function handleSeed(io: SeedIO, mem: HandoffMemory, messages: reado
   if ((await io.sessionId()) !== s.new) return { skip: 'context-editor: this is not the session the handoff created' }
   if (messages.some(r => r.role === 'assistant')) return { skip: 'context-editor: the new session already has a turn' }
   s.taken = true
-  const b = boundaryOf(s.rows)
+  // the seed runs in this process: the boundary carries its host when known
+  const b = boundaryOf(s.rows, io.hostId())
   if (b) await io.recordBoundary(b).catch(() => undefined)
   return { messages: s.rows.map(r => ({ ...r })) }
 }
@@ -468,8 +486,12 @@ export type HandoffIO = {
   // owner-only, through a host command (no 4 MiB limit), parents made
   writeText: (path: string, text: string) => Promise<boolean>
   remove: (path: string) => Promise<void>
-  // tags.json and aliases.json, owner-only; rejects when a copy fails
-  copyRegistries: (fromDir: string, toDir: string) => Promise<void>
+  // [SP_CTX_02_21] one registry into the new session, on its serial chain:
+  // read in `fromDir`, changed, written into `toDir` (owner-only). 'missing'
+  // when `fromDir` has none (nothing written); an unreadable registry, a
+  // throw of `change` or a failed write rejects, and nothing is written.
+  carryTags: (fromDir: string, toDir: string, change: (reg: TagRegistry) => TagRegistry) => Promise<'missing' | 'carried'>
+  carryAliases: (fromDir: string, toDir: string, change: (reg: AliasRegistry) => AliasRegistry) => Promise<'missing' | 'carried'>
   // a built-in command, one attempt; a refusal rejects with the host's text
   runCommand: (command: 'clear' | 'compact', args?: string) => Promise<void>
   // a model request over the session without tools; undefined when unanswered
@@ -642,6 +664,9 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
         file,
         archive: archived,
         report: built.report,
+        visible: built.visible,
+        // the batch as claimed: HandedOff empties the old queue later
+        edits: run.q.edits,
         fromSummary: built.fromSummary,
         unmatchedPromptMedia: built.unmatchedPromptMedia,
         taken: false,
@@ -651,6 +676,46 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
     await clean(true)
     return { reason: `failed: ${errorText(err)}` }
   }
+}
+
+export const REGISTRIES_NOT_CARRIED = ' Tags and aliases were not carried over.'
+
+// [SP_CTX_02_21] step registries: each registry of the old session read,
+// brought in line with the seeded rows as after a compaction in the same
+// session ([SP_CTX_02_14]: before = s.visible, after = s.rows, the batch
+// s.edits, the applied ones by their label in s.report.applied) and written
+// into the new session, each on its own. Tags and aliases of edited pairs
+// (FreshId) and of pairs the seed does not hold go. A registry the old session
+// lacks is not written and is no failure; any other failure writes nothing
+// for that registry and gives the sentence once.
+export async function carryRegistries(
+  io: Pick<HandoffIO, 'carryTags' | 'carryAliases'>,
+  s: Pick<HandoffSeed, 'visible' | 'rows' | 'edits' | 'report'>,
+  oldDir: string,
+  newDir: string,
+): Promise<{ note: string; error?: Error }> {
+  const labels = new Set(s.report.applied)
+  const done = s.edits.filter(e => labels.has(describeEdit(e)))
+  let error: Error | undefined
+  const carries = [
+    () => io.carryTags(oldDir, newDir, reg => rebindTags(reg, s.visible, s.rows, done, s.edits)),
+    () => io.carryAliases(oldDir, newDir, reg => pruneAliases(reg, s.visible, s.rows, done)),
+  ]
+  for (const carry of carries) {
+    try {
+      await carry()
+    } catch (err) {
+      error ??= err instanceof Error ? err : new Error(String(err))
+    }
+  }
+  return error ? { note: REGISTRIES_NOT_CARRIED, error } : { note: '' }
+}
+
+// [SP_CTX_01_05] [SP_CTX_02_21] The seed's FormatReport after the first line
+// of the new session's report: on a line of its own, nothing when it is empty.
+export function seedReportTail(s: Pick<HandoffSeed, 'report' | 'archive'>): string {
+  const text = formatReport(s.report, s.archive, 'seed')
+  return text ? `\n${text}` : ''
 }
 
 // [SP_CTX_02_21] Seed: /clear, then the seed compaction in the new session,
@@ -721,12 +786,9 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
   // first: the old queue no longer holds the request running
   await step('HandedOff', () => handedOff(run, created, 'transcript'))
   await step('registries', async () => {
-    try {
-      await io.copyRegistries(run.oldDir, newDir)
-    } catch (err) {
-      notes += ' Tags and aliases were not carried over.'
-      throw err
-    }
+    const out = await carryRegistries(io, s, run.oldDir, newDir)
+    notes += out.note
+    if (out.error) throw out.error
   })
   const first = s.rows[0]!
   if (s.fromSummary)
@@ -749,7 +811,7 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
     (s.fromSummary ? ` It starts from the summary of an earlier compaction; the rows before it stay in ${run.old}.` : '') +
     (s.unmatchedPromptMedia > 0 ? ` Media in ${s.unmatchedPromptMedia} of the person's prompt(s) was not carried over.` : '') +
     notes +
-    `\n${formatReport(s.report, s.archive)}`
+    seedReportTail(s)
   // without the resume the report waits for the next prompt (DeliverReport)
   await step('deliver', () => deliver(run, report, h.resumePrompt, turnsClear, !h.resume))
   return 'transcript'
