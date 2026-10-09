@@ -4,7 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
-- `/dev-flow resume task_C_CTX` — `implement` — next: фаза 10 PL_CTX закомічена; далі backlog G/H/N1/I або фази 4–5 (на вибір розробника) — branch `feat/context-editor`, останній коміт 3885f30 — 2026-10-09 19:30
+- `/dev-flow resume task_C_CTX` — `plan` — next: погодження дизайну фази 11 PL_CTX (G, H, N1, J), далі реалізація — branch `feat/context-editor` — 2026-10-09
 
 ## Active Tasks
 

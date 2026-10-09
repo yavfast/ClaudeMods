@@ -48,6 +48,7 @@
 - [x] [Phase 8 — Поточна розмова, опис context_edit, архів без дубля медіа](#PL_CTX_P8)
 - [x] [Phase 9 — Передача в нову сесію](#PL_CTX_P9)
 - [x] [Phase 10 — Один плагін, компактизація командою, передача засівом](#PL_CTX_P10)
+- [ ] [Phase 11 — Довіра межі, чесний звіт, реєстри після передачі](#PL_CTX_P11)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
@@ -166,6 +167,20 @@ Pseudocode sketch:
 
 Живий прогін у неінтерактивному хості — драйвер `.dev_flow/cache/handoff-long/drive.sh` (`--plugin-dir mods/context-editor`, `--model haiku`); наприкінці — повторна жива передача з VS Code (сесія розробника, розширення на актуальній версії), яка й виявила ваду.
 
+### Phase 11 — Довіра межі, чесний звіт, реєстри після передачі [TODO]  {#PL_CTX_P11}
+
+**Depends on:** Phase 10; спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md) Entry 6; рішення розробника 2026-10-09 ([SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)) і рев'ю раунд 20 (ідентичність без `ps`, зняття `host` після `/resume` у процесі); виконується перед фазами 4 і 5
+**Implements:** [SP_CTX_01_05](./context_editor.sp.md#SP_CTX_01_05) (`FormatReport(report, archive, kind)`, без рядка розміру при 0 правок), [01_12](./context_editor.sp.md#SP_CTX_01_12) (HOST_ENV), [01_14](./context_editor.sp.md#SP_CTX_01_14) (`host`, `hostId`, ParseHostId), [01_17](./context_editor.sp.md#SP_CTX_01_17) (`visible`, `edits`, інваріант реєстрів), [02_04](./context_editor.sp.md#SP_CTX_02_04) (`apiTruncated`), [02_07](./context_editor.sp.md#SP_CTX_02_07), [02_10](./context_editor.sp.md#SP_CTX_02_10) (`apiTruncated` при ≥ ROW_WINDOW − 1), [02_14](./context_editor.sp.md#SP_CTX_02_14), [02_15](./context_editor.sp.md#SP_CTX_02_15), [02_18](./context_editor.sp.md#SP_CTX_02_18) (`Trusted(b)`, власна межа, зняття `host` після перемикання сесії), [02_21](./context_editor.sp.md#SP_CTX_02_21) (крок реєстрів: читання, узгодження, запис), [02_22](./context_editor.sp.md#SP_CTX_02_22) (`charsAfter` до CarryNote і голови, WINDOW_FULL); [SP_CTX_DEC_07](./context_editor.sp.md#SP_CTX_DEC_07), [SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки: CurrentRows «гаряче перезавантаження», «перший перелік після перезавантаження», «інший процес», «межа без `host`», «власна межа без `host`», «`/resume` у тому самому процесі», «перша підготовка після завантаження», «ідентичність не прочиталась», «межа засіяної сесії»; ParseHostId «розбір»; hostId «ще не прочитано»; RecordBoundary «запис», «`host`»; HandleSeed «засів»; CollectMedia «`apiTruncated`»; ApplyEdits «правка поза вікном», «промпт перед першою парою, повне подання», «промпт перед першою парою, обрізане подання»; FormatReport «форми»; HandleCompaction «жодної правки», «правки застосовано»; BuildSeed «засів без правок», «засів з правками»; RunHandoff «теги й псевдоніми», «псевдонім зміненої пари», «тег на зміненій парі», «disposable з заміною в пакеті засіву», «збій узгодження реєстру», «незмінена пара», «пара поза засівом». [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03): «Гаряче перезавантаження (обидва хости)», «Передача засівом зі зміненою парою з псевдонімом (обидва хости)», «Відновлення сесії (лише текст)», «Відновлення сесії (медіа або злиття відповіді)». [SP_CTX_05_04](./context_editor.sp.md#SP_CTX_05_04): «Другий процес хоста з тією самою сесією». Живе: у сесії з компактизацією, яку хост відхилив обробником (`skip`), людина бачить рядок хоста «Not compacted · <причина>» — це мітка хоста для скасованої компактизації, а звіт мода при цьому без «tokens freed». Плюс механічне: `claude plugin test`, `claude plugin validate`, tsc (лише відомі `isDeferred`)
+
+| Що | Де |
+|----|----|
+| ParseHostId (чиста функція), `hostId` — одна обіцянка на екземпляр модуля (токен HOST_ENV через `$.env.set`, `sh -c 'echo $PPID'`), `host` у Boundary, `Trusted(b)` з власною межею, `host` не рядком ігнорується, зняття `host` після перемикання сесії в процесі | `mods/context-editor/hooks/edits.ts` (ParseHostId, `currentRows`, тип Boundary, Trusted), `register.ts` (читання ідентичності — одна обіцянка з `session.start` або першого PrepareStorage; `$.env.get`/`$.env.set` приймають рядковий літерал, тож `'CONTEXT_EDITOR_HOST'` пишеться прямо у викликах, а HOST_ENV лише документує значення; `view()`, RecordBoundary, HandleSeed, PrepareStorage); `tests/boundary.test.ts` |
+| `apiTruncated` у CollectMedia (≥ ROW_WINDOW − 1), умова `earlyPrompt`, WINDOW_FULL | `edits.ts`; `compaction.ts`, `handoff.ts` (виклики); `tests/edits.test.ts`, `handoff.test.ts` |
+| `FormatReport(…, kind)`, `charsAfter` засіву до CarryNote і голови, звіт передачі без зайвого переносу | `edits.ts` (`formatReport`), `compaction.ts`, `handoff.ts`; `tests/edits.test.ts`, `compaction.test.ts`, `handoff.test.ts` |
+| HandoffSeed `visible` і `edits`; реєстри нової сесії — читання старого, RebindTags / обрізання псевдонімів, запис нового, окремо для кожного | `handoff.ts` (крок реєстрів), `tags.ts`, `aliases.ts`, `register.ts`; `tests/handoff.test.ts` |
+| Навичка й CLAUDE.md | `.dev_flow/skills/claude-code/plugin-hooks.md` — пункти 7, 30, 32–35 (32: ідентичність токеном і pid без `ps`); `CLAUDE.md` (рядок про `/clear` і межу — довіра за процесом хоста) |
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -190,11 +205,10 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 
 - Збереження правок після `claude --resume` ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05)) — return when: вийде версія Claude Code, у якій API компактизації дає позначити рядок-підсумок або відновлення поважає компактизацію від обробника.
 - Налаштовувані пороги нагадувань ([SP_CTX_DEC_03](./context_editor.sp.md#SP_CTX_DEC_03)) — return when: розробник попросить змінювати пороги без правки коду.
-- Довіра до межі після гарячого перезавантаження модуля (знахідка G Verify фази 10; з фази 8): `boundary.trusted` лише в пам'яті — перезавантажений модуль того самого процесу бачить увесь транскрипт, перегляд показує оригінали до межі, правки на них відхиляються. Напрям: ідентичність процесу хоста в `boundary.json` (SP_CTX_02_18). — return when: перед наступною фазою, що чіпає перегляд або компактизацію, або коли розробник попросить (заважає живим тестам з гарячим перезавантаженням).
-- Чесний звіт при 0 застосованих правок (знахідка H): `charsAfter` рахується до скасування, звіт пише «~N tokens freed» при `Not compacted`. — return when: разом із пунктом про межу.
-- Псевдоніми й теги змінених пар після передачі (N1): реєстри копіюються як є, хоча засів дає зміненим парам новий id — `ref cN` такої пари дає TARGET_NOT_FOUND замість UNKNOWN_REF (SP_CTX_02_21, крок реєстрів; RebindTags/pruneAliases). — return when: разом із пунктом про межу.
+- Правки компактизації командою після `--resume` (K, спайк Entry 6): незмінені рядки з медіа тягнуть ланцюжок оригіналів (батько до межі), рядки асистента з тим самим `message.id` підтягуються разом із вилученими викликами — `tool_use` дублюються. Напрям: повертати рядки так, щоб ланцюжок не перетинав межу (медіа файлом, як у засіві) — окремий спайк. — return when: розробник попросить надійне збереження правок без передачі, або скарга на дублікати після відновлення.
 - R1 і сповіщення IDE (I): у VS Code тег `pin` отримав рядок «user opened file»; поза VS Code `unclassified` мають лише промпти людини. — return when: перевірка у VS Code на 2.1.295 (після оновлення розширення).
 - `tsc` фази 10: 4 помилки TS2353 — поле `isDeferred` у `$.tool.register` (`register.ts`), якого немає в `ToolSpec` 2.1.295; були вже в b090f48 — return when: наступна правка реєстрації інструментів або перевірка, чи хост ще відкладає інструменти без цього поля.
+- Очищені хостом результати в засіві (навичка plugin-hooks, пункт 33): після «context hint» хост заміняє вміст старих результатів, але рядки транскрипту, з яких BuildSeed збирає засів, несуть повний текст — нова сесія отримує назад уміст, який хост уже прибрав, і більший контекст. — return when: передача після події «context hint» або скарга на розмір засіяної сесії.
 - Поширення через маркетплейс (`.claude-plugin/marketplace.json`) — return when: розробник вирішить ділитися модом.
 
 ## Design Decisions  {#PL_CTX_DEC}
@@ -288,3 +302,4 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-09 | Рев'ю раунд 12: ескіз фази 10 — `inTurn` скидається після кожного ходу, перевірка перед командою, HandedOff першим після звірки; Implements 01_15 повний |
 | 2026-10-09 | Рев'ю раунд 14: Verify — ще два рядки 05_04; лічильник ходів з `lastTurnAborted` |
 | 2026-10-09 | Фаза 10 виконана: 203 тести; рев'ю коду раунди 16–19; Verify FAIL (A, B, C, D, E, F) → виправлено (спайк Entry 5 — злиття за `message.id`) → повторний Verify PASS у TUI і stream-json; backlog — довіра межі після перезавантаження (G), звіт при 0 правок (H), реєстри після передачі (N1), R1 у VS Code (I) |
+| 2026-10-09 | Фаза 11: G (довіра межі за процесом хоста, SP_CTX_DEC_10), H, N1, J (`earlyPrompt` лише при обрізаному API-поданні); у backlog — K (правки після `--resume`) |

@@ -116,7 +116,12 @@ Invariants:
 | originals | list<{ edit: string, rows: list<Row> }> | ≤ MAX_QUEUE_EDITS записів, рядків не більше, ніж у розмові. Оригінали змінених рядків для архіву |
 | mediaFiles | list<string> | ≤ кількості медіа-блоків у видимому вікні (≤ ROW_WINDOW повідомлень). Шляхи медіа-файлів, збережених цим застосуванням; для засіву ([SP_CTX_02_22](#SP_CTX_02_22)) — і медіа замінених пар, і медіа, перенесеного файлами |
 
-Текстовий звіт: `context-editor: applied N edit(s): <applied>. Not applied: <failed>. Conversation ~<before> -> ~<after> chars (~<(before-after)/4> tokens freed). Originals archived at <path>. Media archived: <paths>.` — частини без даних пропускаються.
+Текстовий звіт — `FormatReport(report, archive, kind)`, `kind` = `compaction` | `seed`; форма залежить від того, чи застосовано хоч одну правку:
+- `applied` непорожній: `context-editor: applied N edit(s): <applied>. Not applied: <failed>. Conversation ~<before> -> ~<after> chars (~<(before-after)/4> tokens freed). Originals archived at <path>. Media archived: <paths>.`
+- `applied` порожній, `kind = compaction`: `context-editor: no edit was applied; the conversation was not changed. Not applied: <failed>.` — без рядка розміру і без «tokens freed»: обробник відповідає `skip`, і розмова справді не змінилась. Інваріант: у компактизації пакет непорожній, і кожна його правка або застосована, або в `failed`, тож тут `failed` непорожній.
+- `applied` порожній, `kind = seed` ([SP_CTX_02_22](#SP_CTX_02_22)): `context-editor: no queued edit was applied. Not applied: <failed>.`, а коли `failed` теж порожній — порожній рядок. Рядка розміру немає: без правок розмір засіву відрізняється від видимих рядків лише прибраними службовими викликами мода, доданими CarryNote, головою-підсумком і нормалізацією (прибрані провідні рядки асистента й сирітські результати, рядок TRANSCRIPT_LINE), і «звільнено» про це було б неправдою.
+
+Частини без даних пропускаються. Правило мінімальне: рядок розміру є тоді й лише тоді, коли застосовано хоч одну правку. `charsBefore` — розмір рядків, до яких правки застосовано (рядки події компактизації або видимі рядки засіву); `charsAfter` — розмір тих самих рядків після ApplyEdits і DropOwnCalls: у компактизації це повернений список, у засіві — до CarryNote і голови, тож «звільнено» рахує лише правки.
 
 ### 01_06. Archive  {#SP_CTX_01_06}
 
@@ -206,6 +211,7 @@ Invariants:
 | ALIAS_PREFIX / MAX_ALIASES | `c` / 2000 | Префікс псевдоніма виклику / найбільше псевдонімів у реєстрі |
 | FLUSH_DELAY | 300 мс | Пауза між завершенням ходу і запуском команди компактизації |
 | HEAD_ROWS | 8 | Скільки перших рядків компактизації запам'ятовує Boundary |
+| HOST_ENV | `CONTEXT_EDITOR_HOST` | Змінна середовища процесу хоста з випадковим токеном для `hostId` ([SP_CTX_01_14](#SP_CTX_01_14)) |
 | ROW_WINDOW | 4096 | Найбільше рядків, які віддає читання розмови, і найбільше повідомлень API-подання |
 | SUMMARY_OPENER | `This session is being continued from a previous conversation` | Початок тексту підсумку вбудованої компактизації в API-поданні і в транскрипті (спайк context_editor_handoff_long, Entry 2) |
 | TRANSCRIPT_LINE | `read the full transcript at:` | Початок рядка в підсумку вбудованої компактизації, що вказує на файл старої сесії; засів прибирає такі рядки ([SP_CTX_02_22](#SP_CTX_02_22)) |
@@ -239,8 +245,17 @@ Invariants:
 |-------|------|----------|---------|-------------|-------------|
 | head | list<string> | yes | — | 1..HEAD_ROWS елементів | `fingerprint` перших рядків розмови, яку повернула компактизація |
 | count | int | yes | — | ≥ len(head) | Скільки рядків повернула компактизація |
+| host | string? | no | — | `hostId` на момент запису | Ідентичність процесу хоста, у якому межу записано; відсутня, коли `hostId` ще не прочитано або не вдалося прочитати |
 
-Стани читання: файл відсутній або `unreadable` — межі немає, поточна розмова — увесь транскрипт.
+Стани читання: файл відсутній або `unreadable` — межі немає, поточна розмова — увесь транскрипт. Поле `host`, що не є рядком, ігнорується: межа читається, але вважається записаною без `host`. Якій межі мод довіряє — [SP_CTX_02_18](#SP_CTX_02_18), `Trusted`, і [SP_CTX_DEC_10](#SP_CTX_DEC_10).
+
+Ідентичність процесу хоста (`hostId: string?`, пам'ять модуля) = `"<token>:<ppid>"`:
+- `token` — значення змінної середовища HOST_ENV процесу хоста. Якщо змінної немає, модуль один раз ставить її `$.env.set` випадковим рядком (≥ 16 символів `[0-9a-z]`). Змінна живе в процесі хоста: переживає гаряче перезавантаження модуля, а новий процес (перезапуск, `--resume`) її не має (навичка plugin-hooks, пункт 32).
+- `ppid` — вивід команди хоста `sh -c 'echo $PPID'`, тобто pid процесу `claude`. Дочірні процеси успадковують змінну середовища, тож прив'язка до pid відрізняє процес хоста, запущений з-під іншого.
+- `ParseHostId(token, stdout)` — чиста функція: `stdout` після обрізання пробільних символів складається лише з десяткових цифр і `token` непорожній → `token + ":" + stdout`; інакше — відсутній.
+- Читання — одна обіцянка на екземпляр модуля (один виклик `$.env` і одна команда `echo`), яку модуль запускає в `session.start` або в першому PrepareStorage — що раніше — і запам'ятовує; під час завантаження модуля `$` ще немає.
+- Читачі поза компактизацією — CurrentRows, `Key()` і зняття `host` при перемиканні сесії в PrepareStorage — **чекають** обіцянку: вони працюють у шляхах інструментів, промптів і перемикання сесії, де бюджету ~1 с немає. Для них `hostId` відсутній лише тоді, коли читання не вдалося.
+- Обробники компактизації (HandleCompaction, HandleSeed, спостерігач межі [SP_CTX_02_18](#SP_CTX_02_18)) обіцянки не чекають і процесів не запускають: виконано — значення, ще ні або не вдалося — `hostId` відсутній, і RecordBoundary пише межу без `host`. Якщо їхній PrepareStorage — перший, він лише запускає обіцянку, не чекаючи її.
 
 ### 01_15. HandoffRequest  {#SP_CTX_01_15}
 
@@ -282,13 +297,15 @@ Fields:
 | file | string | yes | — | `<old storage>/<id>/seed.json` | Файл з `rows` (JSON-список Row), доступний лише власникові; пишеться командою хоста, тож межа 4 MiB файлового API хоста його не обмежує |
 | archive | string | yes | — | `<old storage>/<id>.json` або `""` | Архів оригіналів змінених рядків; `""`, коли жодна правка не застосувалась |
 | report | ApplyReport | yes | — | [SP_CTX_01_05](#SP_CTX_01_05) | Звіт застосування правок черги до засіву |
+| visible | list<Row> | yes | — | рядки з `handle` старої сесії; лише в пам'яті, у файл не пишуться | Рядки, до яких BuildSeed застосував правки (вхід ApplyEdits) — «до» для RebindTags у кроці реєстрів |
+| edits | list<QueuedEdit> | yes | `[]` | ≤ MAX_QUEUE_EDITS | Пакет, який узяв BuildSeed, до перевірки `pin` — «пакет» для RebindTags; застосовані — ті, чий опис є в `report.applied` |
 | fromSummary | bool | yes | false | — | Перший рядок засіву — підсумок попередньої компактизації: голова з API-подання ([C_CTX_DEC_12](./context_editor.concept.md#C_CTX_DEC_12), C) або перший рядок CurrentRows, що вже починався з SUMMARY_OPENER (після `--resume` сесії з вбудованою `/compact` читання починається з рядка-підсумку; Verify фази 10, 2026-10-09, F5) |
 | unmatchedPromptMedia | int | yes | 0 | ≥ 0 | Медіа в промптах людини, яке не перенеслось ([SP_CTX_02_10](#SP_CTX_02_10)) |
 | new | string? | no | — | ставить RunHandoff після `/clear` | Ідентифікатор сесії, яку створив `/clear`; HandleSeed засіває лише її |
 | taken | bool | yes | false | — | Обробник засіву повернув `rows` хосту ([SP_CTX_02_26](#SP_CTX_02_26)) |
 
 Invariants:
-- Кожен `tool_use_id` у `rows` — ідентифікатор виклику зі старої сесії: незмінена пара зберігає свій, змінена — FreshId ([SP_CTX_02_04](#SP_CTX_02_04)). Тому теги й псевдоніми, скопійовані в сховище нової сесії, розв'язуються на тих самих парах; це очікування перевіряє живий сценарій «Передача засівом» ([SP_CTX_05_03](#SP_CTX_05_03)).
+- Кожен `tool_use_id` у `rows` — ідентифікатор виклику зі старої сесії: незмінена пара зберігає свій, змінена — FreshId ([SP_CTX_02_04](#SP_CTX_02_04)). Тому теги й псевдоніми незмінених пар, скопійовані в сховище нової сесії, розв'язуються на тих самих парах, а теги й псевдоніми змінених пар RunHandoff видаляє за правилами RebindTags ([SP_CTX_02_14](#SP_CTX_02_14)); це очікування перевіряє живий сценарій «Передача засівом» ([SP_CTX_05_03](#SP_CTX_05_03)).
 - Медіа в `rows` немає: рядок без `handle` хост будує лише з тексту і блоків інструментів ([C_CTX_DEC_14](./context_editor.concept.md#C_CTX_DEC_14)); медіа незмінених пар лежить файлами, а текст результату називає їх.
 
 ## 02. Contracts  {#SP_CTX_02}
@@ -400,11 +417,12 @@ Input:
 | mediaOwners | set<owner> | yes | усі власники медіа в розмові ([SP_CTX_02_10](#SP_CTX_02_10)) |
 | knownResults | set<string> | yes | `tool_use_id` результатів, які видно в API-поданні ([SP_CTX_02_10](#SP_CTX_02_10)) |
 | unmatchedPromptMedia | int | yes | ≥ 0; кількість повідомлень людини з медіа, не зіставлених з рядками |
+| apiTruncated | bool | yes | API-подання обрізане вікном: `len(api) ≥ ROW_WINDOW − 1` ([SP_CTX_02_10](#SP_CTX_02_10)); тоді рядки до першого відомого результату можуть лежати поза поданням |
 
 Output: `{ rows: list<Row>, report: ApplyReport }`; `charsAfter` дораховує [SP_CTX_02_07](#SP_CTX_02_07).
 
 Processing logic (pseudocode):
-    FUNCTION ApplyEdits(rows, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia):
+    FUNCTION ApplyEdits(rows, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated):
         note = archive ? " (original: " + archive + ")" : ""
         plan = []
         FOR edit IN edits:                                # позиції — на НЕЗМІНЕНОМУ списку
@@ -416,9 +434,9 @@ Processing logic (pseudocode):
                     IF the result row holds a result whose id is not in knownResults:
                        failed "outside the API window; media unknown"
                 collapse: {from..to} via anchors (Locate); recheck pairing
-                    IF the span holds a result whose id is not in knownResults, or a user row without toolResults
-                       before the first row whose result is in knownResults:
-                       failed "outside the API window; media unknown"
+                    IF the span holds a result whose id is not in knownResults,
+                       or (apiTruncated AND the span holds a user row without toolResults before the first row whose result is in knownResults):
+                       failed "outside the API window; media unknown"     # без обрізання подання промпт перед першим результатом — звичайний
                     IF unmatchedPromptMedia > 0 AND the span holds a user row without toolResults:
                        failed "span may hold prompt media that cannot be archived"
                 rewrite, describe: {at} via anchor
@@ -537,7 +555,7 @@ Processing logic (pseudocode):
         reg = read TagRegistry (unreadable → every edit failed "tag registry unreadable")
         edits = q.edits; pinned edits → failed "target is pinned" (rule of SP_CTX_02_03)
         api = read main conversation in Messages API form
-        (found, knownResults, unmatchedPromptMedia) = CollectMedia(api, messages); mediaOwners = keys(found)
+        (found, knownResults, unmatchedPromptMedia, apiTruncated) = CollectMedia(api, messages); mediaOwners = keys(found)
         id = now (ms); media = {}; n = 0
         FOR owner IN owners whose media the edits replace:
             FOR ref IN found[owner]:
@@ -545,7 +563,7 @@ Processing logic (pseudocode):
                 IF ref.data absent OR writing fails: drop media[owner]; BREAK      # ApplyEdits fails its edits
                 media[owner] += path
         archive = <storage>/<id>.json
-        (rows, report) = ApplyEdits(messages, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia)
+        (rows, report) = ApplyEdits(messages, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated)
         IF report.originals not empty AND writing archive (compact JSON, through a host command) fails:
             IF the dispatch was abandoned: RETURN skip "compaction abandoned"
             write Queue with every edit failed "originals could not be archived" (report as below)
@@ -553,7 +571,7 @@ Processing logic (pseudocode):
         rows = DropOwnCalls(rows, mediaOwners, knownResults); report.charsAfter = Σ size(rows)   # повернений список уже пройшов KeepResponsesWhole
         IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned"   # пакет лишається в черзі
         RebindTags(rows, report)
-        text = report text
+        text = FormatReport(report, archive, compaction)               # SP_CTX_01_05: без правок — «not changed», без рядка розміру
         write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
                       report: (q.report ? q.report + "\n" : "") + text, reportId: id,
                       reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt }
@@ -620,7 +638,7 @@ Processing logic (pseudocode):
 
 Purpose: знайти медіа-ресурси розмови, яких немає в Row.
 
-Input: `api` — основна розмова у форматі Messages API, як її повертає читання розмови з поданням `api` (до ROW_WINDOW повідомлень, починається з повідомлення `user`); `rows` — рядки розмови. Output: `found: map<owner, list<MediaRef>>` (не більше записів, ніж медіа-блоків у `api`), `knownResults: set<string>` (усі `tool_use_id` результатів у `api`), `unmatchedPromptMedia: int` (повідомлення людини з медіа, для яких PromptMatch дав «немає»).
+Input: `api` — основна розмова у форматі Messages API, як її повертає читання розмови з поданням `api` (до ROW_WINDOW повідомлень, починається з повідомлення `user`); `rows` — рядки розмови. Output: `found: map<owner, list<MediaRef>>` (не більше записів, ніж медіа-блоків у `api`), `knownResults: set<string>` (усі `tool_use_id` результатів у `api`), `unmatchedPromptMedia: int` (повідомлення людини з медіа, для яких PromptMatch дав «немає»), `apiTruncated: bool` = `len(api) ≥ ROW_WINDOW − 1` (читання API-подання повернуло найбільшу кількість повідомлень, тож старіші могли лишитися поза ним; навичка plugin-hooks, пункт 10). Мінус один — бо подання починається з повідомлення `user`, і хост може відкинути провідне повідомлення асистента після обрізання; хибне спрацювання лише повертає колишню відмову (ApplyEdits, «outside the API window»), а пропуск дав би правку поза поданням.
 
 Processing logic (pseudocode):
     FUNCTION CollectMedia(api, rows):
@@ -735,7 +753,7 @@ Processing logic (pseudocode):
 
 Purpose: тримати реєстр узгодженим з розмовою після застосування.
 
-Logic: у [SP_CTX_02_07](#SP_CTX_02_07) після ApplyEdits видалити псевдоніми змінених і зниклих пар з AliasRegistry, а також теги, чиї цілі змінено застосованими правками (пари `summarize`/`drop` разом з їхніми рядками, пари й рядки діапазонів `collapse`, рядки `rewrite`/`describe`), теги `disposable`, чия заміна (`summarize` пари з `summary = note` або `rewrite` з якорем цілі і `text = note`) була в пакеті — застосована чи відхилена ([SP_CTX_04_03](#SP_CTX_04_03)), і теги, чиї цілі не знайдено в новому списку рядків (за `tool_use_id` або Locate); якщо не застосовано жодної правки, новий список — рядки події. Тег рядка, що лишився, отримує новий індекс як `hint`. Збій запису реєстру не скасовує застосування.
+Logic: у [SP_CTX_02_07](#SP_CTX_02_07) після ApplyEdits, а також у реєстрах, скопійованих у сховище нової сесії після засіву ([SP_CTX_02_21](#SP_CTX_02_21), крок `registries`; рядки «до» — ті, до яких BuildSeed застосував правки, «після» — засіяні), видалити псевдоніми змінених і зниклих пар з AliasRegistry, а також теги, чиї цілі змінено застосованими правками (пари `summarize`/`drop` разом з їхніми рядками, пари й рядки діапазонів `collapse`, рядки `rewrite`/`describe`), теги `disposable`, чия заміна (`summarize` пари з `summary = note` або `rewrite` з якорем цілі і `text = note`) була в пакеті — застосована чи відхилена ([SP_CTX_04_03](#SP_CTX_04_03)), і теги, чиї цілі не знайдено в новому списку рядків (за `tool_use_id` або Locate); новий список: у компактизації — повернені рядки, а якщо не застосовано жодної правки — рядки події; для засіву — засіяні рядки `s.rows`, а «до» — `s.visible`, пакет — `s.edits` (до перевірки `pin`), застосовані — правки з `s.edits`, чий опис є в `s.report.applied`. Тег рядка, що лишився, отримує новий індекс як `hint`. Збій запису реєстру не скасовує застосування.
 
 ### 02_15. PrepareStorage  {#SP_CTX_02_15}
 
@@ -750,7 +768,7 @@ Processing logic (pseudocode):
         IF any command fails or exits non-zero: storage = unavailable "<command>: <stderr>"; status line warning; RETURN
         storage = ready
 
-Періодичного запису немає: зміну сесії (`/clear`, `/resume`, зокрема ті, що запускає RunHandoff) мод помічає перед наступною операцією. Медіа-файли пишуться командою хоста, що декодує base64 з потоку вводу у файл; файли лежать у каталозі сховища, доступному лише власникові.
+Ідентичність процесу хоста (`hostId`, [SP_CTX_01_14](#SP_CTX_01_14)) від сховища не залежить: модуль запускає її читання один раз за свій час життя (у `session.start` або першому PrepareStorage — що раніше), і зміна сесії в тому самому процесі її не змінює. Підготовка сховища після перемикання сесії в тому самому процесі знімає з межі нової сесії `host` цього процесу ([SP_CTX_02_18](#SP_CTX_02_18)). Періодичного запису немає: зміну сесії (`/clear`, `/resume`, зокрема ті, що запускає RunHandoff) мод помічає перед наступною операцією. Медіа-файли пишуться командою хоста, що декодує base64 з потоку вводу у файл; файли лежать у каталозі сховища, доступному лише власникові.
 
 ### 02_16. MarkCall  {#SP_CTX_02_16}
 
@@ -783,10 +801,20 @@ Purpose: відрізати від транскрипту рядки, що ли�
 Processing logic (pseudocode):
     FUNCTION RecordBoundary(rows):                 # rows — розмова, яку повернула компактизація основної розмови
         IF rows empty: RETURN
-        write Boundary { head: [fingerprint(r) FOR r IN rows[0 .. min(len(rows), HEAD_ROWS))], count: len(rows) }
-        IF written: trusted = true                 # збій запису не зупиняє компактизацію: межа лишається попередньою
+        text = Boundary { head: [fingerprint(r) FOR r IN rows[0 .. min(len(rows), HEAD_ROWS))], count: len(rows),
+                          host: hostId (absent when hostId is absent or pending) }
+        write text; IF written: ownBoundary = text  # пам'ять екземпляра; збій запису не зупиняє компактизацію: межа лишається попередньою
 
-    ON storage prepared (session start, session_id changed — SP_CTX_02_15): trusted = false; listedKey = none
+    ON storage prepared (SP_CTX_02_15):
+        listedKey = none; ownBoundary = none
+        start the hostId promise if it is not started
+        IF this instance already had another session_id (a switch in the same process — /clear, /resume; not the first prepare after load):
+            id = await hostId (outside a compaction handler; inside one, the value if resolved, else absent)
+            b = read Boundary of the new session
+            IF b.host is a string AND id present AND b.host = id: write b without host   # /resume у тому самому процесі: читання — завантажений ланцюжок
+
+    Trusted(b) = (b.host is a string AND hostId present AND b.host = hostId)   # той самий процес хоста (SP_CTX_DEC_10); hostId — після await обіцянки
+                 OR (raw text of b = ownBoundary)                              # межу записав цей екземпляр у цій сесії — зокрема коли hostId відсутній
 
     ON compaction (any trigger):
         result = next(e)
@@ -797,9 +825,10 @@ Processing logic (pseudocode):
         RecordBoundary(result.messages); RETURN result
 
     FUNCTION CurrentRows():
+        await the hostId promise                   # шлях інструментів і промптів: очікування дозволене
         transcript = read main conversation rows (the whole transcript, ≤ ROW_WINDOW newest)
-        IF NOT trusted: RETURN transcript          # файл іншого процесу (--resume): хост міг повернути оригінали
         b = read Boundary; IF absent or unreadable: RETURN transcript
+        IF NOT Trusted(b): RETURN transcript       # інший процес або /resume у цьому: читання — завантажений ланцюжок, який і бачить модель
         p = the largest index such that fingerprint(transcript[p + k]) = b.head[k] for every k < len(b.head)
             AND len(transcript) - p ≥ b.count
         IF none: RETURN transcript                  # межа поза вікном ROW_WINDOW або відбитки не збіглися
@@ -808,11 +837,11 @@ Processing logic (pseudocode):
     FUNCTION BoundaryAt(transcript, head, count):  # спільний пошук для CurrentRows і CheckSeeded (SP_CTX_02_24)
         RETURN the largest p as above, or none
 
-    FUNCTION Key(): session_id + (trusted ? raw text of the Boundary file : "")
+    FUNCTION Key(): await the hostId promise; b = read Boundary (one read); session_id + (b present AND Trusted(b) ? raw text of b : "")
     context_list: listedKey = Key(), once the listing is built (a failed listing renews nothing)
     context_edit, context_tag: index targets are refused (SP_CTX_02_03, SP_CTX_02_11) when listedKey ≠ Key()
 
-Без межі, без довіри або без збігу результат — увесь транскрипт: так само, як до запису межі. Власна компактизація мода — команда з `trigger: 'manual'`, як і `/compact` людини; їх розрізняє лише `instructions`, тож спостерігач пропускає саме MARKER і HANDOFF_MARKER, а `/compact` людини з будь-яким іншим текстом (або без нього) записує межу з рядків, які повернула вбудована компактизація. У засіяній сесії межу записує HandleSeed ([SP_CTX_02_26](#SP_CTX_02_26)) уже в сховище нової сесії: перед засіяними рядками в транскрипті стоять лише рядки команди очищення, і CurrentRows їх відрізає. Межа міняється між переліком і правкою, коли компактизація (мода, `/compact` або автоматична, зокрема посеред ходу) пройшла після `context_list`: тоді індекси, які тримає агент, називають інші рядки, і правки та теги за індексом відхиляються до нового переліку; цілі за `tool_use_id` і `ref` від індексів не залежать. Ключ пам'ятає лише останній перелік: індекси зі сторінки, отриманої до компактизації, після нового переліку іншої сторінки проходять цю перевірку; такі правки ловить лише пошук якорів при застосуванні (Locate). Межа записується до того, як хост прийме повернений список: якщо зовнішній хук іншого плагіна відкине або перепише результат, голова може не знайтися, і CurrentRows поверне весь транскрипт. Індекси переліку, перевірка правок, теги, закріплення й лічильник активних `review` працюють на поточній розмові, тож індекс з переліку відповідає позиції рядка в `e.messages` наступної компактизації.
+Без межі, без довіри або без збігу результат — увесь транскрипт: так само, як до запису межі. Довіра — збіг `host` межі з ідентичністю процесу хоста цього екземпляра або межа, яку записав сам цей екземпляр ([SP_CTX_DEC_10](#SP_CTX_DEC_10)). У тому самому процесі, поки сесію в ньому не перемикали (зокрема після гарячого перезавантаження модуля), читання — це оригінали плюс копії, і межа збігається в правильному місці. В іншому процесі (перезапуск, `--resume`) і після `/resume` у тому самому процесі читання — завантажений ланцюжок, тобто саме те, що бачить модель, і весь транскрипт правильний (спайк context_editor_handoff_long, Entry 6; навичка plugin-hooks, пункт 7); тому при перемиканні сесії в процесі мод знімає `host` з межі нової сесії, якщо ту межу записав цей процес. Запасний шлях без `hostId` (власна межа екземпляра) нічого не втрачає порівняно з колишнім прапорцем у пам'яті. Межа засіяної сесії, яку пише HandleSeed, несе `host` і стає власною межею екземпляра: засів іде в тому самому процесі, а підготовка сховища нової сесії передує засіву. Власна компактизація мода — команда з `trigger: 'manual'`, як і `/compact` людини; їх розрізняє лише `instructions`, тож спостерігач пропускає саме MARKER і HANDOFF_MARKER, а `/compact` людини з будь-яким іншим текстом (або без нього) записує межу з рядків, які повернула вбудована компактизація. У засіяній сесії межу записує HandleSeed ([SP_CTX_02_26](#SP_CTX_02_26)) уже в сховище нової сесії: перед засіяними рядками в транскрипті стоять лише рядки команди очищення, і CurrentRows їх відрізає. Межа міняється між переліком і правкою, коли компактизація (мода, `/compact` або автоматична, зокрема посеред ходу) пройшла після `context_list`: тоді індекси, які тримає агент, називають інші рядки, і правки та теги за індексом відхиляються до нового переліку; цілі за `tool_use_id` і `ref` від індексів не залежать. Ключ пам'ятає лише останній перелік: індекси зі сторінки, отриманої до компактизації, після нового переліку іншої сторінки проходять цю перевірку; такі правки ловить лише пошук якорів при застосуванні (Locate). Межа записується до того, як хост прийме повернений список: якщо зовнішній хук іншого плагіна відкине або перепише результат, голова може не знайтися, і CurrentRows поверне весь транскрипт. Індекси переліку, перевірка правок, теги, закріплення й лічильник активних `review` працюють на поточній розмові, тож індекс з переліку відповідає позиції рядка в `e.messages` наступної компактизації.
 
 ### 02_19. context_handoff  {#SP_CTX_02_19}
 
@@ -914,14 +943,16 @@ Processing logic (pseudocode):
     FUNCTION PrepareSeed() → (HandoffSeed, none) | (none, reason):
         transcript = read main conversation rows; rows = CurrentRows(); api = read main conversation in Messages API form
         id = now; folder = <oldDir>/<id>; archive = <oldDir>/<id>.json
-        built = BuildSeed(transcript, rows, api, Queue.edits, TagRegistry, folder, archive)   # SP_CTX_02_22; пише медіа-файли
+        batch = Queue.edits
+        built = BuildSeed(transcript, rows, api, batch, TagRegistry, folder, archive)   # SP_CTX_02_22; пише медіа-файли
         IF built is a refusal: remove folder; RETURN built.reason
         IF CheckSeed(built.rows) gives a reason: remove folder; RETURN that reason           # SP_CTX_02_23
         IF built.report.originals not empty AND writing archive (compact JSON, host command) fails:
             remove folder; RETURN "the originals could not be archived"
         IF writing <folder>/seed.json (JSON list of rows, owner-only, host command) fails: remove folder and archive; RETURN "the seed could not be written"
         RETURN HandoffSeed { old, id, rows: built.rows, file: <folder>/seed.json, archive: (originals written ? archive : ""),
-                             report: built.report, fromSummary: built.fromSummary, unmatchedPromptMedia: built.unmatchedPromptMedia, taken: false }
+                             report: built.report, visible: built.visible, edits: batch,
+                             fromSummary: built.fromSummary, unmatchedPromptMedia: built.unmatchedPromptMedia, taken: false }
         ON any exception: remove folder and archive; RETURN "failed: <error>"
 
     FUNCTION Seed(s):
@@ -949,13 +980,19 @@ Processing logic (pseudocode):
         # засіяно: далі жодного переходу на інший спосіб, хоч би що впало; кожен крок нижче захищений тут же,
         # і обробник винятку RunHandoff не бачить жодного збою після цієї точки
         step HandedOff: HandedOff(new, transcript)                          # спершу: стара черга більше не тримає запит running
-        step registries: copy tags.json and aliases.json from oldDir into newDir (owner-only); a failure adds " Tags and aliases were not carried over." to the report
+        step registries: done = [e IN s.edits | EditLabel(e) IN s.report.applied]   # EditLabel — опис правки, як у ApplyReport.applied
+                         FOR reg IN (TagRegistry, AliasRegistry):                        # окремо для кожного, на ланцюжку реєстру в newDir
+                             read reg from oldDir → transform → write into newDir (owner-only)   # реєстру в старій сесії немає — для нього нічого не пишеться, без речення
+                             transform: tags — RebindTags(reg, before = s.visible, after = s.rows, done, batch = s.edits);
+                                        aliases — pruning of changed and vanished pairs (SP_CTX_02_14)
+                             # теги й псевдоніми змінених пар (FreshId) і пар, яких засів не містить, видаляються — так само, як після компактизації в тій самій сесії
+                             a read or write failure, or a transform failure (then nothing is written): report += " Tags and aliases were not carried over." (once)
         step pin: IF s.fromSummary: PinSummary(newDir, s.rows[0])
         report = "context-editor: this session continues <old> (transcript)."
                  + (s.fromSummary ? " It starts from the summary of an earlier compaction; the rows before it stay in <old>." : "")
                  + (s.unmatchedPromptMedia > 0 ? " Media in <n> of the person's prompt(s) was not carried over." : "")
                  + pin note of PinSummary, if any
-                 + "\n" + report text of s.report (SP_CTX_01_05, archive s.archive)
+                 + (text ? "\n" + text : "")  WHERE text = FormatReport(s.report, s.archive, seed)   # SP_CTX_01_05; порожній — без переносу
         Deliver(report, h.resumePrompt, turnsClear, queueOnly = NOT h.resume)    # без продовження звіт чекає наступного промпту (DeliverReport)
         ON a failure of any step after seeding (caught here, the remaining steps still run):
             toast "context-editor: seeded the new session, but step <step> failed: <error>"
@@ -1017,7 +1054,7 @@ Processing logic (pseudocode):
 
 Порядок має значення. Засів збирається і пишеться до очищення сесії: після `/clear` читання розмови й API-подання бачать уже нову, порожню сесію, а окремий запит до моделі над старою розмовою неможливий. Тому збій збирання веде до способу `document` у старій сесії, а збій після очищення — до повторного очищення (лише коли засів уже взято) і документа агента, а без нього — повідомлення з ідентифікатором старої сесії і шляхом до файлу засіву. Правки черги старої сесії при `Fail` і `FailAfterClear` лишаються в її черзі: стара сесія не змінена, і її можна відновити; при `HandedOff` вони йдуть у засів або, для `document`, не переносяться (`dropped`).
 
-Ідентифікатор нової сесії до `/clear` невідомий, тож файл засіву, архів оригіналів і перенесене медіа лежать у сховищі старої сесії ([SP_CTX_DEC_09](#SP_CTX_DEC_09)); їхні шляхи вписано в текст засіяних рядків. Засів живе в пам'яті модуля: перезавантаження модуля між `/clear` і компактизацією засіву лишає нову сесію порожньою, а запит у старій черзі — у стані `running`; новий екземпляр, у якого `handoffInFlight = false`, вважає його належним через HANDOFF_STALE ([SP_CTX_01_15](#SP_CTX_01_15), [SP_CTX_05_04](#SP_CTX_05_04)). Поки RunHandoff цього екземпляра йде, запит не належний, хоч би скільки `/clear` чекав кінця довгого ходу; будь-який виняток RunHandoff до засіву закінчується Fail, AfterClear або FailAfterClear, а збої після засіву Seed перехоплює сам (спливне повідомлення називає крок), тож запит не лишається `running`, хіба що не вдався сам запис старої черги. Теги й псевдоніми копіюються як є: засіяні пари зберігають ідентифікатори викликів старої сесії ([SP_CTX_01_17](#SP_CTX_01_17)), а цілі змінених пар зникли разом із їхніми ідентифікаторами, тож такі теги й псевдоніми ні на що не вказують.
+Ідентифікатор нової сесії до `/clear` невідомий, тож файл засіву, архів оригіналів і перенесене медіа лежать у сховищі старої сесії ([SP_CTX_DEC_09](#SP_CTX_DEC_09)); їхні шляхи вписано в текст засіяних рядків. Засів живе в пам'яті модуля: перезавантаження модуля між `/clear` і компактизацією засіву лишає нову сесію порожньою, а запит у старій черзі — у стані `running`; новий екземпляр, у якого `handoffInFlight = false`, вважає його належним через HANDOFF_STALE ([SP_CTX_01_15](#SP_CTX_01_15), [SP_CTX_05_04](#SP_CTX_05_04)). Поки RunHandoff цього екземпляра йде, запит не належний, хоч би скільки `/clear` чекав кінця довгого ходу; будь-який виняток RunHandoff до засіву закінчується Fail, AfterClear або FailAfterClear, а збої після засіву Seed перехоплює сам (спливне повідомлення називає крок), тож запит не лишається `running`, хіба що не вдався сам запис старої черги. Теги й псевдоніми копіюються і одразу проходять ті самі RebindTags і очищення псевдонімів, що й після компактизації в тій самій сесії ([SP_CTX_02_14](#SP_CTX_02_14)): незмінені засіяні пари зберігають ідентифікатори викликів старої сесії ([SP_CTX_01_17](#SP_CTX_01_17)), тож їхні теги й псевдоніми працюють далі; змінені пари отримали FreshId, і їхні теги й псевдоніми видаляються, тож `ref` такої пари в новій сесії дає UNKNOWN_REF, а не TARGET_NOT_FOUND.
 
 Команди в черзі хоста. Кожна команда (`/clear`, `/compact HANDOFF_MARKER`, друге `/clear` в AfterClear) — одна спроба: відмова остаточна, її текст іде в причину. Команда, запущена, поки триває хід, чекає його кінця, тож лічильник ходів звіряється після кожної команди. Хід між плануванням і першим `/clear` уже виконано в старій сесії, і засів його не містить — Seed переходить до AfterClear; у способі `document` такий хід лишається в старій сесії, а промпт це називає. Хід, що йде одразу після `/clear` (`inTurn`), або хід між `/clear` і компактизацією засіву відбувається в новій сесії: Seed чи HandleSeed ([SP_CTX_02_26](#SP_CTX_02_26)) відмовляють, і AfterClear за `MovedSince(turnsClear)` не очищає сесію вдруге. Кожен текст після `/clear` (звіт засіву, документ, повідомлення про збій) іде через Deliver: якщо людина вже почала хід, текст лягає у звіт черги поточної сесії з `reportResume = false`, і DeliverReport ([SP_CTX_02_08](#SP_CTX_02_08)) додасть його до її наступного промпту, а промпту мод не надсилає. Якщо після компактизації засіву сесія інша, ніж створив `/clear` (людина могла відкрити іншу сесію), мод не очищає її і нічого в неї не надсилає: лише звіт у черзі старої сесії. Залишкове вікно: хід, що почнеться між перевіркою `MovedSince(turnsClear)` в AfterClear і виконанням другого `/clear`, хост виконає в напівзасіяній сесії, і друге `/clear` його прибере; хід лишиться лише в транскрипті цієї сесії.
 
@@ -1055,20 +1092,20 @@ Input:
 | archive | string | yes | `<old storage>/<id>.json` |
 | writeMedia | функція (path, base64) → bool | yes | порт запису медіа-файлу, доступного лише власникові |
 
-Output: `{ rows: list<Row>, report: ApplyReport, fromSummary: bool, unmatchedPromptMedia: int }` або відмова з причиною.
+Output: `{ rows: list<Row>, report: ApplyReport, visible: list<Row>, fromSummary: bool, unmatchedPromptMedia: int }` або відмова з причиною; `visible` — рядки, передані в ApplyEdits.
 
 Processing logic (pseudocode):
     FUNCTION BuildSeed(transcript, rows, api, edits, tags, folder, archive, writeMedia):
-        (found, knownResults, unmatchedPromptMedia) = CollectMedia(api, rows)             # SP_CTX_02_10
+        (found, knownResults, unmatchedPromptMedia, apiTruncated) = CollectMedia(api, rows)   # SP_CTX_02_10
         hidden = some row of rows holds a tool result whose id is not in knownResults
                  OR some user row of rows other than rows[0] has text that, trimmed, starts with SUMMARY_OPENER   # підсумок посеред рядків — межа не записана
         early = []
         IF NOT hidden:                                                                     # модель бачить усі рядки
-            IF rows = transcript (CurrentRows found no boundary) AND len(transcript) = ROW_WINDOW:
+            IF rows = transcript (CurrentRows found no boundary) AND len(transcript) ≥ ROW_WINDOW:
                 REFUSE "the conversation fills the host's 4096-row window; its start may be cut"
             head = none; visible = rows
         ELSE:                                                                              # після вбудованої компактизації, чию межу цей процес не записав
-            IF len(api) = ROW_WINDOW OR len(transcript) = ROW_WINDOW:                       # результат міг випасти з вікна читання, а не з погляду моделі
+            IF apiTruncated OR len(transcript) ≥ ROW_WINDOW:                                # результат міг випасти з вікна читання, а не з погляду моделі
                 REFUSE "the conversation fills the host's 4096-row window; its start may be cut"
             first = api[0]
             summary = the text blocks of first that are not reminder blocks, joined with "\n\n"   # content given as a string = one text block; reminder block: trimmed text starts with "<system-reminder>"
@@ -1092,9 +1129,10 @@ Processing logic (pseudocode):
             IF NOT writeMedia(path, ref.data): REFUSE "media of <owner> could not be archived"
             items[owner][k] = path
         media = for each owner, the present paths of items[owner] in order                 # вхід ApplyEdits: шляхи для mediaNote
-        (seed, report) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatchedPromptMedia)   # SP_CTX_02_04
+        (seed, report) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatchedPromptMedia, apiTruncated)   # SP_CTX_02_04
         report.failed = early + refused + report.failed
         seed = DropOwnCalls(seed, ∅, knownResults)                                         # зокрема виклик context_handoff
+        report.charsAfter = Σ size(seed)                                                   # тут: «звільнено» рахує лише правки, без CarryNote і голови
         replaced = owners whose media the edits in report.applied replace
         FOR each tool result t in seed whose owner {t.tool_use_id} is in found and not in replaced:
             t.text = t.text + (t.text blank ? "" : "\n\n") + CarryNote(found[owner], items[owner])
@@ -1105,7 +1143,7 @@ Processing logic (pseudocode):
                                drop calls whose result is in no later row; drop rows without text, calls and results
         IF seed empty: REFUSE "no rows to carry over"
         IF len(seed) > ROW_WINDOW − SEED_ROOM: REFUSE "the seed has <n> rows; at most ROW_WINDOW − SEED_ROOM fit the new session's read window"
-        report.mediaFiles = every present path in items; report.charsAfter = Σ size(seed)
+        report.mediaFiles = every present path in items
         RETURN seed, report, fromSummary = (head present OR trimmed text of seed[0] starts with SUMMARY_OPENER), unmatchedPromptMedia   # F5
 
     CarryNote(refs, paths) = MARK + " media carried as files (open them with Read): " + one item per k, joined ", ":
@@ -1116,7 +1154,7 @@ Processing logic (pseudocode):
 Errors (кожна — відмова з причиною, RunHandoff переходить на `document`):
 | Code | Condition |
 |------|-----------|
-| WINDOW_FULL | модель бачить усі рядки, CurrentRows не знайшов межі, а читання повернуло рівно ROW_WINDOW рядків; або є результат поза API-поданням, а читання розмови чи API-подання повернуло рівно ROW_WINDOW елементів |
+| WINDOW_FULL | модель бачить усі рядки, CurrentRows не знайшов межі, а читання повернуло ROW_WINDOW рядків; або є результат поза API-поданням, а читання розмови повернуло ROW_WINDOW рядків чи API-подання обрізане (`apiTruncated`, ≥ ROW_WINDOW − 1 повідомлень) |
 | NO_SUMMARY | модель бачить не всі рядки, а перше повідомлення API-подання — не текст людини, що починається з SUMMARY_OPENER |
 | SUMMARY_NOT_FOUND | у рядках немає рядка людини з початком підсумку |
 | HIDDEN_AFTER_SUMMARY | після знайденого підсумку є результат, якого немає в API-поданні |
@@ -1326,7 +1364,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | HandleCompaction | збіг за інструкцією | MARKER з `trigger` `manual` / `plugin`; MARKER з `agentId`; інша інструкція з `manual` | застосування / застосування / далі / далі |
 | HandleCompaction | попереднє обчислення | `trigger = precompute`, інструкція MARKER або HANDOFF_MARKER | далі без змін; черга і засів не чіпаються |
 | HandleCompaction | збій гілки засіву | виняток у HandleSeed | skip `seeding failed` одразу, черга не чіпається |
-| HandleSeed | засів | засів у пам'яті, сесія нова, `messages` — один рядок `/clear` | повернено рядки засіву, `taken = true`, межу записано в сховище нової сесії |
+| HandleSeed | засів | засів у пам'яті, сесія нова, `messages` — один рядок `/clear` | повернено рядки засіву, `taken = true`, межу записано в сховище нової сесії з `host` = `hostId` (за наявності) і як власну межу екземпляра |
 | HandleSeed | відмови | засіву немає / сесія ≠ `s.new` (стара чи інша) / у `messages` є рядок агента | SKIP_NO_SEED / SKIP_NOT_CLEARED / SKIP_TURN_STARTED; `taken` не змінюється |
 | RunHandoff | засів | transcript, усе вдалося | порядок: збирання, файли в `<old storage>/<id>`, `clear`, сховище нової сесії, `compact HANDOFF_MARKER`, CheckSeeded, HandedOff, копії реєстрів, PinSummary, промпт зі звітом і продовженням |
 | RunHandoff | збирання відмовило | BuildSeed — WINDOW_FULL | файли засіву видалено; спосіб `document`, документ від окремого запиту до моделі; причина у звіті |
@@ -1341,7 +1379,13 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | RunHandoff | хід у новій сесії | хід почався після `clear` (`MovedSince(turnsClear)`), HandleSeed відповів SKIP_TURN_STARTED | FailAfterClear; другого `clear` і промпту немає |
 | RunHandoff | resume false | спосіб `transcript` | промпту немає; звіт у черзі нової сесії; у старій — нотатка, `reportResume` false |
 | RunHandoff | resume false, запасні тексти | `h.resume = false`; документ після збою засіву / повідомлення AfterClear / документ способу `document` | жодного промпту: кожен текст — у звіт черги нової сесії з `reportResume = false` |
-| RunHandoff | теги й псевдоніми | реєстри старої сесії | скопійовано в сховище нової сесії до промпту; збій копіювання — речення у звіті, засів лишається |
+| RunHandoff | теги й псевдоніми | реєстри старої сесії | скопійовано в сховище нової сесії до промпту і узгоджено RebindTags; збій копіювання чи узгодження — речення у звіті, засів лишається |
+| RunHandoff | псевдонім зміненої пари | `c3` → пара `a`, summarize `a` застосовано в засіві | у новій сесії `ref: c3` — UNKNOWN_REF (`unknown ref c3`), не TARGET_NOT_FOUND |
+| RunHandoff | тег на зміненій парі | `review` на парі `a`, summarize `a` застосовано в засіві | у реєстрі нової сесії тегу немає — так само, як після компактизації в тій самій сесії |
+| RunHandoff | disposable з заміною в пакеті засіву | `disposable` на парі `b` з нотаткою N, у пакеті summarize `b` з `summary = N` — застосована або відхилена (зокрема через `pin`) | у реєстрі нової сесії тегу немає (пакет `s.edits` — до перевірки `pin`) |
+| RunHandoff | збій узгодження реєстру | RebindTags кидає виняток | реєстр у нову сесію не записано; у звіті « Tags and aliases were not carried over.» |
+| RunHandoff | незмінена пара | `c4` і `pin` на парі `b`, правок до `b` немає | у новій сесії `ref: c4` розв'язується на `b`; `pin` на `b` лишився |
+| RunHandoff | пара поза засівом | тег і псевдонім на парі, рядки якої лишились до підсумку (`fromSummary`) | видалено: цілі в засіяних рядках немає |
 | cancelHandoff | скасування | запит `queued` / `running` без `handoffInFlight` / `running` під час `handoffInFlight` | знятий зі звітом / знятий зі звітом / без змін |
 | RunHandoff | покинутий запуск із засівом | `running`, старший за HANDOFF_STALE, у сховищі є `<id>/seed.json` з `id ≥ at` | запит знято зі звітом «not re-run»; RunHandoff — `nothing` |
 | context_handoff | перерваний хід запиту | запит агента, `requestTurn = turns`, хід перервано / після перезавантаження модуля (`requestTurn` відсутній) | запит знято / запит лишається і запуститься після наступного кінця ходу |
@@ -1368,9 +1412,20 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | CurrentRows | без межі | транскрипт 9 рядків, Boundary відсутній | усі 9 рядків |
 | CurrentRows | після компактизації | старі 9 рядків, повернені 7, нові 3; Boundary з голови повернених | 10 рядків, починаючи з першого поверненого |
 | CurrentRows | дві компактизації | транскрипт з трьох сегментів, голови однакові | від останнього входження голови |
+| CurrentRows | гаряче перезавантаження | Boundary з `host` = `hostId`; модуль перезавантажено в тому самому процесі (токен HOST_ENV і ppid ті самі) | межа довірена; рядки від неї |
+| CurrentRows | інший процес | Boundary з `host` іншого процесу (перезапуск, `--resume`) | увесь транскрипт |
+| CurrentRows | межа без `host` | Boundary без поля `host` (зокрема записана версією до цього правила) / з `host` не рядком; записана не цим екземпляром | увесь транскрипт (межа читається, `host` ігнорується) |
+| CurrentRows | власна межа без `host` | `hostId` відсутній; цей екземпляр записав Boundary у цій сесії (`ownBoundary` = текст файлу) | межа довірена; після перезавантаження модуля або зміни сесії — увесь транскрипт |
+| CurrentRows | `/resume` у тому самому процесі | процес записав Boundary сесії A з `host` = `hostId`; `/clear`, потім `/resume` A в тому самому процесі | підготовка сховища A знімає `host` з її межі; CurrentRows — увесь транскрипт |
+| CurrentRows | перша підготовка після завантаження | модуль щойно завантажено (зокрема гаряче перезавантаження), Boundary поточної сесії з `host` = `hostId` | `host` не знімається; межа довірена. Залишкове вікно: гаряче перезавантаження між `/resume` у тому самому процесі і наступним PrepareStorage старого екземпляра лишає `host` — новий екземпляр довіряє межі над завантаженим ланцюжком; так само, коли перше після перемикання PrepareStorage припало на обробник компактизації, а обіцянка ще не виконана |
+| CurrentRows | ідентичність не прочиталась | `sh -c 'echo $PPID'` не вдалася або вивід не десяткове число, або `$.env.set` не вдався | `hostId` відсутній; RecordBoundary пише Boundary без `host`; довіра лише до власної межі екземпляра |
+| ParseHostId | розбір | (`k3x9…`, `"12345\n"`) / (`k3x9…`, `"abc"`) / (`""`, `"12345"`) / (`k3x9…`, `""`) | `k3x9…:12345` / відсутній / відсутній / відсутній |
+| hostId | ще не прочитано | обробник компактизації (лише HandleCompaction, HandleSeed, спостерігач) пише межу, поки обіцянка `hostId` не виконана | не чекає і процесу не запускає; Boundary без `host`; межа — власна межа екземпляра |
+| CurrentRows | перший перелік після перезавантаження | обіцянка `hostId` ще виконується; Boundary з `host` = `hostId` | чекає обіцянку; межа довірена; `Key()` не змінюється після її виконання |
 | CurrentRows | межа поза вікном | голови в транскрипті немає | увесь транскрипт |
 | CurrentRows | замало рядків після збігу | збіг голови, але `len - p < count` | цей збіг не підходить |
 | RecordBoundary | запис | 12 повернених рядків | `head` — 8 відбитків, `count` 12 |
+| RecordBoundary | `host` | `hostId` є / відсутній | Boundary з `host` = `hostId` / без `host`; в обох випадках `ownBoundary` = записаний текст |
 | RecordBoundary | спостерігач | `manual`, `auto`, `plugin` з іншими інструкціями / MARKER або HANDOFF_MARKER з `manual` чи `plugin`, `precompute`, `agentId`, `skip`, порожній результат | межа / немає межі |
 | PrepareEdits, context_tag | застарілі індекси | межа змінилась після переліку; collapse, rewrite, тег за `index`, summarize за id | правки й тег за індексом відхилено, summarize і тег за id прийнято |
 | HandleCompaction | довгий текст у `data` | пара з заархівованим медіа і довгим текстом у `data` | текст лишається, замінено лише base64 |
@@ -1386,7 +1441,9 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | ApplyEdits | медіа сусідньої пари | summarize `p`, у тому самому рядку результат `q` з медіа | `failed` `row also holds media of q`; рядок зберігає `handle`; з summarize `q` у тому самому пакеті й заархівованим медіа — обидві застосовано |
 | ApplyEdits | медіа в промптах не зіставлено | collapse діапазону з рядком промпту, `unmatchedPromptMedia = 1` | `failed`; рядок зберігає `handle` |
 | ApplyEdits | вікно API | незмінений рядок результату, id якого немає в knownResults | рядок зберігає `handle` |
-| ApplyEdits | правка поза вікном | summarize пари, рядок результату якої має id поза knownResults; collapse з таким рядком або з промптом до першого відомого результату | `failed` `outside the API window; media unknown` |
+| ApplyEdits | правка поза вікном | summarize пари, рядок результату якої має id поза knownResults; collapse з таким рядком; collapse з промптом до першого відомого результату при `apiTruncated = true` | `failed` `outside the API window; media unknown` |
+| ApplyEdits | промпт перед першою парою, повне подання | collapse промпту людини і першої пари; API-подання повне (`len(api) < ROW_WINDOW − 1`, `apiTruncated = false`), усі результати в knownResults | застосовано |
+| ApplyEdits | промпт перед першою парою, обрізане подання | те саме, `len(api) ≥ ROW_WINDOW − 1` (`apiTruncated = true`) | `failed` `outside the API window; media unknown` |
 | ApplyEdits | носій без input | collapse з викликом великого інструменту | у носія `input = {}` |
 | DropOwnCalls | спільний рядок | службова пара в рядку з результатом, що має медіа або id поза knownResults | службова пара лишається, рядок зберігає `handle` |
 | ApplyEdits | зсув | rewrite #6, на початок додано рядок | застосовано до #7 |
@@ -1411,6 +1468,11 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | HandleCompaction | збій запису архіву | запис архіву падає | skip; жодна правка не застосована; пакет очищено; звіт `originals could not be archived` для кожної правки |
 | HandleCompaction | збій обробника | виняток у застосуванні | skip; черга очищена; звіт про збій |
 | HandleCompaction | charsAfter | пакет з викликами `context_list` | `charsAfter` рахується після DropOwnCalls |
+| FormatReport | форми | `kind = compaction`, applied порожній, failed [x] / `kind = seed`, обидва порожні / applied [y] | «no edit was applied; the conversation was not changed. Not applied: x.» без рядка розміру / порожній рядок (звіт передачі без переносу) / рядок розміру є |
+| HandleCompaction | жодної правки | усі правки пакета `failed` (напр. ціль не знайдено) | skip `no edit could be applied`; звіт `context-editor: no edit was applied; the conversation was not changed. Not applied: …` без рядка розміру і без «tokens freed» |
+| HandleCompaction | правки застосовано | ≥ 1 правку застосовано | звіт з рядком `Conversation ~A -> ~B chars (~N tokens freed)` |
+| BuildSeed | засів без правок | черга порожня або всі правки `failed`; у рядках є виклик `context_list` | звіт нової сесії без рядка розміру; без `failed` — без речення про правки взагалі; з `failed` — `no queued edit was applied. Not applied: …` |
+| BuildSeed | засів з правками | ≥ 1 правку застосовано; у рядках є незмінена пара з медіа | рядок розміру: `charsBefore` — видимі рядки, `charsAfter` — після ApplyEdits і DropOwnCalls, до CarryNote і голови |
 | DeliverReport | один раз | звіт у черзі, два промпти людини поспіль | звіт додано лише до першого |
 | Flush | запуск | хід завершено, у черзі 2 правки | після FLUSH_DELAY — одна команда `compact` з аргументом MARKER |
 | Flush | передача в черзі | правки + handoff | команда не запускається |
@@ -1438,6 +1500,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | CollectMedia | медіа посиланням | `tool_result` з document `source.type = url` | MediaRef без `data`; правка, що його замінює, — `media could not be archived` |
 | CollectMedia | медіа в промпті | повідомлення людини з image | не в `found`; `unmatchedPromptMedia = 1` |
 | CollectMedia | вікно | три `tool_result`, один без медіа | `knownResults` містить усі три id |
+| CollectMedia | `apiTruncated` | 4096 / 4095 / 4094 повідомлень API-подання | true / true / false (поріг ROW_WINDOW − 1) |
 | HandleCompaction | покинута диспетчеризація | `next.signal` перервано | skip `compaction abandoned`; черга не записується |
 | HandleCompaction | недоставлений звіт | у черзі є попередній звіт | новий звіт дописано після старого |
 | DeliverReport | промпт відхилено | нижчий обробник повертає `drop` | звіт лишається в черзі |
@@ -1482,14 +1545,17 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | Автоматичне чищення з тегів | 5 файлів | агент ставить `disposable` з нотатками | на порозі заміни застосовано без нагадування | pass (2026-10-08, фаза 3) |
 | Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | pass (2026-10-08, фаза 3) |
 | Перегляд після компактизації | дві компактизації мода і одна `/compact` | після кожної — `context_list` | у переліку лише поточна розмова, без копій старих рядків; правка за індексом з переліку застосовується до того самого рядка | pass (2026-10-09, фаза 8) — перелік 15 і 22 рядки при транскрипті 25 і 54; `rewrite` #5 змінив саме цей рядок; після `/compact` 7 рядків від підсумку хоста |
+| Гаряче перезавантаження (обидва хости) | одне застосування правок у сесії; межа записана з `host` | змінити файл мода, щоб хост перезавантажив модуль; `context_list`; collapse раннього відрізка з промптом людини | перелік починається від межі (довіра збережена); collapse застосовано при повному API-поданні; після перезапуску процесу з `--resume` — перелік усього завантаженого ланцюжка | not run |
 | Передача засівом (термінал) | розмова з Read великого файлу і скриншотом; агент ставить тег за псевдонімом `c1` на незмінену текстову пару (скриншот псевдоніма не отримує: MarkCall позначає лише текст від BIG_ROW) | summarize великого файлу і context_handoff в одному ході | процес у новій сесії; модель знає лише підсумок; пари викликів на місці; результат скриншота закінчується CarryNote, агент відкриває файл Read і називає деталь скриншота; `context_tag` з `ref: c1` у новій сесії знаходить ту саму пару; `claude --resume <new>` новим процесом показує засіяну розмову; стара сесія без змін | not run (попередній pass фази 9 — на способі файлу сесії, b090f48) |
 | Передача засівом (неінтерактивний хост) | stream-json (drive.sh), та сама розмова | те саме | те саме; команди відновлення сесії мод не запускає; `-p --resume <new>` показує засіяні рядки | not run |
+| Передача засівом зі зміненою парою з псевдонімом (обидва хости) | розмова з двома Read великих текстових файлів, кожен з псевдонімом (`c1`, `c2`) | summarize пари `c1` і context_handoff в одному ході; у новій сесії `context_tag` з `ref: c1` і з `ref: c2` | `ref: c1` — `unknown ref c1`; `ref: c2` знаходить ту саму незмінену пару | not run |
 | Передача довгої сесії після `/compact` | розмова з ключами до і після вбудованої `/compact`; процес перезапущено з `--resume`, щоб межа не була записана в цьому процесі | context_handoff | нова сесія починається з підсумку без рядка `read the full transcript at:`; модель знає ключ з підсумку і ключ з хвоста; звіт називає старт з підсумку | not run |
 | Передача документом | те саме | context_handoff mode `document` з документом | нова сесія з документом першим промптом | not run (попередній pass фази 9 — на двох розширеннях) |
 | Запасний шлях до очищення (обов'язковий, обидва хости) | збирач відмовляє (тестовий прапорець, напр. WINDOW_FULL); агент **не** передає документа, тож документ дає окремий запит до моделі (`$.model.fork`) | context_handoff без `document` | `$.model.fork` повертає документ і в терміналі, і в stream-json; спосіб `document` у новій сесії, причина у звіті нової | not run (попередній pass фази 9 — на способі файлу сесії, лише термінал) |
 | Збій засіву після очищення | обробник засіву повертає засіяні рядки (`taken = true`), а CheckSeeded відмовляє (тестовий прапорець) | context_handoff з документом / без документа | друге `/clear` прибирає засіяну сесію; документ агента з причиною / повідомлення з ідентифікатором старої сесії і шляхом `seed.json`; стара сесія без змін, її правки в черзі | not run |
 | Команда людини (обов'язковий, обидва хости) | — | `/handoff` між ходами | те саме, що інструмент; `/clear` і `/compact` з відкладеної дії обробника команди стають у чергу, а не відхиляються | not run (попередній pass фази 9 — `/handoff document` на двох розширеннях) |
-| Відновлення сесії | «стиснення» завершено | `claude --resume <id>`, спитати KEY_0377 | «немає в контексті» | **fail** — [C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) |
+| Відновлення сесії (лише текст) | «стиснення» без медіа: summarize текстового результату, відповідь перезібрано цілою (KeepResponsesWhole) | `claude --resume <id>`, спитати KEY_0377 | очікувано: підсумок пережив відновлення, KEY_0377 «немає в контексті» (навичка plugin-hooks, пункт 7; спайк context_editor_handoff_long, Entry 6) | not run (попередній **fail** — Entry 3 E1, до KeepResponsesWhole; висновок E1 замінено Entry 6) |
+| Відновлення сесії (медіа або злиття відповіді) | summarize пари, поруч з якою лишився рядок з медіа з `handle`, або відповідь, частину якої повернено з `handle` | `claude --resume <id>`, спитати про змінену пару | очікувано: оригінали повертаються (батько до межі в копії рядка з `handle`; рядки асистента з тим самим `message.id`) — [C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) | not run |
 
 ### 05_04. Edge Cases and Boundaries  {#SP_CTX_05_04}
 
@@ -1500,7 +1566,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | Хост відхиляє команду компактизації | виняток з текстом | одна спроба; черга лишається, текст відмови в рядку стану; наступна спроба — після наступного завершеного ходу |
 | Команда чекає кінця ходу | людина надіслала промпт між плануванням і перевіркою перед `/compact` / між перевіркою і виконанням | команди немає (PERSON_MOVED): Flush заплановано знову кінцем того ходу або одразу, якщо він уже скінчився не перерваним; після перерваного — черга чекає наступного завершеного ходу / команда виконується після цього ходу, продовження не надсилається, звіт іде з наступним промптом людини (PERSON_ACTIVE). Залишкове вікно: хід, що почнеться за мілісекунди між перевіркою `MovedSince` і постановкою команди в чергу хоста, з вивантаженням модуля або невдалим гарячим перезавантаженням під час цього ходу, лишає в черзі хоста `/compact <MARKER>` без обробника — хост виконає справжнє підсумовування |
 | Разовий `claude -p "<prompt>"` | черга з правками після останнього ходу | після останнього ходу сесію не прив'язано: `$.command.run` відхиляється («no session is bound in this process»), текст — у рядку стану, якщо він є; нічого не застосовано; черга лишається у файлі сесії і застосується після першого завершеного ходу, коли сесію відновлять у підтримуваному хості |
-| Передача після `--resume` відредагованої сесії | транскрипт містить оригінали і копії з тими самими ідентифікаторами викликів; межа не довірена | очікувано: BuildSeed відмовляє (NO_SUMMARY, коли копії змінених пар поза API-поданням) або CheckSeed відмовляє (`repeated call id`); у обох випадках — спосіб `document` у старій сесії з причиною у звіті |
+| Передача після `--resume` відредагованої сесії | читання — завантажений ланцюжок (навичка, пункт 7): з медіа чи злиттям рядків однієї відповіді — з оригіналами й дублікатами тих самих ідентифікаторів викликів; межа іншого процесу не довірена | очікувано: BuildSeed відмовляє (NO_SUMMARY, коли копії змінених пар поза API-поданням) або CheckSeed відмовляє (`repeated call id`); у обох випадках — спосіб `document` у старій сесії з причиною у звіті |
 | Хід перервано | — | Flush не запускається |
 | Звичайна `/compact` людини | інструкція ≠ MARKER і ≠ HANDOFF_MARKER | обробник передає далі, черга не чіпається; межу записує спостерігач |
 | `/compact` людини з текстом MARKER | інструкція = MARKER | обробляється як запуск мода |
@@ -1511,7 +1577,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | Мод вимкнено | черга непорожня | компактизацію ніхто не запускає; черга чекає в файлі сесії |
 | Рядки, повернені компактизацією, у stream-json | кожен рядок знову проходить подію додавання з `origin.kind = plugin` | AutoTag їх пропускає; теги не дублюються |
 | `/clear` або `/resume` у тому самому процесі | сесія змінилась без старту сесії | перед наступною операцією сховище готується для нової сесії; черга і звіт попередньої лишаються в її каталозі |
-| Другий процес хоста з тією самою сесією | обидва процеси читають один файл черги | кожен процес запускає команду лише після свого ходу і лише у своїй розмові; правки, чиї цілі не знайдено, — `failed` |
+| Другий процес хоста з тією самою сесією | обидва процеси читають один файл черги і одну межу | кожен процес запускає команду лише після свого ходу і лише у своїй розмові; правки, чиї цілі не знайдено, — `failed`. Межа перемикається: компактизація одного процесу пише Boundary зі своїм `host`, і другий процес до власної компактизації бачить увесь транскрипт (а його `context_list` — інші індекси), потім навпаки |
 | Передача, коли модель бачить не всі рядки | після вбудованої компактизації, межа якої не записана в цьому процесі | засів з підсумку і видимих рядків ([SP_CTX_02_22](#SP_CTX_02_22)); правки рядків до підсумку — `failed` |
 | Передача заповненої розмови | 4096 рядків без межі | спосіб `transcript` відмовляє (WINDOW_FULL), далі `document` |
 | Перерваний промпт у новій сесії до засіву | людина надіслала промпт одразу після `/clear` і перервала його до першого рядка агента | HandleSeed не бачить рядка агента і засіває сесію, замінюючи цей промпт засіяними рядками; прийнято: промпт перервано, і він лишається у файлі сесії перед межею |
@@ -1533,7 +1599,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 
 | Aspect | Rollback approach |
 |--------|-------------------|
-| Data/state changes | Розмови, змінені в поточних сесіях, лишаються зміненими до кінця сесії; після `--resume` хост повертає оригінали ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05)). Засіяні сесії — звичайні сесії хоста; їх відновлення показує засіяну розмову і без мода |
+| Data/state changes | Розмови, змінені в поточних сесіях, лишаються зміненими до кінця сесії; після `--resume` хост може повернути оригінали — через батька до межі в копії рядка, поверненого з `handle`, і через рядки асистента з тим самим `message.id` ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05); навичка plugin-hooks, пункт 7); текстові правки з перезібраною цілою відповіддю переживають відновлення. Засіяні сесії — звичайні сесії хоста; їх відновлення показує засіяну розмову і без мода |
 | Artifacts | Видалити `<HOME>/.claude/context-editor/` (черги, реєстри тегів і псевдонімів, межі, архіви, медіа-файли, файли засіву, лишені файли `editor-ready`); після цього шляхи до архівів і перенесеного медіа в текстах засіяних сесій ведуть у нікуди. Сесії, створені передачею, — звичайні транскрипти хоста, їх видаляють як будь-які інші; стара сесія лишається незмінною |
 | Dependent modules | Немає |
 | External contracts | Рядки `[context-editor] id …` після результатів і рядки команди `/compact context-editor: …` лишаються в розмові як текст без дії; інструменти `context_list`, `context_edit`, `context_tag`, `context_handoff` і команда `/handoff` зникають з наступного старту сесії; промпти й навички, що на них посилаються, треба прибрати |
@@ -1665,7 +1731,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | C — рахувати рядки, додані після компактизації | `session.append` не бачить рядків компактизації, а читання розмови не містить вкладень і сповіщень: лічильники не збігаються |
 
 **Decision:** A
-**Rationale:** спайк 2026-10-09 (Claude Code 2.1.295): при трьох компактизаціях — двох редактором і одній `/compact` — `e.messages` дорівнював хвосту транскрипту після останньої межі, а повернені рядки стояли в наступному читанні суцільним блоком з тими самими відбитками. Розробник погодив підхід, запропонований після живих сценаріїв фази 2 («Виправ всі виявлені проблеми»).
+**Rationale:** спайк 2026-10-09 (Claude Code 2.1.295): при трьох компактизаціях — двох редактором і одній `/compact` — `e.messages` дорівнював хвосту транскрипту після останньої межі, а повернені рядки стояли в наступному читанні суцільним блоком з тими самими відбитками. Розробник погодив підхід, запропонований після живих сценаріїв фази 2 («Виправ всі виявлені проблеми»). Межа діє лише в тому процесі хоста, де її записано ([SP_CTX_DEC_10](#SP_CTX_DEC_10)): після `--resume` читання розмови — завантажений ланцюжок, а не «оригінали + копії» (навичка plugin-hooks, пункт 7; спайк context_editor_handoff_long, Entry 6), і збережена межа там може не збігтися або збігтися не там.
 **Rejected because:** B — немає однозначного зіставлення рядків; C — лічильники хоста не узгоджені між подіями й читанням.
 **Resolution trigger:** —
 
@@ -1707,6 +1773,25 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 **Rejected because:** B — нічого збирати після очищення; C — копія без читача.
 **Resolution trigger:** —
 
+### DEC_10 — Коли довіряти збереженій межі  {#SP_CTX_DEC_10}
+
+> **Status:** resolved
+> **Date:** 2026-10-09
+
+**Question:** Boundary лежить у файлі сесії й переживає перезапуск хоста, а читання розмови після `--resume` — інший вигляд транскрипту. Коли CurrentRows може спиратися на збережену межу?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — лише в тому самому процесі хоста: Boundary несе `host` (токен змінної середовища процесу хоста і pid процесу `claude`), довіра — збіг з ідентичністю процесу цього екземпляра модуля; після `/resume` у тому самому процесі межа нової сесії втрачає `host`; без ідентичності — довіра лише до межі, яку записав сам екземпляр | гаряче перезавантаження модуля довіру зберігає, перезапуск, `--resume` і `/resume` у процесі — ні; в іншому процесі весь транскрипт — це завантажений ланцюжок, який бачить модель (Entry 6); без ідентичності — як колишній прапорець у пам'яті |
+| B — A плюс звірка хвоста після межі з API-поданням за ідентифікаторами результатів | точніше, але знову зіставлення з нормалізованим API-поданням (SP_CTX_DEC_07, B) і очищеним вмістом старих результатів (навичка plugin-hooks, пункт 33) |
+| C — лише API-подання, без збереженої межі | та сама проблема зіставлення рядків, що в SP_CTX_DEC_07, B |
+
+**Decision:** A — розробник, 2026-10-09 («той самий процес хоста»); ідентичність без `ps` — токен і pid, і зняття `host` після `/resume` у процесі — рішення розробника в рев'ю раунд 20.
+**Rationale:** спайк context_editor_handoff_long, Entry 6 (2.1.295): у тому самому процесі і після гарячого перезавантаження межа збігалась у правильному місці, а хвіст відповідав API-поданню один до одного за ідентифікаторами; у відновленому процесі межа не збіглася (дублікати), а весь транскрипт був саме тим, що бачить модель. Ідентичність процесу стабільна при перезавантаженні модуля і нова після перезапуску (навичка plugin-hooks, пункт 32). Пам'ять модуля (колишній прапорець `trusted`) губила довіру при гарячому перезавантаженні.
+**Rejected because:** B — зайве зіставлення без підтвердженої потреби; C — немає однозначного зіставлення рядків.
+**Resolution trigger:** —
+
 ## Changelog
 
 | Date | Change |
@@ -1738,3 +1823,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | 2026-10-09 | Знахідка C Verify фази 10 (спайк context_editor_handoff_long Entry 5, навичка plugin-hooks пункт 30): KeepResponsesWhole — у відрізку між промптами після першого перезібраного рядка асистента перезбираються й решта рядків асистента з `handle` (02_04, 02_05, 02_07, 03_02); рядки 05_01; «Незмінене медіа» з рядком тексту перед викликами, в обох хостах (05_03) |
 | 2026-10-09 | Рев'ю раунд 18: KeepResponsesWhole — рядок результату, спорожнілий після drop, не є промптом (02_04; перемежована відповідь 2.1.295); Flush пише чергу через RemoveDelivered (02_06); DELIVERY_FAILED — доставка щонайменше один раз |
 | 2026-10-09 | Повторний Verify фази 10 (2.1.295, TUI + stream-json): усі сценарії pass; передумова «Передача засівом» — псевдонім на текстовій парі |
+| 2026-10-09 | backlog H, N1: FormatReport без рядка розміру й «tokens freed», коли жодної правки не застосовано — для компактизації «the conversation was not changed», для засіву — лише неприйняті правки (01_05, 02_07); реєстри тегів і псевдонімів, скопійовані в нову сесію, проходять RebindTags і очищення псевдонімів (01_17, 02_14, 02_21); рядки 05_01 |
+| 2026-10-09 | backlog G, J: Boundary несе `host` — ідентичність процесу хоста; CurrentRows довіряє межі лише з тим самим `host` замість прапорця в пам'яті (01_14, 02_15, 02_18, DEC_07, DEC_10 новий); ApplyEdits відхиляє collapse з промптом перед першим відомим результатом лише при обрізаному API-поданні (`apiTruncated` з CollectMedia) (02_04, 02_07, 02_10, 02_22); рядки 05_01 |
+| 2026-10-09 | рев'ю раунд 20: HandoffSeed `visible` і `edits`, крок реєстрів — читання, узгодження, запис окремо для кожного реєстру (01_17, 02_14, 02_21); `hostId` — токен HOST_ENV і ppid без `ps`, ParseHostId, читання однією обіцянкою, власна межа екземпляра як запасна довіра, `host` не рядком ігнорується, зняття `host` після `/resume` у тому самому процесі (01_12, 01_14, 02_15, 02_18, DEC_10); FormatReport з `kind`, інваріант `failed` при 0 правок, `charsAfter` засіву до CarryNote і голови (01_05, 02_07, 02_21, 02_22); `apiTruncated` при ≥ ROW_WINDOW − 1, WINDOW_FULL узгоджено (02_04, 02_10, 02_22); «Відновлення сесії» розділено, 06_01 — «може повернути»; 05_01, 05_04 |
+| 2026-10-09 | рев'ю раунд 21: обіцянка `hostId` стартує в `session.start` або першому PrepareStorage; CurrentRows, `Key()` і зняття `host` при перемиканні сесії чекають її, обробники компактизації — ні (01_14, 02_15, 02_18); залишкове вікно гарячого перезавантаження після `/resume` у процесі; поріг повного подання в 05_01; обґрунтування форми звіту засіву; відсутній реєстр старої сесії нічого не пише (02_21) |
