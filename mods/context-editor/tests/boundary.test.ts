@@ -2,7 +2,7 @@ import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { boundaryOf, currentRows, fingerprint, HEAD_ROWS, MAX_DESCRIPTION, parseBoundary, prepare, STALE_INDEXES } from '../hooks/edits'
 import { applyTagRequests, EMPTY_REGISTRY } from '../hooks/tags'
-import { EDIT_DESCRIPTION, LIST_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/register'
+import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/register'
 
 function row(role: 'user' | 'assistant', text: string): SessionMessage {
   return { role, text, toolUses: [] }
@@ -69,7 +69,7 @@ test('parseBoundary takes only a well-formed boundary', async () => {
 })
 
 test('every tool description reaches the model whole', async () => {
-  for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
+  for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
 })
 
 test('stale indexes: collapse and rewrite are refused, edits by id still queue', async () => {

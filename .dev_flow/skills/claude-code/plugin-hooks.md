@@ -1,7 +1,7 @@
 ---
 skill: ClaudeCodePluginHooks
 domain: claude-code
-topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests]
+topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript]
 source: implementation
 updated: 2026-10-09
 kind: procedural
@@ -54,6 +54,8 @@ state: current
 13. **`$.session.messages()` повертає весь транскрипт, разом з рядками до межі компактизації**: після компактизації від обробника старі рядки йдуть першими, далі їхні копії. Позначки межі в `SessionMessage` немає, і `session.append` рядків компактизації не бачить; `{ as: 'api' }` дає лише те, з чого збирається наступний запит. Вхід `session.compact` (`e.messages`) — лише хвіст транскрипту після останньої межі (і для `/compact`), а повернені рядки стоять у наступному читанні суцільним блоком з тими самими відбитками: на цьому стоїть межа поточної розмови редактора (SP_CTX_DEC_07). Перевірено на 2.1.295.
 14. **`$.tool.register` обрізає `description` до 2048 символів** і пише про це в TUI; важливе ставте на початок опису.
 15. **Медіа від вбудованого Read не буває великим**: зображення понад ~0.5 МБ він перекодовує в JPEG, а великий PDF (4.6 МБ) віддає сторінками-JPEG, не блоком `document`; малий PDF приходить блоком `document` з `source.type = base64`. Тестувати багатомегабайтний `stdin` треба через інший шлях (напр. архів кількох медіа одним пакетом).
+16. **`$.command.run` запускає вбудовані `/resume <id>` і `/clear`** — лише з пізнішої події (`turn.complete`), не з хука, якого чекає хід (хост відхиляє з поясненням). Перемикання дає `session.end` з `reason`, але не `session.start`; невдалий `resume` (невідомий id) резолвиться `{}` без помилки — успіх перевіряйте за `$.session.id()` до і після. Перевірено на 2.1.295.
+17. **Транскрипт сесії — `~/.claude/projects/<cwd з не-буквено-цифровими символами → '-'>/<id>.jsonl`, API для шляху немає.** `--resume` приймає зібраний поза хостом файл; обов'язкові поля рядків `user`/`assistant` — `type`, `uuid`, `parentUuid`, `timestamp`, `message`; модель бачить лише `message.content` (`toolUseResult` — для інтерфейсу). Без `timestamp` — «No conversation found», а розірваний ланцюжок `uuid`/`parentUuid` дає **тиху** порожню розмову. Деталі й збирач — спайк `docs/context_editor_session.spike.md`, `.dev_flow/cache/session-transcript/`.
 
 ## References
 

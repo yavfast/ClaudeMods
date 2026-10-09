@@ -14,8 +14,8 @@
 
 ## Contents
 
-- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга, звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, межа поточної розмови, константи
-- [02. Contracts](#SP_CTX_02) — перегляд, постановка правок, застосування, прибирання службових викликів, тригер, обробник компактизації, доставка звіту, нагадування, пошук медіа, тегування, автоправила, заміни з тегів, узгодження тегів, підготовка сховища, позначка викликів і розв'язання псевдонімів, поточна розмова
+- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга, звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, межа поточної розмови, запит передачі, запис транскрипту, константи
+- [02. Contracts](#SP_CTX_02) — перегляд, постановка правок, застосування, прибирання службових викликів, тригер, обробник компактизації, доставка звіту, нагадування, пошук медіа, тегування, автоправила, заміни з тегів, узгодження тегів, підготовка сховища, позначка викликів і розв'язання псевдонімів, поточна розмова, передача в нову сесію
 - [03. Validation Rules](#SP_CTX_03) — що перевіряється для вводу агента і для результату застосування
 - [04. State Transitions](#SP_CTX_04) — життєвий цикл черги, окремої правки і тегу
 - [05. Verification Criteria](#SP_CTX_05) — модульні очікування, інваріанти, інтеграційні сценарії, граничні випадки
@@ -97,6 +97,7 @@ Fields:
 | reportId | int? | no | — | є разом з `report` | Час застосування, мс від епохи; ідентифікує звіт |
 | reportResume | bool | yes | false | — | Після цього звіту потрібно продовжити сесію |
 | reportPrompt | string | yes | DEFAULT_RESUME | — | Текст продовження для цього звіту |
+| handoff | HandoffRequest? | no | — | [SP_CTX_01_15](#SP_CTX_01_15) | Запит передачі в нову сесію; поки він є, правки черги належать передачі |
 
 Стан файлу при читанні: `missing` (файлу немає — значення за замовчуванням), `ok`, `unreadable` (не читається, не розбирається або будь-яке поле має не свій тип). `unreadable` ніколи не трактується як порожня черга.
 
@@ -207,6 +208,10 @@ Invariants:
 | HEAD_ROWS | 8 | Скільки перших рядків компактизації запам'ятовує Boundary |
 | MEDIA_DATA | 256 | Найкоротший рядок base64, який архів вважає даними медіа |
 | MAX_DESCRIPTION | 2048 | Найбільша довжина опису інструмента, яку хост передає моделі |
+| MAX_DOCUMENT | 60 000 | Найбільша довжина документа передачі, символи |
+| HANDOFF_DELAY | 1 с | Пауза між кінцем ходу (або командою людини) і початком RunHandoff |
+| HANDOFF_STALE | 120 с | Вік запиту `running`, після якого він вважається покинутим |
+| HANDOFF_PROMPT | `Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Plain text, no preamble.` | Запит до моделі, коли документа немає |
 
 ### 01_13. AliasRegistry  {#SP_CTX_01_13}
 
@@ -230,6 +235,38 @@ Invariants:
 | count | int | yes | — | ≥ len(head) | Скільки рядків повернула компактизація |
 
 Стани читання: файл відсутній або `unreadable` — межі немає, поточна розмова — увесь транскрипт.
+
+### 01_15. HandoffRequest  {#SP_CTX_01_15}
+
+Запит перенести розмову в нову сесію ([C_CTX_03_06](./context_editor.concept.md#C_CTX_03_06)). Живе в Queue.
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| mode | `transcript` \| `document` | yes | `transcript` | — | Спосіб, який обрав агент або людина |
+| document | string? | no | — | непорожній, ≤ MAX_DOCUMENT | Документ передачі від агента; для `document` без нього — підсумок через окремий запит до моделі |
+| resume | bool | yes | true | — | Продовжити нову сесію промптом продовження |
+| resumePrompt | string | yes | DEFAULT_RESUME | непорожній, ≤ MAX_TEXT | Текст продовження |
+| by | `agent` \| `person` | yes | — | — | Хто запитав |
+| state | `queued` \| `running` | yes | `queued` | — | `running` — RunHandoff уже йде; другий запуск не починається |
+| at | int | yes | — | мс від епохи | Час запиту або початку виконання |
+
+Invariant: запит у стані `running`, старший за HANDOFF_STALE, вважається покинутим (процес перервано) і може бути запущений знову.
+
+### 01_16. TranscriptRecord  {#SP_CTX_01_16}
+
+Один рядок файлу нової сесії `<projects>/<проєкт>/<newId>.jsonl` — один JSON-об'єкт на рядок. Формат внутрішній для хоста; мінімальна схема перевірена спайком [context_editor_session](./context_editor_session.spike.md) на 2.1.295.
+
+| Field | Type | Required | Constraints | Description |
+|-------|------|----------|-------------|-------------|
+| type | `user` \| `assistant` | yes | чергуються, перший — `user` | Роль рядка |
+| uuid | string | yes | унікальний у файлі | Ідентифікатор рядка |
+| parentUuid | string \| null | yes | `null` лише в першого; інакше `uuid` попереднього рядка | Ланцюжок |
+| timestamp | string | yes | ISO 8601, неспадні | Час рядка |
+| sessionId | string | yes | `newId` | Сесія |
+| cwd | string | yes | — | Робочий каталог сесії |
+| message | `{ role, content }` | yes | `role` = `type`; `content` — список блоків | Те, що бачить модель |
+
+Блоки `content`: `text { text }`; `tool_use { id, name, input }` (лише в `assistant`); `tool_result { tool_use_id, content: list<text \| image \| document>, is_error? }` (лише в `user`); `image` / `document { source: { type: base64, media_type, data } }` (усередині `tool_result`). Не пишуться: thinking-блоки, `toolUseResult`, `message.usage`, вкладення, службові рядки.
 
 ## 02. Contracts  {#SP_CTX_02}
 
@@ -436,6 +473,7 @@ Processing logic (pseudocode):
         IF storage unavailable: RETURN skip "storage unavailable"
         q = read Queue; IF state = unreadable: RETURN skip "queue unreadable"
         IF q.edits empty: RETURN skip "no queued edits"
+        IF q.handoff present: RETURN skip "handoff pending"            # правки належать передачі (SP_CTX_02_21)
         reg = read TagRegistry (unreadable → every edit failed "tag registry unreadable")
         edits = q.edits; pinned edits → failed "target is pinned" (rule of SP_CTX_02_03)
         api = read main conversation in Messages API form
@@ -477,6 +515,7 @@ Errors:
 | SKIP_STORAGE | сховище `unavailable` | розмова не змінюється |
 | SKIP_QUEUE_READ | Queue `unreadable` | розмова і черга не змінюються |
 | SKIP_EMPTY | черга порожня | розмова не змінюється |
+| SKIP_HANDOFF | у черзі запит передачі | розмова і черга не змінюються; правки застосує передача |
 | SKIP_NONE_APPLIED | жодна правка не застосувалась | звіт пояснює причини |
 | SKIP_FAILED | обробник впав | розмова не змінюється; черга очищена; звіт про збій чекає наступного промпту |
 | SKIP_ABANDONED | хост покинув диспетчеризацію до повернення | розмова і черга не змінюються; медіа-файли й архів, уже записані, лишаються без посилань |
@@ -709,6 +748,143 @@ Processing logic (pseudocode):
 
 Без межі, без довіри або без збігу результат — увесь транскрипт: так само, як до запису межі. Межа міняється між переліком і правкою, коли компактизація (редактора, `/compact` або автоматична, зокрема посеред ходу) пройшла після `context_list`: тоді індекси, які тримає агент, називають інші рядки, і правки та теги за індексом відхиляються до нового переліку; цілі за `tool_use_id` і `ref` від індексів не залежать. Ключ пам'ятає лише останній перелік: індекси зі сторінки, отриманої до компактизації, після нового переліку іншої сторінки проходять цю перевірку; такі правки ловить лише пошук якорів при застосуванні (Locate). Межа записується до того, як хост прийме повернений список: якщо зовнішній хук іншого плагіна відкине або перепише результат, голова може не знайтися, і CurrentRows поверне весь транскрипт. Індекси переліку, перевірка правок, теги, закріплення й лічильник активних `review` працюють на поточній розмові, тож індекс з переліку відповідає позиції рядка в `e.messages` наступної компактизації.
 
+### 02_19. context_handoff  {#SP_CTX_02_19}
+
+Purpose: інструмент агента; ставить запит передачі розмови в нову сесію ([C_CTX_DEC_11](./context_editor.concept.md#C_CTX_DEC_11)).
+
+Input:
+| Parameter | Type | Required | Constraints |
+|-----------|------|----------|-------------|
+| mode | `transcript` \| `document` | no | типово `transcript` |
+| document | string | no | ≤ MAX_DOCUMENT; запасний документ для `transcript`, основний для `document` |
+| resume | bool | no | типово true |
+| resume_prompt | string | no | ≤ MAX_TEXT |
+
+Output: `Handoff queued (<mode>): it runs when this turn ends. End your turn now with a one-line status.` Новий запит замінює попередній у стані `queued`; правки, вже поставлені в чергу, застосує передача.
+
+Errors:
+| Code | Condition | Guidance |
+|------|-----------|----------|
+| DENIED_SUBAGENT | виклик із субагента | передає лише основна розмова |
+| DENIED_STORAGE | сховище `unavailable` | причина в повідомленні |
+| DENIED_BAD_MODE | `mode` не з двох значень | — |
+| DENIED_TOO_LONG | `document` > MAX_DOCUMENT або `resume_prompt` > MAX_TEXT | скоротити |
+| DENIED_RUNNING | запит у стані `running`, не покинутий | дочекатися перемикання |
+| DENIED_QUEUE | Queue `unreadable` або не записалась | причина в повідомленні |
+
+### 02_20. HandoffCommand  {#SP_CTX_02_20}
+
+Purpose: команда людини `/handoff [document|cancel]` — те саме, що інструмент, без ходу агента; `cancel` знімає запит, що ще не почався.
+
+Processing logic (pseudocode):
+    ON command handoff (args):
+        IF args trimmed = "cancel": drop a queued request (SP_CTX_04_04); RETURN text "handoff cancelled" or "no handoff waiting"
+        mode = args trimmed = "document" ? document : transcript
+        write Queue.handoff = { mode, resume: true, resumePrompt: DEFAULT_RESUME, by: person, state: queued, at: now }   # помилки — як у 02_19
+        after HANDOFF_DELAY: RunHandoff()
+        RETURN text "context-editor: handoff (<mode>) starts"
+
+Команда не позначається `immediate`: під час ходу вона чекає його кінця, як вбудовані команди.
+
+### 02_21. RunHandoff  {#SP_CTX_02_21}
+
+> **Criticality:** core
+
+Purpose: виконати запит передачі: зібрати нову сесію і переключитися на неї, а при збої — спосіб `document`.
+
+Processing logic (pseudocode):
+    ON turn start (main loop): turns += 1; inTurn = true
+    ON turn complete (main loop): inTurn = false (before the host's own step)
+        IF aborted AND the agent's request was made in this turn: drop it (SP_CTX_04_04)
+        ELSE IF Queue.handoff is queued (or running and older than HANDOFF_STALE): Schedule()   # і після перерваного ходу, що відклав передачу
+
+    FUNCTION Schedule(): turns0 = turns; after HANDOFF_DELAY: outcome = RunHandoff(turns0)
+        IF outcome = deferred AND NOT inTurn: Schedule()                  # хід, що відклав передачу, уже скінчився
+
+    Moved() = inTurn OR turns ≠ turns0                                     # хід ішов або почався від планування
+
+    FUNCTION RunHandoff(turns0):
+        IF Moved(): RETURN deferred                                         # запит лишається queued
+        old = session id; oldDir = storage of old (prepared)
+        claim: on the queue chain, IF the request is due: state = running, at = now; ELSE RETURN
+        reasons = []
+        IF h.mode = transcript:
+            step = HandoffTranscript()
+            IF switched: RETURN
+            IF deferred: Defer(); RETURN
+            IF stuck: Fail(step); RETURN                                   # без способу document: процес не в old
+            reasons += step.reason                                         # сесія як була — далі document
+        doc = h.document OR model fork over the session with HANDOFF_PROMPT (no tools)
+        IF doc empty: Fail(reasons + "no handoff document"); RETURN
+        IF Moved(): Defer(); RETURN
+        run built-in command clear; IF session id = old: Fail(reasons + "clear did not start a new session"); RETURN
+        HandedOff(new, document)                                           # стара черга — до промпту
+        submit prompt (doc + "\n\ncontext-editor: this session continues <old> (document)." + why + dropped + (h.resume ? "\n\n" + h.resumePrompt : ""))
+
+    FUNCTION HandoffTranscript():
+        rows = CurrentRows(); (found, knownResults, unmatchedPromptMedia) = CollectMedia(api)
+        IF some row holds a tool result whose id the API form does not show: RETURN reason "the conversation holds rows the model no longer sees"
+        dir = FindTranscript(old)                                          # <config>/projects/*/<old>.jsonl, config = CLAUDE_CONFIG_DIR або <HOME>/.claude
+        IF none: RETURN reason "the transcript of this session was not found"
+        newId = fresh UUID v4; storage' = owner-only storage of newId (as SP_CTX_02_15); IF it fails: RETURN reason
+        edits = queued edits without pinned targets (as SP_CTX_02_07)
+        media of the replaced owners → storage'/<id>/<n>.<ext>; archive = storage'/<id>.json
+        (records, report) = BuildTranscript(...)
+        IF CheckTranscript fails, the archive or the file cannot be written, or any of these steps throws: remove storage' (and <newId>.jsonl.tmp); RETURN reason
+        write <dir>/<newId>.jsonl.tmp (owner-only), rename to <newId>.jsonl; copy TagRegistry, AliasRegistry into storage'
+        IF Moved(): remove <newId>.jsonl and storage'; RETURN deferred   # хід, що почався, не потрапив би в нову сесію
+        run built-in command `resume <newId>`
+        IF session id ≠ newId OR NOT CheckSwitched(records, rows read now):
+            IF session id ≠ old: run built-in command `resume <old>`
+            IF session id ≠ old: RETURN stuck "…, and the way back to <old> failed"
+            remove <newId>.jsonl and storage'; RETURN reason "the host did not open the assembled transcript"
+        # перемкнулись: далі жодного переходу на document, хоч би що впало
+        HandedOff(newId, transcript)
+        report = "context-editor: this session continues <old> (transcript)." + prompt-media note + "\n" + report text
+        IF h.resume: submit prompt (report + "\n\n" + h.resumePrompt)
+        ELSE: Queue of newId: report += report, reportId = id, reportResume = false   # DeliverReport віддасть з наступним промптом
+        RETURN switched
+
+    FUNCTION HandedOff(to, mode): old Queue: edits = [], handoff absent, report += "this session was handed off to <to> (<mode>)", reportId = now, reportResume = false
+    FUNCTION Defer(): old Queue: handoff.state = queued                    # знову після наступного кінця ходу
+    FUNCTION Fail(reasons): old Queue: handoff absent, report += "handoff failed: <reasons>; the session was not changed", reportId = now, reportResume = false; toast
+
+Звіт для нової сесії: `context-editor: this session continues <old> (<mode>)` плюс звіт застосування правок ([SP_CTX_01_05](#SP_CTX_01_05)) для `transcript`; для `document` — чому `transcript` не вдався і що правки черги не переносились. Команди хоста запускаються лише з цієї відкладеної дії, ніколи з хука, якого чекає хід; ланцюжок черги не тримається через команду хоста чи промпт. Стара сесія не змінюється: її транскрипт і є повним оригіналом. Залишкове вікно: хід, що почнеться між останньою перевіркою `Moved()` і командою хоста, хост виконає до перемикання, і нова сесія його не побачить. Перевірка рядків поза API-поданням бачить лише рядки з результатами інструментів: текстові рядки до компактизації, відновленої в новому процесі, вона пропускає.
+
+Errors: відмови не виходять назовні — кожна причина потрапляє у звіт (`fail`) або веде до способу `document`.
+
+### 02_22. BuildTranscript  {#SP_CTX_02_22}
+
+Purpose: зібрати записи нової сесії з поточної розмови і правок. Чиста функція.
+
+Input: `rows` (CurrentRows), `edits` (Queue.edits), `api` (Messages API подання), `newId`, `cwd`, `now`, `archive`, `media` (як у [SP_CTX_02_07](#SP_CTX_02_07)). Output: `records: list<TranscriptRecord>`, `report: ApplyReport`.
+
+Processing logic (pseudocode):
+    (found, knownResults, unmatchedPromptMedia) = CollectMedia(api, rows)
+    (rows', report) = ApplyEdits(rows, edits, archive, media, keys(found), knownResults, unmatchedPromptMedia)
+    rows' = DropOwnCalls(rows', keys(found), knownResults)             # зокрема виклик context_handoff
+    merge consecutive rows of the same role into one (blocks in order)
+    UNTIL nothing changes: drop leading assistant rows; drop tool_result blocks that do not answer a tool_use of the row before (вікно почалось посеред пари — хост такі прибирає сам); drop empty rows; merge neighbours of one role
+    IF none left: RETURN empty                                             # у вікні немає повідомлення людини
+    FOR each merged row r (i-th): block list (text blocks that are blank are left out; a tool_result without text or media has no content) =
+        user:      text (if any), FOR each tool result: tool_result { tool_use_id, content: [text] + media of that pair from found unless replaced, is_error }
+        assistant: text (if any), FOR each tool use: tool_use { id, name, input }
+    record i = { type, uuid: fresh, parentUuid: uuid of i-1 or null, timestamp: now - (n - i) ms, sessionId: newId, cwd, message: { role, content } }
+
+Медіа в промптах людини не переноситься, доки відкрите [SP_CTX_DEC_06](#SP_CTX_DEC_06): їхню кількість (`unmatchedPromptMedia`) називає звіт нової сесії. Блок `tool_result` у записі `user` іде перед текстом. Пари з правками, що не застосувались (зокрема медіа, яке не вдалося заархівувати), лишаються як були, разом з медіа.
+
+### 02_23. CheckTranscript  {#SP_CTX_02_23}
+
+Purpose: відкинути записи, які хост прийняв би мовчки, але показав би моделі не те. Чиста функція; повертає причину або «гаразд».
+
+Rules: записів ≥ 1; перший `user` з `parentUuid = null`; ролі чергуються; кожен `parentUuid` — `uuid` попереднього; `uuid` унікальні; `timestamp` неспадні; кожен `tool_use` має `tool_result` у наступному записі і навпаки; блоки лише дозволених типів ([SP_CTX_01_16](#SP_CTX_01_16)).
+
+### 02_24. CheckSwitched  {#SP_CTX_02_24}
+
+Purpose: переконатися після перемикання, що хост відкрив зібраний транскрипт повністю ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Чиста функція.
+
+Logic: читання розмови нової сесії непорожнє; текст першого прочитаного рядка містить перші 80 символів першого текстового блоку першого запису; кожен `tool_use.id` записів є серед викликів прочитаних рядків. Розбіжність — «не відкрив».
+
 ## 03. Validation Rules  {#SP_CTX_03}
 
 ### 03_01. Input Validation  {#SP_CTX_03_01}
@@ -764,12 +940,40 @@ Processing logic (pseudocode):
 | queued as edit | absent | правку застосовано або відхилено при застосуванні | тег видалено (RebindTags) |
 | tagged | absent | тег знято, ціль змінено іншою правкою або ціль зникла | тег видалено |
 
+### 04_04. Handoff Lifecycle  {#SP_CTX_04_04}
+
+```
+(none) ──context_handoff / /handoff──▶ queued ──after turn end + HANDOFF_DELAY──▶ running
+queued ──the turn the agent asked in is interrupted / /handoff cancel──▶ (none) + report "handoff cancelled"
+queued ──new request──▶ queued (replaced)
+running ──switched──▶ (none) in the old queue + report "handed off to <new>"
+running ──failed (both ways, or no way back)──▶ (none) + report "handoff failed"
+queued / running ──a turn ran or started since scheduling──▶ queued (runs after that turn, or at once if it already ended)
+running ──older than HANDOFF_STALE (process gone)──▶ due again
+```
+
+Поки запит є (`queued` чи `running`), обробник компактизації не застосовує черги ([SP_CTX_02_07](#SP_CTX_02_07)).
+
 ## 05. Verification Criteria  {#SP_CTX_05}
 
 ### 05_01. Functional Expectations  {#SP_CTX_05_01}
 
 | Contract | Scenario | Input | Expected outcome |
 |----------|----------|-------|------------------|
+| BuildTranscript | правки й медіа | розмова з парою з PNG, summarize іншої пари, drop третьої | summarize і drop застосовані, PNG незміненої пари в `tool_result`, виклику context_handoff немає, ланцюжок суцільний |
+| BuildTranscript | однакові ролі поспіль | два рядки агента підряд | один запис з блоками обох |
+| CheckTranscript | порушення | розірваний ланцюжок, дубль `uuid`, `tool_result` без `tool_use`, два `user` поспіль | кожне — причина |
+| CheckSwitched | тиха відмова | прочитано 1 рядок без викликів | «не відкрив» |
+| context_handoff | постановка | mode без значення / `document` / задовгий документ / запит `running` | `transcript` / `document` / DENIED_TOO_LONG / DENIED_RUNNING |
+| HandleCompaction | передача в черзі | правки + handoff | skip `handoff pending`, черга без змін |
+| RunHandoff | запасний шлях | FindTranscript не знайшов файл | спосіб `document`, документ від окремого запиту до моделі |
+| RunHandoff | рядки поза поданням | у рядках є результат, якого немає в API-поданні | спосіб `document`, причина у звіті |
+| RunHandoff | хід почався | хід іде або лічильник змінився від планування — до захоплення, перед `resume`, перед `clear` | `deferred`: без захоплення / новий файл і сховище видалено; запит знову `queued` |
+| RunHandoff | тиха відмова хоста | після `resume` читання порожнє | повернення в стару сесію, файл і сховище видалено, спосіб `document` |
+| RunHandoff | шляху назад немає | повернення не вдалося | `failed` без способу `document` |
+| RunHandoff | resume false | спосіб `transcript` | промпту немає; звіт у черзі нової сесії; у старій — нотатка, `reportResume` false |
+| cancelHandoff | скасування | запит `queued` / `running` | знятий зі звітом / без змін |
+| BuildTranscript | вікно посеред пари | перший рядок — результат без виклику | сирітські результати прибрано, перший запис — повідомлення людини; без повідомлення людини записів немає |
 | CurrentRows | без межі | транскрипт 9 рядків, Boundary відсутній | усі 9 рядків |
 | CurrentRows | після компактизації | старі 9 рядків, повернені 7, нові 3; Boundary з голови повернених | 10 рядків, починаючи з першого поверненого |
 | CurrentRows | дві компактизації | транскрипт з трьох сегментів, голови однакові | від останнього входження голови |
@@ -780,7 +984,7 @@ Processing logic (pseudocode):
 | PrepareEdits, context_tag | застарілі індекси | межа змінилась після переліку; collapse, rewrite, тег за `index`, summarize за id | правки й тег за індексом відхилено, summarize і тег за id прийнято |
 | HandleCompaction | довгий текст у `data` | пара з заархівованим медіа і довгим текстом у `data` | текст лишається, замінено лише base64 |
 | HandleCompaction | архів без дубля медіа | summarize пари з PNG у `result` виклику і результату | у JSON архіву base64 замінено на `[media archived: …]`; інші поля без змін |
-| context_list, context_edit, context_tag | опис інструмента | описи трьох інструментів | кожен ≤ MAX_DESCRIPTION |
+| context_list, context_edit, context_tag, context_handoff | опис інструмента | описи чотирьох інструментів | кожен ≤ MAX_DESCRIPTION |
 | ApplyEdits | summarize | пара `a`, результат 5000 символів | рядки пари перезібрано, спільний id `a_ce…`, виклик без `text`, результат містить summary; рядки без результатів зберігають `handle` |
 | ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `4 rows collapsed`; наступний рядок не змінено |
 | ApplyEdits | collapse зі службовим викликом першим | діапазон, що починається з виклику `context_list` | носій — перший не службовий виклик; після DropOwnCalls підсумок присутній |
@@ -839,7 +1043,7 @@ Processing logic (pseudocode):
 | TriggerCompaction | відправка відхилена | `submit` падає | `lastSubmittedReportId` не змінюється, попередження |
 | TriggerCompaction | хост відмовляє | `compact` падає 20 разів | 20 очікувань по 500 мс; черга лишається |
 
-Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти), `mods/context-editor-trigger/tests/flush.test.ts` (TriggerCompaction через порти). Зв'язування портів з `$` (PrepareStorage, EditorReady через список інструментів) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag, AutoTag, QueueTagReplacements, Nudge, RebindTags, розбір реєстру, перелік з тегами) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). describe і PromptMatch не реалізовані (план PL_CTX).
+Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти), `mods/context-editor-trigger/tests/flush.test.ts` (TriggerCompaction через порти). Зв'язування портів з `$` (PrepareStorage, EditorReady через список інструментів) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag, AutoTag, QueueTagReplacements, Nudge, RebindTags, розбір реєстру, перелік з тегами) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildTranscript, CheckTranscript, CheckSwitched, пропуск компактизації, RunHandoff через порт: транскрипт, повернення і документ, документ, обидва збої, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). describe і PromptMatch не реалізовані (план PL_CTX).
 
 ### 05_02. Invariant Checks  {#SP_CTX_05_02}
 
@@ -870,6 +1074,10 @@ Processing logic (pseudocode):
 | Автоматичне чищення з тегів | 5 файлів | агент ставить `disposable` з нотатками | на порозі заміни застосовано без нагадування | pass (2026-10-08, фаза 3) |
 | Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | pass (2026-10-08, фаза 3) |
 | Перегляд після компактизації | дві компактизації редактором і одна `/compact` | після кожної — `context_list` | у переліку лише поточна розмова, без копій старих рядків; правка за індексом з переліку застосовується до того самого рядка | pass (2026-10-09, фаза 8) — перелік 15 і 22 рядки при транскрипті 25 і 54; `rewrite` #5 змінив саме цей рядок; після `/compact` 7 рядків від підсумку хоста |
+| Передача транскриптом | розмова з Read великого файлу і скриншотом | summarize великого файлу і context_handoff в одному ході | процес у новій сесії; модель знає лише підсумок; скриншот на місці; `claude --resume <new>` показує очищену розмову; стара сесія без змін | pass (2026-10-09, фаза 9) — KEY_0042 з підсумку, KEY_0377 невідомий і після `--resume` новим процесом, скриншот на місці (E-4172), файл 0600; стара сесія KEY_0377 бачить |
+| Передача документом | те саме | context_handoff mode `document` з документом | нова сесія з документом першим промптом | pass (2026-10-09, фаза 9) — шлях «документ» з документом агента пройдено в «Запасний шлях»; окремого запуску з mode `document` не було |
+| Запасний шлях | зіпсований збирач (тестовий прапорець) або видалений транскрипт | context_handoff | спосіб `document`, звіт причини | pass (2026-10-09, фаза 9) — каталог транскриптів без права запису: «the new transcript could not be written», нова сесія з документом агента |
+| Команда людини | — | `/handoff` між ходами | те саме, що інструмент | pass (2026-10-09, фаза 9) — `/handoff document`: документ від `$.model.fork`, `/clear`, продовження |
 | Відновлення сесії | «стиснення» завершено | `claude --resume <id>`, спитати KEY_0377 | «немає в контексті» | **fail** — [C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) |
 
 ### 05_04. Edge Cases and Boundaries  {#SP_CTX_05_04}
@@ -903,7 +1111,7 @@ Processing logic (pseudocode):
 | Aspect | Rollback approach |
 |--------|-------------------|
 | Data/state changes | Розмови, змінені в поточних сесіях, лишаються зміненими до кінця сесії; після `--resume` хост повертає оригінали ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05)) |
-| Artifacts | Видалити `<HOME>/.claude/context-editor/` (черги, реєстри тегів і псевдонімів, архіви, медіа-файли, файли готовності) |
+| Artifacts | Видалити `<HOME>/.claude/context-editor/` (черги, реєстри тегів і псевдонімів, архіви, медіа-файли, файли готовності); сесії, створені передачею, — звичайні транскрипти хоста, їх видаляють як будь-які інші, стара сесія лишається незмінною |
 | Dependent modules | Немає |
 | External contracts | Рядки `[context-editor] id …` після результатів лишаються в розмові як текст без дії; інструменти `context_list`, `context_edit`, `context_tag` зникають з наступного старту сесії; промпти й навички, що на них посилаються, треба прибрати |
 
@@ -1053,3 +1261,5 @@ Processing logic (pseudocode):
 | 2026-10-09 | Живі сценарії «Скриншот у результаті інструменту», «Документ у результаті інструменту», «Незмінене медіа» — pass (фаза 2) |
 | 2026-10-09 | Поточна розмова: Boundary (01_14), CurrentRows і RecordBoundary (02_18), DEC_07; HEAD_ROWS, MAX_DESCRIPTION; архів без дубля base64 медіа (01_06); модульні очікування й живий сценарій «Перегляд після компактизації» |
 | 2026-10-09 | Рев'ю раунд 4: precompute і субагенти в 02_18; межа іншого процесу без довіри; правки й теги за застарілими індексами відхиляються (02_03, 02_11); MEDIA_DATA і алфавіт base64 в архіві (01_06, 01_12) |
+| 2026-10-09 | Передача в нову сесію: HandoffRequest (01_15), TranscriptRecord (01_16), поле `handoff` у Queue, context_handoff (02_19), HandoffCommand (02_20), RunHandoff (02_21), BuildTranscript (02_22), CheckTranscript (02_23), CheckSwitched (02_24); skip у HandleCompaction; константи; критерії й живі сценарії |
+| 2026-10-09 | Рев'ю раунд 6: RunHandoff — відкладання при новому ході, перевірене повернення й прибирання файлу, перевірка рядків поза API-поданням, без переходу на document після перемикання; скасування запиту (04_04, `/handoff cancel`); нормалізація BuildTranscript; CheckSwitched і CheckTranscript — як у коді |

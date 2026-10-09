@@ -4,6 +4,18 @@ import { checkShape, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resol
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
 export const MAX_QUEUE_BYTES = 3 * 1024 * 1024
+export const MAX_DOCUMENT = 60_000
+
+// [SP_CTX_01_15] A request to move the conversation into a new session.
+export type HandoffRequest = {
+  mode: 'transcript' | 'document'
+  document?: string
+  resume: boolean
+  resumePrompt: string
+  by: 'agent' | 'person'
+  state: 'queued' | 'running'
+  at: number
+}
 
 // [SP_CTX_01_04]
 export type Queue = {
@@ -15,6 +27,7 @@ export type Queue = {
   reportId?: number
   reportResume: boolean
   reportPrompt: string
+  handoff?: HandoffRequest
 }
 
 export type Read<T> = { state: 'missing' | 'ok'; value: T } | { state: 'unreadable'; reason: string }
@@ -48,10 +61,26 @@ export function parseQueue(text: string): Read<Queue> {
     q.reportId !== undefined && typeof q.reportId !== 'number' && 'reportId',
     typeof q.reportResume !== 'boolean' && 'reportResume',
     typeof q.reportPrompt !== 'string' && 'reportPrompt',
+    q.handoff !== undefined && !isHandoff(q.handoff) && 'handoff',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badEdit = q.edits.findIndex(e => !isQueuedEdit(e))
   return badEdit >= 0 ? { state: 'unreadable', reason: `bad edit ${badEdit + 1}` } : { state: 'ok', value: q }
+}
+
+function isHandoff(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null) return false
+  const h = raw as Partial<HandoffRequest>
+  return (
+    (h.mode === 'transcript' || h.mode === 'document') &&
+    (h.document === undefined || (typeof h.document === 'string' && h.document.length > 0 && h.document.length <= MAX_DOCUMENT)) &&
+    typeof h.resume === 'boolean' &&
+    typeof h.resumePrompt === 'string' &&
+    h.resumePrompt.length > 0 &&
+    (h.by === 'agent' || h.by === 'person') &&
+    (h.state === 'queued' || h.state === 'running') &&
+    typeof h.at === 'number'
+  )
 }
 
 function isQueuedEdit(raw: unknown): boolean {

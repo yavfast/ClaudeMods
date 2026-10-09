@@ -26,7 +26,8 @@ import {
   type Boundary,
   type RefResolver,
 } from './edits'
-import { contextEdit, DEFAULT_RESUME, deliverReport, EMPTY_QUEUE, parseQueue, withoutReport, type Queue, type QueueIO, type Read } from './queue'
+import { cancelHandoff, HANDOFF_DELAY_MS, handoffDue, queueHandoff, runHandoff, type HandoffArgs, type HandoffIO } from './handoff'
+import { contextEdit, DEFAULT_RESUME, deliverReport, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, withoutReport, type Queue, type QueueIO, type Read } from './queue'
 import {
   activeReviews,
   appendFacts,
@@ -49,6 +50,7 @@ const PLUGIN = 'context-editor'
 const LIST = 'context_list'
 const EDIT = 'context_edit'
 const TAG = 'context_tag'
+const HANDOFF = 'context_handoff'
 // [SP_CTX_01_12]
 export const MARKER = `${PLUGIN}: apply queued edits`
 const HEARTBEAT_MS = 5_000
@@ -113,6 +115,24 @@ const TAG_TARGET = {
   index: { type: 'integer', description: `Target: a row index from ${LIST}.` },
 }
 
+// [SP_CTX_02_19]
+export const HANDOFF_DESCRIPTION = `Move this conversation into a new session and continue there, so a cleaned context survives --resume.
+
+mode "transcript" (default): the conversation as you see it now, with the edits you queued with ${EDIT} applied, becomes a new session the host opens; on any failure the "document" way is used.
+mode "document": the new session starts from "document", your handoff text (the person's task and constraints verbatim, decisions in force, facts, numbers, paths, open questions, the next step), sent as its first prompt; without it the mod asks the model for one. Give "document" with "transcript" too, as the fallback.
+
+It runs when your turn ends: after this call, end your turn at once with a one-line status. Unless "resume" is false, the new session goes on with "resume_prompt" (default: "${DEFAULT_RESUME}").`
+
+const HANDOFF_SCHEMA = {
+  type: 'object',
+  properties: {
+    mode: { type: 'string', enum: ['transcript', 'document'], description: 'How to build the new session (default "transcript").' },
+    document: { type: 'string', maxLength: MAX_DOCUMENT, description: 'Your handoff document: the start of a "document" session, the fallback of a "transcript" one.' },
+    resume: { type: 'boolean', description: 'Continue in the new session at once (default true).' },
+    resume_prompt: { type: 'string', maxLength: MAX_TEXT, description: 'What the new session is told to continue with.' },
+  },
+}
+
 const TAG_SCHEMA = {
   type: 'object',
   properties: {
@@ -142,6 +162,8 @@ const nudged = { level: -1 }
 const boundary = { trusted: false }
 // [SP_CTX_02_18] What the conversation's start was when the agent last listed it.
 const listed: { key?: string } = {}
+// [SP_CTX_02_21] One RunHandoff scheduled or running in this process at a time.
+const handoff = { scheduled: false, turnsStarted: 0, inTurn: false, requestTurn: -1 }
 // [SP_CTX_02] One serial chain per file: no two read-modify-writes overlap.
 const chains = new Map<string, Promise<unknown>>()
 
@@ -337,6 +359,140 @@ function aliasIO($: EngineInterface): AliasIO {
   }
 }
 
+async function readQueueAt($: EngineInterface, dir: string): Promise<Read<Queue>> {
+  const path = `${dir}/pending.json`
+  if (!(await $.fs.exists(path))) return { state: 'missing', value: { ...EMPTY_QUEUE } }
+  try {
+    return parseQueue(await $.fs.read(path))
+  } catch (err) {
+    return { state: 'unreadable', reason: String(err) }
+  }
+}
+
+// [SP_CTX_02_21] The transcript directory holding `<id>.jsonl`, under the
+// host's configuration directory.
+async function findTranscript($: EngineInterface, id: string): Promise<string | undefined> {
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
+  const ran = await $.process
+    .run(['sh', '-c', 'for f in "$1"/projects/*/"$2".jsonl; do [ -f "$f" ] && dirname "$f" && exit 0; done; exit 1', 'sh', config, id])
+    .catch(() => ({ exitCode: -1, stdout: '' }))
+  return ran.exitCode === 0 && ran.stdout.trim() ? ran.stdout.trim() : undefined
+}
+
+// [SP_CTX_02_15] The owner-only storage of another session, for the handoff.
+async function storageFor($: EngineInterface, id: string): Promise<string | undefined> {
+  const home = await $.env.get('HOME')
+  if (!home) return undefined
+  const dir = `${home}/.claude/${PLUGIN}/${id}`
+  const ran = await $.process.run(['sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$1"', 'sh', dir]).catch(() => ({ exitCode: -1 }))
+  return ran.exitCode === 0 ? dir : undefined
+}
+
+function newUuid(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto
+  if (c?.randomUUID) return c.randomUUID()
+  const hex = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16))
+  hex[12] = '4'
+  hex[16] = ((parseInt(hex[16]!, 16) & 3) | 8).toString(16)
+  const h = hex.join('')
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+}
+
+function handoffIO($: EngineInterface): HandoffIO {
+  return {
+    now: () => Date.now(),
+    newId: newUuid,
+    sessionId: () => $.session.id(),
+    storageDir: () => ensureStorage($),
+    turnsStarted: () => handoff.turnsStarted,
+    inTurn: () => handoff.inTurn,
+    readQueue: () => readQueue($),
+    updateQueue: (dir, change) =>
+      serial('queue', async () => {
+        const read = await readQueueAt($, dir)
+        if (read.state !== 'unreadable') await $.fs.write(`${dir}/pending.json`, JSON.stringify(change(read.value)))
+      }),
+    rows: () => conversation($),
+    readApi: () => apiMessages($),
+    readTags: () => readTags($),
+    cwd: () => $.session.cwd(),
+    findTranscript: id => findTranscript($, id),
+    prepareStorage: id => storageFor($, id),
+    writeMedia: (path, data) => writeMedia($, path, data),
+    writeText: (path, text) => writeText($, path, text),
+    rename: async (from, to) => ((await $.process.run(['mv', from, to]).catch(() => ({ exitCode: -1 }))).exitCode === 0),
+    remove: async path => {
+      await $.process.run(['rm', '-rf', '--', path])
+    },
+    copyRegistries: async (from, to) => {
+      await $.process.run(['sh', '-c', 'umask 077; for f in tags.json aliases.json; do [ -f "$1/$f" ] && cp "$1/$f" "$2/$f"; done; true', 'sh', from, to])
+    },
+    runCommand: async (command, args) => {
+      await $.command.run({ command, args })
+    },
+    fork: async prompt => {
+      const r = await $.model.fork({ prompt })
+      return r.isAnswered ? r.text : undefined
+    },
+    // A refused prompt resolves with `drop`; the handoff treats it as a failure.
+    submit: async text => {
+      const entered = await $.prompt.submit({ text })
+      if (entered.drop !== undefined) throw new Error(String(entered.drop))
+    },
+    toast: text => $.ui.toast(text),
+  }
+}
+
+// [SP_CTX_02_21] Starts RunHandoff after HANDOFF_DELAY, from no hook the turn
+// waits on: the host refuses its commands there.
+function scheduleHandoff($: EngineInterface): void {
+  if (handoff.scheduled) return
+  handoff.scheduled = true
+  // Turns that start from here on put the handoff off ([SP_CTX_04_04]).
+  const turns = handoff.turnsStarted
+  $.clock.after(HANDOFF_DELAY_MS, () => {
+    let again = false
+    void runHandoff(handoffIO($), turns)
+      .then(out => {
+        // the old session's queue was cleared behind writeQueue: clear its status line too
+        if (out.outcome === 'transcript' || out.outcome === 'document') $.ui.status(undefined)
+        // put off by a turn that has already ended: no later turn end would start it
+        again = out.outcome === 'deferred' && !handoff.inTurn
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        handoff.scheduled = false
+        if (again) scheduleHandoff($)
+      })
+  })
+}
+
+// [SP_CTX_02_19] [SP_CTX_02_20] Queues a handoff for the agent or the person.
+// [SP_CTX_04_04] Drops a request that has not started; `onlyBy` limits it to one requester.
+async function dropHandoff($: EngineInterface, why: string, onlyBy?: 'agent' | 'person'): Promise<boolean> {
+  if (!(await ensureStorage($))) return false
+  return serial('queue', async () => {
+    const read = await readQueue($)
+    if (read.state === 'unreadable' || !read.value.handoff || (onlyBy && read.value.handoff.by !== onlyBy)) return false
+    const next = cancelHandoff(read.value, why, Date.now())
+    if (next === read.value) return false
+    await writeQueue($, next)
+    return true
+  })
+}
+
+async function requestHandoff($: EngineInterface, args: HandoffArgs, by: 'agent' | 'person') {
+  if (!(await ensureStorage($))) return { deny: `storage unavailable: ${storage.reason}` }
+  return serial('queue', async () => {
+    const read = await readQueue($)
+    if (read.state === 'unreadable') return { deny: `the queue cannot be read (${read.reason}).` }
+    const out = queueHandoff(read.value, args, by, Date.now())
+    if ('deny' in out) return out
+    await writeQueue($, out.queue)
+    return { mode: out.mode }
+  })
+}
+
 function tagIO($: EngineInterface): TagIO {
   return {
     rows: () => conversation($),
@@ -411,6 +567,8 @@ export const register: Register = on => {
     })
     await $.tool.register({ name: EDIT, description: EDIT_DESCRIPTION, inputSchema: EDIT_SCHEMA, isDeferred: false })
     await $.tool.register({ name: TAG, description: TAG_DESCRIPTION, inputSchema: TAG_SCHEMA, isDeferred: false })
+    await $.tool.register({ name: HANDOFF, description: HANDOFF_DESCRIPTION, inputSchema: HANDOFF_SCHEMA, isDeferred: false })
+    await $.command.register({ name: 'handoff', description: 'Move this conversation into a new session: cleaned transcript, or a handoff document', argumentHint: '[document|cancel]' })
     await prepareStorage($)
     $.clock.every(HEARTBEAT_MS, () => void ensureStorage($).then(() => writeReady($)))
     return next(e)
@@ -465,6 +623,32 @@ export const register: Register = on => {
     return 'deny' in out ? deny(out.deny) : { result: out.result }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`tagging failed: ${next.error.kind}`)))
 
+  // [SP_CTX_02_21] Turns that start while a handoff waits put it off.
+  on('turn.start', async ($, e, next) => {
+    handoff.turnsStarted += 1
+    handoff.inTurn = true
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // [SP_CTX_02_19] A regex: the host's generated types do not list this tool
+  // until a session has loaded it; a string literal is the goal once they do.
+  on('tool.call', { tool: /^mcp__context-editor__context_handoff$/ }, async ($, e) => {
+    const out = await requestHandoff($, { ...(e as unknown as HandoffArgs), agentId: e.agentId }, 'agent')
+    if ('deny' in out) return deny(out.deny)
+    handoff.requestTurn = handoff.turnsStarted
+    return { result: `Handoff queued (${out.mode}): it runs when this turn ends. End your turn now with a one-line status.` }
+  }).catch(($, e, next) => (next.called ? next(e) : deny(`handoff failed: ${next.error.kind}`)))
+
+  // [SP_CTX_02_20]
+  on('command.run', { command: 'handoff' }, async ($, e) => {
+    const arg = e.args.trim()
+    if (arg === 'cancel') return { text: `${PLUGIN}: ${(await dropHandoff($, 'cancelled by the person')) ? 'handoff cancelled' : 'no handoff waiting'}` }
+    const out = await requestHandoff($, { mode: arg === 'document' ? 'document' : 'transcript' }, 'person')
+    if ('deny' in out) return { text: `${PLUGIN}: ${out.deny}` }
+    scheduleHandoff($)
+    return { text: `${PLUGIN}: handoff (${out.mode}) starts` }
+  }).catch(($, e, next) => (next.called ? next(e) : { text: `${PLUGIN}: handoff failed: ${next.error.kind}` }))
+
   // [SP_CTX_02_12] The row is stored first and returned unchanged; the rules
   // run after it, on the registry's chain, and never hold the row back.
   on('session.append', async ($, e, next) => {
@@ -484,11 +668,23 @@ export const register: Register = on => {
 
   // [SP_CTX_02_12] The turn counter that review ttls are measured in.
   on('turn.complete', async ($, e, next) => {
+    // nothing starts while the turn ends: the flag is down whatever `next` does
+    if (!e.agentId) handoff.inTurn = false
     const done = await next(e)
     if (!e.agentId && !e.isAborted)
       void serial('tags', async () => {
         if (await ensureStorage($)) await countTurn(tagIO($))
       }).catch(() => undefined)
+    if (!e.agentId && e.isAborted && handoff.requestTurn === handoff.turnsStarted)
+      // [SP_CTX_04_04] The agent's request dies with the turn it was made in, when the person interrupts it.
+      void dropHandoff($, 'the turn was interrupted', 'agent').catch(() => undefined)
+    else if (!e.agentId)
+      // [SP_CTX_02_21] After any other turn, interrupted or not, a waiting handoff goes on.
+      void (async () => {
+        if (!(await ensureStorage($))) return
+        const read = await readQueue($)
+        if (read.state !== 'unreadable' && handoffDue(read.value, Date.now())) scheduleHandoff($)
+      })().catch(() => undefined)
     return done
   }).catch(($, e, next) => next(e))
 

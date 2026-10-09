@@ -14,6 +14,7 @@ import {
   touchesPin,
   type ApplyReport,
   type Boundary,
+  type MediaRef,
   type QueuedEdit,
 } from './edits'
 import { DEFAULT_RESUME, EMPTY_QUEUE, type Queue, type Read } from './queue'
@@ -63,42 +64,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const q = read.value
   if (!q.edits.length) return { skip: 'context-editor: no queued edits' }
 
-  // [SP_CTX_02_07] [SP_CTX_03_01] No edit touches a pinned target, however
-  // it was queued; without a readable registry no edit can be checked.
-  const tags = await io.readTags()
-  const refused: string[] = []
-  const edits: QueuedEdit[] = []
-  if (tags.state === 'unreadable') refused.push(...q.edits.map(e => `${describeEdit(e)}: tag registry unreadable`))
-  else {
-    const pinned = pinnedTargets(messages, tags.value)
-    for (const e of q.edits) {
-      if (touchesPin(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${PINNED}`)
-      else edits.push(e)
-    }
-  }
+  if (q.handoff) return { skip: 'context-editor: handoff pending' }
 
+  const { edits, refused } = screenPinned(messages, q.edits, await io.readTags())
   const { found, knownResults, unmatchedPromptMedia } = collectMedia(await io.readApi())
   const mediaOwners = new Set(found.keys())
   const id = io.now()
-  const replaced = replacedOwners(messages, edits)
-  const media = new Map<string, string[]>()
-  let n = 0
-  // An owner whose media cannot all be written keeps none: applyEdits then
-  // refuses every edit that would replace it.
-  for (const [key, refs] of found) {
-    if (!replaced.has(key)) continue
-    const paths: string[] = []
-    for (const ref of refs) {
-      n += 1
-      const path = `${io.dir}/${id}/${n}.${EXT[ref.mediaType] ?? 'bin'}`
-      if (!ref.data || !(await io.writeMedia(path, ref.data))) {
-        paths.length = 0
-        break
-      }
-      paths.push(path)
-    }
-    if (paths.length) media.set(key, paths)
-  }
+  const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.dir}/${id}`, io.writeMedia)
 
   const options = { knownResults, unmatchedPromptMedia }
   const archive = `${io.dir}/${id}.json`
@@ -186,6 +158,52 @@ function withoutMediaData(value: unknown, note: string): unknown {
   return Object.fromEntries(
     Object.entries(value).map(([k, v]) => [k, (k === 'base64' || k === 'data') && typeof v === 'string' && v.length >= MEDIA_DATA && BASE64.test(v) ? note : withoutMediaData(v, note)]),
   )
+}
+
+// [SP_CTX_02_07] [SP_CTX_03_01] No edit touches a pinned target, however
+// it was queued; without a readable registry no edit can be checked.
+export function screenPinned(
+  messages: readonly SessionMessage[],
+  queued: readonly QueuedEdit[],
+  tags: Read<TagRegistry>,
+): { edits: QueuedEdit[]; refused: string[] } {
+  if (tags.state === 'unreadable') return { edits: [], refused: queued.map(e => `${describeEdit(e)}: tag registry unreadable`) }
+  const pinned = pinnedTargets(messages, tags.value)
+  const edits: QueuedEdit[] = []
+  const refused: string[] = []
+  for (const e of queued) {
+    if (touchesPin(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${PINNED}`)
+    else edits.push(e)
+  }
+  return { edits, refused }
+}
+
+// [SP_CTX_01_06] Writes the media of the owners the edits replace into
+// `<base>/<n>.<ext>`. An owner whose media cannot all be written keeps none:
+// applyEdits then refuses every edit that would replace it.
+export async function archiveMedia(
+  found: ReadonlyMap<string, readonly MediaRef[]>,
+  replaced: ReadonlySet<string>,
+  base: string,
+  writeMedia: (path: string, base64: string) => Promise<boolean>,
+): Promise<Map<string, string[]>> {
+  const media = new Map<string, string[]>()
+  let n = 0
+  for (const [key, refs] of found) {
+    if (!replaced.has(key)) continue
+    const paths: string[] = []
+    for (const ref of refs) {
+      n += 1
+      const path = `${base}/${n}.${EXT[ref.mediaType] ?? 'bin'}`
+      if (!ref.data || !(await writeMedia(path, ref.data))) {
+        paths.length = 0
+        break
+      }
+      paths.push(path)
+    }
+    if (paths.length) media.set(key, paths)
+  }
+  return media
 }
 
 // The queue once a batch was handled: the batch cleared, its report added

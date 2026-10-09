@@ -48,6 +48,7 @@
 - [x] [Phase 7 — Псевдоніми викликів](#PL_CTX_P7)
 - [x] [Phase 2 — Медіа в результатах інструментів](#PL_CTX_P2)
 - [x] [Phase 8 — Поточна розмова, опис context_edit, архів без дубля медіа](#PL_CTX_P8)
+- [x] [Phase 9 — Передача в нову сесію](#PL_CTX_P9)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
@@ -126,6 +127,18 @@ Pseudocode sketch:
 - `register.ts`: одне читання поточної розмови для `context_list`, `context_edit`, тегів, закріплень і лічильника `review`; хук запису межі для компактизацій не редактора; коротший опис `context_edit`, експорт описів для тесту.
 - рев'ю раунд 4: правки й теги за індексом з переліку, зробленого до зміни межі, відхиляються; межа іншого процесу не довіряється; предикат спостерігача — чиста `observedBoundary`; архів замінює лише рядки в алфавіті base64.
 
+### Phase 9 — Передача в нову сесію [DONE]  {#PL_CTX_P9}
+
+**Depends on:** Phase 8 (поточна розмова); спайк [context_editor_session](./context_editor_session.spike.md); [C_CTX_DEC_11](./context_editor.concept.md#C_CTX_DEC_11), [C_CTX_DEC_12](./context_editor.concept.md#C_CTX_DEC_12), [C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)
+**Implements:** [SP_CTX_01_15](./context_editor.sp.md#SP_CTX_01_15), [01_16](./context_editor.sp.md#SP_CTX_01_16), поле `handoff` у [01_04](./context_editor.sp.md#SP_CTX_01_04), [02_19](./context_editor.sp.md#SP_CTX_02_19)–[02_24](./context_editor.sp.md#SP_CTX_02_24), skip у [02_07](./context_editor.sp.md#SP_CTX_02_07), константи [01_12](./context_editor.sp.md#SP_CTX_01_12)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки BuildTranscript, CheckTranscript, CheckSwitched, context_handoff, HandleCompaction «передача в черзі», RunHandoff «запасний шлях»; [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Передача транскриптом», «Передача документом», «Запасний шлях», «Команда людини»; регрес — «Стиснення в межах сесії», «Перегляд після компактизації»
+
+- `hooks/handoff.ts` (новий): `buildTranscript`, `checkTranscript`, `checkSwitched`, розбір і постановка HandoffRequest (`contextHandoff`), оркестрація `runHandoff` через порт `HandoffIO` (читання черги, CurrentRows, API-подання, пошук транскрипту, запис файлу, сховище нової сесії, `command.run`, `session.id`, `model.fork`, `prompt.submit`, тост);
+- `hooks/queue.ts`: поле `handoff` у Queue, його перевірка при розборі; `hooks/compaction.ts`: skip `handoff pending`;
+- `hooks/register.ts`: інструмент `context_handoff`, команда `/handoff`, запуск RunHandoff після `turn.complete` з паузою HANDOFF_DELAY, зв'язування `HandoffIO` з `$`;
+- `tests/handoff.test.ts`: чисті функції й оркестрація через порт (успіх, обидва збої, повернення в стару сесію);
+- живі сценарії — драйвер `ce.sh`; збирач і перевірки спайку — `.dev_flow/cache/session-transcript/`.
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -151,7 +164,6 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 - Збереження правок після `claude --resume` ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05)) — return when: вийде версія Claude Code, у якій API компактизації дає позначити рядок-підсумок або відновлення поважає компактизацію від обробника.
 - Налаштовувані пороги нагадувань ([SP_CTX_DEC_03](./context_editor.sp.md#SP_CTX_DEC_03)) — return when: розробник попросить змінювати пороги без правки коду.
 - Поширення через маркетплейс (`.claude-plugin/marketplace.json`) — return when: розробник вирішить ділитися модом.
-- Рев'ю раунд 4 повного обсягу — return when: перед наступним комітом коду (раунд по змінах фаз 2–6).
 
 ## Design Decisions  {#PL_CTX_DEC}
 
@@ -218,3 +230,5 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-09 | Фаза 2 виконана: три живі сценарії медіа pass, обидва припущення підтверджено; backlog — старі рядки в перегляді, обрізаний опис context_edit, подвійний base64 в архіві |
 | 2026-10-09 | Фаза 8: три знахідки фази 2 з backlog стали фазою (рішення розробника — виправити всі); спайк межі компактизації → SP_CTX_DEC_07 |
 | 2026-10-09 | Фаза 8 виконана: 91 + 6 тестів; живий сценарій «Перегляд після компактизації» pass; рев'ю раунд 4 FAIL → виправлено, раунд 5 PASS. Не спостерігалось наживо: автоматична компактизація посеред ходу |
+| 2026-10-09 | Фаза 9 — передача в нову сесію (C_CTX §3.6, SP_CTX 01_15–01_16, 02_19–02_24); пункт backlog про нову сесію став фазою |
+| 2026-10-09 | Фаза 9 виконана: 115 + 6 тестів; живі сценарії передачі pass; рев'ю раунди 6–8 FAIL → виправлено (останнє — механічне підтвердження і живий прогін) |

@@ -5,7 +5,7 @@ updated: 2026-10-09
 skills:
   - file: plugin-hooks.md
     skill: ClaudeCodePluginHooks
-    topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests]
+    topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript]
     source: implementation
     updated: 2026-10-09
     promotion: candidate
