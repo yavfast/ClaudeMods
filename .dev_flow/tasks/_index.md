@@ -4,4 +4,4 @@ Each file here is the shared working space for one feature or fix; the dashboard
 
 ## Active Tasks
 
-- [task_C_CTX](task_C_CTX.md) — `claude-session-bd80217a` — `verify` — Редактор контексту агента: концепт і специфікація
+- [task_C_CTX](task_C_CTX.md) — `claude-session-bd80217a` — `plan` — Редактор контексту агента: концепт і специфікація

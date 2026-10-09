@@ -4,10 +4,10 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
-- `/dev-flow resume task_C_CTX` — `plan` — next: фаза 13 PL_CTX (покрокове вибіркове чищення) — design sign-off, потім код — branch `feat/context-editor` — 2026-10-09
+- `/dev-flow resume task_C_CTX` — `plan` — next: запитати розробника про наступну роботу (фази 4–5, I, решта K, знахідка M — поріг нагадування рахує незмінну частину контексту); фаза 13 закомічена, живий Verify «Нагадування з початку» pending — branch `feat/context-editor`, clean after e7269d9 — 2026-10-09 23:55
 
 ## Active Tasks
 
 | Task | Phase | Status | Contributors | Updated |
 |------|-------|--------|--------------|---------|
-| [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan | in-progress | claude-session-bd80217a, claude-session-8e44a3be, claude-session-a3902d56 | 2026-10-09 19:30 |
+| [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan | in-progress | claude-session-bd80217a, claude-session-8e44a3be, claude-session-a3902d56 | 2026-10-09 23:55 |
