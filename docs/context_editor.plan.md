@@ -47,7 +47,7 @@
 - [x] [Phase 2 — Медіа в результатах інструментів](#PL_CTX_P2)
 - [x] [Phase 8 — Поточна розмова, опис context_edit, архів без дубля медіа](#PL_CTX_P8)
 - [x] [Phase 9 — Передача в нову сесію](#PL_CTX_P9)
-- [ ] [Phase 10 — Один плагін, компактизація командою, передача засівом](#PL_CTX_P10)
+- [x] [Phase 10 — Один плагін, компактизація командою, передача засівом](#PL_CTX_P10)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
@@ -138,7 +138,7 @@ Pseudocode sketch:
 - `tests/handoff.test.ts`: чисті функції й оркестрація через порт (успіх, обидва збої, повернення в стару сесію);
 - живі сценарії — драйвер `ce.sh`; збирач і перевірки спайку — `.dev_flow/cache/session-transcript/`.
 
-### Phase 10 — Один плагін, компактизація командою, передача засівом [TODO]  {#PL_CTX_P10}
+### Phase 10 — Один плагін, компактизація командою, передача засівом [DONE]  {#PL_CTX_P10}
 
 **Depends on:** Phase 9; спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md) (Entries 1–4); [C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02), [C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09), [C_CTX_DEC_11](./context_editor.concept.md#C_CTX_DEC_11)–[C_CTX_DEC_14](./context_editor.concept.md#C_CTX_DEC_14); виконується перед фазами 4 і 5 ([PL_CTX_DEC_04](#PL_CTX_DEC_04))
 **Implements:** преамбула [SP_CTX_02](./context_editor.sp.md#SP_CTX_02) (команди в черзі хоста, походження команди, лічильник ходів); [SP_CTX_01_05](./context_editor.sp.md#SP_CTX_01_05) (`mediaFiles` засіву), [01_06](./context_editor.sp.md#SP_CTX_01_06), [01_07](./context_editor.sp.md#SP_CTX_01_07), [01_12](./context_editor.sp.md#SP_CTX_01_12), [01_15](./context_editor.sp.md#SP_CTX_01_15) (`owner`, `handoffInFlight`, `handoffScheduled`, Due), вилучення [01_16](./context_editor.sp.md#SP_CTX_01_16), [01_17](./context_editor.sp.md#SP_CTX_01_17); [02_06](./context_editor.sp.md#SP_CTX_02_06) Flush, [02_07](./context_editor.sp.md#SP_CTX_02_07), [02_12](./context_editor.sp.md#SP_CTX_02_12) (копії рядків, лічильник ходів реєстру), [02_15](./context_editor.sp.md#SP_CTX_02_15), [02_18](./context_editor.sp.md#SP_CTX_02_18), [02_19](./context_editor.sp.md#SP_CTX_02_19)–[02_24](./context_editor.sp.md#SP_CTX_02_24), вилучення [02_25](./context_editor.sp.md#SP_CTX_02_25), [02_26](./context_editor.sp.md#SP_CTX_02_26); [03_02](./context_editor.sp.md#SP_CTX_03_02); [04_01](./context_editor.sp.md#SP_CTX_04_01), [04_04](./context_editor.sp.md#SP_CTX_04_04); [SP_CTX_DEC_04](./context_editor.sp.md#SP_CTX_DEC_04), [DEC_08](./context_editor.sp.md#SP_CTX_DEC_08), [DEC_09](./context_editor.sp.md#SP_CTX_DEC_09)
@@ -190,6 +190,11 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 
 - Збереження правок після `claude --resume` ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05)) — return when: вийде версія Claude Code, у якій API компактизації дає позначити рядок-підсумок або відновлення поважає компактизацію від обробника.
 - Налаштовувані пороги нагадувань ([SP_CTX_DEC_03](./context_editor.sp.md#SP_CTX_DEC_03)) — return when: розробник попросить змінювати пороги без правки коду.
+- Довіра до межі після гарячого перезавантаження модуля (знахідка G Verify фази 10; з фази 8): `boundary.trusted` лише в пам'яті — перезавантажений модуль того самого процесу бачить увесь транскрипт, перегляд показує оригінали до межі, правки на них відхиляються. Напрям: ідентичність процесу хоста в `boundary.json` (SP_CTX_02_18). — return when: перед наступною фазою, що чіпає перегляд або компактизацію, або коли розробник попросить (заважає живим тестам з гарячим перезавантаженням).
+- Чесний звіт при 0 застосованих правок (знахідка H): `charsAfter` рахується до скасування, звіт пише «~N tokens freed» при `Not compacted`. — return when: разом із пунктом про межу.
+- Псевдоніми й теги змінених пар після передачі (N1): реєстри копіюються як є, хоча засів дає зміненим парам новий id — `ref cN` такої пари дає TARGET_NOT_FOUND замість UNKNOWN_REF (SP_CTX_02_21, крок реєстрів; RebindTags/pruneAliases). — return when: разом із пунктом про межу.
+- R1 і сповіщення IDE (I): у VS Code тег `pin` отримав рядок «user opened file»; поза VS Code `unclassified` мають лише промпти людини. — return when: перевірка у VS Code на 2.1.295 (після оновлення розширення).
+- `tsc` фази 10: 4 помилки TS2353 — поле `isDeferred` у `$.tool.register` (`register.ts`), якого немає в `ToolSpec` 2.1.295; були вже в b090f48 — return when: наступна правка реєстрації інструментів або перевірка, чи хост ще відкладає інструменти без цього поля.
 - Поширення через маркетплейс (`.claude-plugin/marketplace.json`) — return when: розробник вирішить ділитися модом.
 
 ## Design Decisions  {#PL_CTX_DEC}
@@ -282,3 +287,4 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-09 | Рев'ю раунд 11: «Запасний шлях до очищення» — в обох хостах без документа агента |
 | 2026-10-09 | Рев'ю раунд 12: ескіз фази 10 — `inTurn` скидається після кожного ходу, перевірка перед командою, HandedOff першим після звірки; Implements 01_15 повний |
 | 2026-10-09 | Рев'ю раунд 14: Verify — ще два рядки 05_04; лічильник ходів з `lastTurnAborted` |
+| 2026-10-09 | Фаза 10 виконана: 203 тести; рев'ю коду раунди 16–19; Verify FAIL (A, B, C, D, E, F) → виправлено (спайк Entry 5 — злиття за `message.id`) → повторний Verify PASS у TUI і stream-json; backlog — довіра межі після перезавантаження (G), звіт при 0 правок (H), реєстри після передачі (N1), R1 у VS Code (I) |

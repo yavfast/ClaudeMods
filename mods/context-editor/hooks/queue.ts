@@ -15,6 +15,8 @@ export type HandoffRequest = {
   by: 'agent' | 'person'
   state: 'queued' | 'running'
   at: number
+  // [SP_CTX_01_15] the module instance that claimed it; diagnostics only, no decision reads it
+  owner?: string
 }
 
 // [SP_CTX_01_04]
@@ -79,7 +81,8 @@ function isHandoff(raw: unknown): boolean {
     h.resumePrompt.length > 0 &&
     (h.by === 'agent' || h.by === 'person') &&
     (h.state === 'queued' || h.state === 'running') &&
-    typeof h.at === 'number'
+    typeof h.at === 'number' &&
+    (h.owner === undefined || (typeof h.owner === 'string' && h.owner.length > 0))
   )
 }
 

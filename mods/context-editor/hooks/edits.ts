@@ -86,11 +86,18 @@ export function parseBoundary(text: string): Boundary | undefined {
 // head is not found (no boundary, out of the window, fingerprints differ).
 export function currentRows(transcript: readonly SessionMessage[], b: Boundary | undefined): readonly SessionMessage[] {
   if (!b) return transcript
+  const p = boundaryAt(transcript, b.head, b.count)
+  return p === undefined ? transcript : transcript.slice(p)
+}
+
+// [SP_CTX_02_18] BoundaryAt: the largest p where `head` starts with at least
+// `count` rows from p on; shared by CurrentRows and CheckSeeded ([SP_CTX_02_24]).
+export function boundaryAt(transcript: readonly SessionMessage[], head: readonly string[], count: number): number | undefined {
   const prints = transcript.map(fingerprint)
-  for (let p = transcript.length - b.count; p >= 0; p--) {
-    if (b.head.every((h, k) => prints[p + k] === h)) return transcript.slice(p)
+  for (let p = transcript.length - count; p >= 0; p--) {
+    if (head.every((h, k) => prints[p + k] === h)) return p
   }
-  return transcript
+  return undefined
 }
 
 export function oneLine(s: string, max: number): string {
@@ -181,17 +188,17 @@ export function dropOwnCalls(
   }
   const ids = new Set([...own].filter(id => !kept.has(id)))
   if (ids.size === 0) return [...input]
-  return input
-    .map(r => {
-      const hasUse = r.toolUses.some(u => ids.has(u.tool_use_id))
-      const hasResult = (r.toolResults ?? []).some(t => ids.has(t.tool_use_id))
-      if (!hasUse && !hasResult) return r
-      return plain(r, {
-        toolUses: r.toolUses.filter(u => !ids.has(u.tool_use_id)).map(stripUse),
-        toolResults: r.toolResults?.filter(t => !ids.has(t.tool_use_id)).map(stripResult),
-      })
+  const dropped = input.map(r => {
+    const hasUse = r.toolUses.some(u => ids.has(u.tool_use_id))
+    const hasResult = (r.toolResults ?? []).some(t => ids.has(t.tool_use_id))
+    if (!hasUse && !hasResult) return r
+    return plain(r, {
+      toolUses: r.toolUses.filter(u => !ids.has(u.tool_use_id)).map(stripUse),
+      toolResults: r.toolResults?.filter(t => !ids.has(t.tool_use_id)).map(stripResult),
     })
-    .filter(r => r.handle !== undefined || !isEmpty(r))
+  })
+  // [SP_CTX_02_04] a rebuilt assistant row splits its response (pitfall 30)
+  return rebuildSplitResponses(dropped).filter(r => r.handle !== undefined || !isEmpty(r))
 }
 
 function findToolUse(rows: readonly SessionMessage[], id: string): number {
@@ -406,6 +413,11 @@ export function locate(rows: readonly SessionMessage[], anchor: string, hint: nu
   if (rows[hint] && fingerprint(rows[hint]!) === anchor) return hint
   const hits = rows.flatMap((r, i) => (fingerprint(r) === anchor ? [i] : []))
   return hits.length === 1 ? hits[0]! : -1
+}
+
+// [SP_CTX_02_04] "Rebuild a row": the same fields, without `handle`.
+export function rebuild(row: SessionMessage): SessionMessage {
+  return plain(row, {})
 }
 
 // A row without `handle` is rebuilt by the host from these fields alone.
@@ -735,9 +747,37 @@ export function applyEdits(
     if (known && !results.every(t => known.has(t.tool_use_id))) return r
     return plain(r, {})
   })
-  const out = relinked.filter(r => r.handle !== undefined || !isEmpty(r))
+  const out = rebuildSplitResponses(relinked).filter(r => r.handle !== undefined || !isEmpty(r))
   report.charsAfter = totalChars(out)
   return { rows: out, report }
+}
+
+// [SP_CTX_02_04] The host merges assistant rows of one model response (one
+// `message.id`) when it builds a request, even across other rows; a rebuilt
+// row gets a synthetic id and splits the response, and a later row of it kept
+// with its handle is pulled back to the earlier message, leaving its tool_use
+// without the adjacent result ("Tool result missing"; plugin-hooks pitfall
+// 30). So in each stretch between prompt rows (a user row without results that
+// is not a result row a drop left empty),
+// every assistant row kept with a handle after the first rebuilt or inserted
+// assistant row is rebuilt too: its thinking blocks go, as in any rebuilt row,
+// and the caller drops it when that leaves it empty. Result rows keep their own
+// rule (media keeps the handle).
+export function rebuildSplitResponses(rows: readonly SessionMessage[]): SessionMessage[] {
+  let split = false
+  return rows.map(r => {
+    if (r.role === 'user') {
+      // a prompt row ends the stretch; a result row a drop emptied is none
+      // (it goes later, with the other rebuilt rows left empty)
+      if (!(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))) split = false
+      return r
+    }
+    if (r.handle === undefined) {
+      split = true
+      return r
+    }
+    return split ? plain(r, {}) : r
+  })
 }
 
 // [SP_CTX_01_05] The report as the model reads it.

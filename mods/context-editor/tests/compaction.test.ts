@@ -1,6 +1,17 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { archiveText, failedQueue, handleCompaction, MEDIA_DATA, observedBoundary, type CompactionIO } from '../hooks/compaction'
+import {
+  archiveText,
+  compactionFailure,
+  compactionRoute,
+  failedQueue,
+  handleCompaction,
+  HANDOFF_MARKER,
+  MARKER,
+  MEDIA_DATA,
+  observedBoundary,
+  type CompactionIO,
+} from '../hooks/compaction'
 import { boundaryOf, fingerprint, prepare, type Boundary } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
@@ -195,15 +206,46 @@ test('archiveText keeps long data that is not base64, even beside archived media
   expect(back[0]!.rows[0]!.toolUses[0]!.result).toEqual({ data: prose, image: { base64: '[media archived: /s/1/1.png]' } })
 })
 
-test('observedBoundary: a standing compaction of the main conversation sets the boundary; the rest do not', async () => {
+test('RecordBoundary — спостерігач: manual, auto, plugin with other instructions set the boundary; the mod\'s own, precompute, a subagent, a skip, no rows do not', async () => {
   const rows = conversation()
   const done = { messages: rows }
-  expect(observedBoundary({ trigger: 'manual' }, done, 'M')).toEqual(boundaryOf(rows))
-  expect(observedBoundary({ trigger: 'auto' }, done, 'M')).toEqual(boundaryOf(rows))
-  expect(observedBoundary({ trigger: 'plugin', instructions: 'other' }, done, 'M')).toEqual(boundaryOf(rows))
-  expect(observedBoundary({ trigger: 'plugin', instructions: 'M' }, done, 'M')).toBeUndefined()
-  expect(observedBoundary({ trigger: 'precompute' }, done, 'M')).toBeUndefined()
-  expect(observedBoundary({ trigger: 'auto', agentId: 'sub' }, done, 'M')).toBeUndefined()
-  expect(observedBoundary({ trigger: 'manual' }, { skip: 'off' }, 'M')).toBeUndefined()
-  expect(observedBoundary({ trigger: 'manual' }, { messages: [] }, 'M')).toBeUndefined()
+  expect(observedBoundary({ trigger: 'manual' }, done)).toEqual(boundaryOf(rows))
+  expect(observedBoundary({ trigger: 'manual', instructions: 'keep the API notes' }, done)).toEqual(boundaryOf(rows))
+  expect(observedBoundary({ trigger: 'auto' }, done)).toEqual(boundaryOf(rows))
+  expect(observedBoundary({ trigger: 'plugin', instructions: 'other' }, done)).toEqual(boundaryOf(rows))
+  for (const trigger of ['manual', 'plugin', 'auto'])
+    for (const instructions of [MARKER, HANDOFF_MARKER]) expect(observedBoundary({ trigger, instructions }, done)).toBeUndefined()
+  expect(observedBoundary({ trigger: 'precompute' }, done)).toBeUndefined()
+  expect(observedBoundary({ trigger: 'auto', agentId: 'sub' }, done)).toBeUndefined()
+  expect(observedBoundary({ trigger: 'manual' }, { skip: 'off' })).toBeUndefined()
+  expect(observedBoundary({ trigger: 'manual' }, { messages: [] })).toBeUndefined()
+})
+
+test('HandleCompaction — збіг за інструкцією: MARKER under manual or plugin applies; with agentId or other instructions it passes', async () => {
+  expect(compactionRoute({ trigger: 'manual', instructions: MARKER })).toBe('apply')
+  expect(compactionRoute({ trigger: 'plugin', instructions: MARKER })).toBe('apply')
+  expect(compactionRoute({ trigger: 'auto', instructions: MARKER })).toBe('apply')
+  expect(compactionRoute({ trigger: 'manual', instructions: MARKER, agentId: 'sub' })).toBe('pass')
+  expect(compactionRoute({ trigger: 'manual', instructions: 'keep the API notes' })).toBe('pass')
+  expect(compactionRoute({ trigger: 'manual' })).toBe('pass')
+  expect(compactionRoute({ trigger: 'manual', instructions: HANDOFF_MARKER })).toBe('seed')
+})
+
+test('HandleCompaction — попереднє обчислення: precompute with MARKER or HANDOFF_MARKER passes on unchanged, even on failure', async () => {
+  expect(compactionRoute({ trigger: 'precompute', instructions: MARKER })).toBe('pass')
+  expect(compactionRoute({ trigger: 'precompute', instructions: HANDOFF_MARKER })).toBe('pass')
+  expect(compactionFailure({ trigger: 'precompute', instructions: MARKER })).toEqual({ pass: true })
+  expect(compactionFailure({ trigger: 'precompute', instructions: HANDOFF_MARKER })).toEqual({ pass: true })
+})
+
+test('HandleCompaction — збій гілки засіву: skip "seeding failed" at once, the queue untouched; a failed apply skips and records the failure', async () => {
+  expect(compactionFailure({ trigger: 'manual', instructions: HANDOFF_MARKER })).toEqual({ skip: 'context-editor: seeding failed', recordFailure: false })
+  expect(compactionFailure({ trigger: 'manual', instructions: MARKER })).toEqual({ skip: 'context-editor: applying the edits failed', recordFailure: true })
+  expect(compactionFailure({ trigger: 'manual', instructions: 'other' })).toEqual({ pass: true })
+  expect(compactionFailure({ trigger: 'manual', instructions: MARKER, agentId: 'sub' })).toEqual({ pass: true })
+})
+
+test('the markers explain themselves to the model', async () => {
+  expect(MARKER).toBe('context-editor: apply queued edits')
+  expect(HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation')
 })

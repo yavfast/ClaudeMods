@@ -53,7 +53,112 @@ test('collapse keeps one tool pair as the carrier of the summary', async () => {
   expect(out.length).toBe(7)
   expect(out[2]!.toolUses[0]!.tool_use_id.startsWith('a_ce')).toBe(true)
   expect(out[3]!.toolResults![0]!.text).toContain('4 rows collapsed')
-  expect(out[4]!.handle).toBe('h6')
+  // the next row keeps its content; after the inserted carrier in the same
+  // stretch it is rebuilt without its handle ([SP_CTX_02_04], pitfall 30)
+  expect(out[4]!.text).toBe('Conclusion: X is true.')
+  expect(out[4]!.handle).toBeUndefined()
+})
+
+// ---- [SP_CTX_02_04] one model response split by a rebuilt row (pitfall 30)
+
+// a prompt, then one response: a text row and two Reads, then their results;
+// b's result holds an image; after the next prompt, another response
+function response(): SessionMessage[] {
+  return [
+    { role: 'user', text: 'read both', toolUses: [], handle: 'p0' },
+    { role: 'assistant', text: 'Reading both files.', toolUses: [], handle: 't1' },
+    use('a', 'Read', 'u2'),
+    use('b', 'Read', 'u3'),
+    result('a', BIG, 'r4'),
+    result('b', '', 'r5'),
+    { role: 'assistant', text: '', toolUses: [], handle: 'thinking6' },
+    { role: 'user', text: 'next prompt', toolUses: [], handle: 'p7' },
+    { role: 'assistant', text: 'Later answer.', toolUses: [], handle: 't8' },
+    use('c', 'Read', 'u9'),
+    result('c', 'small', 'r10'),
+  ]
+}
+
+test('a split response: summarize the first Read; the second Read\'s row is rebuilt, its media result kept with handle', async () => {
+  const input = response()
+  const { queued } = prepare(input, [{ op: 'summarize', tool_use_id: 'a', summary: 'A says X' }])
+  const out = applyEdits(input, queued, '/arch.json', new Map(), new Set(['u:b']))
+  expect(out.report.applied).toEqual(['summarize a'])
+  const byId = (id: string) => out.rows.find(r => r.toolUses.some(u => u.tool_use_id === id))!
+  // before the first rebuilt row: kept
+  expect(out.rows[1]!.handle).toBe('t1')
+  expect(byId('b').handle).toBeUndefined()
+  expect(byId('b').toolUses[0]!.input).toEqual({ q: 'b' })
+  expect(out.rows.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'b'))!.handle).toBe('r5')
+  // a thinking-only row after it, rebuilt, is left empty and goes
+  expect(out.rows.some(r => r.handle === 'thinking6')).toBe(false)
+  expect(out.rows.length).toBe(input.length - 1)
+})
+
+test('an interleaved response: summarize a and drop b; the emptied result row of b does not end the stretch', async () => {
+  // host 2.1.295 writes one response interleaved: use, result, use, result
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'read three', toolUses: [], handle: 'p0' },
+    { role: 'assistant', text: 'Reading.', toolUses: [], handle: 't1' },
+    use('a', 'Read', 'ua'),
+    result('a', BIG, 'ra'),
+    use('b', 'Read', 'ub'),
+    result('b', BIG, 'rb'),
+    use('c', 'Read', 'uc'),
+    result('c', '', 'rc'),
+  ]
+  const { queued } = prepare(input, [
+    { op: 'summarize', tool_use_id: 'a', summary: 'A says X' },
+    { op: 'drop', tool_use_id: 'b' },
+  ])
+  const out = applyEdits(input, queued, '/arch.json', new Map(), new Set(['u:c']))
+  const useOf = (id: string) => out.rows.find(r => r.toolUses.some(u => u.tool_use_id === id))!
+  expect(out.rows.some(r => r.toolUses.some(u => u.tool_use_id === 'b'))).toBe(false)
+  // c's tool_use row follows the rebuilt a in the same response: rebuilt too
+  expect(useOf('c').handle).toBeUndefined()
+  // c's result holds media: kept with its handle
+  expect(out.rows.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'c'))!.handle).toBe('rc')
+  expect(out.rows[1]!.handle).toBe('t1')
+})
+
+test('a stretch without a rebuilt assistant row rebuilds nothing more', async () => {
+  const input = response()
+  // the edit lies in the second stretch: the first keeps every assistant handle
+  const { queued } = prepare(input, [{ op: 'summarize', tool_use_id: 'c', summary: 'C is small' }])
+  const out = applyEdits(input, queued, '/arch.json', new Map(), new Set(['u:b']))
+  expect(out.rows.slice(0, 4).map(r => r.handle)).toEqual(['p0', 't1', 'u2', 'u3'])
+  expect(out.rows.some(r => r.handle === 'thinking6')).toBe(true)
+  expect(out.rows.find(r => r.handle === 't8')).toBeDefined()
+  // no edit at all: every assistant row keeps its handle
+  const none = applyEdits(input, [], '', new Map(), new Set(['u:b']))
+  expect(none.rows.filter(r => r.role === 'assistant').every(r => r.handle !== undefined)).toBe(true)
+})
+
+test('DropOwnCalls: an own call rebuilt out of a response rebuilds the later assistant rows of that stretch', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'p0' },
+    { role: 'assistant', text: 'Listing first.', toolUses: [], handle: 't1' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'z', tool: 'mcp__context-editor__context_list', input: {} }, { tool_use_id: 'd', tool: 'Read', input: {} }], handle: 'u2' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'z', text: 'listing', isError: false }, { tool_use_id: 'd', text: 'd', isError: false }], handle: 'r3' },
+    { role: 'assistant', text: 'Done.', toolUses: [], handle: 't4' },
+  ]
+  const out = dropOwnCalls(input)
+  expect(out.map(r => r.handle)).toEqual(['p0', 't1', undefined, undefined, undefined])
+  expect(out[4]!.text).toBe('Done.')
+})
+
+test('DropOwnCalls: the result row emptied by dropping an own call does not end the stretch', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'p0' },
+    { role: 'assistant', text: 'Listing.', toolUses: [{ tool_use_id: 'z', tool: 'mcp__context-editor__context_list', input: {} }], handle: 'u1' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'z', text: 'listing', isError: false }], handle: 'r2' },
+    use('d', 'Read', 'u3'),
+    result('d', '', 'r4'),
+  ]
+  const out = dropOwnCalls(input, new Set(['u:d']))
+  // u1 is rebuilt without z; r2 is left empty and goes; d's use row follows the
+  // rebuilt row in the same response, so it is rebuilt too
+  expect(out.map(r => r.handle ?? '-')).toEqual(['p0', '-', '-', 'r4'])
 })
 
 test('a collapse starting with an own call keeps its summary after the own calls are dropped', async () => {

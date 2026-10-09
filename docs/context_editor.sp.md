@@ -178,7 +178,7 @@ Invariants:
 
 | Rule | Condition (рядок щойно додано в основну розмову) | Tag |
 |------|--------------------------------------------------|-----|
-| R1 | двері `prompt`, походження — людина (`composer`, `bridge`, `sdk`), `firstPromptPinned = false` | `pin` на `{ anchor }` цього рядка; `firstPromptPinned = true` |
+| R1 | двері `prompt`, походження — людина (`composer`, `bridge`, `sdk`, `unclassified`), `firstPromptPinned = false` | `pin` на `{ anchor }` цього рядка; `firstPromptPinned = true` |
 | R2 | двері `tool-result`, `size ≥ BIG_ROW`, інструмент з походження не з OWN_TOOLS, ціль без тегу | `review` на `{ tool_use_id }`, без терміну |
 | R3 | двері `tool-result`, інструмент з походження входить у SEARCH_TOOLS, ціль без тегу | `review` на `{ tool_use_id }`, `ttl_turns = SEARCH_TTL` |
 
@@ -214,9 +214,10 @@ Invariants:
 | MAX_DOCUMENT | 60 000 | Найбільша довжина документа передачі, символи |
 | HANDOFF_DELAY | 1 с | Пауза між кінцем ходу (або командою людини) і початком RunHandoff |
 | SEED_ROOM | 16 | Скільки рядків вікна читання нової сесії лишається для рядків `/clear` і команди компактизації; засів не довший за ROW_WINDOW − SEED_ROOM ([SP_CTX_02_22](#SP_CTX_02_22)) |
+| SEED_WAIT / SEED_POLL | 2000 мс / 100 мс | Скільки AwaitSeeded чекає появи засіяних рядків у читанні розмови / інтервал опитування ([SP_CTX_02_24](#SP_CTX_02_24); Verify фази 10, F2) |
 | SEED_PROBE | 80 | Скільки перших символів тексту першого засіяного рядка шукає CheckSeeded ([SP_CTX_02_24](#SP_CTX_02_24)) |
 | HANDOFF_STALE | 120 с | Вік запиту `running`, після якого він вважається покинутим |
-| HANDOFF_PROMPT | `Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Plain text, no preamble.` | Запит до моделі, коли документа немає |
+| HANDOFF_PROMPT | `Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Do not call any tools: answer with the document text only. Plain text, no preamble.` | Запит до моделі, коли документа немає. Окремий запит бачить інструменти сесії і може їх викликати (кожен виклик відхиляється), а відповідь тоді засмічується (Verify фази 10, 2026-10-09, F4); тому промпт прямо забороняє виклики |
 
 ### 01_13. AliasRegistry  {#SP_CTX_01_13}
 
@@ -281,7 +282,7 @@ Fields:
 | file | string | yes | — | `<old storage>/<id>/seed.json` | Файл з `rows` (JSON-список Row), доступний лише власникові; пишеться командою хоста, тож межа 4 MiB файлового API хоста його не обмежує |
 | archive | string | yes | — | `<old storage>/<id>.json` або `""` | Архів оригіналів змінених рядків; `""`, коли жодна правка не застосувалась |
 | report | ApplyReport | yes | — | [SP_CTX_01_05](#SP_CTX_01_05) | Звіт застосування правок черги до засіву |
-| fromSummary | bool | yes | false | — | Перший рядок засіву — підсумок попередньої компактизації з API-подання ([C_CTX_DEC_12](./context_editor.concept.md#C_CTX_DEC_12), C) |
+| fromSummary | bool | yes | false | — | Перший рядок засіву — підсумок попередньої компактизації: голова з API-подання ([C_CTX_DEC_12](./context_editor.concept.md#C_CTX_DEC_12), C) або перший рядок CurrentRows, що вже починався з SUMMARY_OPENER (після `--resume` сесії з вбудованою `/compact` читання починається з рядка-підсумку; Verify фази 10, 2026-10-09, F5) |
 | unmatchedPromptMedia | int | yes | 0 | ≥ 0 | Медіа в промптах людини, яке не перенеслось ([SP_CTX_02_10](#SP_CTX_02_10)) |
 | new | string? | no | — | ставить RunHandoff після `/clear` | Ідентифікатор сесії, яку створив `/clear`; HandleSeed засіває лише її |
 | taken | bool | yes | false | — | Обробник засіву повернув `rows` хосту ([SP_CTX_02_26](#SP_CTX_02_26)) |
@@ -431,8 +432,16 @@ Processing logic (pseudocode):
             IF step.pair: pairs += step.pair ELSE exclusiveRow ∪= step.touched
         rows = rebuild every untouched row that has a handle AND toolResults AND none of its owners in mediaOwners
                AND all its result ids in knownResults
+        rows = KeepResponsesWhole(rows)
         rows = remove rows without handle that became empty
         RETURN rows, report
+
+    FUNCTION KeepResponsesWhole(rows):            # відповідь моделі не розривається перезібраним рядком
+        stretches = rows split before every prompt row (a user row without toolResults that is not a result row a drop left empty: it has a handle or content)   # порожній рядок ще не відфільтровано
+        FOR stretch IN stretches:
+            k = index of the first assistant row without handle in stretch (rebuilt or inserted); IF none: CONTINUE
+            rebuild every assistant row with handle after k in stretch                # thinking-блоки цих рядків губляться
+        RETURN rows                                                                   # рядки результатів — за правилом вище (SP_CTX_DEC_02)
 
     run summarize: id' = FreshId(id); use row rebuilt, call gets id' and loses text; result row rebuilt, result gets id' and text MARK+" summarized"+note+mediaNote(id)+": "+summary
     run drop: call removed from its row, result from its row; both rows rebuilt; media paths of id go to the report only
@@ -454,11 +463,13 @@ Processing logic (pseudocode):
 
 «Перезібрати рядок» = скопіювати `role`, `text`, виклики (`tool_use_id`, `tool`, `input`, `text`) і результати (`tool_use_id`, `text`, `isError`) без `handle`.
 
+Цілісність відповіді (KeepResponsesWhole). Хост зливає рядки асистента з однаковим `message.id` (одна відповідь моделі) при побудові запиту, навіть через рядки з іншим id; `SessionMessage` цього id не показує. Перезібраний рядок отримує синтетичний id і розриває відповідь, а пізніший рядок тієї ж відповіді, повернений з `handle`, хост підтягує назад у раніше повідомлення: його `tool_use` втрачає сусідній результат, модель бачить «Tool result missing due to internal error», а медіа цього результату зникає. Так в обох хостах і обома шляхами компактизації (спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md), Entry 5; навичка plugin-hooks, пункт 30). Відповідь ніколи не перетинає промпт людини, а злиття йде лише назад, тож досить у кожному відрізку між промптами перезібрати рядки асистента з `handle`, що стоять після першого перезібраного або вставленого рядка асистента. Рядки результатів лишаються за чинним правилом: з медіа — з `handle`, без медіа — перезібрані ([SP_CTX_DEC_02](#SP_CTX_DEC_02)); батько до межі в копії рядка результату з `handle` (навичка plugin-hooks, пункт 5) за цього правила не шкодить (Entry 5). Ціна: thinking-блоки пізніших рядків асистента відрізка губляться; рядок, у якому лишився лише thinking, стає порожнім і видаляється. Відбитки (роль, ідентифікатори, текст) від перезбирання не змінюються, тож CurrentRows і межа ([SP_CTX_02_18](#SP_CTX_02_18)) не зачеплені. Засіву ([SP_CTX_02_22](#SP_CTX_02_22)) правило не потрібне: жоден засіяний рядок не має `handle`.
+
 ### 02_05. DropOwnCalls  {#SP_CTX_02_05}
 
 Purpose: прибрати з результату ApplyEdits виклики інструментів мода та їхні результати.
 
-Input: рядки, `mediaOwners`, `knownResults`. Logic: множина ідентифікаторів викликів, чия назва починається з OWN_TOOLS, крім тих службових пар, у рядку результату яких є інший результат з власником у `mediaOwners` або з id поза `knownResults` — такі пари лишаються разом із рядками, бо перезбирання знищило б незаархівоване медіа. Кожен рядок, що містить решту службових викликів або результатів, перезбирається без них; рядки без `handle`, що стали порожніми, видаляються. Рядок-носій `collapse` ніколи не є службовим викликом ([SP_CTX_02_04](#SP_CTX_02_04)).
+Input: рядки, `mediaOwners`, `knownResults`. Logic: множина ідентифікаторів викликів, чия назва починається з OWN_TOOLS, крім тих службових пар, у рядку результату яких є інший результат з власником у `mediaOwners` або з id поза `knownResults` — такі пари лишаються разом із рядками, бо перезбирання знищило б незаархівоване медіа. Кожен рядок, що містить решту службових викликів або результатів, перезбирається без них; потім рядки проходять KeepResponsesWhole ([SP_CTX_02_04](#SP_CTX_02_04)), бо перезібраний рядок асистента зі службовим викликом теж розриває відповідь; рядки без `handle`, що стали порожніми, видаляються. Рядок-носій `collapse` ніколи не є службовим викликом ([SP_CTX_02_04](#SP_CTX_02_04)).
 
 ### 02_06. Flush  {#SP_CTX_02_06}
 
@@ -486,13 +497,17 @@ Processing logic (pseudocode):
         q = read Queue
         IF q.report AND q.reportResume AND q.reportId != lastSubmittedReportId:
             IF MovedSince(turns0):                                            # хід почався між перевіркою і виконанням команди
-                lastSubmittedReportId = q.reportId                            # продовження не надсилається; звіт піде з наступним промптом (DeliverReport)
-            ELSE TRY submit prompt q.reportPrompt                             # звіт до промпту додає DeliverReport, SP_CTX_02_08
-                lastSubmittedReportId = q.reportId
-            CATCH (exception or result with drop): status line "context-editor: could not resume the session; send any prompt to continue"
+                lastSubmittedReportId = q.reportId                            # продовження не надсилається; звіт лишається в черзі для DeliverReport з наступним промптом людини
+            ELSE:
+                text = q.report                                               # увесь недоставлений звіт
+                TRY entered = submit prompt (text + "\n\n" + q.reportPrompt)   # звіт — у самому тексті промпту: власні хуки prompt.submit мода для нього пропускаються (F1)
+                    IF entered (no drop):
+                        lastSubmittedReportId = q.reportId
+                        on the queue chain: RemoveDelivered(text)              # SP_CTX_02_08: увесь звіт або лише доставлений початок
+                CATCH (exception or result with drop): status line "context-editor: could not resume the session; send any prompt to continue"   # звіт лишається в черзі
         scheduled = false                                                     # за будь-якого виходу, зокрема після винятку
 
-Flush лише читає чергу; пише її обробник компактизації ([SP_CTX_02_07](#SP_CTX_02_07)) на ланцюжку черги. Хост ставить команду в чергу і виконує, коли сесія вільна, з `trigger: 'manual'` і `instructions = MARKER`, і викликає обробники всіх розширень, разом із самим модом ([C_CTX_01_02](./context_editor.concept.md#C_CTX_01_02)); рядки самої команди (`/compact <MARKER>` і позначка виконання) лишаються в розмові з міткою як є: у терміналі хост пише їх повз подію додавання рядка, тож сховати мітку неможливо (спайк context_editor_handoff_long, Entry 4, «Мітка в рядках команди»; навичка plugin-hooks, пункт 24), а текст мітки самопояснювальний ([SP_CTX_01_12](#SP_CTX_01_12)). Відмова хоста остаточна, тож повторів немає: черга лишається до наступного завершеного ходу. Хід, що почався від планування, означає, що людина активна. Перед командою Flush її не запускає: команда, поставлена в чергу за ходом, могла б пережити модуль (див. залишкове вікно в [SP_CTX_05_02](#SP_CTX_05_02)), а правки застосує наступний кінець ходу. Якщо хід почався вже після перевірки, Flush не перебиває людину промптом продовження, і звіт дійде з її наступним промптом. Запуск команди завершується після того, як обробник відповів, тож наступне читання черги бачить звіт цього застосування; це очікування обов'язково перевіряє сценарій «Завершення команди після обробника» в обох хостах ([SP_CTX_05_03](#SP_CTX_05_03)). Відповідь `skip` обробника не є відмовою хоста: причина видна людині рядком «Not compacted».
+Чергу пишуть обробник компактизації ([SP_CTX_02_07](#SP_CTX_02_07)) і, після прийнятого промпту, RemoveDelivered самого Flush ([SP_CTX_02_08](#SP_CTX_02_08)) — обидва на ланцюжку черги. Хост ставить команду в чергу і виконує, коли сесія вільна, з `trigger: 'manual'` і `instructions = MARKER`, і викликає обробники всіх розширень, разом із самим модом ([C_CTX_01_02](./context_editor.concept.md#C_CTX_01_02)); рядки самої команди (`/compact <MARKER>` і позначка виконання) лишаються в розмові з міткою як є: у терміналі хост пише їх повз подію додавання рядка, тож сховати мітку неможливо (спайк context_editor_handoff_long, Entry 4, «Мітка в рядках команди»; навичка plugin-hooks, пункт 24), а текст мітки самопояснювальний ([SP_CTX_01_12](#SP_CTX_01_12)). Відмова хоста остаточна, тож повторів немає: черга лишається до наступного завершеного ходу. Хід, що почався від планування, означає, що людина активна. Перед командою Flush її не запускає: команда, поставлена в чергу за ходом, могла б пережити модуль (див. залишкове вікно в [SP_CTX_05_02](#SP_CTX_05_02)), а правки застосує наступний кінець ходу. Якщо хід почався вже після перевірки, Flush не перебиває людину промптом продовження, і звіт дійде з її наступним промптом. Звіт у промпт продовження вписує сам Flush: хост пропускає власні хуки `prompt.submit` плагіна для промптів, які той надсилає через `$.prompt.submit` («prompt.submit skipped: re-entry (the plugin's own code raised it)»; Verify фази 10, 2026-10-09, F1), тож DeliverReport ([SP_CTX_02_08](#SP_CTX_02_08)) до промпту продовження звіту не додасть. Звіт прибирається з черги лише після того, як промпт увійшов; відхилений промпт лишає звіт для наступного промпту людини. Запуск команди завершується після того, як обробник відповів, тож наступне читання черги бачить звіт цього застосування (черга записана до відповіді обробника); рядків розмови Flush не читає, тож запізнення рядків у неінтерактивному хості (F2, [SP_CTX_02_24](#SP_CTX_02_24)) його не стосується; це очікування обов'язково перевіряє сценарій «Завершення команди після обробника» в обох хостах ([SP_CTX_05_03](#SP_CTX_05_03)). Відповідь `skip` обробника не є відмовою хоста: причина видна людині рядком «Not compacted».
 
 Errors:
 | Code | Condition | Guidance |
@@ -500,7 +515,7 @@ Errors:
 | HOST_REFUSED | хост відхилив команду (виняток з текстом причини) | черга лишається; рядок стану показує текст відмови; наступна спроба — після наступного завершеного ходу |
 | PERSON_MOVED | хід почався від планування, до запуску команди | команда не запускається; Flush заплановано знову кінцем того ходу або одразу, якщо він уже скінчився не перерваним; після перерваного ходу черга чекає наступного завершеного ходу |
 | PERSON_ACTIVE | хід почався між перевіркою і виконанням команди | продовження не надсилається; звіт — з наступним промптом людини |
-| RESUME_FAILED | відправка промпту продовження відхилена (виняток або результат з `drop`) | `lastSubmittedReportId` не змінюється; попередження; звіт дійде з наступним промптом людини |
+| RESUME_FAILED | відправка промпту продовження відхилена (виняток або результат з `drop`) | `lastSubmittedReportId` не змінюється; звіт лишається в черзі; попередження; звіт дійде з наступним промптом людини (DeliverReport) |
 | QUEUE_UNREADABLE | Queue `unreadable` | команда не запускається, нічого не пишеться; файл перенесе наступний `context_edit` ([SP_CTX_02_02](#SP_CTX_02_02)) |
 
 ### 02_07. HandleCompaction  {#SP_CTX_02_07}
@@ -535,7 +550,7 @@ Processing logic (pseudocode):
             IF the dispatch was abandoned: RETURN skip "compaction abandoned"
             write Queue with every edit failed "originals could not be archived" (report as below)
             RETURN skip "originals could not be archived"                 # оригінали не зникають без архіву
-        rows = DropOwnCalls(rows, mediaOwners, knownResults); report.charsAfter = Σ size(rows)
+        rows = DropOwnCalls(rows, mediaOwners, knownResults); report.charsAfter = Σ size(rows)   # повернений список уже пройшов KeepResponsesWhole
         IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned"   # пакет лишається в черзі
         RebindTags(rows, report)
         text = report text
@@ -571,17 +586,17 @@ Errors:
 
 ### 02_08. DeliverReport  {#SP_CTX_02_08}
 
-Purpose: довести звіт до агента рівно один раз.
+Purpose: довести звіт до агента рівно один раз з промптом, який мод не надсилав сам.
 
-Logic: при кожному промпті основної розмови (людини або розширення) мод, якщо `Queue.report` присутній, додає `report` як прихований контекст промпту і передає промпт далі. Лише коли промпт увійшов (результат без `drop`), мод на послідовному ланцюжку черги видаляє з `report` саме доставлений текст: увесь звіт, якщо він не змінився (тоді також `reportId`, `reportResume = false`, `reportPrompt = DEFAULT_RESUME`), або лише доставлений початок, якщо тим часом дописано новий звіт. Промпт, відхилений нижчим обробником, лишає звіт у черзі для наступного промпту.
+Logic: при кожному промпті основної розмови, що проходить хуки мода (промпт людини або іншого розширення), мод, якщо `Queue.report` присутній, додає `report` як прихований контекст промпту і передає промпт далі. Лише коли промпт увійшов (результат без `drop`), мод на послідовному ланцюжку черги виконує `RemoveDelivered(text)`: видаляє з `report` саме доставлений текст — увесь звіт, якщо він не змінився (тоді також `reportId`, `reportResume = false`, `reportPrompt = DEFAULT_RESUME`), або лише доставлений початок, якщо тим часом дописано новий звіт. Той самий крок виконує Flush після свого промпту продовження ([SP_CTX_02_06](#SP_CTX_02_06)). Промпт, відхилений нижчим обробником, лишає звіт у черзі для наступного промпту.
 
 Errors:
 | Code | Condition | Guidance |
 |------|-----------|----------|
 | PROMPT_DROPPED | нижчий обробник відхилив промпт | звіт лишається в черзі |
-| DELIVERY_FAILED | збій читання або запису черги | промпт іде без звіту або звіт лишається; доставка повториться з наступним промптом |
+| DELIVERY_FAILED | збій читання або запису черги | промпт іде без звіту або звіт лишається; доставка повториться з наступним промптом — тобто при збої запису після вже прийнятого промпту звіт буде доставлено вдруге (щонайменше один раз, не рівно один) |
 
-Flush ([SP_CTX_02_06](#SP_CTX_02_06)) при `reportResume = true` надсилає лише `reportPrompt`; звіт до нього додає цей самий крок. Збій кроку не впливає на промпт.
+Промпти, які мод надсилає сам (`$.prompt.submit`: продовження Flush, Deliver передачі), цих хуків не проходять — хост пропускає для них власні хуки `prompt.submit` плагіна (Verify фази 10, 2026-10-09, F1). Тому такі промпти несуть звіт у власному тексті, а DeliverReport служить лише промптам людини (зокрема коли продовження вимкнено або людина вже почала хід). Збій кроку не впливає на промпт.
 
 ### 02_09. Nudge  {#SP_CTX_02_09}
 
@@ -686,14 +701,14 @@ Processing logic (pseudocode):
         IF origin.kind = plugin: RETURN stored     # копія після компактизації плагіна або нотатка плагіна — не новий рядок
         IF storage ready AND TagRegistry state != unreadable:
             door, origin = from the append event
-            R1: door = prompt AND origin.kind IN (composer, bridge, sdk)
+            R1: door = prompt AND origin.kind IN (composer, bridge, sdk, unclassified)   # stream-json дає промпту людини unclassified (F3)
             R2, R3: door = tool-result; tool = origin.tool; ids = tool_use_id of each tool_result block
             write TagRegistry if changed
         RETURN stored
     ON turn completed (main loop, not aborted): TagRegistry.turn += 1     # команди мода подій ходу не дають (преамбула 02)
     ON hook failure: RETURN stored row unchanged
 
-Обробник ніколи не змінює і не відхиляє рядок. Рядки з `origin.kind = plugin` правила не бачать: у неінтерактивному хості кожен рядок, повернений обробником компактизації, знову проходить подію додавання з походженням плагіна, що запустив `/compact` (спайк context_editor_handoff_long, Entry 4; навичка plugin-hooks, пункт 24), і без цього фільтра R2 і R3 ставили б теги копіям уже опрацьованих результатів (R2 перевіряє лише, що інструмент не з OWN_TOOLS, а в копії інструмента в походженні немає). Фільтр охоплює будь-який плагін, а не лише цей мод: копії після компактизації іншого плагіна — так само не нові рядки, а свіжий результат інструменту походження плагіна не має. Промпт, який плагін передає від імені людини (`asUser`), має походження плагіна і теж пропускається; поведінка від цього не змінюється, бо R1 і без фільтра вимагає походження `composer`, `bridge` або `sdk`. Інших хуків додавання рядка мод не має. Рядок R1 у переліку [SP_CTX_02_01](#SP_CTX_02_01) — останній рядок `user` без результатів, текст якого збігається з текстовими блоками промпту без урахування пробільних символів (або містить їх); не знайдено — R1 не спрацьовує і `firstPromptPinned` лишається `false`.
+Обробник ніколи не змінює і не відхиляє рядок. Рядки з `origin.kind = plugin` правила не бачать: у неінтерактивному хості кожен рядок, повернений обробником компактизації, знову проходить подію додавання з походженням плагіна, що запустив `/compact` (спайк context_editor_handoff_long, Entry 4; навичка plugin-hooks, пункт 24), і без цього фільтра R2 і R3 ставили б теги копіям уже опрацьованих результатів (R2 перевіряє лише, що інструмент не з OWN_TOOLS, а в копії інструмента в походженні немає). Фільтр охоплює будь-який плагін, а не лише цей мод: копії після компактизації іншого плагіна — так само не нові рядки, а свіжий результат інструменту походження плагіна не має. Промпт, який плагін передає від імені людини (`asUser`), має походження плагіна і теж пропускається; поведінка від цього не змінюється, бо R1 і без фільтра вимагає походження людини. Походження людини для R1 — `composer`, `bridge`, `sdk` і `unclassified`: у неінтерактивному хості рядки промптів людини доходять до події додавання з походженням `unclassified`, а не `sdk` (Verify фази 10, 2026-10-09, F3); рядки з походженням плагіна відсікає фільтр вище, тож копії і промпти плагінів R1 не бачить. Інших хуків додавання рядка мод не має. Рядок R1 у переліку [SP_CTX_02_01](#SP_CTX_02_01) — останній рядок `user` без результатів, текст якого збігається з текстовими блоками промпту без урахування пробільних символів (або містить їх); не знайдено — R1 не спрацьовує і `firstPromptPinned` лишається `false`.
 
 ### 02_13. QueueTagReplacements  {#SP_CTX_02_13}
 
@@ -833,9 +848,9 @@ Processing logic (pseudocode):
         mode = args trimmed = "document" ? document : transcript
         write Queue.handoff = { mode, resume: true, resumePrompt: DEFAULT_RESUME, by: person, state: queued, at: now }   # помилки — як у 02_19, зокрема DENIED_RUNNING
         Schedule()                                  # SP_CTX_02_21: знімок turns0 і HANDOFF_DELAY; no-op, поки handoffInFlight
-        RETURN text "context-editor: handoff (<mode>) starts"
+        RETURN text "handoff (<mode>) starts"
 
-Команда не позначається `immediate`: під час ходу вона чекає його кінця, як вбудовані команди. Обробник команди — подія, на яку не чекає жоден хід, тож відкладена дія з нього має походження, яке хост ставить у чергу (преамбула розділу 02); це підтверджує обов'язковий сценарій «Команда людини» в обох хостах ([SP_CTX_05_03](#SP_CTX_05_03)).
+Команда не позначається `immediate`: під час ходу вона чекає його кінця, як вбудовані команди. Відповіді команди (`text`) не починаються з `context-editor:`: хост сам показує їх під назвою плагіна (у stream-json — з префіксом плагіна), і префікс мода повторився б; помилки з [SP_CTX_02_19](#SP_CTX_02_19) повертаються тим самим текстом без префікса. Обробник команди — подія, на яку не чекає жоден хід, тож відкладена дія з нього має походження, яке хост ставить у чергу (преамбула розділу 02); це підтверджує обов'язковий сценарій «Команда людини» в обох хостах ([SP_CTX_05_03](#SP_CTX_05_03)).
 
 ### 02_21. RunHandoff  {#SP_CTX_02_21}
 
@@ -866,7 +881,7 @@ Processing logic (pseudocode):
 
     FUNCTION RunHandoff(turns0) → Outcome:
         handoffInFlight = true; cleared = false; turnsClear = none          # cleared — /clear уже створив нову сесію
-        afterClearEntered = false; terminal = false                         # terminal — запис HandedOff, Fail чи FailAfterClear удався
+        afterClearEntered = false; terminal = false; sessionChanged = false # terminal — запис HandedOff, Fail чи FailAfterClear удався
         seed: HandoffSeed? = none; seedReason: string? = none
         IF Moved(): RETURN deferred                                         # запит лишається queued
         old = session id; oldDir = storage of old (prepared)
@@ -888,12 +903,13 @@ Processing logic (pseudocode):
             IF NOT cleared:
                 remove seed files of seed, if any
                 IF NOT terminal: TRY Fail(reasons + "failed: <error>") CATCH: toast "context-editor: handoff failed: <error>; the old queue could not be written"
-            ELSE IF seed present AND NOT afterClearEntered:
-                RETURN AfterClear(seed, "failed: <error>", turnsClear)        # AfterClear ніколи не кидає
+            ELSE IF seed present AND NOT afterClearEntered AND NOT sessionChanged:
+                RETURN AfterClear(seed, "failed: <error>", turnsClear)        # AfterClear ніколи не кидає; при SESSION_CHANGED — лише FailAfterClear нижче (сесія не мода)
             ELSE IF NOT terminal:
                 TRY FailAfterClear(seed, reasons + "failed: <error>") CATCH: toast "context-editor: handoff failed after /clear: <error>; the old queue could not be written"
             RETURN failed
         FINALLY: handoffInFlight = false                                    # на кожному виході: поверненні, винятку, deferred, nothing
+                 IF cleared: status line = "<n> context edit(s) queued" from the current session's queue, or cleared when it is empty   # рядок стану старої сесії не лишається в новій
 
     FUNCTION PrepareSeed() → (HandoffSeed, none) | (none, reason):
         transcript = read main conversation rows; rows = CurrentRows(); api = read main conversation in Messages API form
@@ -925,16 +941,16 @@ Processing logic (pseudocode):
         TRY run built-in command compact with args = HANDOFF_MARKER         # одна спроба; чекає, доки сесія вільна
         CATCH err: RETURN AfterClear(s, "the seed compaction was refused: " + err, turnsClear)
         IF session id ≠ new:                                                # людина могла відкрити іншу сесію
-            pending seed = none; FailAfterClear(s, ["transcript: the session changed during seeding"]); RETURN failed   # без другого /clear і без промпту
+            sessionChanged = true; pending seed = none; FailAfterClear(s, ["transcript: the session changed during seeding"]); RETURN failed   # без другого /clear і без промпту; виняток тут — лише FailAfterClear обробника
         IF NOT s.taken: RETURN AfterClear(s, "the seed compaction did not take the seed", turnsClear)     # skip (зокрема хід у новій сесії), збій обробника або відповідь іншого обробника
-        why = CheckSeeded(s.rows, rows read now, old, session id)            # SP_CTX_02_24
+        why = AwaitSeeded(s.rows, old, session id)                           # SP_CTX_02_24: опитування до SEED_WAIT (F2)
         IF why: RETURN AfterClear(s, "the host did not keep the seeded conversation: " + why, turnsClear)
         pending seed = none
         # засіяно: далі жодного переходу на інший спосіб, хоч би що впало; кожен крок нижче захищений тут же,
         # і обробник винятку RunHandoff не бачить жодного збою після цієї точки
         step HandedOff: HandedOff(new, transcript)                          # спершу: стара черга більше не тримає запит running
         step registries: copy tags.json and aliases.json from oldDir into newDir (owner-only); a failure adds " Tags and aliases were not carried over." to the report
-        step pin: IF s.fromSummary OR text of s.rows[0] starts with SUMMARY_OPENER: PinSummary(newDir, s.rows[0])
+        step pin: IF s.fromSummary: PinSummary(newDir, s.rows[0])
         report = "context-editor: this session continues <old> (transcript)."
                  + (s.fromSummary ? " It starts from the summary of an earlier compaction; the rows before it stay in <old>." : "")
                  + (s.unmatchedPromptMedia > 0 ? " Media in <n> of the person's prompt(s) was not carried over." : "")
@@ -952,6 +968,7 @@ Processing logic (pseudocode):
         IF MovedSince(turnsClear):                                          # людина вже працює в новій сесії: її не чіпати
             step fail: FailAfterClear(s, reasons); step deliver: Deliver(notice(s, reasons), none, turnsClear, queueOnly = true)
             RETURN failed                                                   # notice — у чергу поточної сесії
+        # другий /clear відхилено: `now` лишається засіяною сесією, і HandedOff та документ потрапляють у неї поверх засіву (прийнято)
         step clear: IF s.taken: TRY run built-in command clear CATCH err: reasons += "/clear: " + err   # прибрати засіяну сесію; без засіву вона й так порожня
         now = session id
         IF h.document present:
@@ -996,7 +1013,7 @@ Processing logic (pseudocode):
     FUNCTION FailAfterClear(s?, reasons): old Queue: handoff absent, report += "handoff failed after the session was cleared: <reasons>; this session was not changed" + (s present ? "; the assembled conversation is in <s.file>" : ""), reportId = now, reportResume = false; terminal = true; toast
     # terminal ставиться лише після вдалого запису; у межах одного запуску жоден з трьох записів не робиться двічі
 
-`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з тим самим текстом.
+`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`.
 
 Порядок має значення. Засів збирається і пишеться до очищення сесії: після `/clear` читання розмови й API-подання бачать уже нову, порожню сесію, а окремий запит до моделі над старою розмовою неможливий. Тому збій збирання веде до способу `document` у старій сесії, а збій після очищення — до повторного очищення (лише коли засів уже взято) і документа агента, а без нього — повідомлення з ідентифікатором старої сесії і шляхом до файлу засіву. Правки черги старої сесії при `Fail` і `FailAfterClear` лишаються в її черзі: стара сесія не змінена, і її можна відновити; при `HandedOff` вони йдуть у засів або, для `document`, не переносяться (`dropped`).
 
@@ -1004,7 +1021,7 @@ Processing logic (pseudocode):
 
 Команди в черзі хоста. Кожна команда (`/clear`, `/compact HANDOFF_MARKER`, друге `/clear` в AfterClear) — одна спроба: відмова остаточна, її текст іде в причину. Команда, запущена, поки триває хід, чекає його кінця, тож лічильник ходів звіряється після кожної команди. Хід між плануванням і першим `/clear` уже виконано в старій сесії, і засів його не містить — Seed переходить до AfterClear; у способі `document` такий хід лишається в старій сесії, а промпт це називає. Хід, що йде одразу після `/clear` (`inTurn`), або хід між `/clear` і компактизацією засіву відбувається в новій сесії: Seed чи HandleSeed ([SP_CTX_02_26](#SP_CTX_02_26)) відмовляють, і AfterClear за `MovedSince(turnsClear)` не очищає сесію вдруге. Кожен текст після `/clear` (звіт засіву, документ, повідомлення про збій) іде через Deliver: якщо людина вже почала хід, текст лягає у звіт черги поточної сесії з `reportResume = false`, і DeliverReport ([SP_CTX_02_08](#SP_CTX_02_08)) додасть його до її наступного промпту, а промпту мод не надсилає. Якщо після компактизації засіву сесія інша, ніж створив `/clear` (людина могла відкрити іншу сесію), мод не очищає її і нічого в неї не надсилає: лише звіт у черзі старої сесії. Залишкове вікно: хід, що почнеться між перевіркою `MovedSince(turnsClear)` в AfterClear і виконанням другого `/clear`, хост виконає в напівзасіяній сесії, і друге `/clear` його прибере; хід лишиться лише в транскрипті цієї сесії.
 
-Закріплення підсумку. Коли засів починається з підсумку (`fromSummary`, або CurrentRows цього процесу вже починалися з підсумку вбудованої компактизації), у ньому, а не в першому промпті людини, лежить початкове завдання. R1 ([SP_CTX_01_11](#SP_CTX_01_11)) бачить лише нові рядки людини, а засіяні рядки подію додавання або оминають (термінал), або проходять з походженням плагіна, яке AutoTag пропускає (stream-json, [SP_CTX_02_12](#SP_CTX_02_12)); скинути `firstPromptPinned` недостатньо — R1 закріпив би наступний промпт людини, а не підсумок. Тому RunHandoff сам ставить `pin` на перший засіяний рядок у скопійованому реєстрі (PinSummary): один запис, без нового правила. Реєстру немає — PinSummary створює його; реєстр повний (MAX_TAGS) або нечитабельний — `pin` не ставиться, і звіт нової сесії це називає. Інакше скопійований `pin` першого промпту знаходить той самий рядок за відбитком.
+Закріплення підсумку. Коли засів починається з підсумку (`fromSummary`: голова з API-подання або перший рядок, що вже починався з SUMMARY_OPENER), у ньому, а не в першому промпті людини, лежить початкове завдання. R1 ([SP_CTX_01_11](#SP_CTX_01_11)) бачить лише нові рядки людини, а засіяні рядки подію додавання або оминають (термінал), або проходять з походженням плагіна, яке AutoTag пропускає (stream-json, [SP_CTX_02_12](#SP_CTX_02_12)); скинути `firstPromptPinned` недостатньо — R1 закріпив би наступний промпт людини, а не підсумок. Тому RunHandoff сам ставить `pin` на перший засіяний рядок у скопійованому реєстрі (PinSummary): один запис, без нового правила. Реєстру немає — PinSummary створює його; реєстр повний (MAX_TAGS) або нечитабельний — `pin` не ставиться, і звіт нової сесії це називає. Інакше скопійований `pin` першого промпту знаходить той самий рядок за відбитком.
 
 Errors: відмови не виходять назовні — кожна причина потрапляє у звіт старої черги (`Fail`, `FailAfterClear`), у промпт нової сесії або веде до способу `document`.
 
@@ -1089,7 +1106,7 @@ Processing logic (pseudocode):
         IF seed empty: REFUSE "no rows to carry over"
         IF len(seed) > ROW_WINDOW − SEED_ROOM: REFUSE "the seed has <n> rows; at most ROW_WINDOW − SEED_ROOM fit the new session's read window"
         report.mediaFiles = every present path in items; report.charsAfter = Σ size(seed)
-        RETURN seed, report, fromSummary = head present, unmatchedPromptMedia
+        RETURN seed, report, fromSummary = (head present OR trimmed text of seed[0] starts with SUMMARY_OPENER), unmatchedPromptMedia   # F5
 
     CarryNote(refs, paths) = MARK + " media carried as files (open them with Read): " + one item per k, joined ", ":
         paths[k] present → "<refs[k].mediaType> <paths[k]>"; paths[k] absent (refs[k] without inline data) → "<refs[k].mediaType> (not carried: no inline data)"
@@ -1137,6 +1154,17 @@ Logic (перша порушена умова — причина):
 - текст `read[p]` — першого рядка після межі — містить перші SEED_PROBE символів тексту `seed[0]`, якщо той непорожній; інакше `the first row after the boundary is not the seeded one`;
 - кожен ідентифікатор виклику з `seed` є серед викликів `read[p ..]`; інакше `seeded call <id> is missing`.
 
+Очікування рядків. У неінтерактивному хості `$.command.run('compact')` завершується після відповіді обробника, але ще до того, як повернені рядки з'являються в читанні розмови (приблизно через 50 мс); у терміналі вони вже є на момент завершення (Verify фази 10, 2026-10-09, F2). Тому RunHandoff перевіряє засів через AwaitSeeded:
+
+    FUNCTION AwaitSeeded(seed, old, now):
+        deadline = clock + SEED_WAIT
+        LOOP:
+            why = CheckSeeded(seed, read main conversation rows, old, now)
+            IF why absent OR clock ≥ deadline: RETURN why                   # остання причина — SEED_NOT_KEPT
+            wait SEED_POLL
+
+Інших читань рядків одразу після компактизації мода немає: Flush читає лише чергу, записану до відповіді обробника; межу записують HandleCompaction і HandleSeed з рядків, які вони самі повертають, а спостерігач [SP_CTX_02_18](#SP_CTX_02_18) — з результату `next`, не з читання.
+
 Рядки перед `p` — рядки команди очищення, рядки після засіяних — рядки команди компактизації з HANDOFF_MARKER; перевірку вони не зачіпають. Повернені рядки стоять у наступному читанні суцільним блоком з тими самими відбитками (навичка plugin-hooks, пункт 13), тож межа знаходиться тим самим пошуком, що й у CurrentRows.
 
 ### 02_25. ScrubCommandRows (вилучено)  {#SP_CTX_02_25}
@@ -1182,7 +1210,7 @@ Errors:
 ### 03_02. Output Validation  {#SP_CTX_03_02}
 
 - Новий список рядків задовольняє інваріант пар [SP_CTX_01_01](#SP_CTX_01_01).
-- Жоден змінений рядок не зберігає `handle`; незмінений рядок з результатами інструментів зберігає `handle` тоді й лише тоді, коли має медіа ([C_CTX_DEC_06](./context_editor.concept.md#C_CTX_DEC_06)).
+- Жоден змінений рядок не зберігає `handle`; незмінений рядок з результатами інструментів зберігає `handle` тоді й лише тоді, коли має медіа ([C_CTX_DEC_06](./context_editor.concept.md#C_CTX_DEC_06)); незмінений рядок асистента зберігає `handle` лише тоді, коли в його відрізку між промптами людини перед ним немає перезібраного чи вставленого рядка асистента (KeepResponsesWhole, [SP_CTX_02_04](#SP_CTX_02_04)).
 - Текст кожного зміненого результату інструменту і кожного зміненого рядка без результатів починається з MARK.
 - Медіа зникає з розмови лише разом з правкою, що його замінила, і лише після запису його файлу.
 - Пакет застосовується лише тоді, коли файл оригіналів записано; тож кожен змінений текст має посилання `original:` на наявний файл.
@@ -1270,6 +1298,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | BuildSeed | однакові ролі поспіль | два рядки агента підряд | обидва рядки лишаються окремими, CheckSeed їх приймає |
 | BuildSeed | модель бачить усе | усі результати є в API-поданні | голови немає, `fromSummary = false`, засів — CurrentRows з правками |
 | BuildSeed | після вбудованої компактизації | рядки: 6 старих (результат `a` поза API-поданням), рядок-підсумок, що починається з SUMMARY_OPENER, з `read the full transcript at: …/old.jsonl`, копія тексту агента, пара `b`; API: підсумок, копія, `<system-reminder>`, пара `b` | перший рядок — підсумок без рядка зі шляхом, далі копія і пара `b`; `fromSummary = true`; `<system-reminder>` не перенесено; summarize `a` — `failed` `the model no longer sees this row` |
+| BuildSeed | відновлена сесія після `/compact` | CurrentRows після `--resume` починаються з рядка-підсумку (F5), усі результати видно | голови немає, але `fromSummary = true`; звіт нової сесії каже, що вона починається з підсумку; PinSummary закріплює перший рядок |
 | BuildSeed | підсумку немає | є результат поза API-поданням, перше повідомлення API — асистента / з `tool_result` / промпт людини без SUMMARY_OPENER | відмова NO_SUMMARY |
 | BuildSeed | заповнене вікно при прихованих рядках | є результат поза API-поданням, API-подання — рівно 4096 повідомлень (або читання — 4096 рядків), перше — підсумок | відмова WINDOW_FULL, підсумок не шукається |
 | BuildSeed | збіг підсумку | текст рядка-підсумку відрізняється від API лише пробілами й переносами; підсумок коротший за 160 символів | рядок знайдено (порівнюються перші min(160, довжина) символів без пробільних) |
@@ -1281,12 +1310,14 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | BuildSeed | вміст рядком | перше повідомлення API має `content` рядком, що починається з SUMMARY_OPENER | рядок — один текстовий блок; підсумок знайдено |
 | BuildSeed | заповнене вікно з межею | 4096 рядків, CurrentRows знайшов межу | засів зібрано |
 | BuildSeed | медіа не записалось | запис PNG незміненої пари падає | відмова MEDIA_NOT_ARCHIVED |
-| BuildSeed | медіа без даних | document `source.type = url` у незміненій парі | CarryNote `application/pdf (not carried: no inline data)`; засів зібрано |
-| BuildSeed | змішане медіа одного власника | незмінена пара: image з даними і document без даних | image записано в `<folder>/1.png`; CarryNote `image/png <folder>/1.png, application/pdf (not carried: no inline data)`; засів зібрано |
+| BuildSeed | медіа без даних | document `source.type = url` у незміненій парі (без `media_type` в API-поданні) | CarryNote `document (not carried: no inline data)` — тип береться з `media_type`, а без нього — з типу блоку; засів зібрано |
+| BuildSeed | змішане медіа одного власника | незмінена пара: image з даними і document без даних | image записано в `<folder>/1.png`; CarryNote `image/png <folder>/1.png, document (not carried: no inline data)`; засів зібрано |
 | BuildSeed | рядок зі шляхом у повній розмові | CurrentRows після `/compact` у цьому процесі починається з підсумку з рядком TRANSCRIPT_LINE | у першому рядку засіву цього рядка немає |
 | CheckSeed | порушення | рядок з `handle`; `tool_result` без виклику; виклик без результату; результат після нового промпту; дубль id виклику; перший рядок агента; порожній рядок | кожне — своя причина з таблиці [SP_CTX_02_23](#SP_CTX_02_23) |
 | CurrentRows | межа засіяної сесії | рядки `/clear`, засіяні рядки, рядки команди; Boundary від HandleSeed | від першого засіяного рядка |
 | CheckSeeded | засів на місці | прочитано: рядок `/clear`, засіяні рядки, два рядки команди | «гаразд» |
+| AwaitSeeded | рядки з запізненням | засіяні рядки з'являються в читанні через 50 мс після завершення `compact` (stream-json) | перше читання — `the seeded rows were not found`; після опитувань — «гаразд»; передача вдалася |
+| AwaitSeeded | рядків немає | засіяні рядки так і не з'являються | після SEED_WAIT — остання причина; RunHandoff — AfterClear з SEED_NOT_KEPT |
 | CheckSeeded | засів не взято | прочитано лише рядок `/clear` і рядки команди | `the seeded rows were not found` |
 | CheckSeeded | бракує виклику | засіяні рядки є, один виклик відсутній | `seeded call <id> is missing` |
 | CheckSeeded | сесія та сама | `now = old` | `the session id did not change` |
@@ -1345,8 +1376,8 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | HandleCompaction | довгий текст у `data` | пара з заархівованим медіа і довгим текстом у `data` | текст лишається, замінено лише base64 |
 | HandleCompaction | архів без дубля медіа | summarize пари з PNG у `result` виклику і результату | у JSON архіву base64 замінено на `[media archived: …]`; інші поля без змін |
 | context_list, context_edit, context_tag, context_handoff | опис інструмента | описи чотирьох інструментів | кожен ≤ MAX_DESCRIPTION |
-| ApplyEdits | summarize | пара `a`, результат 5000 символів | рядки пари перезібрано, спільний id `a_ce…`, виклик без `text`, результат містить summary; рядки без результатів зберігають `handle` |
-| ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `4 rows collapsed`; наступний рядок не змінено |
+| ApplyEdits | summarize | пара `a`, результат 5000 символів | рядки пари перезібрано, спільний id `a_ce…`, виклик без `text`, результат містить summary; рядки без результатів зберігають `handle`, крім рядків асистента, що стоять у тому самому відрізку після перезібраного рядка `tool_use a` (KeepResponsesWhole) |
+| ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `4 rows collapsed`; вміст наступного рядка не змінено (рядок асистента того самого відрізка перезібрано без `handle` — KeepResponsesWhole) |
 | ApplyEdits | collapse зі службовим викликом першим | діапазон, що починається з виклику `context_list` | носій — перший не службовий виклик; після DropOwnCalls підсумок присутній |
 | ApplyEdits | collapse без викликів | діапазон лише з текстових рядків | один рядок з підсумком |
 | ApplyEdits | drop | пара `c` | рядки пари зникли |
@@ -1362,6 +1393,10 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | ApplyEdits | якір не знайдено | rewrite #6, рядок змінено | `failed` з причиною |
 | ApplyEdits | архів не записано | archive `""` | немає `original:` у тексті |
 | ApplyEdits | незмінений рядок з медіа | mediaOwners містить власника незачепленого результату | рядок зберігає `handle` |
+| ApplyEdits | одна відповідь: текст і два Read | відрізок: промпт; рядок асистента з текстом; `tool_use a`; результат `a`; `tool_use b`; результат `b` з медіа (усі з `handle`); summarize `a` | рядок `tool_use a` і результат `a` перезібрано; рядок `tool_use b` теж перезібрано (KeepResponsesWhole); результат `b` з медіа зберігає `handle`; рядок тексту перед ними — з `handle` |
+| ApplyEdits | без перезібраного асистента у відрізку | правка лише рядка результату (рядки асистента відрізка не змінено) або перезібраний рядок асистента в іншому відрізку | жоден інший рядок асистента цього відрізка не перезібрано |
+| ApplyEdits | рядок лише з thinking | після перезібраного рядка асистента у відрізку стоїть рядок асистента з `handle`, що має лише thinking (`text` порожній, викликів немає) | рядок перезібрано, він порожній і видалений |
+| DropOwnCalls | службовий виклик посеред відповіді | відрізок: текст, `context_list`, Read з медіа (одна відповідь) | пару `context_list` прибрано; рядок `tool_use` Read перезібрано; результат Read з `handle` |
 | ApplyEdits | медіа не заархівовано | правка замінює власника з mediaOwners без шляхів у media | `failed` `media could not be archived` |
 | ApplyEdits | describe | рядок промпту з медіа | текст починається з MARK, далі опис, далі оригінальний текст |
 | FreshId | повторна правка | id з суфіксом `_ce…` | один суфікс |
@@ -1376,17 +1411,19 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | HandleCompaction | збій запису архіву | запис архіву падає | skip; жодна правка не застосована; пакет очищено; звіт `originals could not be archived` для кожної правки |
 | HandleCompaction | збій обробника | виняток у застосуванні | skip; черга очищена; звіт про збій |
 | HandleCompaction | charsAfter | пакет з викликами `context_list` | `charsAfter` рахується після DropOwnCalls |
-| DeliverReport | один раз | звіт у черзі, два промпти поспіль | звіт додано лише до першого |
+| DeliverReport | один раз | звіт у черзі, два промпти людини поспіль | звіт додано лише до першого |
 | Flush | запуск | хід завершено, у черзі 2 правки | після FLUSH_DELAY — одна команда `compact` з аргументом MARKER |
 | Flush | передача в черзі | правки + handoff | команда не запускається |
 | Flush | людина почала хід | `turns` змінився, поки команда чекала; у звіті `reportResume = true` | промпт продовження не надіслано; `lastSubmittedReportId = reportId`; звіт лишається в черзі для DeliverReport |
 | Лічильник ходів | промпт з цитатою мітки | промпт людини з текстом `context-editor: apply queued edits` (`turn.start` з цим текстом) | рахується як хід: `turns` +1, `inTurn`; після його кінця — звичайні кроки 02_06, 02_12, 02_21 |
 | Лічильник ходів | команди мода | `$.command.run` `clear` і `compact` без подій ходу (Entry 4) | `turns`, `inTurn` і `TagRegistry.turn` не змінюються |
 | Flush | продовження один раз | той самий reportId двічі | промпт продовження надіслано один раз |
+| Flush | звіт доходить до ходу продовження | звіт `T` у черзі, `reportResume = true`, хід не зсунувся | надіслано один промпт `T + "\n\n" + reportPrompt`; після входу промпту RemoveDelivered(T): звіту в черзі немає; хук `prompt.submit` мода для цього промпту не викликається (F1) |
 | AutoTag | копія промпту | у stream-json рядок промпту, повернений компактизацією, знову додається з `door = prompt`, `origin { kind: plugin, name: context-editor }`, `firstPromptPinned = false` | R1 не спрацьовує; реєстр без змін |
 | AutoTag | копія великого результату | копія рядка результату Read 5000 символів з `origin.kind = plugin` | R2 і R3 не спрацьовують; тег не дублюється |
 | context_tag | помилки | кожен рядок таблиці Errors [SP_CTX_02_11](#SP_CTX_02_11) | відповідний код |
 | AutoTag | R1, R2, R3 | перший промпт людини; Read 5000 символів; Grep | `pin`; `review`; `review` з `ttl_turns = 3`; другий промпт без тегу |
+| AutoTag | R1 у stream-json | перший промпт людини з `door = prompt`, `origin.kind = unclassified` (F3) | `pin`, `firstPromptPinned = true`; рядок з `origin.kind = plugin` — без тегу |
 | QueueTagReplacements | заміни з тегів | два `disposable` при порожній черзі | дві правки, `tagsOnly = true`; після context_edit — `false` |
 | Nudge | заміни достатньо | оцінка звільнення опускає нижче порогу | нагадування немає |
 | RebindTags | після застосування | тег на змінену пару і на незмінену | перший видалено, другий лишився; псевдонім зміненої пари видалено |
@@ -1406,7 +1443,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | DeliverReport | промпт відхилено | нижчий обробник повертає `drop` | звіт лишається в черзі |
 | context_edit | нечитабельна черга | файл з полем не свого типу, JSON-масив, елемент `edits` не правка | файл перенесено (QUEUE_QUARANTINED), правки поставлено в нову чергу; без переносу — DENIED_QUEUE_READ зі шляхом |
 | DeliverReport | дописаний звіт | під час входу промпту дописано новий звіт | видалено лише доставлений текст |
-| Flush | відправка відхилена | `submit` падає або повертає `drop` | `lastSubmittedReportId` не змінюється, попередження |
+| Flush | відправка відхилена | `submit` падає або повертає `drop` | `lastSubmittedReportId` не змінюється; звіт лишається в черзі; попередження; наступний промпт людини отримує звіт через DeliverReport |
 | Flush | хост відмовляє | `compact` падає з текстом T | одна спроба, без очікувань; черга лишається; рядок стану містить T |
 
 Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти, збіг за інструкцією за будь-якого `trigger`, гілка HANDOFF_MARKER), `flush.test.ts` (Flush через порт FlushIO). Зв'язування портів з `$` (PrepareStorage, запуск команд хоста) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag, AutoTag, QueueTagReplacements, Nudge, RebindTags, розбір реєстру, перелік з тегами) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildSeed, CheckSeed, CheckSeeded, HandleSeed, пропуск компактизації, RunHandoff через порт: засів, збій до і після `/clear`, документ, відкладання, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). describe і PromptMatch не реалізовані (план PL_CTX).
@@ -1439,13 +1476,13 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | Мод вимкнено | черга з правками у файлі сесії, мод не завантажено | завершити хід; потім увімкнути мод і завершити ще один хід | без мода компактизації немає; після ввімкнення правки застосовано після першого завершеного ходу | not run |
 | Скриншот у результаті інструменту | PNG з написами | прочитати; summarize з описом | опис у контексті, медіа-файл в архіві відкривається | pass (2026-10-09, фаза 2) — деталі поза описом агент не знає; архівний PNG байт у байт з оригіналом, 0600, Read його відкриває |
 | Документ у результаті інструменту | PDF | прочитати; summarize | те саме | pass (2026-10-09, фаза 2) — блок `document`, `application/pdf`, base64; архівний PDF збігається з оригіналом, 0600 |
-| Незмінене медіа | два скриншоти | summarize першого | другий агент бачить | pass (2026-10-09, фаза 2) — деталі другого скриншота агент називає, рядок другого лишився з `@` |
+| Незмінене медіа (обидва хости) | два скриншоти, прочитані в одній відповіді, перед викликами Read — рядок тексту агента | summarize першого | другий агент бачить; помилки «Tool result missing» немає; рядок другого лишився з `@` | not run (попередній pass фази 2 — без рядка тексту перед викликами, де розриву відповіді не виникало; Verify фази 10 знайшов розрив — знахідка C) |
 | Зображення в промпті людини | скриншот у промпті | describe | залежить від [SP_CTX_DEC_06](#SP_CTX_DEC_06) | blocked |
 | Тег за псевдонімом | 5 файлів | після кожного Read агент ставить `disposable` з `ref: last`, без `context_list` | жодного `context_list`; теги на правильних викликах; заміни на порозі | pass (2026-10-08, фаза 7) |
 | Автоматичне чищення з тегів | 5 файлів | агент ставить `disposable` з нотатками | на порозі заміни застосовано без нагадування | pass (2026-10-08, фаза 3) |
 | Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | pass (2026-10-08, фаза 3) |
 | Перегляд після компактизації | дві компактизації мода і одна `/compact` | після кожної — `context_list` | у переліку лише поточна розмова, без копій старих рядків; правка за індексом з переліку застосовується до того самого рядка | pass (2026-10-09, фаза 8) — перелік 15 і 22 рядки при транскрипті 25 і 54; `rewrite` #5 змінив саме цей рядок; після `/compact` 7 рядків від підсумку хоста |
-| Передача засівом (термінал) | розмова з Read великого файлу і скриншотом; агент ставить тег за псевдонімом `c1` на пару скриншота | summarize великого файлу і context_handoff в одному ході | процес у новій сесії; модель знає лише підсумок; пари викликів на місці; результат скриншота закінчується CarryNote, агент відкриває файл Read і називає деталь скриншота; `context_tag` з `ref: c1` у новій сесії знаходить ту саму пару; `claude --resume <new>` новим процесом показує засіяну розмову; стара сесія без змін | not run (попередній pass фази 9 — на способі файлу сесії, b090f48) |
+| Передача засівом (термінал) | розмова з Read великого файлу і скриншотом; агент ставить тег за псевдонімом `c1` на незмінену текстову пару (скриншот псевдоніма не отримує: MarkCall позначає лише текст від BIG_ROW) | summarize великого файлу і context_handoff в одному ході | процес у новій сесії; модель знає лише підсумок; пари викликів на місці; результат скриншота закінчується CarryNote, агент відкриває файл Read і називає деталь скриншота; `context_tag` з `ref: c1` у новій сесії знаходить ту саму пару; `claude --resume <new>` новим процесом показує засіяну розмову; стара сесія без змін | not run (попередній pass фази 9 — на способі файлу сесії, b090f48) |
 | Передача засівом (неінтерактивний хост) | stream-json (drive.sh), та сама розмова | те саме | те саме; команди відновлення сесії мод не запускає; `-p --resume <new>` показує засіяні рядки | not run |
 | Передача довгої сесії після `/compact` | розмова з ключами до і після вбудованої `/compact`; процес перезапущено з `--resume`, щоб межа не була записана в цьому процесі | context_handoff | нова сесія починається з підсумку без рядка `read the full transcript at:`; модель знає ключ з підсумку і ключ з хвоста; звіт називає старт з підсумку | not run |
 | Передача документом | те саме | context_handoff mode `document` з документом | нова сесія з документом першим промптом | not run (попередній pass фази 9 — на двох розширеннях) |
@@ -1468,8 +1505,8 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | Звичайна `/compact` людини | інструкція ≠ MARKER і ≠ HANDOFF_MARKER | обробник передає далі, черга не чіпається; межу записує спостерігач |
 | `/compact` людини з текстом MARKER | інструкція = MARKER | обробляється як запуск мода |
 | `/compact` людини з текстом HANDOFF_MARKER | засіву в пам'яті немає | skip SKIP_NO_SEED, розмова без змін |
-| Перезавантаження модуля | черга непорожня | правки застосовуються після наступного завершеного ходу: черга лежить у файлі |
-| Запис старої черги після засіву не вдався | HandedOff не записав стару чергу (диск, права) | нова сесія засіяна, звіт і продовження доставлено; спливне повідомлення називає крок HandedOff і каже, що стара сесія `<old>` досі тримає запит `running`; у старій сесії запит стане належним через HANDOFF_STALE, і її наступний завершений хід запустить передачу знову |
+| Перезавантаження модуля | черга непорожня або запит передачі `queued`; Flush чи RunHandoff вже заплановано | гаряче перезавантаження відкидає заплановані таймери старого екземпляра (Verify фази 10, 2026-10-09, F6), а `scheduled` і `handoffScheduled` нового — false; правки застосовуються, а передача запускається після наступного завершеного ходу: черга і запит лежать у файлі |
+| Запис старої черги після засіву не вдався | HandedOff не записав стару чергу (диск, права) | нова сесія засіяна, звіт і продовження доставлено; спливне повідомлення називає крок HandedOff, каже, що стара сесія `<old>` досі тримає запит `running`, і радить `/handoff cancel` у ній; якщо стару сесію відновлять без цього, після HANDOFF_STALE її захоплення побачить `<id>/seed.json` цього запуску і зніме запит зі звітом «not re-run» ([SP_CTX_02_21](#SP_CTX_02_21)) — повторної передачі немає |
 | Перезавантаження модуля посеред передачі | між `/clear` і компактизацією засіву | нова сесія лишається порожньою; запит у старій черзі — `running` до HANDOFF_STALE; файл засіву лишається в сховищі старої сесії |
 | Мод вимкнено | черга непорожня | компактизацію ніхто не запускає; черга чекає в файлі сесії |
 | Рядки, повернені компактизацією, у stream-json | кожен рядок знову проходить подію додавання з `origin.kind = plugin` | AutoTag їх пропускає; теги не дублюються |
@@ -1561,7 +1598,7 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 ### DEC_04 — Хто доставляє звіт  {#SP_CTX_DEC_04}
 
 > **Status:** resolved
-> **Date:** 2026-10-08, переглянуто 2026-10-09
+> **Date:** 2026-10-08, переглянуто 2026-10-09 (двічі)
 
 **Question:** Як звіт про застосування доходить до агента?
 
@@ -1570,11 +1607,12 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 |--------|-------------|
 | A — обробник компактизації надсилає промпт і чекає | взаємне блокування: відправка завершується, коли стартує хід, а хід стартує після компактизації — підтверджено наживо |
 | B — крок запуску компактизації (до 2026-10-09 — тригер) надсилає промпт зі звітом і сам чистить звіт у черзі | звіт доходить лише з промптом продовження; з двома розширеннями — два записувачі одного файлу і можлива подвійна доставка |
-| C — DeliverReport додає звіт до наступного промпту (людини чи продовження) і чистить його; Flush лише надсилає текст продовження | один шлях запису черги — її послідовний ланцюжок; доставка рівно один раз і тоді, коли продовження вимкнено |
+| C — DeliverReport додає звіт до наступного промпту (людини чи продовження) і чистить його; Flush лише надсилає текст продовження | з одним розширенням не працює для продовження: хост пропускає власні хуки `prompt.submit` мода для промпту, який мод надсилає сам (Verify фази 10, 2026-10-09, F1) — звіт не доходив до ходу продовження |
+| D — Flush вписує звіт у текст промпту продовження і прибирає його з черги (RemoveDelivered), коли промпт увійшов; DeliverReport додає звіт до наступного промпту людини, коли продовження немає (вимкнено, людина вже почала хід, промпт продовження відхилено) | обидва шляхи пишуть чергу її послідовним ланцюжком одним кроком RemoveDelivered; доставка рівно один раз, крім DELIVERY_FAILED (щонайменше один раз); звіт пакета лише з тегів доходить з промптом людини |
 
-**Decision:** C. Після переходу на одне розширення ([C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02), C) і DeliverReport ([SP_CTX_02_08](#SP_CTX_02_08)), і Flush ([SP_CTX_02_06](#SP_CTX_02_06)) живуть у моді; розподіл обов'язків не змінився.
-**Rationale:** без блокування і з єдиним шляхом запису файлу черги (рев'ю раунд 1); звіт пакета лише з тегів, що не продовжує сесію, теж доходить з наступним промптом людини.
-**Rejected because:** A — блокування; B — звіт губиться, коли продовження вимкнено, а з двома розширеннями — гонка двох записувачів.
+**Decision:** D (Verify фази 10, 2026-10-09). До того діяло C (рев'ю раунд 1, дві розширення: промпт тригера проходив хуки редактора).
+**Rationale:** у одному розширенні лише D доводить звіт до ходу продовження; з одним модом записувач черги один, тож заперечення проти B (гонка двох записувачів) зникло, а частину C для промптів людини D зберігає.
+**Rejected because:** A — блокування; B — звіт губиться, коли продовження вимкнено або відхилено; C — власний промпт мода оминає його хук.
 
 ### DEC_05 — Коли автоматично застосовувати заміни з тегів  {#SP_CTX_DEC_05}
 
@@ -1695,3 +1733,8 @@ running ──any exception after /clear, document way──▶ (none) via FailA
 | 2026-10-09 | Рев'ю раунд 11: `handoffScheduled` скидається до RunHandoff (01_15, 02_21); Due без `owner` (лише діагностика), виняток RunHandoff → Fail / FailAfterClear, `handoffInFlight` скидається на кожному виході (01_15, 02_21, 04_04); перевірка `MovedSince` безпосередньо перед `/compact` у Flush і Seed, залишкове вікно справжнього підсумовування (02, 02_06, 02_21, 05_02, 05_04); HandleSeed засіває лише `s.new` (01_17, 02_26); друге `/clear` лише після засіву; `$.model.fork` у stream-json — обов'язковий сценарій (02_21, 05_03); PinSummary і TRANSCRIPT_LINE уточнено (02_21, 02_22); походження таймера з `prompt.submit` — виведене (02); AutoTag і `asUser` (02_12) |
 | 2026-10-09 | Рев'ю раунд 12: `lastTurnAborted` — Flush не перепланує себе після перерваного ходу (02, 02_06); поля лічильника ходів оголошено; друге `/clear` лише після взятого засіву — у 04_04, 05_01, 05_03 і прозі 02_21; порядок кроків засіву в 05_01; Outcome RunHandoff, змінні `seed` і `seedReason`, захищена спроба AfterClear в обробнику винятку, кроки після засіву перехоплює Seed і називає у спливному повідомленні; інваріанти з застереженням про запис старої черги (01_15, 02_21), рядок 05_04; виведене походження таймера з таймера (02) |
 | 2026-10-09 | Рев'ю раунд 14: AfterClear ніколи не кидає (кроки перехоплюються на місці), `afterClearEntered` і `terminal` — жоден з HandedOff, Fail, FailAfterClear не пишеться двічі (02_21); 04_04 і 05_01 для винятків до і після `/clear`; Schedule перехоплює виняток RunHandoff; `h.resume = false` — запасні тексти у звіт черги (Deliver `queueOnly`); `requestTurn` (01_15, 02_19, 02_21); покинутий `running` з наявним `seed.json` знімається зі звітом, `/handoff cancel` знімає `running` поза `handoffInFlight` (02_20, 02_21, 04_04); FailAfterClear і notice без шляху засіву, коли засіву немає; `why` ініціалізовано; 05_04 «Команда чекає кінця ходу», перерваний промпт у новій сесії; Flush перелічує `lastTurnAborted` |
+| 2026-10-09 | Реалізація фази 10 (зворотний зв'язок імплементатора): SESSION_CHANGED — обробник винятків не входить в AfterClear (`sessionChanged`); відмова промпту в Deliver — спливне повідомлення з текстом хоста без повторного винятку; CarryNote медіа без `media_type` — тип блоку; поведінка при відхиленому другому `/clear` |
+| 2026-10-09 | Verify фази 10 (F1–F6): Flush вписує звіт у промпт продовження і прибирає його RemoveDelivered після входу промпту, DeliverReport — лише для промптів людини (02_06, 02_08, DEC_04 → D); AwaitSeeded з SEED_WAIT / SEED_POLL (01_12, 02_21, 02_24); R1 рахує `unclassified` (01_11, 02_12); `fromSummary` і для рядка-підсумку на початку CurrentRows (01_17, 02_21, 02_22); 05_04 «Запис старої черги після засіву не вдався» узгоджено з правилом захоплення; HANDOFF_PROMPT забороняє виклики інструментів; рядок стану після `/clear`; відповіді `/handoff` без префікса; рядки 05_01 |
+| 2026-10-09 | Знахідка C Verify фази 10 (спайк context_editor_handoff_long Entry 5, навичка plugin-hooks пункт 30): KeepResponsesWhole — у відрізку між промптами після першого перезібраного рядка асистента перезбираються й решта рядків асистента з `handle` (02_04, 02_05, 02_07, 03_02); рядки 05_01; «Незмінене медіа» з рядком тексту перед викликами, в обох хостах (05_03) |
+| 2026-10-09 | Рев'ю раунд 18: KeepResponsesWhole — рядок результату, спорожнілий після drop, не є промптом (02_04; перемежована відповідь 2.1.295); Flush пише чергу через RemoveDelivered (02_06); DELIVERY_FAILED — доставка щонайменше один раз |
+| 2026-10-09 | Повторний Verify фази 10 (2.1.295, TUI + stream-json): усі сценарії pass; передумова «Передача засівом» — псевдонім на текстовій парі |

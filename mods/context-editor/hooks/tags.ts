@@ -40,7 +40,8 @@ export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinne
 
 const KINDS: readonly string[] = ['pin', 'disposable', 'review']
 // [SP_CTX_01_11] Who counts as the person for rule R1.
-const HUMAN: readonly string[] = ['composer', 'bridge', 'sdk']
+// stream-json files the person's prompt rows as `unclassified`, not `sdk`
+const HUMAN: readonly string[] = ['composer', 'bridge', 'sdk', 'unclassified']
 
 function isCount(v: unknown, min: number): v is number {
   return typeof v === 'number' && Number.isInteger(v) && v >= min
@@ -347,9 +348,17 @@ export function applyRules(reg: TagRegistry, f: AppendFacts, prompt?: { anchor: 
   return { ...reg, tags, firstPromptPinned }
 }
 
+// [SP_CTX_02_12] A row of plugin origin is no new row: a copy a plugin's
+// compaction returned (stream-json passes each one through again) or a
+// plugin's note. No rule sees it.
+export function isPluginRow(f: AppendFacts): boolean {
+  return f.origin === 'plugin'
+}
+
 // [SP_CTX_02_12] After the row is stored; the caller runs it on the
 // registry's serial chain.
 export async function autoTag(io: TagIO, f: AppendFacts): Promise<void> {
+  if (isPluginRow(f)) return
   const read = await io.readTags()
   if (read.state === 'unreadable') return
   let prompt: { anchor: string; hint: number } | undefined

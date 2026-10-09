@@ -9,13 +9,11 @@ Mods for Claude Code: plugins built from **function hooks** (TypeScript modules 
 ## Commands
 
 ```sh
-# run Claude Code with both mods loaded (they only work as a pair)
-claude --plugin-dir ~/Projects/ClaudeMods/mods/context-editor --plugin-dir ~/Projects/ClaudeMods/mods/context-editor-trigger
+# run Claude Code with the mod loaded
+claude --plugin-dir ~/Projects/ClaudeMods/mods/context-editor
 
 claude plugin validate mods/context-editor          # module validator (also checks how `$` is passed around)
 claude plugin test mods/context-editor              # runs every tests/*.test.ts of the mod
-claude plugin test mods/context-editor-trigger
-scripts/check-shared.sh                             # the shared constants of the two mods still match
 
 # type check (there is no global tsc)
 npx -p typescript@5.6.3 tsc -p mods/context-editor/tsconfig.json --noEmit
@@ -27,14 +25,17 @@ npx -p typescript@5.6.3 tsc -p mods/context-editor/tsconfig.json --noEmit
 
 ## Architecture
 
-### Two plugins that must agree
+### One plugin that both runs and handles the compaction
 
-- `mods/context-editor` gives the agent the MCP tools `context_list`, `context_edit` and `context_tag`. Edits are not applied right away. They go into a queue file, and the plugin's `session.compact` handler applies them later.
-- `mods/context-editor-trigger`: on `turn.complete`, if the queue holds edits and the editor is running in this process, it calls `$.session.compact({ instructions: MARKER })` and then submits the resume prompt.
+`mods/context-editor` gives the agent the MCP tools `context_list`, `context_edit`, `context_tag` and `context_handoff`, and the person the command `/handoff`. Edits are not applied right away. They go into a queue file. After a turn of the main conversation, Flush runs the built-in `/compact` with the marker `context-editor: apply queued edits` through `$.command.run`, and the mod's own `session.compact` handler, matching on that `instructions` text, applies the queue and returns the new rows. Then Flush sends the resume prompt.
 
-The split exists because the host skips a plugin's own hooks for a compaction that plugin started ("skipped: re-entry"). The request and the handler have to live in different plugins. The plugins share no code. They agree on string constants (MARKER, DEFAULT_RESUME, storage path, `editor-ready`, the tool name, queue field names, and the rule HEARTBEAT × 3 ≤ READY_FRESH), and `scripts/check-shared.sh` checks them with grep. If you rename or move any of these constants, update that script too.
+A plugin's `$.command.run({ command: 'compact', args })` reaches that plugin's own hooks, works in the non-interactive host too, and arrives with `trigger: 'manual'`. `$.session.compact` is never used: the host skips the calling plugin's own hooks for it, and the non-interactive host refuses it outright. That is why the mod no longer needs a second plugin or a ready file.
 
-Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a directory with mode 700. It holds `pending.json` (the queue), `tags.json`, the aliases registry, `editor-ready` (a heartbeat file the trigger checks for freshness) and archives of the replaced originals. The trigger only reads these files and never writes them.
+The handoff (`context_handoff`, `/handoff`) builds a seed from what the model sees, runs `/clear`, then `/compact` with `context-editor: seed the handed-off conversation`; the handler returns the seeded rows in place of the cleared session's. Media of untouched pairs goes as files named in the result text.
+
+Commands run only from a deferred action (`$.clock.after`) planned in `turn.complete` or in the `/handoff` command handler, never from a timer made in a `tool.call` or `prompt.submit` hook. Each command gets one attempt; the host's refusal text goes into the reasons or the status line.
+
+Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a directory with mode 700. It holds `pending.json` (the queue), `tags.json`, `aliases.json`, `boundary.json`, archives of the replaced originals with their media, and the handoff's seed files.
 
 ### Ports pattern (how the code is split for testing)
 
@@ -42,10 +43,12 @@ Faking the whole host `$` is expensive, so the logic sits in pure modules behind
 
 - `hooks/edits.ts`: edit, listing and media logic (pure).
 - `hooks/queue.ts` (`QueueIO`): the queue, `context_edit`, and delivering the report.
-- `hooks/compaction.ts` (`CompactionIO`): applies queued edits inside `session.compact`.
+- `hooks/compaction.ts` (`CompactionIO`): the markers, which branch a compaction takes, applying queued edits inside `session.compact`, and the boundary observer.
+- `hooks/flush.ts` (`FlushIO`): running the compaction command after a turn and the resume prompt.
+- `hooks/turns.ts`: the turn counter Flush, AutoTag and the handoff share.
+- `hooks/handoff.ts` (`HandoffIO`, `SeedIO`): the handoff request, BuildSeed, CheckSeed, CheckSeeded, RunHandoff and HandleSeed.
 - `hooks/tags.ts` (`TagIO`), `hooks/aliases.ts` (`AliasIO`): tags, auto-tagging rules, reminders, and the `cN` call aliases.
-- `mods/context-editor-trigger/hooks/flush.ts` (`TriggerIO`): the trigger's decision logic.
-- `hooks/register.ts` in each mod: tool schemas and descriptions, the event hooks, and storage I/O. Each file has its own `serial()` chain so that read-modify-write cycles never overlap.
+- `hooks/register.ts`: tool schemas and descriptions, the event hooks, and storage I/O. It has its own `serial()` chain per file so that read-modify-write cycles never overlap.
 
 Tests in `tests/*.test.ts` use `claude-code/testing`, call these pure functions with fake IO objects, and build `SessionMessage` rows by hand. New logic belongs in a ports module with a test. `register.ts` should only do the binding.
 
@@ -55,14 +58,18 @@ Code comments and commit subjects cite IDs from `docs/`: `C_CTX_*` (concept), `S
 
 ## Host behavior you must know
 
-`.dev_flow/skills/claude-code/plugin-hooks.md` lists host pitfalls found by testing live, against Claude Code 2.1.294. Read it before changing hooks. The ones you hit most often:
+`.dev_flow/skills/claude-code/plugin-hooks.md` lists host pitfalls found by testing live, against Claude Code 2.1.294–2.1.295 (older hosts are not supported). Read it before changing hooks. The ones you hit most often:
 
-- A hook has the shape `($, e, next)`. If it never calls `next`, it answers the event itself. Modules have no Node or DOM APIs, so everything goes through `$`. The validator allows `$` to be passed only to functions declared at the top level of the same file. A `tool.call` matcher must be a string literal.
-- Hooks that can refuse (`tool.call`, `prompt.submit`, `session.compact`) need `.catch`. Without one, a failing hook is skipped and the event goes on. `.catch` has a budget of about 1 s. In `session.compact`, the `.catch` must return `{ skip }`, so that a failure never falls through to a real summarizing compaction.
+- A hook has the shape `($, e, next)`. If it never calls `next`, it answers the event itself. Modules have no Node or DOM APIs, so everything goes through `$`. The validator allows `$` to be passed only to functions declared at the top level of the same file. A `tool.call` matcher must be a string or regex literal (no template strings: `${...}` in a matcher gives `tool=?`). One module may register an event without a matcher only once (e.g. one `session.compact` hook).
+- Hooks that can refuse (`tool.call`, `prompt.submit`, `session.compact`) need `.catch`. Without one, a failing hook is skipped and the event goes on. `.catch` has a budget of about 1 s. In `session.compact`, the `.catch` must return `{ skip }` for the mod's own instructions, so that a failure never falls through to a real summarizing compaction.
 - Never await `$.prompt.submit` inside a `session.compact` hook: it deadlocks. A refused prompt resolves with `{ drop }`. It does not throw.
-- `session.compact` can only run between turns. `/clear` and `/resume` change `session_id` without a `session.start`, so check the session before each storage operation.
+- `$.command.run` queues a command until the session is idle and returns after the work (`compact` once the handler answered, `clear` once `$.session.id()` is new). Its refusal is final. It refuses a call from a timer made inside a `tool.call` hook. The mod's own `/clear` and `/compact` raise no `prompt.submit`, `turn.start` or `turn.complete`.
+- The non-interactive host (VS Code, SDK, stream-json) has no `/resume` for `$.command.run`, and `$.session.compact` always fails there; `clear` and `compact` work. In a one-shot `claude -p "<prompt>"`, every `$.command.*` after the last turn fails with "no session is bound in this process".
+- In stream-json every row a compaction handler returns passes through `session.append` again with `origin.kind = 'plugin'`; in the terminal those rows and the command's rows bypass `session.append`.
+- A row without `handle`, or with a `handle` from another session, loses its media and thinking blocks.
+- A compaction runs only between turns; a command started mid-turn waits for the turn's end, and a turn may start meanwhile, so recheck the turn counter after each command. `/clear` and `/resume` change `session_id` without a `session.start`, so check the session before each storage operation.
 - `$.fs.read` and `$.fs.write` are capped at 4 MiB. Write larger files through `$.process.run(['sh','-c','umask 077 && cat > "$1"','sh',path], { stdin })`.
 
 ## Live testing
 
-Unit tests don't cover how the host behaves. Run live scenarios in a separate `claude --plugin-dir … --debug` process inside tmux, driven by a script. The debug log goes to `~/.claude/debug/<session>.txt`. The current task's driver is `.dev_flow/cache/live-test/ce.sh` (git ignores `.dev_flow/cache/`). To find the active task and its next step, read `.dev_flow/active_context.md`.
+Unit tests don't cover how the host behaves. Run live scenarios in a separate `claude --plugin-dir mods/context-editor --debug` process: in the terminal inside tmux, driven by a script, and in the non-interactive host in stream-json mode (`-p --input-format stream-json --output-format stream-json`), as VS Code runs it. The debug log goes to `~/.claude/debug/<session>.txt`. The current task's drivers are `.dev_flow/cache/live-test/ce.sh` (terminal) and `.dev_flow/cache/handoff-long/drive.sh` (stream-json); git ignores `.dev_flow/cache/`. To find the active task and its next step, read `.dev_flow/active_context.md`.

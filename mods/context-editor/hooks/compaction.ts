@@ -28,9 +28,53 @@ const EXT: Record<string, string> = {
   'application/pdf': 'pdf',
 }
 
+// [SP_CTX_01_06] The file extension of a media file by its media type.
+export function mediaExt(mediaType: string): string {
+  return EXT[mediaType] ?? 'bin'
+}
+
 // [SP_CTX_01_06] A base64 string this long under `base64` or `data` is media data.
 export const MEDIA_DATA = 256
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+
+// [SP_CTX_01_12] The args of the built-in /compact the mod runs: the handler
+// sees them as `instructions`, and the model reads them in the command's rows,
+// so they explain themselves.
+export const MARKER = 'context-editor: apply queued edits'
+export const HANDOFF_MARKER = 'context-editor: seed the handed-off conversation'
+
+function isOwnInstruction(instructions: string | undefined): boolean {
+  return instructions === MARKER || instructions === HANDOFF_MARKER
+}
+
+type CompactionEvent = { agentId?: string; trigger: string; instructions?: string }
+
+// [SP_CTX_02_07] Which branch of the handler a compaction takes. A match is
+// by `instructions` and no `agentId`, under any trigger but `precompute`: the
+// mod's command arrives as `manual`, as does the person's `/compact MARKER`.
+export type CompactionRoute = 'apply' | 'seed' | 'pass'
+
+export function compactionRoute(e: CompactionEvent): CompactionRoute {
+  if (e.agentId || e.trigger === 'precompute') return 'pass'
+  if (e.instructions === MARKER) return 'apply'
+  if (e.instructions === HANDOFF_MARKER) return 'seed'
+  return 'pass'
+}
+
+// [SP_CTX_02_07] ON handler failure: never a real, summarizing compaction for
+// the mod's instructions. The seed branch answers at once and leaves the
+// queue alone (RunHandoff sees the seed was not taken); the apply branch
+// answers at once too and records the failure in the queue in the background.
+export function compactionFailure(e: CompactionEvent): { pass: true } | { skip: string; recordFailure: boolean } {
+  switch (compactionRoute(e)) {
+    case 'pass':
+      return { pass: true }
+    case 'seed':
+      return { skip: 'context-editor: seeding failed', recordFailure: false }
+    case 'apply':
+      return { skip: 'context-editor: applying the edits failed', recordFailure: true }
+  }
+}
 
 // What HandleCompaction needs from the host; register.ts binds it to `$`.
 export type CompactionIO = {
@@ -121,14 +165,14 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
 
 // [SP_CTX_02_18] The boundary another compaction of the main conversation
 // sets once it stands: none for a subagent's, a precomputed one (it stands
-// only when used, through manual or auto), the editor's own (`marker`; its
-// handler records it) or a skipped one.
+// only when used, through manual or auto), the mod's own (MARKER and
+// HANDOFF_MARKER under any trigger; HandleCompaction and HandleSeed record
+// those) or a skipped one.
 export function observedBoundary(
   e: { agentId?: string; trigger: string; instructions?: string },
   done: { skip?: string; messages?: readonly SessionMessage[] },
-  marker: string,
 ): Boundary | undefined {
-  if (e.agentId || e.trigger === 'precompute' || (e.trigger === 'plugin' && e.instructions === marker)) return undefined
+  if (e.agentId || e.trigger === 'precompute' || isOwnInstruction(e.instructions)) return undefined
   if (done.skip !== undefined || !done.messages) return undefined
   return boundaryOf(done.messages)
 }
@@ -194,7 +238,7 @@ export async function archiveMedia(
     const paths: string[] = []
     for (const ref of refs) {
       n += 1
-      const path = `${base}/${n}.${EXT[ref.mediaType] ?? 'bin'}`
+      const path = `${base}/${n}.${mediaExt(ref.mediaType)}`
       if (!ref.data || !(await writeMedia(path, ref.data))) {
         paths.length = 0
         break

@@ -10,6 +10,7 @@ import {
   contextTag,
   countTurn,
   EMPTY_REGISTRY,
+  isPluginRow,
   MAX_TAGS,
   nudge,
   parseRegistry,
@@ -282,6 +283,41 @@ test('R1 waits for the person: a plugin prompt first gets no pin', async () => {
   expect(log.tags).toBeUndefined()
   await autoTag(io, fact({ origin: 'bridge', text: 'the task: find KEY_0042' }))
   expect(log.tags!.tags[0]!.kind).toBe('pin')
+})
+
+test('AutoTag — R1 у stream-json: the person\'s first prompt arrives with origin unclassified and is pinned; a plugin-origin row is not', async () => {
+  const { io, log } = harness(empty())
+  await autoTag(io, appendFacts({ door: 'prompt', origin: { kind: 'plugin' }, message: { content: [{ type: 'text', text: 'the task: find KEY_0042' }] } }))
+  expect(log.tagWrites).toBe(0)
+  await autoTag(io, appendFacts({ door: 'prompt', origin: { kind: 'unclassified' }, message: { content: [{ type: 'text', text: 'the task: find KEY_0042' }] } }))
+  expect(log.tags!.firstPromptPinned).toBe(true)
+  expect(log.tags!.tags).toEqual([{ kind: 'pin', target: anchorOf(0), created_turn: 0 }])
+})
+
+test('AutoTag — копія промпту: a prompt row a compaction returned, appended again with plugin origin, gets no pin', async () => {
+  // stream-json: door prompt, origin { kind: plugin, name: context-editor }, firstPromptPinned false
+  const copy = appendFacts({ door: 'prompt', origin: { kind: 'plugin' }, message: { content: [{ type: 'text', text: 'the task: find KEY_0042' }] } })
+  expect(isPluginRow(copy)).toBe(true)
+  const { io, log } = harness(empty())
+  await autoTag(io, copy)
+  expect(log.tagWrites).toBe(0)
+  expect(applyRules(EMPTY_REGISTRY, copy, anchorOf(0))).toBe(EMPTY_REGISTRY)
+})
+
+test('AutoTag — копія великого результату: a 5000-char Read result copy with plugin origin gets neither R2 nor R3', async () => {
+  const copy = appendFacts({
+    door: 'tool-result',
+    origin: { kind: 'plugin' },
+    message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: [{ type: 'text', text: BIG }] }] },
+  })
+  const tagged = reg([{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }])
+  const { io, log } = harness({ state: 'ok', value: tagged })
+  await autoTag(io, copy)
+  expect(log.tagWrites).toBe(0)
+  // even a copy that named its tool is skipped
+  const fresh = harness(empty())
+  await autoTag(fresh.io, { ...copy, tool: 'Grep' })
+  expect(fresh.log.tagWrites).toBe(0)
 })
 
 test('R2 marks a big output, R3 a search output with a ttl; own tools and small outputs get nothing', async () => {

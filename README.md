@@ -4,23 +4,19 @@
 
 | Мод | Що робить | Документи |
 |-----|-----------|-----------|
-| `mods/context-editor` | Інструменти агента `context_list` / `context_edit`: агент замінює опрацьовані виводи, медіа і хибні кроки у своєму контексті стислими нотатками; нагадування чистити контекст з початку | [C_CTX](docs/context_editor.concept.md), [SP_CTX](docs/context_editor.sp.md) |
-| `mods/context-editor-trigger` | Після ходу запускає компактизацію, у якій `context-editor` застосовує правки; без нього правки не застосовуються | ті самі |
+| `mods/context-editor` | Інструменти агента `context_list` / `context_edit` / `context_tag` / `context_handoff` і команда `/handoff`: агент замінює опрацьовані виводи, медіа і хибні кроки у своєму контексті стислими нотатками, а після ходу мод сам застосовує правки вбудованою командою `/compact`; нагадування чистити контекст з початку; передача розмови в нову сесію. Працює в інтерактивному терміналі і в неінтерактивному хості з потоковим входом (розширення VS Code, SDK); Claude Code ≥ 2.1.295 | [C_CTX](docs/context_editor.concept.md), [SP_CTX](docs/context_editor.sp.md) |
 
 ## Запуск
 
 ```sh
-claude --plugin-dir ~/Projects/ClaudeMods/mods/context-editor --plugin-dir ~/Projects/ClaudeMods/mods/context-editor-trigger
+claude --plugin-dir ~/Projects/ClaudeMods/mods/context-editor
 ```
 
 ## Перевірки
 
 ```sh
 claude plugin validate mods/context-editor
-claude plugin validate mods/context-editor-trigger
 claude plugin test mods/context-editor
-claude plugin test mods/context-editor-trigger
-scripts/check-shared.sh        # спільні константи двох модів збігаються
 ```
 
 `mods/*/tsconfig.json` розширює `.claude-plugin/types/tsconfig.json`. Цей каталог генерує Claude Code при кожному завантаженні мода, і він не зберігається в git; у свіжому клоні типи з'являються після першого запуску мода через `--plugin-dir`.

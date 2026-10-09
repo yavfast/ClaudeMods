@@ -115,3 +115,13 @@ test('deliverReport removes the report only once the prompt entered', async () =
   await deliverReport(async () => ({ state: 'missing', value: { ...EMPTY_QUEUE } }), async r => (none.push(r), {}), async () => undefined)
   expect(none).toEqual([undefined])
 })
+
+test('DeliverReport — один раз: a report in the queue, two prompts in a row; only the first carries it', async () => {
+  let q: Queue = { ...EMPTY_QUEUE, report: 'R', reportId: 3, reportResume: true }
+  const read = async (): Promise<Read<Queue>> => ({ state: 'ok', value: q })
+  const seen: (string | undefined)[] = []
+  for (let i = 0; i < 2; i++) await deliverReport(read, async r => (seen.push(r), {}), async d => void (q = withoutReport(q, d)))
+  expect(seen).toEqual(['R', undefined])
+  expect(q.report).toBeUndefined()
+  expect(q.reportResume).toBe(false)
+})
