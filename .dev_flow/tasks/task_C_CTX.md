@@ -2,18 +2,18 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-09 23:55
+> **Last updated:** 2026-10-10 08:45
 > **Status:** `in-progress`
-> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`
+> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`
 > **Autonomy:** `checkpoints`
 
 ## Current Work Item
 
 | Field | Value |
 |-------|-------|
-| **Document** | `plan` — фаза 13 закомічена (e7269d9), живий Verify відкладено; далі — наступна робота на вибір розробника, [docs/context_editor.plan.md](../../docs/context_editor.plan.md#PL_CTX_P13) |
+| **Document** | `plan` — фаза 13 закомічена (e7269d9), живий Verify відкладено; M злито в задачу етапів; далі — наступна робота на вибір розробника, [docs/context_editor.plan.md](../../docs/context_editor.plan.md#PL_CTX_P13) |
 | **Pipeline phase** | `plan` — вибір наступної фази |
-| **Traceable ID** | `PL_CTX_P13` (Verify pending) → `PL_CTX_P4`/`P5`, backlog I, K, M |
+| **Traceable ID** | `PL_CTX_P13` (Verify pending) → `PL_CTX_P4`/`P5`, backlog I, K; задача етапів |
 
 ## Intent
 
@@ -26,6 +26,19 @@
 Прототип мода складається з двох розширень Claude Code — `context-editor` і `context-editor-trigger` — і перевірений модульними та живими тестами в сесії bd80217a. Документи описують його поведінку зворотно, за кодом і результатами тестів. — claude-session-bd80217a
 
 ## Subtasks
+
+### Subtask: backlog M — поріг нагадування (фазу-кандидат 14 скасовано)
+> Author: `claude-session-decd4bc6` — Created: 2026-10-10 08:00 — Last updated: 2026-10-10 08:45 — Status: `done`
+
+Розробник обрав M наступною роботою (resume 2026-10-10). Дизайн фази 14 (поріг за рядком `Messages`) розробник розвернув: чистити частину контексту, коли завершується етап завдання, а запускати оптимізацію — спеціальними тегами в повідомленні агента, свідомим рішенням агента. Фазу 14 скасовано, правки документів відкочено (не комічено), M злито в окрему задачу [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md).
+
+**Progress:**
+- [x] Проба `usage({ breakdown: 'summary' })` → навичка plugin-hooks, пункт 37
+- [x] Рішення розробника записано в задачу етапів; backlog плану M переписано з посиланням на неї
+- [x] Підзадачу закрито; код не змінювався
+
+**Activity:**
+- 08:45 — фазу 14 скасовано на користь задачі етапів (рішення розробника)
 
 ### Subtask: фаза 13 PL_CTX — покрокове вибіркове чищення (C_CTX_DEC_04 → D)
 > Author: `claude-session-a3902d56` — Created: 2026-10-09 23:00 — Last updated: 2026-10-09 23:55 — Status: `in-progress`

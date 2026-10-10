@@ -3,7 +3,7 @@ skill: ClaudeCodePluginHooks
 domain: claude-code
 topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript, headless, stream-json, vscode]
 source: implementation
-updated: 2026-10-09
+updated: 2026-10-10
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.295
@@ -16,7 +16,7 @@ state: current
 
 - **when_to_use:** пишете або змінюєте мод у `mods/` — хуки подій, виклики `$`, тести, живі сценарії.
 - **when_not:** класичні хуки `settings.json` (команди оболонки) — інший механізм.
-- **version_or_context_scope:** Claude Code ≥ 2.1.295 — старіші версії не підтримуються (рішення розробника 2026-10-09); пункти 1–15 перевірено на 2.1.294, 16–36 — на 2.1.295, інтерактивно й у stream-json; після оновлення хоста факти нижче перевірити заново (типи в `.claude-plugin/types/claude-code/index.d.ts`).
+- **version_or_context_scope:** Claude Code ≥ 2.1.295 — старіші версії не підтримуються (рішення розробника 2026-10-09); пункти 1–15 перевірено на 2.1.294, 16–36 — на 2.1.295, інтерактивно й у stream-json; 37–38 — на 2.1.295 лише в stream-json; після оновлення хоста факти нижче перевірити заново (типи в `.claude-plugin/types/claude-code/index.d.ts`).
 - **promotion scope:** `candidate` — підтверджено одним модом (`context-editor`).
 
 ## Context
@@ -75,6 +75,8 @@ state: current
 34. **Один модуль хуків на плагін** (2.1.295): друге `modules` у `hooks/hooks.json` валідатор відхиляє.
 35. **Хук `session.compact`, що відповідає без `next`, ховає подію від плагінів, завантажених після нього** (порядок — `--plugin-dir`; 2.1.295).
 36. **Модель з thinking пише одну відповідь кількома рядками з тим самим `message.id`: рядок лише з thinking, далі рядок з `tool_use`.** Якщо обробник перезбирає рядок виклику, а рядок thinking тієї ж відповіді повертає з `handle`, `--resume`/`/resume` за злиттям `message.id` (пункт 7б) повертає оригінальний `tool_use` разом із результатом — правка втрачається навіть у суто текстовій розмові. Коли в завантаженому ланцюжку дублюються `tool_use`, кожен запит процесу пише `[ERROR] ensureToolResultPairing: repaired missing tool_result blocks`. Перевірено на 2.1.295 (haiku з thinking за замовчуванням).
+37. **Розмір рядків розмови без незмінної частини** (2.1.295, проба в неінтерактивному хості 2026-10-10): `$.session.usage().context.tokens` — увесь останній запит разом із системним промптом, схемами інструментів, інструкціями MCP, агентами, файлами пам'яті й навичками (~38k у терміналі з haiku, ~70k у VS Code). `$.session.usage({ breakdown: 'summary' })` дає `context.breakdown.categories`; рядок `name: 'Messages'` (`kind: 'used'`, власного `kind` немає — шукати за назвою, хоча типи радять розгалужуватись лише за `kind`, а не за `name`: назва може змінитися між версіями хоста, тож без рядка — запасна міра) = розмір запиту − незмінна частина, узгоджений з останньою відповіддю API і вже з локальною оцінкою рядків після неї. Хук `tool.call` після `next` бачить `Messages` без результату поточного виклику. Ціна: `summary` 23–87 мс, без запитів до API; звичайний виклик 1–3 мс. `$.clock.now()` повертає Promise — `await` перед відніманням. Поки моделі ще не відповідали (свіжа сесія, щойно після компактизації), `tokens` відсутній.
+38. **Промпт розширення після кінця ходу без команди** (2.1.295, проба в неінтерактивному хості з потоковим входом 2026-10-10): у `turn.complete` поле `e.answer` — фінальний текст ходу; `$.prompt.submit({ text })` з `$.clock.after(300, …)`, запланованого в `turn.complete`, без жодної `$.command.run` перед ним, запускає новий хід (результат `{ text, origin: { kind: 'plugin', … } }`, далі звичайні події ходу). В інтерактивному терміналі не перевірялось.
 
 ## References
 
