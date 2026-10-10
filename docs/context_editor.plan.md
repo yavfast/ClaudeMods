@@ -50,11 +50,13 @@
 - [x] [Phase 10 — Один плагін, компактизація командою, передача засівом](#PL_CTX_P10)
 - [x] [Phase 11 — Довіра межі, чесний звіт, реєстри після передачі](#PL_CTX_P11)
 - [x] [Phase 12 — Цілісна відповідь з thinking (backlog K, крок 1)](#PL_CTX_P12)
-- [ ] [Phase 13 — Покрокове вибіркове чищення (C_CTX_DEC_04, D)](#PL_CTX_P13)
+- [x] [Phase 13 — Покрокове вибіркове чищення (C_CTX_DEC_04, D)](#PL_CTX_P13)
+- [ ] [Phase 14 — Етапи і свідомий тригер оптимізації: ядро](#PL_CTX_P14)
+- [ ] [Phase 15 — Етапи: авторозмітка, діапазон, слот стану, журнал](#PL_CTX_P15)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
-Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02) і [PL_CTX_DEC_04](#PL_CTX_DEC_04); номери фаз — незмінні ідентифікатори, а не черговість.
+Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02), [PL_CTX_DEC_04](#PL_CTX_DEC_04) і [PL_CTX_DEC_05](#PL_CTX_DEC_05); номери фаз — незмінні ідентифікатори, а не черговість.
 - [backlog] Збереження правок після `--resume`; налаштовувані пороги; поширення через маркетплейс
 
 ## Phases
@@ -194,16 +196,47 @@ Pseudocode sketch:
 | KeepResponsesWhole: відрізок з перезібраним або вставленим рядком асистента — перезібрати всі його рядки асистента з `handle` | `mods/context-editor/hooks/edits.ts` (`rebuildSplitResponses`); `tests/edits.test.ts` |
 | Навичка: правило пункту 30 | `.dev_flow/skills/claude-code/plugin-hooks.md` |
 
-### Phase 13 — Покрокове вибіркове чищення (C_CTX_DEC_04, D) [IN PROGRESS]  {#PL_CTX_P13}
+### Phase 13 — Покрокове вибіркове чищення (C_CTX_DEC_04, D) [DONE]  {#PL_CTX_P13}
 
 **Depends on:** Phase 12; перегляд [C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04) (2026-10-09)
 **Implements:** NudgeText у [SP_CTX_02_09](./context_editor.sp.md#SP_CTX_02_09); порада в описі `context_edit` (обмеження довжини — [SP_CTX_02](./context_editor.sp.md#SP_CTX_02), MAX_DESCRIPTION)
-**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) «context_list, context_edit, context_tag, context_handoff — опис інструмента» (boundary.test.ts) і Nudge «текст просить порцію» (tags.test.ts); `claude plugin test`, `claude plugin validate`, tsc; живий сценарій «Нагадування з початку» в терміналі — стиснуто лише опрацьовані читання, промпти людини без змін
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) «context_list, context_edit, context_tag, context_handoff — опис інструмента» (boundary.test.ts) і Nudge «текст просить порцію» (tags.test.ts); `claude plugin test`, `claude plugin validate`, tsc; живий сценарій «Нагадування з початку» в терміналі — не виконано: нагадування за розміром прибирає фаза 14 ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)); живе чищення за D у VS Code 2026-10-09 (два нагадування, стиснуто лише опрацьоване) — єдине спостереження
 
 | Що | Де |
 |----|----|
 | Текст нагадування: наступна порція опрацьованого, не вся розмова; без змін — повідомлення людини, правила й навички, робоча частина | `mods/context-editor/hooks/tags.ts` (`nudgeText`); `tests/tags.test.ts` |
 | Порада в описі `context_edit` замість «one large collapse» | `mods/context-editor/hooks/register.ts` (`EDIT_DESCRIPTION`) |
+
+### Phase 14 — Етапи і свідомий тригер оптимізації: ядро [TODO]  {#PL_CTX_P14}
+
+**Depends on:** Phase 13; [C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)–[DEC_17](./context_editor.concept.md#C_CTX_DEC_17); [SP_CTX_DEC_11](./context_editor.sp.md#SP_CTX_DEC_11)–[DEC_15](./context_editor.sp.md#SP_CTX_DEC_15); задача `.dev_flow/tasks/task_20261010_083402_stage-cleanup.md` (відкриті знахідки рев'ю 35 — «Перевірити на практиці»)
+**Implements:** [SP_CTX_01_04](./context_editor.sp.md#SP_CTX_01_04) (`optimize`, `optimizePrompted`), [01_05](./context_editor.sp.md#SP_CTX_01_05) (`produced`), [01_10](./context_editor.sp.md#SP_CTX_01_10) (`stage`, `lastClosed`, `introduced`), [01_12](./context_editor.sp.md#SP_CTX_01_12) (без NUDGE_*; OPTIMIZE_MARK, MESSAGES_ROW, MAX_STAGE_NAME, MAX_BLOCK_INDEXES, INTRO_TEXT, STAGE_ADVICE, SKILL), [01_17](./context_editor.sp.md#SP_CTX_01_17) (`carried`), [01_18](./context_editor.sp.md#SP_CTX_01_18), [01_20](./context_editor.sp.md#SP_CTX_01_20) без кандидатів за причинами, журналу і слоту стану; [02_01](./context_editor.sp.md#SP_CTX_02_01) з телеметрією, `count: 0`, `[stage ▶]`, `[block ▶]`/`[block end]`; [02_06](./context_editor.sp.md#SP_CTX_02_06) (Optimize); [02_07](./context_editor.sp.md#SP_CTX_02_07) (перенесення `optimize`, `optimizePrompted`; `produced`); [02_08](./context_editor.sp.md#SP_CTX_02_08) (вступ, PersonAdvice, `optimizePrompted`); [02_09](./context_editor.sp.md#SP_CTX_02_09) (вилучено); [02_11](./context_editor.sp.md#SP_CTX_02_11) `open`/`close`; [02_13](./context_editor.sp.md#SP_CTX_02_13) тригери закриття і мітки; [02_14](./context_editor.sp.md#SP_CTX_02_14) RelocateMark; [02_15](./context_editor.sp.md#SP_CTX_02_15), [02_16](./context_editor.sp.md#SP_CTX_02_16) без нагадування; [02_18](./context_editor.sp.md#SP_CTX_02_18) (`listedKey` звітом закриття); [02_21](./context_editor.sp.md#SP_CTX_02_21), [02_22](./context_editor.sp.md#SP_CTX_02_22) (мітки, `introduced`, `carried`); [02_27](./context_editor.sp.md#SP_CTX_02_27) (вступ і навичка — лише ядро), [02_28](./context_editor.sp.md#SP_CTX_02_28), [02_29](./context_editor.sp.md#SP_CTX_02_29), [02_30](./context_editor.sp.md#SP_CTX_02_30); [04_05](./context_editor.sp.md#SP_CTX_04_05), [04_06](./context_editor.sp.md#SP_CTX_04_06)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки контрактів зі списку Implements (Telemetry, StageBlock, DetectOptimize, Flush/Optimize, DeliverReport, context_tag `open`/`close`, RebindTags/RelocateMark, produced, HandleCompaction зберігає `optimize`), [05_02](./context_editor.sp.md#SP_CTX_05_02) інваріанти етапу й черги, [05_04](./context_editor.sp.md#SP_CTX_05_04) відповідні рядки; `claude plugin test`, `claude plugin validate`, tsc; живі сценарії [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03): «Етап: закриття і стискання блоку», «Мітка оптимізації, stream-json», «Мітка оптимізації, термінал», «Мітка при непорожній черзі», «Людина випереджає хід оптимізації», «Інструкція на початку сесії», «Межа етапу після застосування», «Вбудована компактизація при відкритому етапі»; результати живих прогонів — у задачі етапів (знахідки «Перевірити на практиці» підтвердити або закрити)
+
+| Що | Де |
+|----|----|
+| Етапи: RowMark, StartOf, MarkBefore, RelocateMark, CloseStage, BlockReport, OptimizeText, PersonAdvice, ListHint, DetectOptimize, Telemetry (чисті функції за портами) | `mods/context-editor/hooks/stages.ts` (новий); `tests/stages.test.ts` (новий) |
+| Реєстр: `stage`, `lastClosed`, `introduced`; `context_tag` `open`/`close`; прибрати `nudge`, `nudgeText`, NUDGE_*; QueueTagReplacements без перевірки `listedKey` | `mods/context-editor/hooks/tags.ts`; `tests/tags.test.ts` |
+| Черга: `optimize`, `optimizePrompted`; DeliverReport — вступ, PersonAdvice, скидання `optimizePrompted` | `mods/context-editor/hooks/queue.ts`; `tests/queue.test.ts` |
+| Flush: Optimize, перевірка перед заміною і CAS, OPTIMIZE_* | `mods/context-editor/hooks/flush.ts`; `tests/flush.test.ts` |
+| `produced` після DropOwnCalls; перенесення `optimize`/`optimizePrompted` у записах черги | `mods/context-editor/hooks/edits.ts`, `hooks/compaction.ts`; тести відповідних модулів |
+| Передача: копія реєстрів з перенесеними мітками, `introduced = false`, `carried` | `mods/context-editor/hooks/handoff.ts`; `tests/handoff.test.ts` |
+| Реєстрація: опис і схема `context_tag` (`open`/`close`), опис `context_list` і `context_edit` (пріоритети MAX_DESCRIPTION), DetectOptimize у `turn.complete`, вступ у `prompt.submit`, телеметрія через `$.session.usage({ breakdown: 'summary' })`, хук `tool.call` без нагадування | `mods/context-editor/hooks/register.ts` |
+| Навичка мода (ядро: етапи, мітка, телеметрія, запис етапу, повернення через архів) | `mods/context-editor/skills/context-stages/SKILL.md` (новий) |
+| Живі сценарії: драйвери для мітки й етапів у терміналі і stream-json; тестові файли | `.dev_flow/cache/live-test/` (локально) |
+
+### Phase 15 — Етапи: авторозмітка, діапазон, слот стану, журнал [TODO]  {#PL_CTX_P15}
+
+**Depends on:** Phase 14 і її живі прогони ([PL_CTX_DEC_05](#PL_CTX_DEC_05)): знахідки практики можуть змінити специфікацію цієї фази
+**Implements:** [SP_CTX_01_09](./context_editor.sp.md#SP_CTX_01_09) (`state`, `reason`, діапазон), [01_11](./context_editor.sp.md#SP_CTX_01_11) (R2/R3 з причинами, R4, R5), [01_12](./context_editor.sp.md#SP_CTX_01_12) (REPRODUCIBLE_TOOLS, WRITE_TOOLS, REPRO_FLAG, MAX_JOURNAL), [01_19](./context_editor.sp.md#SP_CTX_01_19), [01_20](./context_editor.sp.md#SP_CTX_01_20) (кандидати за причинами, журнал, слот стану); [02_01](./context_editor.sp.md#SP_CTX_02_01) (`~`, `[review: причина]`, `[state]`, діапазон); [02_02](./context_editor.sp.md#SP_CTX_02_02)/[02_03](./context_editor.sp.md#SP_CTX_02_03) (захист `state`); [02_07](./context_editor.sp.md#SP_CTX_02_07) (запис журналу); [02_11](./context_editor.sp.md#SP_CTX_02_11) (`state`, діапазон `disposable`); [02_12](./context_editor.sp.md#SP_CTX_02_12) (R5); [02_13](./context_editor.sp.md#SP_CTX_02_13) (діапазон → collapse); [02_14](./context_editor.sp.md#SP_CTX_02_14) (`state` після `rewrite`); [02_16](./context_editor.sp.md#SP_CTX_02_16) (R4, повторні читання); [02_27](./context_editor.sp.md#SP_CTX_02_27) (повна навичка); [02_31](./context_editor.sp.md#SP_CTX_02_31); [04_03](./context_editor.sp.md#SP_CTX_04_03)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки цих контрактів, [05_02](./context_editor.sp.md#SP_CTX_05_02), [05_04](./context_editor.sp.md#SP_CTX_05_04); `claude plugin test`, `claude plugin validate`, tsc; живі сценарії [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03): «Застаріле читання», «Дублікат вставки навички» (рішення для R5 щодо рядків вставок), «Слот стану»
+
+| Що | Де |
+|----|----|
+| Теги: `state`, `reason`, діапазон; R2–R5; захист `state`; заміна діапазону — collapse | `mods/context-editor/hooks/tags.ts`, `hooks/edits.ts`; `tests/tags.test.ts`, `tests/edits.test.ts` |
+| Журнал ефекту: застосування, `changed`, повторні читання | `mods/context-editor/hooks/journal.ts` (новий); `tests/journal.test.ts` (новий) |
+| Перегляд і телеметрія: `~`, причини, слот стану, підсумок журналу | `mods/context-editor/hooks/edits.ts`, `hooks/stages.ts` |
+| Навичка мода — повна (відтворюване/невідтворюване, слот стану, діапазон) | `mods/context-editor/skills/context-stages/SKILL.md` |
 
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
 
@@ -233,7 +266,7 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 - R1 і сповіщення IDE (I): у VS Code тег `pin` отримав рядок «user opened file»; поза VS Code `unclassified` мають лише промпти людини. — return when: перевірка у VS Code на 2.1.295 (після оновлення розширення).
 - Очищені хостом результати в засіві (навичка plugin-hooks, пункт 33): після «context hint» хост заміняє вміст старих результатів, але рядки транскрипту, з яких BuildSeed збирає засів, несуть повний текст — нова сесія отримує назад уміст, який хост уже прибрав, і більший контекст. — return when: передача після події «context hint» або скарга на розмір засіяної сесії.
 - Правила чищення з досвіду ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04), D): зараз лише порада в нагадуванні й описі `context_edit` (за C_CTX_DEC_15 — у результаті закриття етапу й описі `context_edit`); розробник: «правила оптимізації та редагувань потім сформуються у процесі роботи над реальними задачами». — return when: на реальній задачі агент стиснув потрібне або лишив явно зайве, чи розробник сформулює правило.
-- Тригер чищення і стратегія нагадувань (M разом з етапами завдання): вирішено [C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)–[DEC_19](./context_editor.concept.md#C_CTX_DEC_19) — етапи, мітка оптимізації, телеметрія на запит, без нагадувань за розміром; фазу-кандидат 14 скасовано. Реалізація — задача `.dev_flow/tasks/task_20261010_083402_stage-cleanup.md` (спец, потім нова фаза плану). — return when: спец задачі етапів готовий (пункт стане фазою).
+- Тригер чищення і стратегія нагадувань (M разом з етапами завдання): вирішено [C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)–[DEC_19](./context_editor.concept.md#C_CTX_DEC_19), специфіковано (SP_CTX 01_18–01_20, 02_27–02_31), стало фазами [14](#PL_CTX_P14) і [15](#PL_CTX_P15).
 - Дослідження: як змінний контекст впливає на якість виконання завдань ([C_CTX](./context_editor.concept.md)). Розробник: «концепція змінного контексту сесії, який ai-агент може сам редагувати — це щось нове та потребує додаткових досліджень, як ця можливість може вплинути на якість виконання завдань». Питання: чи покращують правки фокус і результат; як часто агент потім шукає стиснуте (читання архіву, повторні запити); ціна скинутого кешу промпту; які правки шкодять. Спосіб — `/dev-flow research`: однакові реальні задачі з модом і без, метрики (успіх, помилки, повторні читання, токени, кількість правок і скидань кешу), розбір журналів сесій. — return when: розробник запустить дослідження, або накопичиться кілька реальних задач, виконаних з модом.
 - Поширення через маркетплейс (`.claude-plugin/marketplace.json`) — return when: розробник вирішить ділитися модом.
 
@@ -307,6 +340,24 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 **Rationale:** проміжний код для двох плагінів не має споживача після фази.
 **Rejected because:** A — код, що живе одну фазу.
 
+### DEC_05 — Як перевіряти етапи на практиці  {#PL_CTX_DEC_05}
+
+> **Status:** resolved
+> **Date:** 2026-10-10
+
+**Question:** Реалізувати специфікацію етапів однією фазою, ядро спершу, чи швидкий прототип без повних тестів?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — ядро спершу (фаза 14: етапи, мітка, телеметрія, вступ, без нагадувань; фаза 15: авторозмітка, діапазон, слот стану, журнал) | живий прогін ядра раніше; практика може змінити фазу 15 до її реалізації |
+| B — усе однією фазою | довше до першого живого прогону; більше коду під ризиком переробки |
+| C — швидкий прототип без повних тестів і рев'ю, потім повна реалізація | найшвидший живий прогін; код прототипу викидається або переробляється |
+
+**Decision:** A — розробник, 2026-10-10 («Ядро спочатку»), після слів: «Пропоную спочатку перевірити концепти на практиці, а не крутити багато раундів ревью з доколупуванням до дрібниць».
+**Rationale:** рев'ю специфікації (раунди 30–35) почали давати дрібниці; відповідь на відкриті питання дасть живий прогін ядра.
+**Rejected because:** B — довше до практики; C — подвійна робота над кодом.
+
 ## Changelog
 
 | Date | Change |
@@ -335,3 +386,4 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-09 | Фаза 13: покрокове вибіркове чищення за переглянутим C_CTX_DEC_04 |
 | 2026-10-09 | Backlog: перегляд стратегії нагадувань (M), дослідження впливу змінного контексту на якість завдань |
 | 2026-10-10 | Backlog M злито з етапами завдання (окрема задача task_20261010_083402_stage-cleanup); фазу-кандидат 14 скасовано |
+| 2026-10-10 | Фази 14 (ядро етапів) і 15 (авторозмітка, діапазон, слот стану, журнал) за SP_CTX 2026-10-10; PL_CTX_DEC_05 — ядро спершу, практика перед фазою 15; фаза 13 закрита без живого Verify (нагадування прибирає фаза 14) |
