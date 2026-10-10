@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, describeEdit, MARK, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, DESCRIBE_DROPS, describeEdit, MARK, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -205,6 +205,18 @@ export function personTagWarning(rows: readonly SessionMessage[], target: { from
   return personWarning('tool_use_id' in target ? `disposable ${target.tool_use_id}` : `disposable #${target.from}..#${target.to}`, hits)
 }
 
+// [SP_CTX_02_02] Whether a context_edit call needs the API form: only a
+// describe asks whether a prompt row has media ([SP_CTX_02_10]).
+export function needsApi(args: EditArgs): boolean {
+  return Array.isArray(args.edits) && args.edits.some(x => (x as { op?: unknown } | null)?.op === 'describe')
+}
+
+// [SP_CTX_02_10] hasMedia for PrepareEdits from CollectMedia's owners; none
+// read, no row has media.
+export function hasMediaFrom(found?: ReadonlyMap<string, readonly MediaRef[]>): (owner: MediaOwner) => boolean {
+  return owner => !!found?.has(ownerKey(owner))
+}
+
 // [SP_CTX_02_02] The queue after a context_edit call, or why it is refused.
 // Pure: the caller reads the queue, the rows, the pinned targets and the
 // aliases, and writes the result. A `ref` is resolved here, before
@@ -216,12 +228,14 @@ export function queueEdits(
   pinned: Pinned = NO_PINS,
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
+  // [SP_CTX_02_10] whether a person's prompt row has media (PromptMatch)
+  hasMedia: (owner: MediaOwner) => boolean = () => false,
 ): { queue: Queue; queued: number; errors: string[]; warnings: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.length > MAX_TEXT)
     return { deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` }
-  const { queued, errors } = prepare(rows, resolveEditRefs(args.edits, resolve), undefined, pinned, staleIndexes)
+  const { queued, errors } = prepare(rows, resolveEditRefs(args.edits, resolve), hasMedia, pinned, staleIndexes)
   if (q.edits.length + queued.length > MAX_QUEUE_EDITS)
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
@@ -230,7 +244,9 @@ export function queueEdits(
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.trim()) next.resumePrompt = args.resume_prompt
   if (queueBytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
-  return { queue: next, queued: queued.length, errors, warnings: personWarnings(rows, queued) }
+  const warnings = personWarnings(rows, queued)
+  if (queued.some(e => e.op === 'describe')) warnings.push(DESCRIBE_DROPS)
+  return { queue: next, queued: queued.length, errors, warnings }
 }
 
 export function queuedText(q: Queue, queued: number, errors: readonly string[], warnings: readonly string[] = []): string {
@@ -276,6 +292,7 @@ export async function contextEdit(
   pinned: Pinned = NO_PINS,
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
+  hasMedia: (owner: MediaOwner) => boolean = () => false,
 ): Promise<{ result: string } | { deny: string }> {
   let read = await io.readQueue()
   let notice = ''
@@ -285,7 +302,7 @@ export async function contextEdit(
     notice = `The unreadable queue (${read.reason}) was moved to ${moved}; its edits are not applied.\n`
     read = { state: 'missing', value: { ...EMPTY_QUEUE } }
   }
-  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes)
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

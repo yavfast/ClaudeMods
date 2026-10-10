@@ -21,7 +21,7 @@ A stage is a logical block of your work: a phase, a sub-task, an investigation, 
 
 ## Compressing a block
 
-After a close, review the block as a whole and queue ONE `context_edit` for what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media you have already looked at (a description, if the task allows). If nothing needs compressing, queue nothing.
+After a close, review the block as a whole and queue ONE `context_edit` for what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media you have already looked at (a description, if the task allows: `summarize` for a tool result, `describe` for an image or document in the person's prompt, whose words stay verbatim; attachments the host added to that prompt, such as file contents from `@path` and reminders, go with it, so re-read files if needed). If nothing needs compressing, queue nothing.
 
 Write a stage record in place of the processed rows, e.g. as the summary of a `collapse`:
 

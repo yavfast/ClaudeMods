@@ -129,7 +129,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const { edits, refused } = screenPinned(messages, q.edits, tagsRead)
   // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
   const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
-  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(await io.readApi())
+  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(await io.readApi(), messages)
   const mediaOwners = new Set(found.keys())
   const id = io.now()
   const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.dir}/${id}`, io.writeMedia)

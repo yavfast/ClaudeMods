@@ -251,7 +251,8 @@ function normalize(seed: SessionMessage[]): SessionMessage[] {
 // the queued edits. Pure but for writing media files through `writeMedia`.
 export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse: SeedRefusal; reason: string }> {
   const { transcript, rows, api } = input
-  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(api)
+  // the window alone: prompt media is matched below, on the visible rows
+  const { knownResults, apiTruncated } = collectMedia(api, [])
   const hidden =
     rows.some(r => results(r).some(t => !knownResults.has(t.tool_use_id))) ||
     rows.some((r, i) => i > 0 && r.role === 'user' && r.text.trim().startsWith(SUMMARY_OPENER))
@@ -289,11 +290,16 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
     })
   }
   const screened = screenPinned(visible, edits, input.tags)
+  // [SP_CTX_02_10] prompt rows by their index in `visible`, which ends where the API form ends
+  const { found, unmatchedPromptMedia: unmatched } = collectMedia(api, visible)
+  // a prompt's media goes to a file only for an edit that replaces it; the rest is not carried
+  const willReplace = replacedOwners(visible, screened.edits)
 
   // every medium on its own: a medium without inline data is named, not carried
   let n = 0
   const items = new Map<string, (string | undefined)[]>()
   for (const [key, refs] of found) {
+    if (key.startsWith('r:') && !willReplace.has(key)) continue
     const paths: (string | undefined)[] = []
     items.set(key, paths)
     for (const ref of refs) {
@@ -313,13 +319,15 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
     if (present.length) media.set(key, present)
   }
 
-  // every medium already lies in a file and no seeded row keeps a handle,
-  // so ApplyEdits needs no media owners
-  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia, apiTruncated })
+  // every medium an edit replaces lies in a file and no seeded row keeps a
+  // handle, so ApplyEdits needs no media owners
+  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia: unmatched, apiTruncated })
   const report = applied.report
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
   const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))))
+  // [SP_CTX_02_22] prompts whose media the seed does not carry: not tied to a row, or tied and not replaced
+  const unmatchedPromptMedia = unmatched + [...found.keys()].filter(k => k.startsWith('r:') && !replaced.has(k)).length
   // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
   const { rows: kept, removed } = dropOwnCallsCounted(applied.rows, new Set(), knownResults)
   report.ownCallsRemoved = removed

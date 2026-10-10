@@ -55,8 +55,8 @@
 - [x] [Phase 15 — Етапи: авторозмітка, діапазон, слот стану, журнал](#PL_CTX_P15)
 - [x] [Phase 16 — Службові нотатки агента](#PL_CTX_P16)
 - [x] [Phase 17 — Знахідки прогону на копії реальної сесії](#PL_CTX_P17)
-- [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
-- [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
+- [x] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
+- [x] [Phase 5 — Операція describe](#PL_CTX_P5)
 
 Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02), [PL_CTX_DEC_04](#PL_CTX_DEC_04) і [PL_CTX_DEC_05](#PL_CTX_DEC_05); номери фаз — незмінні ідентифікатори, а не черговість.
 - [backlog] Збереження правок після `--resume`; налаштовувані пороги; поширення через маркетплейс
@@ -291,19 +291,33 @@ Pseudocode sketch:
 | STAGE_ADVICE і навичка: дослівні цитати людини, причини відмови, AskUserQuestion — повідомлення людини, нагадування після будь-якого інструменту | `mods/context-editor/hooks/stages.ts`, `skills/context-stages/SKILL.md` |
 | Живий сценарій «Повтор на копії сесії»: драйвер копії сесії (stream-json і термінал) | `.dev_flow/cache/live-test/` (локально) |
 
-### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
+### Phase 4 — Дослідження: медіа в промптах і межі вікон [DONE]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
 **Implements:** закриття [SP_CTX_DEC_06](./context_editor.sp.md#SP_CTX_DEC_06)
-**Verify:** spike-файл `docs/context_editor.spike.md` з даними живого прогону: обидва подання розмови і рядки `e.messages` для сесії з промптами людини з медіа і нагадуваннями; висновок A / B / C; межі вікон трьох подань
+**Verify:** spike-файл [context_editor_media.spike.md](./context_editor_media.spike.md) з даними живого прогону: обидва подання розмови і рядки `e.messages` для сесії з промптами людини з медіа і нагадуваннями; висновок A / B / C; межі вікон трьох подань — concluded 2026-10-10
 
-Time-box: одна сесія. Результат — рішення в SP_CTX_DEC_06 і, за потреби, правка [SP_CTX_02_10](./context_editor.sp.md#SP_CTX_02_10).
+Time-box: одна сесія. Результат (2026-10-10, хост 2.1.296, stream-json і термінал): розробник обрав B з перевіркою A — ходи людини від хвоста, кожна пара перевіряється текстом і ідентифікаторами ([SP_CTX_DEC_06](./context_editor.sp.md#SP_CTX_DEC_06) resolved, правило — PromptMatch у [SP_CTX_02_10](./context_editor.sp.md#SP_CTX_02_10)); межі вікон — рядки 4096 з усього транскрипту, API 4096 повідомлень від межі, `e.messages` — усе від межі без ліміту (навичка plugin-hooks, пункти 47–51). Проба, драйвери, дампи й еталон `match.py` — `.dev_flow/cache/media-spike/` (локально).
 
-### Phase 5 — Операція describe [TODO]  {#PL_CTX_P5}
+### Phase 5 — Операція describe [DONE]  {#PL_CTX_P5}
 
-**Depends on:** Phase 4 (рішення A або B; за рішення C фаза переходить у backlog як відкинута)
-**Implements:** `PromptMatch` у [SP_CTX_02_10](./context_editor.sp.md#SP_CTX_02_10), `describe` у [02_03](./context_editor.sp.md#SP_CTX_02_03) і [02_04](./context_editor.sp.md#SP_CTX_02_04), операція в описі й схемі `context_edit`
-**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки «describe», CollectMedia «медіа в промпті»; [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Зображення в промпті людини»
+**Depends on:** Phase 4 (рішення B з перевіркою A)
+**Implements:** `PromptMatch` і CollectMedia з рядками в [SP_CTX_02_10](./context_editor.sp.md#SP_CTX_02_10); PROMPT_DECORATIONS у [01_12](./context_editor.sp.md#SP_CTX_01_12); `describe` у [02_02](./context_editor.sp.md#SP_CTX_02_02) (схема, опис, `hasMedia` з API-подання лише для `describe`), [02_03](./context_editor.sp.md#SP_CTX_02_03), [02_04](./context_editor.sp.md#SP_CTX_02_04) (код уже був, тепер досяжний); CollectMedia з `e.messages` у [02_07](./context_editor.sp.md#SP_CTX_02_07), з CurrentRows у [02_01](./context_editor.sp.md#SP_CTX_02_01) і [02_29](./context_editor.sp.md#SP_CTX_02_29); медіа промптів у засіві [02_22](./context_editor.sp.md#SP_CTX_02_22); навичка ([02_27](./context_editor.sp.md#SP_CTX_02_27)) — `describe` для медіа в промпті
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки PromptMatch (живі дампи, лише зображення, однаковий текст, прикраси, рядки команди, `@файл`, зсув, `tool_result` у повідомленні, `/compact` у хвості, паралельні виклики, після вбудованої `/compact`), CollectMedia «медіа в промпті» і «медіа в промпті зіставлено», ApplyEdits / context_edit / HandleCompaction / BuildSeed «describe», опис інструментів ≤ MAX_DESCRIPTION; `claude plugin test`, `claude plugin validate`, tsc; живий сценарій [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Зображення в промпті людини» в обох хостах
+
+| Що | Де |
+|----|----|
+| PromptMatch (`matchPrompts`): ходи людини, прикраси, пари від хвоста, довіра, власник | `mods/context-editor/hooks/media.ts` (новий, чистий) |
+| CollectMedia з рядками і власниками `{row}` | `mods/context-editor/hooks/edits.ts` |
+| `hasMedia` у context_edit: `needsApi` (API-подання лише для `describe`), `hasMediaFrom`; рядок DESCRIBE_DROPS у результаті | `mods/context-editor/hooks/queue.ts` (`queueEdits`, `contextEdit`) |
+| `describe` при застосуванні лише з медіа, заархівованим цим застосуванням (NO_MEDIA_NOW), DESCRIBE_DROPS у звіті | `mods/context-editor/hooks/edits.ts` (`applyEdits`, `formatReport`) |
+| CollectMedia з `e.messages` | `mods/context-editor/hooks/compaction.ts` |
+| BuildSeed: CollectMedia по видимих рядках, медіа промпту лише для правки, що його замінює, лічба незмінених | `mods/context-editor/hooks/handoff.ts` |
+| Схема й опис `describe` (EDIT_DESCRIPTION: пункт (7) — вказівка на навичку), зв'язування: API-подання для `describe`, CurrentRows для переліку й блоку | `mods/context-editor/hooks/register.ts` |
+| Навичка: `describe` для медіа в промпті | `mods/context-editor/skills/context-stages/SKILL.md` |
+| Тести: PromptMatch на обрізаних живих дампах (фікстури зібрано `make_fixtures.py` з дампів проби; очікування — з еталону `match_v3` у `.dev_flow/cache/media-spike/match.py`) і штучних випадках, describe наскрізно | `mods/context-editor/tests/media.test.ts`, `tests/media-fixtures.ts`; `tests/edits.test.ts` (CollectMedia з рядками) |
+
+Стан 2026-10-10: код і модульні тести готові (421 тест після рев'ю 44), живий сценарій 05_03 — після рев'ю.
 
 ### Phase 6 — Залишкове вікно тригера [DONE]  {#PL_CTX_P6}
 
@@ -326,6 +340,7 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 - R5 (б) — дублікати рядків без результатів (повторні вставки навички, [SP_CTX_01_11](./context_editor.sp.md#SP_CTX_01_11)): проба фази 15 показала, що текст навички від `Skill` — не рядок поточної розмови, а повторний `Skill` хост удруге не вставляє (навичка plugin-hooks, пункт 46). Живий прогін фази 15 (термінал, `.dev_flow/cache/live-test/phase15-results.md`): після `Skill X` slash-команда людини `/X` вставляє повний текст удруге (двері `note`, `origin engine`, `isMeta`), і це теж не рядок `$.session.messages()` — дубль є, але мод його не бачить. — return when: хост почав передавати вставки навичок рядками розмови або агент скаржиться на дубльовану навичку.
 - Текст відмови `INDEXES_STALE` ([SP_CTX_02_18](./context_editor.sp.md#SP_CTX_02_18)): радить «call context_list again», але не каже, що `context_list` з `count: 0` індексів не оновлює — у живому прогоні фази 15 haiku після `/compact` викликала саме так і далі отримувала відмову. Дописати в текст відмови «with rows (count > 0)». — return when: наступна правка текстів інструментів або повтор на практиці.
 - Індекси у звіті застосування ([SP_CTX_01_05](./context_editor.sp.md#SP_CTX_01_05)): звіт називає рядки за індексами до застосування (`rewrite #23`), а після DropOwnCalls агент бачить той самий рядок як `#18` і не може зіставити звіт із новим переліком (живий прогін фази 15). Варіант — індекс після застосування в дужках або без індексів, лише ярлик рядка. — return when: агент на практиці плутає рядки після застосування.
+- Медіа незмінених промптів людини в засіві передачі ([SP_CTX_02_22](./context_editor.sp.md#SP_CTX_02_22)): після фази 5 воно зіставлене, але засів його не несе (лише лічить у «Media in <n> of the person's prompt(s) was not carried over»). Можна нести файлом, як CarryNote результатів, але дописаний до тексту промпту рядок змінює його відбиток (теги, `pin` першого промпту). — return when: людина скаржиться на втрачене зображення після передачі.
 - Поширення через маркетплейс (`.claude-plugin/marketplace.json`) — return when: розробник вирішить ділитися модом.
 
 ## Design Decisions  {#PL_CTX_DEC}
@@ -453,3 +468,5 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-10 | Фаза 17 виконана: калібровані оцінки й виміряне «звільнено», нагадування після інструментів мода, попередження про повідомлення людини (PersonText), порада P11, повний рядок, рядки `review`, нотатки поза сторінкою; пункт (d) відкинуто; 355 тестів; живі перевірки (копія сесії, синтетична сесія); рев'ю 39–41 |
 | 2026-10-10 | Backlog: втрата вкладень `queued_command` при застосуванні — спайк context_editor_attachments, виправлення відкладено розробником |
 | 2026-10-10 | Design sign-off фази 15 (PL_CTX_DEC_05; рішення розробника): уся фаза за спецом без поділу; журнал без оцінки звільненого; P13 — речення в навичці, INTRO_TEXT і звіті застосування; навичка ≤ 8000 скороченням наявних розділів; перші кроки — діагностика R2 на копії сесії і проба «Дублікат вставки навички» (R5 (б) умовний); бюджети EDIT_DESCRIPTION, TAG_DESCRIPTION, LIST_DESCRIPTION, INTRO_TEXT і SKILL.md; Implements/Verify/таблиця файлів за SP_CTX 2026-10-10 (01_05, 02_05, 02_22, 02_28, 02_29 додано) |
+| 2026-10-10 | Фаза 4 виконана (спайк context_editor_media, SP_CTX_DEC_06 — B з перевіркою A, рішення розробника); фаза 5 — PromptMatch і `describe`: файли, Verify і фікстури з живих дампів; код і модульні тести готові, живий 05_03 — після рев'ю; backlog — медіа незмінених промптів у засіві |
+| 2026-10-10 | Рев'ю 44 фаз 4–5: `describe` без медіа, заархівованого при застосуванні, відхиляється (NO_MEDIA_NOW) у компактизації й засіві; DESCRIBE_DROPS — текстові вкладення промпту зникають разом із ним; `needsApi`/`hasMediaFrom` у queue.ts |

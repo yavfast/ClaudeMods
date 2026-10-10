@@ -348,7 +348,7 @@ test('collectMedia finds tool-result media, the API window and unmatched prompt 
       { type: 'tool_result', tool_use_id: 'b', content: [{ type: 'document', source: { type: 'url', url: 'https://x/y.pdf' } }] },
       { type: 'tool_result', tool_use_id: 'c', content: 'plain text' },
     ] },
-  ])
+  ], [])
   expect(unmatchedPromptMedia).toBe(1)
   expect([...knownResults].sort()).toEqual(['a', 'b', 'c'])
   expect(found.get(ownerKey({ tool_use_id: 'a' }))![0]!.bytes).toBe(8)
@@ -483,7 +483,7 @@ test('ApplyEdits — промпт перед першою парою, обріз
 })
 
 test('CollectMedia — apiTruncated: 4096 / 4095 / 4094 messages of the API form give true / true / false (ROW_WINDOW − 1)', async () => {
-  const of = (n: number) => collectMedia(Array.from({ length: n }, () => ({ role: 'user', content: 'x' }))).apiTruncated
+  const of = (n: number) => collectMedia(Array.from({ length: n }, () => ({ role: 'user', content: 'x' })), []).apiTruncated
   expect(ROW_WINDOW).toBe(4096)
   expect(of(4096)).toBe(true)
   expect(of(4095)).toBe(true)

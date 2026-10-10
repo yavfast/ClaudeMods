@@ -4,7 +4,7 @@
 > **Created:** 2026-10-08 20:00
 > **Last updated:** 2026-10-10 19:14
 > **Status:** `in-progress`
-> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`
+> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`
 > **Autonomy:** `checkpoints`
 
 ## Current Work Item
@@ -12,7 +12,7 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `plan` — фази 13–14, 16–17 виконані; етапи, нотатки і їх подальша робота ведуться в [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md); відкриті тут — фази 4–5, backlog I, K |
-| **Pipeline phase** | `plan` — вибір наступної фази |
+| **Pipeline phase** | `research` — фаза 4 PL_CTX (спайк медіа в промптах) |
 | **Traceable ID** | `PL_CTX_P13` (Verify pending) → `PL_CTX_P4`/`P5`, backlog I, K; задача етапів |
 
 ## Intent
@@ -26,6 +26,23 @@
 Прототип мода складається з двох розширень Claude Code — `context-editor` і `context-editor-trigger` — і перевірений модульними та живими тестами в сесії bd80217a. Документи описують його поведінку зворотно, за кодом і результатами тестів. — claude-session-bd80217a
 
 ## Subtasks
+
+### Subtask: фази 4–5 PL_CTX — спайк медіа в промптах людини, операція describe
+> Author: `claude-session-d5614704` — Created: 2026-10-10 — Last updated: 2026-10-10 — Status: `in-progress`
+
+Розробник: «продовжуй фази 4–5 PL_CTX» (`/dev-flow do`, 2026-10-10). Фаза 4 — спайк (time-box одна сесія), закриває [SP_CTX_DEC_06](../../docs/context_editor.sp.md): як зіставити повідомлення API-подання з медіа в промпті людини з рядком розмови (A — рівність тексту, B — позиція, C — відмова від `describe`). Фаза 5 (`describe`) — лише за рішення A або B, після design sign-off.
+
+- [x] Спайк фази 4 (субагент, 2.1.296, haiku, stream-json + термінал): `docs/context_editor_media.spike.md` concluded — рекомендація B+A (вирівнювання промптів з хвоста, текст без пробілів і прикрас лише перевіряє пару; правило PromptMatch у 7 кроків, 51 дамп без хибних зіставлень); A окремо — ні (зображення без тексту `""`/`[Image #N]`, дублікати), B з початку — ні (оригінали до межі, рядки `/compact`); межі вікон — 4096 рядків / 4096 API від межі / `e.messages` без ліміту; plugin-hooks 47–51; докази й еталон `match.py` — `.dev_flow/cache/media-spike/`; посилання у Verify фази 4 виправлено
+- [x] Рішення DEC_06 — розробник: «B+A, фаза 5» (2026-10-10, на запитання з варіантами B+A / C / B+A без фази 5)
+- [x] Спец (DEC_06 resolved, 02_10 PromptMatch, 01_12 PROMPT_DECORATIONS, 02_02, 02_22, 05_01 +13 рядків, 05_03, 05_04), план (фаза 4 DONE, фаза 5), код фази 5 (`hooks/media.ts` matchPrompts, collectMedia з власниками `{row}`, describe; фікстури з живих дампів) — субагент; одиниця вирівнювання — хід людини (run3: паралельні виклики), спайк Entry 4, plugin-hooks 52; 401 → 417 тестів, validate, tsc — перевірено головною сесією; EDIT_DESCRIPTION 2037/2048 (пункт (7) → посилання на навичку)
+- [x] Рев'ю раунд 44 — FAIL: must — `describe` застосовується без архіву медіа, коли PromptMatch на час застосування дає «немає» (відтворено тестом; HandleCompaction і BuildSeed) → вимагати архів власника `{row}`, інакше відмова; should — вкладення промпту (`@файл`) губляться → рішення головної сесії: задокументувати й попередити (вміст відтворюваний); тести; prefer 4–7 → виправлення субагентом
+- [x] Рев'ю раунд 45 (delta) — PASS, усі 7 закрито; prefer: причина відмови `describe` для знайденого, але не заархівованого медіа → виправлено головною сесією (`media could not be archived`), тест, спец 01_12/02_04/05_01; 422 тести, validate, tsc
+- [x] Живий сценарій 05_03 «Зображення в промпті людини» — pass в обох хостах (2.1.296, haiku; `.dev_flow/cache/live-test/phase5-results.md`); дефектів немає
+- [ ] **Next:** commit sign-off фаз 4–5
+- [ ] Рев'ю, живий сценарій «Зображення в промпті людини» (обидва хости), commit sign-off
+
+**Activity:**
+- 2026-10-10 — розробник обрав фази 4–5; задача етапів — практика (P15, P16 чекають рішення)
 
 ### Subtask: backlog M — поріг нагадування (фазу-кандидат 14 скасовано)
 > Author: `claude-session-decd4bc6` — Created: 2026-10-10 08:00 — Last updated: 2026-10-10 08:45 — Status: `done`

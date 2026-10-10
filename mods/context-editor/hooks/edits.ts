@@ -1,4 +1,5 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
+import { apiBlocks, isMediaBlock, matchPrompts } from './media'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -59,6 +60,11 @@ export const ROW_WINDOW = 4096
 export const HOST_ID_WAIT_MS = 2000
 // The longest tool description the host passes to the model; it cuts the rest.
 export const MAX_DESCRIPTION = 2048
+// [SP_CTX_02_04] A describe whose row has no media found and archived at apply time.
+export const NO_MEDIA_NOW = 'no media found in that row now'
+// [SP_CTX_02_02] [SP_CTX_02_04] What a describe takes along with the prompt's
+// media: the host's attachments carried by the row's handle (plugin-hooks 44).
+export const DESCRIBE_DROPS = "describe: attachments the host added to that prompt (file contents from @path, reminders) are dropped; re-read files if needed."
 // [SP_CTX_01_12] Tools whose output is reproducible from disk, and the flag
 // of their pairs in the listing ([C_CTX_03_04], reproducibility).
 export const REPRODUCIBLE_TOOLS: readonly string[] = ['Read', 'Grep', 'Glob']
@@ -810,13 +816,18 @@ export function replacedOwners(rows: readonly SessionMessage[], edits: readonly 
 export type MediaRef = { mediaType: string; bytes: number; data?: string }
 
 // [SP_CTX_02_10] What the Messages API form of the conversation holds beyond
-// the rows: media by owner key, the tool_use ids it shows (its window), and
-// how many prompt messages carry media that cannot be matched to a row while
-// [SP_CTX_DEC_06] is open, and whether the read gave as many messages as it
+// the rows: media by owner key (tool results by id; a person's prompt row by
+// its index in `rows` once PromptMatch ties it, [SP_CTX_DEC_06]), the
+// tool_use ids it shows (its window), how many prompt messages carry media
+// no row could be tied to, and whether the read gave as many messages as it
 // can (`apiTruncated`: older ones may lie outside it; minus one since the form
 // starts with a user message and the host may drop a leading assistant one;
-// plugin-hooks pitfall 10). Pure.
-export function collectMedia(api: readonly unknown[]): {
+// plugin-hooks pitfall 10). `rows`: CurrentRows, or the compaction's
+// `e.messages`. Pure.
+export function collectMedia(
+  api: readonly unknown[],
+  rows: readonly SessionMessage[],
+): {
   found: Map<string, MediaRef[]>
   knownResults: Set<string>
   unmatchedPromptMedia: number
@@ -825,24 +836,22 @@ export function collectMedia(api: readonly unknown[]): {
   const found = new Map<string, MediaRef[]>()
   const knownResults = new Set<string>()
   let unmatchedPromptMedia = 0
-  const isMedia = (b: Record<string, unknown>) => b.type === 'image' || b.type === 'document'
-  for (const msg of api) {
-    const m = msg as { role?: unknown; content?: unknown }
-    if (!Array.isArray(m.content)) continue
-    const blocks = m.content as Record<string, unknown>[]
+  const add = (key: string, block: Record<string, unknown>) => found.set(key, [...(found.get(key) ?? []), mediaRef(block)])
+  const owners = matchPrompts(api, rows)
+  api.forEach((msg, at) => {
+    const blocks = apiBlocks(msg)
     for (const block of blocks) {
       if (block.type !== 'tool_result') continue
       const id = String(block.tool_use_id)
       knownResults.add(id)
       if (!Array.isArray(block.content)) continue
-      for (const inner of block.content as Record<string, unknown>[]) {
-        if (!isMedia(inner)) continue
-        const key = ownerKey({ tool_use_id: id })
-        found.set(key, [...(found.get(key) ?? []), mediaRef(inner)])
-      }
+      for (const inner of block.content as Record<string, unknown>[]) if (isMediaBlock(inner)) add(ownerKey({ tool_use_id: id }), inner)
     }
-    if (m.role === 'user' && blocks.some(isMedia)) unmatchedPromptMedia += 1
-  }
+    if ((msg as { role?: unknown } | null)?.role !== 'user' || !blocks.some(isMediaBlock)) return
+    const row = owners.get(at)
+    if (row === undefined) unmatchedPromptMedia += 1
+    else for (const block of blocks) if (isMediaBlock(block)) add(ownerKey({ row }), block)
+  })
   return { found, knownResults, unmatchedPromptMedia, apiTruncated: api.length >= ROW_WINDOW - 1 }
 }
 
@@ -1030,6 +1039,14 @@ export function applyEdits(
           continue
         }
         touched = [at]
+        // [SP_CTX_02_04] describe replaces media only when this apply found
+        // and archived the row's media (PromptMatch here, not at queue time)
+        if (edit.op === 'describe' && !archived(ownerKey({ row: at }))) {
+          const key = ownerKey({ row: at })
+          const seen = mediaOwners.has(key) || media.has(key)
+          report.failed.push(`${name}: ${seen ? 'media could not be archived' : NO_MEDIA_NOW}`)
+          continue
+        }
         run = () => {
           const row = rows[at]!
           report.originals.push({ edit: name, rows: [row] })
@@ -1194,6 +1211,7 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   if (r.notesDropped.length) parts.push(`Notes dropped (their rows were removed): ${r.notesDropped.join(', ')}.`)
   // [SP_CTX_01_05] P13: the agent's own context_* calls left the conversation
   // when the returned list replaces it (a compaction with an applied edit; a seed always)
+  if (r.applied.some(a => a.startsWith('describe '))) parts.push(DESCRIBE_DROPS)
   if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length))
     parts.push(`Your own context-editor calls (${r.ownCallsRemoved}) were removed; tags and notes stay — see context_list.`)
   const text = parts.filter(Boolean).join(' ')

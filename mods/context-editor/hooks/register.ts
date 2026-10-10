@@ -50,6 +50,8 @@ import {
 } from './handoff'
 import {
   contextEdit,
+  hasMediaFrom,
+  needsApi,
   DEFAULT_RESUME,
   deliverReport,
   EMPTY_QUEUE,
@@ -124,12 +126,13 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a wrong conclusion.
+- {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
 
 Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
 Originals are archived to the file named in the replacement (original: <path>); Read it to get one back. Summaries keep every fact, number, URL and source you may still need.
 
-Compress a finished stage's block; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Stage record: goal; decisions with reason, the person's verbatim words and why alternatives were rejected; facts with sources; changed artifacts; open questions. Batch edits in one call. Guide: skill ${PLUGIN}:${SKILL}.`
+Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call. Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for the most recently marked call.' }
@@ -149,6 +152,7 @@ const EDIT_SCHEMA = {
           { type: 'object', properties: { op: { const: 'drop' }, ref: REF }, required: ['op', 'ref'] },
           { type: 'object', properties: { op: { const: 'collapse' }, from_index: { type: 'integer' }, to_index: { type: 'integer' }, summary: { type: 'string' } }, required: ['op', 'from_index', 'to_index', 'summary'] },
           { type: 'object', properties: { op: { const: 'rewrite' }, index: { type: 'integer' }, text: { type: 'string' } }, required: ['op', 'index', 'text'] },
+          { type: 'object', properties: { op: { const: 'describe' }, index: { type: 'integer' }, description: { type: 'string' } }, required: ['op', 'index', 'description'] },
         ],
       },
     },
@@ -706,7 +710,7 @@ function blockIO($: EngineInterface): BlockIO {
     rows: () => conversation($),
     readTags: () => readTags($),
     updateRegistry: change => updateRegistry($, change),
-    media: async () => collectMedia(await apiMessages($)).found,
+    media: async () => collectMedia(await apiMessages($), await conversation($)).found,
     usage: () => usageInfo($),
     journal: async () => (await journalNow($)) ?? { applications: 0, rereads: 0, archiveRereads: 0 },
     setListed: key => {
@@ -909,7 +913,7 @@ export const register: Register = on => {
     const { rows, key } = await view($)
     const mode = listMode(args, rows.length)
     if ('bad' in mode) return deny(mode.bad)
-    const { found } = collectMedia(await apiMessages($))
+    const { found } = collectMedia(await apiMessages($), rows)
     const tagged = await labels($, rows)
     // [SP_CTX_02_01] one row whole: no telemetry, no new listedKey
     if ('full' in mode) {
@@ -944,7 +948,9 @@ export const register: Register = on => {
     const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown }
     const out = await serial('queue', async () => {
       const { rows, key } = await view($)
-      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($), listed.key !== key)
+      // [SP_CTX_02_10] the API form is read only for a describe
+      const found = needsApi(args) ? collectMedia(await apiMessages($), rows).found : undefined
+      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($), listed.key !== key, hasMediaFrom(found))
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out

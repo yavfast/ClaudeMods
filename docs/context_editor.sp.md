@@ -129,7 +129,7 @@ Invariants:
 - `applied` порожній, `kind = compaction`: `context-editor: no edit was applied; the conversation was not changed. Not applied: <failed>.` — без рядка розміру і без «tokens freed»: обробник відповідає `skip`, і розмова справді не змінилась. Інваріант: у компактизації пакет непорожній, і кожна його правка або застосована, або в `failed`, тож тут `failed` непорожній.
 - `applied` порожній, `kind = seed` ([SP_CTX_02_22](#SP_CTX_02_22)): `context-editor: no queued edit was applied. Not applied: <failed>.`, а коли `failed` теж порожній — порожній рядок. Рядка розміру немає: без правок розмір засіву відрізняється від видимих рядків лише прибраними службовими викликами мода, доданими CarryNote, головою-підсумком і нормалізацією (прибрані провідні рядки асистента й сирітські результати, рядок TRANSCRIPT_LINE), і «звільнено» про це було б неправдою.
 
-Після будь-якої з форм, коли `notesDropped` непорожній, додається ` Notes dropped (their rows were removed): <ids>.` Далі, коли `ownCallsRemoved` > 0 і повернений список замінює розмову (у компактизації — `applied` непорожній; у засіві — завжди), додається ` Your own context-editor calls (<ownCallsRemoved>) were removed; tags and notes stay — see context_list.` (пропозиція P13: агент, чиї виклики `context_note` чи `context_edit` зникли з розмови, не впізнавав своїх дій — живі прогони фаз 14 і 17). Порожній звіт з однією з цих частин починається з `context-editor:`. `ratio` — `TagRegistry.charsPerToken`, прочитаний обробником (HandleCompaction уже читає реєстр) або BuildSeed; обробник телеметрії не запитує ([SP_CTX_02_34](#SP_CTX_02_34)). Частини без даних пропускаються. Правило мінімальне: рядок розміру є тоді й лише тоді, коли застосовано хоч одну правку. `charsBefore` — розмір рядків, до яких правки застосовано (рядки події компактизації або видимі рядки засіву); `charsAfter` — розмір тих самих рядків після ApplyEdits і DropOwnCalls: у компактизації це повернений список, у засіві — до CarryNote і голови, тож «звільнено» рахує лише правки.
+Після будь-якої з форм, коли `notesDropped` непорожній, додається ` Notes dropped (their rows were removed): <ids>.` Далі, коли серед `applied` є `describe`, — ` `+DESCRIBE_DROPS ([SP_CTX_01_12](#SP_CTX_01_12)). Далі, коли `ownCallsRemoved` > 0 і повернений список замінює розмову (у компактизації — `applied` непорожній; у засіві — завжди), додається ` Your own context-editor calls (<ownCallsRemoved>) were removed; tags and notes stay — see context_list.` (пропозиція P13: агент, чиї виклики `context_note` чи `context_edit` зникли з розмови, не впізнавав своїх дій — живі прогони фаз 14 і 17). Порожній звіт з однією з цих частин починається з `context-editor:`. `ratio` — `TagRegistry.charsPerToken`, прочитаний обробником (HandleCompaction уже читає реєстр) або BuildSeed; обробник телеметрії не запитує ([SP_CTX_02_34](#SP_CTX_02_34)). Частини без даних пропускаються. Правило мінімальне: рядок розміру є тоді й лише тоді, коли застосовано хоч одну правку. `charsBefore` — розмір рядків, до яких правки застосовано (рядки події компактизації або видимі рядки засіву); `charsAfter` — розмір тих самих рядків після ApplyEdits і DropOwnCalls: у компактизації це повернений список, у засіві — до CarryNote і голови, тож «звільнено» рахує лише правки.
 
 ### 01_06. Archive  {#SP_CTX_01_06}
 
@@ -246,7 +246,10 @@ Invariants:
 | FLUSH_DELAY | 300 мс | Пауза між завершенням ходу і запуском Flush: команди компактизації, промпту продовження або промпту ходу оптимізації |
 | HEAD_ROWS | 8 | Скільки перших рядків компактизації запам'ятовує Boundary |
 | HOST_ENV | `CONTEXT_EDITOR_HOST` | Змінна середовища процесу хоста з випадковим токеном для `hostId` ([SP_CTX_01_14](#SP_CTX_01_14)) |
-| ROW_WINDOW | 4096 | Найбільше рядків, які віддає читання розмови, і найбільше повідомлень API-подання |
+| ROW_WINDOW | 4096 | Найбільше рядків, які віддає читання розмови, і найбільше повідомлень API-подання; рядки події компактизації (`e.messages`) цієї межі не мають — це всі рядки після останньої межі (навичка plugin-hooks, пункт 49) |
+| NO_MEDIA_NOW | `no media found in that row now` | Причина відмови `describe` при застосуванні, коли медіа рядка цим застосуванням не знайдено (PromptMatch дав «немає»); знайдене, але не заархівоване медіа відхиляється з `media could not be archived` ([SP_CTX_02_04](#SP_CTX_02_04)) |
+| DESCRIBE_DROPS | `describe: attachments the host added to that prompt (file contents from @path, reminders) are dropped; re-read files if needed.` | Рядок результату `context_edit` з прийнятим `describe` і звіту застосування з `describe` ([SP_CTX_02_02](#SP_CTX_02_02), [SP_CTX_02_04](#SP_CTX_02_04)) |
+| PROMPT_DECORATIONS | `<system-reminder>`, `<local-command-caveat>`, `[Image: source: ` | Початки текстових блоків, які хост додає до API-повідомлення промпту і яких немає в рядках (вкладення, застереження команди, isMeta-нотатка збереженого зображення); рядок, що так починається, — вставлений модом (доставка). PromptMatch їх пропускає ([SP_CTX_02_10](#SP_CTX_02_10); навичка plugin-hooks, пункт 47) |
 | SUMMARY_OPENER | `This session is being continued from a previous conversation` | Початок тексту підсумку вбудованої компактизації в API-поданні і в транскрипті (спайк context_editor_handoff_long, Entry 2) |
 | TRANSCRIPT_LINE | `read the full transcript at:` | Початок рядка в підсумку вбудованої компактизації, що вказує на файл старої сесії; засів прибирає такі рядки ([SP_CTX_02_22](#SP_CTX_02_22)) |
 | MEDIA_DATA | 256 | Найкоротший рядок base64, який архів вважає даними медіа |
@@ -502,7 +505,7 @@ Input:
 | resume | bool | no | задає `Queue.resume` поточного пакета |
 | resume_prompt | string | no | ≤ MAX_TEXT; непорожній після обрізання задає `Queue.resumePrompt`, порожній ігнорується |
 
-Output: `Queued <n> edit(s); <m> pending in total.`, відхилені правки з причинами, попередження про повідомлення людини (нижче), при непорожній черзі — вказівка завершити хід і текст продовження.
+Output: `Queued <n> edit(s); <m> pending in total.`, відхилені правки з причинами, попередження про повідомлення людини (нижче), для прийнятого `describe` — рядок DESCRIBE_DROPS, при непорожній черзі — вказівка завершити хід і текст продовження.
 
 Errors:
 | Code | Condition | Guidance |
@@ -523,7 +526,8 @@ Processing logic (pseudocode):
         IF Queue state = unreadable: move the file aside (QUEUE_QUARANTINED) or deny (DENIED_QUEUE_READ); q = empty
         rows = CurrentRows()                                           # SP_CTX_02_18
         edits = edits with each resolvable `ref` of summarize/drop replaced by its tool_use_id (ResolveRef, SP_CTX_02_17)
-        (queued, errors) = PrepareEdits(rows, edits, TagRegistry)   # реєстр unreadable → без перевірки pin; HandleCompaction відхилить кожну правку
+        hasMedia = edits hold a describe ? owner ∈ keys(CollectMedia(API form, rows).found) : false   # SP_CTX_02_10; API-подання читається лише для describe
+        (queued, errors) = PrepareEdits(rows, edits, TagRegistry, hasMedia)   # реєстр unreadable → без перевірки pin; HandleCompaction відхилить кожну правку
         warnings = PersonWarnings(rows, queued)                       # попередження, не відмова (C_CTX_DEC_21)
         REQUIRE len(q.edits) + len(queued) <= MAX_QUEUE_EDITS AND size of the new file <= MAX_QUEUE_BYTES
         q.edits += queued; IF queued not empty: q.tagsOnly = false
@@ -554,7 +558,7 @@ Processing logic (pseudocode):
 
 Попередження не повторюється при застосуванні і не впливає на пакет: що стискати, вирішує агент ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04)). Заміни з тегів (QueueTagReplacements) попередження при постановці в чергу не мають: ті самі рядки агент побачив у попередженні результату `context_tag` у мить тегування (PersonTagWarnings, [SP_CTX_02_11](#SP_CTX_02_11)) — прогін на копії сесії показав, що агент, який згортає діапазон, не помічає відповідей людини в ньому ([C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)).
 
-Опис інструмента (EDIT_DESCRIPTION) не довший за MAX_DESCRIPTION. Після фази 17 текст — 2038 з 2048 символів, і пункт (8) уже зведено до «Batch edits in one call.» (пояснення кешу — у навичці). Фаза 15 додає до пункту (4) відмову для рядка з `state` (до 100 символів) і звільняє стільки ж у пункті (6): з нього зникають «(`context_tag` close), or without stages the earliest processed or excess span» і «and the working part»; бюджет фази 15 — сума ≤ 2048, перевіряє рядок 05_01 «опис інструмента». Обов'язковий зміст за пріоритетом (хост обрізає кінець, [SP_CTX_02](#SP_CTX_02)): (1) призначення і що правки застосовуються після кінця ходу, з продовженням `resume` / `resume_prompt`; (2) операції з обов'язковими полями і правило пар `collapse`; (3) `ref` і `last`; (4) відмова для цілей з `pin` і для рядка з `state`, крім `rewrite` цього рядка; (5) оригінали архівуються у файл, названий у заміні, і читаються `Read` ([C_CTX_DEC_18](./context_editor.concept.md#C_CTX_DEC_18)); (6) порада одним реченням — стискати блок завершеного етапу, лишаючи зазвичай дослівно повідомлення людини — зокрема відповіді на запитання агента (AskUserQuestion) — і чинні правила й навички (ділянка без етапів і робоча частина — у навичці з фази 15) ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04), [C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)); (7) шаблон запису етапу одним рядком — мета; рішення з причиною, дослівними словами людини і причиною відмови від інших варіантів; факти з джерелами; змінені артефакти; відкриті питання (пропозиції P5, P11); (8) пакетування; (9) вказівка на навичку `context-editor:<SKILL>`. Лише в навичці SKILL ([SP_CTX_02_27](#SP_CTX_02_27)): ціна скидання кешу, відтворюване проти невідтворюваного, глухі кути діапазоном `disposable`, мітка оптимізації, телеметрія, причини `review`, слот стану докладно. Скорочується спершу текст пунктів (8) і (6), потім (7) зводиться до вказівки на навичку; пункти (1)–(5) лишаються повністю. Довжину перевіряє рядок 05_01 «опис інструмента».
+Опис інструмента (EDIT_DESCRIPTION) не довший за MAX_DESCRIPTION. Після фази 17 текст був 2038 з 2048 символів, і пункт (8) зведено до «Batch edits in one call.» (пояснення кешу — у навичці). Фаза 5 (2026-10-10) додала до пункту (2) рядок операції `describe` (`{"op":"describe","index","description"}`: медіа в рядку промпту людини, позначка `@` у `context_list`, текст лишається), а місце звільнила за порядком нижче: пункт (6) скорочено до «Compress a finished stage's block into a stage record; usually keep verbatim …», пункт (7) зведено до вказівки на навичку — «Record template and guide: skill context-editor:context-stages.» (шаблон запису етапу — у навичці, розділ «Compressing a block»); текст — 2037 з 2048. Фаза 15 додає до пункту (4) відмову для рядка з `state` (до 100 символів) і звільняє стільки ж у пункті (6): з нього зникають «(`context_tag` close), or without stages the earliest processed or excess span» і «and the working part»; бюджет фази 15 — сума ≤ 2048, перевіряє рядок 05_01 «опис інструмента». Обов'язковий зміст за пріоритетом (хост обрізає кінець, [SP_CTX_02](#SP_CTX_02)): (1) призначення і що правки застосовуються після кінця ходу, з продовженням `resume` / `resume_prompt`; (2) операції з обов'язковими полями і правило пар `collapse`; (3) `ref` і `last`; (4) відмова для цілей з `pin` і для рядка з `state`, крім `rewrite` цього рядка; (5) оригінали архівуються у файл, названий у заміні, і читаються `Read` ([C_CTX_DEC_18](./context_editor.concept.md#C_CTX_DEC_18)); (6) порада одним реченням — стискати блок завершеного етапу, лишаючи зазвичай дослівно повідомлення людини — зокрема відповіді на запитання агента (AskUserQuestion) — і чинні правила й навички (ділянка без етапів і робоча частина — у навичці з фази 15) ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04), [C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)); (7) шаблон запису етапу — мета; рішення з причиною, дослівними словами людини і причиною відмови від інших варіантів; факти з джерелами; змінені артефакти; відкриті питання (пропозиції P5, P11) — з фази 5 в описі лише вказівка на навичку, де шаблон записано; (8) пакетування; (9) вказівка на навичку `context-editor:<SKILL>`. Лише в навичці SKILL ([SP_CTX_02_27](#SP_CTX_02_27)): ціна скидання кешу, відтворюване проти невідтворюваного, глухі кути діапазоном `disposable`, мітка оптимізації, телеметрія, причини `review`, слот стану докладно. Пункт (7) уже зведено до вказівки на навичку (фаза 5); далі скорочується текст пунктів (8) і (6); пункти (1)–(5) лишаються повністю. Довжину перевіряє рядок 05_01 «опис інструмента».
 
 ### 02_03. PrepareEdits  {#SP_CTX_02_03}
 
@@ -621,6 +625,7 @@ Processing logic (pseudocode):
                     IF unmatchedPromptMedia > 0 AND the span holds a user row without toolResults:
                        failed "span may hold prompt media that cannot be archived"
                 rewrite, describe: {at} via anchor
+                    IF describe AND media has no paths for {row: at}: failed ("media could not be archived" IF {row: at} in mediaOwners OR media has the key ELSE NO_MEDIA_NOW)   # медіа цього рядка знайдено (PromptMatch на рядках застосування) і заархівовано саме цим застосуванням; інакше рядок не змінюється
             IF edit replaces media of an owner in mediaOwners AND media has no paths for it: failed "media could not be archived"
             plan += (edit, touched, pair?, hi = max(touched))
         SORT plan BY hi DESC; anyRow = {}; exclusiveRow = {}; pairs = {}
@@ -650,7 +655,7 @@ Processing logic (pseudocode):
         no carrier → 1 row {role span[0].role, text T, toolUses []}
         T = MARK+" <n> rows collapsed"+note+mediaNote(all owners in span)+": "+summary
     run rewrite: row text = MARK+" rewritten"+note+": "+text; row rebuilt
-    run describe: row text = MARK+" media replaced"+note+mediaNote(row)+": "+description+"\n\n"+original text; row rebuilt
+    run describe: row text = MARK+" media replaced"+note+mediaNote(row)+": "+description+"\n\n"+original text; row rebuilt   # вкладення хоста на handle рядка (вміст файлу з @шлях, нагадування) зникають разом із медіа (навичка plugin-hooks, пункт 44); звіт і результат context_edit кажуть це DESCRIBE_DROPS
     mediaNote(owners) = media has paths for these owners ? " (media: "+paths joined ", "+")" : ""
 
     FUNCTION Produced(final, steps) → list:                         # викликають HandleCompaction після DropOwnCalls і BuildSeed після нормалізації
@@ -664,7 +669,7 @@ Processing logic (pseudocode):
 
 Правки пар (summarize, drop) не розрізають рядків, тож кілька правок різних пар на спільних рядках застосовуються послідовно; правки рядків (collapse, rewrite, describe) беруть свої рядки виключно.
 
-«Правка замінює медіа власника»: summarize і drop — власник `{tool_use_id}` пари; collapse — власники всіх пар і рядків діапазону; describe — власник `{row}`.
+«Правка замінює медіа власника»: summarize і drop — власник `{tool_use_id}` пари; collapse — власники всіх пар і рядків діапазону; describe — власник `{row}`. Для `describe` умова сильніша за «власник у mediaOwners»: власника могло не бути в mediaOwners, якщо PromptMatch на рядках застосування дав «немає» (зсув, рядок у хвості, якого немає в API), — тоді опис без медіа-файлу мовчки знищив би зображення людини; тому `describe` вимагає шляхів медіа свого рядка в `media` і інакше відхиляється з NO_MEDIA_NOW. Так і в HandleCompaction (`media` — архів цього застосування), і в BuildSeed (`mediaOwners = ∅`, `media` — файли засіву).
 
 `Locate(rows, anchor, hint)`: рядок `hint`, якщо його відбиток збігається; інакше єдиний рядок з цим відбитком; інакше «не знайдено».
 
@@ -888,21 +893,56 @@ Errors:
 
 Purpose: знайти медіа-ресурси розмови, яких немає в Row.
 
-Input: `api` — основна розмова у форматі Messages API, як її повертає читання розмови з поданням `api` (до ROW_WINDOW повідомлень, починається з повідомлення `user`); `rows` — рядки розмови. Output: `found: map<owner, list<MediaRef>>` (не більше записів, ніж медіа-блоків у `api`), `knownResults: set<string>` (усі `tool_use_id` результатів у `api`), `unmatchedPromptMedia: int` (повідомлення людини з медіа, для яких PromptMatch дав «немає»), `apiTruncated: bool` = `len(api) ≥ ROW_WINDOW − 1` (читання API-подання повернуло найбільшу кількість повідомлень, тож старіші могли лишитися поза ним; навичка plugin-hooks, пункт 10). Мінус один — бо подання починається з повідомлення `user`, і хост може відкинути провідне повідомлення асистента після обрізання; хибне спрацювання лише повертає колишню відмову (ApplyEdits, «outside the API window»), а пропуск дав би правку поза поданням.
+Input: `api` — основна розмова у форматі Messages API, як її повертає читання розмови з поданням `api` (до ROW_WINDOW повідомлень від останньої межі, починається з повідомлення `user`); `rows` — рядки розмови, що закінчуються там само, де `api`: CurrentRows ([SP_CTX_02_18](#SP_CTX_02_18)) для `context_list`, `context_edit` і звіту закриття етапу, `e.messages` для HandleCompaction ([SP_CTX_02_07](#SP_CTX_02_07)), видимі рядки для BuildSeed ([SP_CTX_02_22](#SP_CTX_02_22)); власник `{row}` — індекс у цьому самому `rows`. Output: `found: map<owner, list<MediaRef>>` (не більше записів, ніж медіа-блоків у `api`), `knownResults: set<string>` (усі `tool_use_id` результатів у `api`), `unmatchedPromptMedia: int` (повідомлення людини з медіа, для яких PromptMatch дав «немає»), `apiTruncated: bool` = `len(api) ≥ ROW_WINDOW − 1` (читання API-подання повернуло найбільшу кількість повідомлень, тож старіші могли лишитися поза ним; навичка plugin-hooks, пункт 10). Мінус один — бо подання починається з повідомлення `user`, і хост може відкинути провідне повідомлення асистента після обрізання; хибне спрацювання лише повертає колишню відмову (ApplyEdits, «outside the API window»), а пропуск дав би правку поза поданням.
 
 Processing logic (pseudocode):
     FUNCTION CollectMedia(api, rows):
         FOR block IN tool_result blocks of api:
             FOR inner IN block.content WHERE inner.type IN (image, document):
                 result[{tool_use_id: block.tool_use_id}] += MediaRef(inner)
-        FOR msg IN user messages of api WITH top-level image/document blocks:
-            PromptMatch(msg, rows) → index or none           # SP_CTX_DEC_06
-            IF index: result[{row: index}] += MediaRef(each media block)
+        owners = PromptMatch(api, rows)                     # SP_CTX_DEC_06: api index → row index
+        FOR msg AT i IN user messages of api WITH top-level image/document blocks:
+            IF i IN owners: result[{row: owners[i]}] += MediaRef(each top-level media block of msg)
+            ELSE unmatchedPromptMedia += 1
         RETURN result
+
+    FUNCTION PromptMatch(api, rows) → map<int, int>:        # B з перевіркою A кожної пари (SP_CTX_DEC_06)
+        decoration(t) = trimmed-left t starts with one of PROMPT_DECORATIONS
+        commandRow(t) = trimmed-left t starts with "<command-name>" or "<local-command-stdout>"
+        squash(t) = t with every whitespace character (\s) removed
+        text(msg) = text blocks of msg in order; a string content is one text block
+        # (1) хвіст: рядок промпту "/compact <args>" поза ланцюжком (термінал, навичка plugin-hooks, пункт 50)
+        IF last(api) is user AND last(rows) is assistant AND squash(join(non-decoration text(last(api)))) starts with "/compact":
+            api = api without its last message
+        # (3) одиниці — ходи людини
+        rowUnits: a unit starts at a user row without toolResults whose text is not a decoration, when there is no unit yet
+                  or the current unit already holds an assistant row; every other row joins the current unit (rows before
+                  the first start belong to none); lead(unit) = its user rows before its first assistant row
+        apiUnits: the same over api, a unit starts at a user message with a text block that is not a decoration, or with
+                  a top-level image/document; a message of decorations alone starts nothing (термінал, `@файл`)
+        # (4) пари від хвоста
+        n = min(len(rowUnits), len(apiUnits)); agreed = 0
+        WHILE agreed < n AND Agrees(rowUnits[-1-agreed], apiUnits[-1-agreed]): agreed += 1
+        Agrees(ru, au) =
+            squash(join(text of user rows of ru that are not decorations)) = squash(join(non-decoration text blocks of user messages of au))
+            AND multiset(tool_use_id of toolResults of ru) = multiset(tool_use_id of tool_result blocks of au)
+            AND squash(join(text of assistant rows of ru)) = squash(join(text blocks of assistant messages of au))   # thinking не входить
+            AND multiset(tool_use_id of toolUses of ru) = multiset(id of tool_use blocks of au)
+        # (5) довіра
+        failedAtStart = agreed < n AND apiUnits[-1-agreed] starts at api[0]          # підсумок вбудованої компактизації чи початок вікна
+        FOR k IN 0..agreed-1 WHERE k + 1 < agreed OR agreed = n OR failedAtStart:
+            head = first message of apiUnits[-1-k]
+            # (6) власник
+            IF head has a top-level image/document AND no tool_result block:
+                owners = rows of lead(rowUnits[-1-k]) that are user rows without toolResults, not commandRow, not decoration
+                IF len(owners) = 1: out[index of head] = index of owners[0]
+        RETURN out                                            # (7) решта — «немає»
 
 `MediaRef(block)`: `mediaType` і `data` — з `block.source`, якщо джерело типу `base64`; інакше `data` відсутнє; `bytes` = довжина декодованих даних.
 
-Зіставлення за `tool_use_id` однозначне. `PromptMatch` для медіа в промптах людини — відкрите рішення [SP_CTX_DEC_06](#SP_CTX_DEC_06); доки його не закрито, `PromptMatch` завжди повертає «немає», тож `describe` відхиляється з `no media found in that row`.
+Зіставлення за `tool_use_id` однозначне. Медіа в промптах людини зіставляє PromptMatch ([SP_CTX_DEC_06](#SP_CTX_DEC_06), спайк [context_editor_media](./context_editor_media.spike.md)): обидва подання закінчуються тим самим ходом, тож ходи людини (одиниці) йдуть парами від хвоста, а текст лише перевіряє кожну пару. Ключем текст бути не може: промпт лише із зображенням має `Row.text = ""` у stream-json, однакові тексти повторюються, а API-повідомлення — це злиття суміжних рядків `user` з вкладеннями хоста. Що бачить хост (2.1.296, обидва хости; навичка plugin-hooks, пункти 47–50): `Row.text` з'єднує текстові блоки без розділювача; в API ті самі блоки дослівні, але з `\n` на стиках злиття — тому порівнюються рядки без пробільних символів; нагадування (`<system-reminder>`) стоять перед блоками промпту, isMeta-нотатка `[Image: source: <шлях>]` — після них, рядки `/compact` і `Compacted` зливаються з наступним промптом разом з блоком `<local-command-caveat>`; у терміналі `@файл` дає окреме API-повідомлення лише з нагадувань. Паралельні виклики рядки пишуть «виклик, результат, виклик», а API зливає їх в одне повідомлення асистента й одне повідомлення результатів — тому одиниця — хід людини, а не відрізок рядків `user`.
+
+«Немає» (медіа йде в `unmatchedPromptMedia`), коли: пара не перевірилась або стоїть за першою неперевіреною (зсув: рядок, якого немає в одному з подань, а також відрізок, обрізаний вікном читання); наступна старша пара не перевірилась не на першому повідомленні API — тоді й ця пара не довірена (одна пара з порожнім текстом промпту не доводить, що зсуву немає); медіа не в першому повідомленні ходу або в повідомленні з `tool_result` (доставка посеред ходу, навичка plugin-hooks, пункт 43); голова ходу має не один рядок людини (два промпти без відповіді між ними). Помилка правила дає «немає», а не чужий рядок; зсув лишається непоміченим лише тоді, коли в сусідніх ходах однакові і промпт, і відповідь, і виклики. Медіа файлу з `@шлях` у терміналі хост кладе в повідомлення промпту — воно належить рядку промпту і зникає разом із перезібраним рядком (навичка plugin-hooks, пункт 44); так само зникають текстові вкладення цього промпту (вміст файлу з `@шлях`, нагадування) — їх `describe` не архівує, а лише попереджає (DESCRIBE_DROPS). PromptMatch рахується і при постановці (`context_edit`), і при застосуванні — на тодішніх рядках; при застосуванні «немає» відхиляє `describe` ([SP_CTX_02_04](#SP_CTX_02_04)). Еталонна реалізація для фікстур — `match_v3` у `.dev_flow/cache/media-spike/match.py`; код — `matchPrompts` у `hooks/media.ts`.
 
 ### 02_11. context_tag  {#SP_CTX_02_11}
 
@@ -1450,7 +1490,7 @@ Output: `{ rows: list<Row>, report: ApplyReport, visible: list<Row>, fromSummary
 
 Processing logic (pseudocode):
     FUNCTION BuildSeed(transcript, rows, api, edits, tags, folder, archive, writeMedia):
-        (found, knownResults, unmatchedPromptMedia, apiTruncated) = CollectMedia(api, rows)   # SP_CTX_02_10
+        (knownResults, apiTruncated) = CollectMedia(api, rows)                              # SP_CTX_02_10
         hidden = some row of rows holds a tool result whose id is not in knownResults
                  OR some user row of rows other than rows[0] has text that, trimmed, starts with SUMMARY_OPENER   # підсумок посеред рядків — межа не записана
         early = []
@@ -1476,20 +1516,22 @@ Processing logic (pseudocode):
             FOR edit IN edits whose target lies in rows but not in visible:      # summarize, drop: call or result outside visible;
                 early += "<edit>: the model no longer sees this row"; remove edit  # collapse, rewrite, describe: Locate finds the anchor in rows, not in visible
         (edits, refused) = ScreenPinned(visible, edits, tags)                               # SP_CTX_02_03: pin і state, як у SP_CTX_02_07
+        (found, unmatched) = CollectMedia(api, visible)                                    # власник {row} — індекс у visible, що закінчується там само, де api
         n = 0; items = {}                                                                  # items[owner][k] — шлях k-го медіа власника або відсутній
-        FOR owner IN found, FOR k, ref IN found[owner]:                                    # кожне медіа окремо
+        FOR owner IN found WHERE owner is {tool_use_id} OR an edit of edits replaces it, FOR k, ref IN found[owner]:   # кожне медіа окремо; медіа промпту — лише для правки, що його замінює
             IF ref.data absent: items[owner][k] = absent; CONTINUE
             n += 1; path = <folder>/<n>.<ext of ref.mediaType>                             # ext — як у SP_CTX_01_06
             IF NOT writeMedia(path, ref.data): REFUSE "media of <owner> could not be archived"
             items[owner][k] = path
         media = for each owner, the present paths of items[owner] in order                 # вхід ApplyEdits: шляхи для mediaNote
-        (seed, report) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatchedPromptMedia, apiTruncated)   # SP_CTX_02_04
+        (seed, report) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatched, apiTruncated)   # SP_CTX_02_04
         report.failed = early + refused + report.failed
         (seed, report.ownCallsRemoved) = DropOwnCalls(seed, ∅, knownResults)                # зокрема виклик context_handoff; лічильник — для речення P13 (SP_CTX_01_05)
         report.charsAfter = Σ size(seed)                                                   # тут: «звільнено» рахує лише правки, без CarryNote і голови
         replaced = owners whose media the edits in report.applied replace
         FOR each tool result t in seed whose owner {t.tool_use_id} is in found and not in replaced:
             t.text = t.text + (t.text blank ? "" : "\n\n") + CarryNote(found[owner], items[owner])
+        unmatchedPromptMedia = unmatched + count of owners {row} in found not in replaced   # медіа промптів, якого засів не несе: не зіставлене або не замінене правкою
         seed = every row of seed rebuilt without handle                                    # handle старої сесії після /clear хост мовчки ігнорує
         IF head present: seed = [head] + seed
         IF seed[0] has role user AND seed[0].text has a line that holds TRANSCRIPT_LINE: remove every such line, then trim seed[0].text
@@ -1504,6 +1546,8 @@ Processing logic (pseudocode):
 
     CarryNote(refs, paths) = MARK + " media carried as files (open them with Read): " + one item per k, joined ", ":
         paths[k] present → "<refs[k].mediaType> <paths[k]>"; paths[k] absent (refs[k] without inline data) → "<refs[k].mediaType> (not carried: no inline data)"
+
+Медіа в промпті людини (власник `{row}` за PromptMatch, [SP_CTX_02_10](#SP_CTX_02_10)) засів несе лише через правку, що його замінює (`describe`, `collapse`: файл у `<folder>` і шлях у mediaNote); незмінений промпт з медіа переходить без нього і лічиться в `unmatchedPromptMedia` разом із незіставленим («Media in <n> of the person's prompt(s) was not carried over»), а файли для нього не пишуться (фаза 5). Нести таке медіа файлом, як CarryNote для результатів, — backlog плану.
 
 Голова — підсумок вбудованої компактизації, перше повідомлення API-подання. Вміст повідомлення API-подання, заданий рядком, — один текстовий блок з цим текстом. Результат поза API-поданням означає «модель цього рядка не бачить» лише тоді, коли жодне з вікон читання не заповнене: рядки, що випали за межу ROW_WINDOW, модель ще може бачити, тож за заповненого вікна засів відмовляє (WINDOW_FULL). Блок-нагадування — текстовий блок, обрізаний текст якого починається з `<system-reminder>`. `mediaOwners = ∅` у виклику ApplyEdits: усе медіа засіяних рядків уже лежить файлами, а засіяний рядок ніде не зберігає `handle`, тож правила ApplyEdits, що бережуть незаархівоване медіа сусідніх пар, тут не потрібні; шляхи замінених пар потрапляють у текст правки (`(media: …)`), як при компактизації. Медіа в промптах людини не переноситься, доки відкрите [SP_CTX_DEC_06](#SP_CTX_DEC_06): його кількість (`unmatchedPromptMedia`) називає звіт нової сесії. Thinking-блоки не переносяться: рядок без `handle` хост будує лише з тексту і блоків інструментів. Нагадування хоста (`<system-reminder>`) і повторно вкладені вбудованою компактизацією файли до засіву не потрапляють: голова — лише текст підсумку, а рядки беруться з транскрипту, не з API-подання. Рядки команд (`/compact`, «Compacted») поточної розмови засіваються як звичайні рядки людини.
 
@@ -2204,7 +2248,15 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | ApplyEdits | thinking перед зміненим викликом | відрізок: промпт; рядок лише з thinking; `tool_use a`; результат `a` (одна відповідь з thinking, усі з `handle`); summarize `a` | рядок thinking перезібрано й видалено; рядок `tool_use a` і результат перезібрано; жоден рядок асистента відрізка не має `handle` |
 | DropOwnCalls | службовий виклик посеред відповіді | відрізок: текст, `context_list`, Read з медіа (одна відповідь) | пару `context_list` прибрано; рядок `tool_use` Read і рядок тексту перед ним перезібрано (вміст той самий); результат Read з `handle` |
 | ApplyEdits | медіа не заархівовано | правка замінює власника з mediaOwners без шляхів у media | `failed` `media could not be archived` |
-| ApplyEdits | describe | рядок промпту з медіа | текст починається з MARK, далі опис, далі оригінальний текст |
+| ApplyEdits | describe | рядок промпту з медіа, шлях медіа в `media` | `describe #0` застосовано; рядок без `handle`; текст `MARK media replaced (original: …) (media: <path>): <опис>`, порожній рядок, оригінальний текст; звіт містить DESCRIBE_DROPS |
+| ApplyEdits | describe без медіа при застосуванні | `describe #0`, у `media` немає шляхів рядка: власник у mediaOwners без файлу / власника немає в mediaOwners (PromptMatch дав «немає») | перший: `describe #0: media could not be archived`; другий: `describe #0: no media found in that row now`; рядок зберігає `handle` в обох |
+| HandleCompaction | describe без зіставлення при застосуванні | у черзі `describe #0` (при постановці медіа знайдено); `e.messages` закінчується рядком `user`, якого немає в API | медіа не записано; skip; звіт черги — `describe #0: no media found in that row now` |
+| BuildSeed | describe без зіставлення | те саме для засіву | файлів немає; `failed = [describe #0: no media found in that row now]`; текст промпту без змін |
+| BuildSeed | медіа в промпті після підсумку | рядки: результат поза API, рядок-підсумок, відповідь, промпт; API починається з підсумку, далі промпт з image; `describe` промпту | PromptMatch на видимих рядках; один файл, шлях у рядку з описом; `fromSummary = true`; `unmatchedPromptMedia = 0` |
+| context_edit | needsApi, hasMediaFrom | правки з `describe` / без нього / `edits` не список; власники CollectMedia / без читання | true / false / false; `hasMedia` — за ключами `found`, без читання — false; прийнятий `describe` додає рядок DESCRIBE_DROPS |
+| context_edit | describe | `describe #0`; `hasMedia` за CollectMedia / без нього | у черзі / `no media found in that row` |
+| HandleCompaction | describe | два промпти з медіа, `describe #0` | один медіа-файл; рядок #0 з описом без `handle`; рядок #2 зберігає `handle` (медіа лишається) |
+| BuildSeed | медіа в промптах | два промпти з медіа, `describe #0` | записано лише медіа #0, шлях — у його рядку; `unmatchedPromptMedia = 1` (незмінений #2) |
 | FreshId | повторна правка | id з суфіксом `_ce…` | один суфікс |
 | PrepareEdits | обов'язкові поля | summarize без summary; rewrite з порожнім text | `summary is required`, `text is required` |
 | PrepareEdits | помилки | невідомий op; невідомий id; індекс поза межами; collapse розриває пару; rewrite рядка з викликом; describe рядка без медіа | відповідні причини з [SP_CTX_02_03](#SP_CTX_02_03) |
@@ -2385,7 +2437,19 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | PrepareStorage | права | команда встановлення прав завершується з помилкою | сховище `unavailable`, інструменти відмовляють DENIED_STORAGE |
 | CollectMedia | медіа в результаті | `tool_result` з image base64 | власник `{tool_use_id}`, `data` присутні, `bytes` = довжина декодованих даних |
 | CollectMedia | медіа посиланням | `tool_result` з document `source.type = url` | MediaRef без `data`; правка, що його замінює, — `media could not be archived` |
-| CollectMedia | медіа в промпті | повідомлення людини з image | не в `found`; `unmatchedPromptMedia = 1` |
+| CollectMedia | медіа в промпті | повідомлення людини з image, рядків немає (`rows = []`) | не в `found`; `unmatchedPromptMedia = 1` |
+| CollectMedia | медіа в промпті зіставлено | рядки «промпт, відповідь»; API: нагадування, текст промпту, image | `found[{row: 0}]` — MediaRef з `data`; `unmatchedPromptMedia = 0`; перелік ставить `@`; `describe #0` з `hasMedia` прийнято, без нього — `no media found in that row` |
+| PromptMatch | живі дампи | 7 обрізаних дампів проби 2.1.296 (`tests/media-fixtures.ts`): stream-json після компактизації обробником і в `e.messages`; термінал з `@файл` і рядками команд, після вбудованої `/compact`, `e.messages` під час неї; посеред ходу з паралельними викликами; `@image.png` разом із вставленим | кожне повідомлення з медіа → рядок, як у еталоні `match_v3` (`.dev_flow/cache/media-spike/match.py`) |
+| PromptMatch | лише зображення | промпт без тексту (`Row.text = ""`), API: нагадування, image, нотатка `[Image: source: …]` | зіставлено за позицією |
+| PromptMatch | однаковий текст | два промпти з тим самим текстом і різними зображеннями, різні відповіді | кожне зображення — своєму рядку |
+| PromptMatch | прикраси | нагадування перед промптом, нотатка `[Image: source: …]` після, `\n` на стику; текст промпту двома блоками навколо зображення | зіставлено (`Row.text` — блоки без розділювача) |
+| PromptMatch | рядки команди | рядки `/compact` і `Compacted` перед промптом злиті в одне API-повідомлення з `<local-command-caveat>` | власник — рядок промпту, не рядок команди |
+| PromptMatch | `@файл` у терміналі | API-повідомлення лише з нагадуванням «Called the Read tool…» між відповіддю і промптом | пропущено; обидва медіа зіставлено |
+| PromptMatch | зсув | (а) у рядках немає ходу з однаковим текстом промпту; (б) немає ходу з промптом лише із зображенням | (а) «немає» для всіх старших (відповіді різні); (б) медіа новішого ходу не довірене — «немає»; `unmatchedPromptMedia = 2` |
+| PromptMatch | `tool_result` у повідомленні | image верхнього рівня в повідомленні з `tool_result` (доставка посеред ходу) | «немає»; `unmatchedPromptMedia = 1` |
+| PromptMatch | `/compact` у хвості | API закінчується повідомленням `/compact <args>`, рядки — відповіддю асистента | повідомлення пропущено; зіставлено |
+| PromptMatch | паралельні виклики | рядки «виклик a, результат a, виклик b, результат b»; API — один `assistant(a, b)` і один `user(a, b)` | зіставлено |
+| PromptMatch | після вбудованої `/compact` | рядки: старий промпт, підсумок, відповідь, новий промпт; API починається з підсумку | пара на першому повідомленні API не перевіряється, новіша зіставлена |
 | CollectMedia | вікно | три `tool_result`, один без медіа | `knownResults` містить усі три id |
 | CollectMedia | `apiTruncated` | 4096 / 4095 / 4094 повідомлень API-подання | true / true / false (поріг ROW_WINDOW − 1) |
 | HandleCompaction | покинута диспетчеризація | `next.signal` перервано | skip `compaction abandoned`; черга не записується |
@@ -2397,7 +2461,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | Flush | відправка відхилена | `submit` падає або повертає `drop` | `lastSubmittedReportId` не змінюється; звіт лишається в черзі; попередження; наступний промпт людини отримує звіт через DeliverReport |
 | Flush | хост відмовляє | `compact` падає з текстом T | одна спроба, без очікувань; черга лишається; рядок стану містить T |
 
-Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти, збіг за інструкцією за будь-якого `trigger`, гілка HANDOFF_MARKER), `flush.test.ts` (Flush через порт FlushIO). Зв'язування портів з `$` (PrepareStorage, запуск команд хоста) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag з етапами, слотом стану і діапазонами, AutoTag з R5, R4, QueueTagReplacements, RebindTags з межами етапів і слотом стану, розбір реєстру, перелік з тегами, позначками етапу і `~`) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildSeed, CheckSeed, CheckSeeded, HandleSeed, пропуск компактизації, RunHandoff через порт: засів, збій до і після `/clear`, документ, відкладання, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). Етапи, мітка і хід оптимізації — `stages.test.ts` (CloseStage, BlockReport, OptimizeText, PersonAdvice, DetectOptimize, Telemetry через порт `usage`, SessionIntro) і `flush.test.ts` (хід оптимізації, повторна перевірка й порівняння-і-запис, запасні шляхи до звичайного продовження); журнал — `journal.test.ts` (JournalApply, JournalReread, Trim, розбір файлу); вміст навички (рядок SKILL.md вище) перевіряють `claude plugin validate` і рев'ю за таблицею [SP_CTX_02_27](#SP_CTX_02_27), бо модулі мода не мають файлового API поза `$`. describe і PromptMatch не реалізовані (план PL_CTX).
+Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `media.test.ts` (PromptMatch на живих дампах `media-fixtures.ts` і штучних випадках, describe наскрізно: context_edit, ApplyEdits, HandleCompaction, BuildSeed), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти, збіг за інструкцією за будь-якого `trigger`, гілка HANDOFF_MARKER), `flush.test.ts` (Flush через порт FlushIO). Зв'язування портів з `$` (PrepareStorage, запуск команд хоста) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag з етапами, слотом стану і діапазонами, AutoTag з R5, R4, QueueTagReplacements, RebindTags з межами етапів і слотом стану, розбір реєстру, перелік з тегами, позначками етапу і `~`) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildSeed, CheckSeed, CheckSeeded, HandleSeed, пропуск компактизації, RunHandoff через порт: засів, збій до і після `/clear`, документ, відкладання, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). Етапи, мітка і хід оптимізації — `stages.test.ts` (CloseStage, BlockReport, OptimizeText, PersonAdvice, DetectOptimize, Telemetry через порт `usage`, SessionIntro) і `flush.test.ts` (хід оптимізації, повторна перевірка й порівняння-і-запис, запасні шляхи до звичайного продовження); журнал — `journal.test.ts` (JournalApply, JournalReread, Trim, розбір файлу); вміст навички (рядок SKILL.md вище) перевіряють `claude plugin validate` і рев'ю за таблицею [SP_CTX_02_27](#SP_CTX_02_27), бо модулі мода не мають файлового API поза `$`. describe і PromptMatch не реалізовані (план PL_CTX).
 
 ### 05_02. Invariant Checks  {#SP_CTX_05_02}
 
@@ -2445,7 +2509,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | Документ у результаті інструменту | PDF | прочитати; summarize | те саме | pass (2026-10-09, фаза 2) — блок `document`, `application/pdf`, base64; архівний PDF збігається з оригіналом, 0600 |
 | Паралельні виклики після застосування (обидва хости) | два файли | «прочитай X і Y паралельно (обидва Read в одній відповіді)», потім один `context_edit` зі summarize обох; кінець ходу; спитати про результати; окремо — summarize лише X | у журналі налагодження немає `ensureToolResultPairing`; модель бачить обидва підсумки (і незмінений Y), без «Tool result missing»; записати, як хост пише результати паралельних викликів — одним рядком чи кількома | pass 2026-10-10 (2.1.295; `.dev_flow/cache/live-test/phase14-results.md`) |
 | Незмінене медіа (обидва хости) | два скриншоти, прочитані в одній відповіді, перед викликами Read — рядок тексту агента | summarize першого | другий агент бачить; помилки «Tool result missing» немає; рядок другого лишився з `@` | not run (попередній pass фази 2 — без рядка тексту перед викликами, де розриву відповіді не виникало; Verify фази 10 знайшов розрив — знахідка C) |
-| Зображення в промпті людини | скриншот у промпті | describe | залежить від [SP_CTX_DEC_06](#SP_CTX_DEC_06) | blocked |
+| Зображення в промпті людини (обидва хости) | stream-json: промпт з блоком image (base64 PNG) і текстом; термінал: зображення вставлено шляхом до файлу (`[Image #1]`) | `context_list` показує `@` на рядку промпту; агент робить `describe` цього рядка; кінець ходу; спитати колір без інструментів | правку застосовано; рядок — опис, порожній рядок і дослівний текст промпту; медіа-файл в архіві; модель відповідає з опису, а не із зображення; інший промпт із зображенням не змінено | pass 2026-10-10, фази 4–5, обидва хости (2.1.296, haiku): опис, порожній рядок і дослівний текст промпту; PNG в архіві збігається з оригіналом; зображення зникло з API-подання, модель відповідає з опису; DESCRIBE_DROPS у результаті й звіті; `describe` рядка без медіа відхилено при постановці; інший промпт з медіа не змінено (`.dev_flow/cache/live-test/phase5-results.md`) |
 | Тег за псевдонімом | 5 файлів | після кожного Read агент ставить `disposable` з `ref: last`, без `context_list`; потім закриває етап | жодного `context_list`; теги на правильних викликах; заміни застосовано після закриття етапу | pass (2026-10-08, фаза 7) — тоді заміни на порозі нагадування; частина про закриття етапу — pending (задача етапів) |
 | Автоматичне чищення з тегів (обидва хости) | 5 файлів, етап відкрито | агент ставить `disposable` з нотатками (зокрема діапазон глухого кута), потім закриває етап, нічого не додаючи | заміни (і `collapse` діапазону) поставлено закриттям і застосовано після кінця ходу; пакет лише з тегів не продовжує сесію | pass 2026-10-10, фаза 15, обидва хости, з діапазоном `disposable` і попередженням про промпт людини (2.1.295, haiku; `.dev_flow/cache/live-test/phase15-results.md`) |
 | Захист початкового завдання | довга сесія | collapse діапазону з першим промптом | відхилено (`pin`) | pass (2026-10-08, фаза 3) |
@@ -2487,9 +2551,9 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | Передача заповненої розмови | 4096 рядків без межі | спосіб `transcript` відмовляє (WINDOW_FULL), далі `document` |
 | Перерваний промпт у новій сесії до засіву | людина надіслала промпт одразу після `/clear` і перервала його до першого рядка агента | HandleSeed не бачить рядка агента і засіває сесію, замінюючи цей промпт засіяними рядками; прийнято: промпт перервано, і він лишається у файлі сесії перед межею |
 | Хід почався в новій сесії до засіву | людина надіслала промпт одразу після `/clear` | TURN_IN_NEW: Seed (`inTurn` або `MovedSince(turnsClear)` перед командою) чи HandleSeed відмовляє; RunHandoff не очищає сесію вдруге; FailAfterClear — звіт у старій черзі і спливне повідомлення; повідомлення про збій через Deliver — у звіт черги нової сесії з `reportResume = false`, без промпту |
-| Межі `e.messages` інші, ніж у API-поданні | рядки з результатами поза API-вікном | такі рядки зберігають `handle`; Locate за підказкою може влучити в дублікат відбитку — перевіряється спайком [SP_CTX_DEC_06](#SP_CTX_DEC_06) |
+| Межі `e.messages` інші, ніж у API-поданні | рядки з результатами поза API-вікном | такі рядки зберігають `handle`. Спайк [context_editor_media](./context_editor_media.spike.md): `e.messages` — усі рядки після межі без ліміту, API-вікно і CurrentRows — їхні суфікси; підказка індексу з CurrentRows зсунута на `len(e.messages) − len(CurrentRows)`, коли вікно рядків обрізане, і Locate знаходить рядок за відбитком (дублікат відбитку — «не знайдено») |
 | Сесія довша за ROW_WINDOW рядків | — | перегляд і правки охоплюють лише останні ROW_WINDOW; старіші id відхиляються як невідомі |
-| Два промпти з однаковим текстом і медіа | — | PromptMatch «немає», describe відхиляється |
+| Два промпти з однаковим текстом і медіа | — | PromptMatch розрізняє їх за позицією; зсув (рядок, якого немає в одному з подань) між сусідніми ходами з однаковими промптом, відповіддю й викликами лишається непоміченим, за різних відповідей — «немає» (рядок «зсув» 05_01) |
 | Медіа посиланням, без даних | — | правка в `failed` |
 | collapse діапазону з медіа | діапазон зі скриншотом | медіа заархівовано, шлях у тексті носія |
 | Тег на пару, яку потім змінив агент | — | тег видаляється, заміна з тегу не ставиться |
@@ -2646,8 +2710,9 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 
 ### DEC_06 — Як зіставити медіа в промпті людини з рядком розмови  {#SP_CTX_DEC_06}
 
-> **Status:** open
-> **Date:** 2026-10-08
+> **Status:** resolved
+> **Date:** 2026-10-10 (відкрито 2026-10-08)
+> **Decided by:** розробник
 
 **Question:** Як знайти рядок розмови, якому належить повідомлення API-подання з медіа в промпті людини?
 
@@ -2658,10 +2723,10 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | B — позиційне зіставлення промптів людини в обох поданнях | стійке до вмісту; залежить від однакової кількості промптів в обох поданнях |
 | C — відмовитися від `describe`; медіа в промптах лише через `collapse` діапазону | не потребує зіставлення; втрачається точкова заміна |
 
-**Decision:** OPEN — see resolution trigger. До закриття `PromptMatch` повертає «немає».
-**Rationale:** жодне припущення про нормалізацію API-подання не перевірено на хості.
-**Rejected because:** —
-**Resolution trigger:** research spike перед фазою медіа плану PL_CTX: зняти обидва подання розмови (і рядки події компактизації `e.messages`) з промптами людини з медіа і нагадуваннями, перевірити A і B та межі вікон усіх трьох подань; якщо A і B ненадійні — C.
+**Decision:** B, де A — перевірка кожної пари: ходи людини обох подань зіставляються від хвоста, і пара береться, лише якщо збігаються тексти людини й асистента без пробільних символів і прикрас та ідентифікатори викликів і результатів (правило — PromptMatch у [SP_CTX_02_10](#SP_CTX_02_10)). `describe` реалізує фаза 5 ([PL_CTX_P5](./context_editor.plan.md#PL_CTX_P5)).
+**Rationale:** спайк [context_editor_media](./context_editor_media.spike.md) (хост 2.1.296, stream-json і термінал, до й після обох видів компактизації, у вікні 4096, з `e.messages` і посеред ходу): правило зіставило кожне медіа в промпті з правильним рядком на всіх 66 дампах, а три штучні зсуви дали «немає», а не чужий рядок. Хвости трьох подань збігаються (з поправкою на рядок `/compact` у терміналі), тож однакове правило працює на CurrentRows і на `e.messages`.
+**Rejected because:** A як ключ — промпт лише із зображенням має `Row.text = ""` у stream-json, однакові тексти (і оригінали з копіями після компактизації) дають до п'яти кандидатів, а наївна нормалізація ламає текст з `\n` на краях. B від початку — кількість промптів в поданнях не збігається (оригінали до межі в рядках, рядки команд злиті з промптом, у терміналі API-повідомлення без рядка, обрізання вікон). C — зіставлення можливе, а точкова заміна медіа в промпті дешевша за `collapse` діапазону.
+**Resolution trigger:** — (закрито спайком 2026-10-10)
 
 ### DEC_07 — Як відрізати рядки до межі компактизації  {#SP_CTX_DEC_07}
 
@@ -2887,3 +2952,6 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | 2026-10-10 | Design sign-off фази 15 (рішення розробника, звірка з практикою фаз 14, 16, 17): журнал без оцінки звільненого — `freedChars` вилучено, телеметрія `Effect` — застосування і повторні читання з `archiveRereads` (01_19, 01_20, 02_28, 02_31, 05_01); рядки `Effect` і `State slot` лише коли є що показати (01_20, 02_28); розмір етапу й блоку — Estimate, а не символи/4 (02_28); `review` без причини зі старіших версій — `[review]` і група `no reason`, `agent` лише для нових тегів агента (01_09, 01_20, 02_01, 02_28, 02_29, 05_01); P13 — `ownCallsRemoved` у звіті застосування і речення FormatReport, лічильник DropOwnCalls, речення в INTRO_TEXT і навичці (01_05, 01_12, 02_05, 02_07, 02_22, 02_27, 05_01); PersonTagWarnings для `disposable` з діапазоном і на парі AskUserQuestion (02_02, 02_11, 05_01); ScreenPinned — `pin` і `state` одним кроком для застосування і засіву (02_03, 02_07, 02_22, 05_01); бюджети описів `context_edit` (2038 → пункт (4) за рахунок (6)) і `context_tag` (1769 + ≤ 300) (02_02, 02_11); навичка ≤ 8000 скороченням наявних розділів, нотатки про зміст, вартість оновлення слоту стану (02_27); R5 (б) умовний — спершу проба «Дублікат вставки навички», хук слухає лише `prompt` і `tool-result`, діагностика R2 на копії сесії перед R4/R5 (01_11, 02_12, 05_03) |
 | 2026-10-10 | Фаза 15, код: діагностика R2 — у stream-json копія рядка результату проходить `session.append` з походженням свого інструмента, не плагіна (проба фази 15), тож AutoTag ще пропускає рядок `tool-result`, усі результати якого — з рядків, повернених останньою компактизацією, до початку ходу (`Copied`, 02_12; 05_01 «копія великого результату»); проба «Дублікат вставки навички»: вставка навички — не рядок поточної розмови, R5 (б) — у backlog (01_11, 02_12, 05_01, 05_03); формат лічильника відтворюваних пар у звіті закриття (02_29) |
 | 2026-10-10 | Рев'ю 42 фази 15: R5 (а) не позначає вже стиснуту ранішу пару (текст з MARK) (01_11, 02_12, 05_01); гілку R5 (б) прибрано з псевдокоду AutoTag, абзац про фазу 15 — у минулому часі (02_12); R4 не переписує наявний `stale` (02_16); одиночний `disposable` на рядку `state` — BAD_TARGET (01_09, 02_11, 05_01) |
+| 2026-10-10 | Фаза 4 (спайк [context_editor_media](./context_editor_media.spike.md)) і фаза 5: SP_CTX_DEC_06 закрито — B з перевіркою A (рішення розробника); PromptMatch у CollectMedia — ходи людини від хвоста з перевіркою кожної пари, випадки «немає», входи CurrentRows / `e.messages` / видимі рядки засіву (02_10); PROMPT_DECORATIONS і межа `e.messages` у ROW_WINDOW (01_12); `context_edit` читає API-подання для `describe`, `describe` в описі (2037 з 2048: пункт (7) зведено до вказівки на навичку) і в схемі (02_02); BuildSeed — CollectMedia по видимих рядках, медіа промпту лише для правки, що його замінює, незмінене лічиться в `unmatchedPromptMedia` (02_22); рядки 05_01 PromptMatch і describe, 05_03 «Зображення в промпті людини» для обох хостів, 05_04 межі `e.messages` і однакові промпти |
+| 2026-10-10 | Рев'ю 44 фаз 4–5: `describe` вимагає медіа свого рядка, знайденого й заархівованого цим застосуванням, інакше NO_MEDIA_NOW — і в HandleCompaction, і в BuildSeed (02_04); текстові вкладення промпту зникають разом із ним — DESCRIBE_DROPS у результаті `context_edit` і звіті (01_12, 02_02, 02_04, 02_10); рядки 05_01 для обох шляхів, засіву після підсумку і needsApi/hasMediaFrom |
+| 2026-10-10 | Рев'ю 45 фаз 4–5: причина відмови `describe` розрізняє «медіа не знайдено» (NO_MEDIA_NOW) і «знайдено, але не заархівовано» (`media could not be archived`) (01_12, 02_04, 05_01) |
