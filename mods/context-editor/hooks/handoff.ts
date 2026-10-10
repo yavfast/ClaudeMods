@@ -12,8 +12,10 @@ import {
   formatReport,
   HEAD_ROWS,
   MARK,
+  mergeCallRows,
   MAX_TEXT,
   ownerKey,
+  producedRows,
   rebuild,
   replacedOwners,
   ROW_WINDOW,
@@ -25,6 +27,7 @@ import {
   type QueuedEdit,
 } from './edits'
 import { DEFAULT_RESUME, MAX_DOCUMENT, type HandoffRequest, type Queue, type Read } from './queue'
+import { relocateStageMarks } from './stages'
 import { EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
 
@@ -69,6 +72,9 @@ export type HandoffSeed = {
   edits: readonly QueuedEdit[]
   fromSummary: boolean
   unmatchedPromptMedia: number
+  // [SP_CTX_01_17] the results whose text CarryNote extended: their rows are
+  // "changed by the seed" although their fingerprint stays ([SP_CTX_02_14])
+  carried: string[]
   new?: string
   taken: boolean
 }
@@ -156,6 +162,8 @@ export type BuiltSeed = {
   unmatchedPromptMedia: number
   // archived paths by owner key, for the archive's JSON ([SP_CTX_01_06])
   media: Map<string, string[]>
+  // the results that got CarryNote
+  carried: string[]
 }
 
 export type SeedInput = {
@@ -312,15 +320,17 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   const kept = dropOwnCalls(applied.rows, new Set(), knownResults)
   // [SP_CTX_01_05] "freed" counts the edits only: before CarryNote and the head
   report.charsAfter = totalChars(kept)
+  const carried: string[] = []
   let seed = kept.map(r => {
-    const carried = results(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
-    if (!carried) return rebuild(r)
+    const carries = results(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
+    if (!carries) return rebuild(r)
     return {
       ...rebuild(r),
       toolResults: results(r).map(t => {
         const key = ownerKey({ tool_use_id: t.tool_use_id })
         const refs = found.get(key)
         if (!refs || replaced.has(key)) return { tool_use_id: t.tool_use_id, text: t.text, isError: t.isError }
+        carried.push(t.tool_use_id)
         return { tool_use_id: t.tool_use_id, isError: t.isError, text: `${t.text}${t.text.trim() ? '\n\n' : ''}${carryNote(refs, items.get(key) ?? [])}` }
       }),
     }
@@ -329,15 +339,20 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   const top = seed[0]
   if (top?.role === 'user' && top.text.split('\n').some(l => l.includes(TRANSCRIPT_LINE)))
     seed[0] = { ...top, text: top.text.split('\n').filter(l => !l.includes(TRANSCRIPT_LINE)).join('\n').trim() }
-  seed = normalize(seed)
+  // [SP_CTX_02_04] every seeded row is without handle: parallel calls of one
+  // response, written as separate rows, become one row with their calls
+  seed = mergeCallRows(normalize(seed))
   if (!seed.length) return { refuse: 'EMPTY', reason: 'no rows to carry over' }
+  // [SP_CTX_01_05] the made rows in the seeded list: after the head and normalizing
+  report.produced = producedRows(seed, applied.made)
   if (seed.length > ROW_WINDOW - SEED_ROOM)
     return { refuse: 'SEED_TOO_LONG', reason: `the seed has ${seed.length} rows; at most ${ROW_WINDOW - SEED_ROOM} fit the new session's read window` }
   report.mediaFiles = [...items.values()].flatMap(paths => paths.filter((p): p is string => p !== undefined))
   // [SP_CTX_01_17] a summary head from the API form, or CurrentRows that already
   // start with the summary row (a resumed session after /compact)
   const fromSummary = head !== undefined || seed[0]!.text.trim().startsWith(SUMMARY_OPENER)
-  return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media }
+  const seededIds = new Set(seed.flatMap(r => results(r).map(t => t.tool_use_id)))
+  return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media, carried: carried.filter(id => seededIds.has(id)) }
 }
 
 // ---- [SP_CTX_02_23] CheckSeed
@@ -669,6 +684,7 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
         edits: run.q.edits,
         fromSummary: built.fromSummary,
         unmatchedPromptMedia: built.unmatchedPromptMedia,
+        carried: built.carried,
         taken: false,
       },
     }
@@ -685,12 +701,14 @@ export const REGISTRIES_NOT_CARRIED = ' Tags and aliases were not carried over.'
 // session ([SP_CTX_02_14]: before = s.visible, after = s.rows, the batch
 // s.edits, the applied ones by their label in s.report.applied) and written
 // into the new session, each on its own. Tags and aliases of edited pairs
-// (FreshId) and of pairs the seed does not hold go. A registry the old session
-// lacks is not written and is no failure; any other failure writes nothing
-// for that registry and gives the sentence once.
+// (FreshId) and of pairs the seed does not hold go. The stage marks move by
+// RelocateMark (s.report.produced; the rows CarryNote changed, s.carried),
+// and `introduced` is false: the new session's first prompt gets the intro.
+// A registry the old session lacks is not written and is no failure; any
+// other failure writes nothing for that registry and gives the sentence once.
 export async function carryRegistries(
   io: Pick<HandoffIO, 'carryTags' | 'carryAliases'>,
-  s: Pick<HandoffSeed, 'visible' | 'rows' | 'edits' | 'report'>,
+  s: Pick<HandoffSeed, 'visible' | 'rows' | 'edits' | 'report' | 'carried'>,
   oldDir: string,
   newDir: string,
 ): Promise<{ note: string; error?: Error }> {
@@ -698,7 +716,11 @@ export async function carryRegistries(
   const done = s.edits.filter(e => labels.has(describeEdit(e)))
   let error: Error | undefined
   const carries = [
-    () => io.carryTags(oldDir, newDir, reg => rebindTags(reg, s.visible, s.rows, done, s.edits)),
+    () =>
+      io.carryTags(oldDir, newDir, reg => ({
+        ...relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits), s.visible, s.rows, done, s.report.produced, s.carried),
+        introduced: false,
+      })),
     () => io.carryAliases(oldDir, newDir, reg => pruneAliases(reg, s.visible, s.rows, done)),
   ]
   for (const carry of carries) {

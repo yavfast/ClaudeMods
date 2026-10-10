@@ -45,17 +45,43 @@ import {
   type HandoffIO,
   type SeedIO,
 } from './handoff'
-import { contextEdit, DEFAULT_RESUME, deliverReport, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, withoutReport, type Queue, type QueueIO, type Read } from './queue'
+import {
+  contextEdit,
+  DEFAULT_RESUME,
+  deliverReport,
+  EMPTY_QUEUE,
+  MAX_DOCUMENT,
+  parseQueue,
+  settledQueue,
+  withoutReport,
+  type Queue,
+  type QueueIO,
+  type Read,
+  type Settle,
+} from './queue'
+import {
+  adviceFor,
+  blockReport,
+  detectOptimize,
+  introFor,
+  markLabels,
+  MAX_STAGE_NAME,
+  SKILL,
+  telemetry,
+  telemetryText,
+  withIntroduced,
+  type BlockIO,
+  type DetectIO,
+  type UsageInfo,
+} from './stages'
 import { newTurns, turnCompleted, turnStarted } from './turns'
 import {
-  activeReviews,
   appendFacts,
   autoTag,
   contextTag,
   countTurn,
   EMPTY_REGISTRY,
   MAX_TAGS,
-  nudge,
   parseRegistry,
   pinnedTargets,
   queueTagReplacements,
@@ -71,23 +97,27 @@ const EDIT = 'context_edit'
 const TAG = 'context_tag'
 const HANDOFF = 'context_handoff'
 
-export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time, with indexes, sizes, tool_use ids (with their call alias, e.g. (c3), when they have one), media, flags (* already edited, ! large, @ has media) and tags ([pin], [disposable: note], [review]), so you can choose what to compact with ${EDIT}. Call it right before ${EDIT}: indexes are positions in this listing. Only the latest 4096 rows are visible.`
+// [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
+export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block) and tags ([pin], [disposable: note], [review]). Indexes are positions in this listing: call it right before ${EDIT} or ${TAG} by index.
 
+The header shows context telemetry: the conversation's size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, and the cleanup candidates. "count":0 gives that header alone, without rows; it does not renew the indexes. Only the latest 4096 rows are visible.`
+
+// [SP_CTX_02_02] At most MAX_DESCRIPTION chars, by the priorities of the spec.
 export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have already processed (text, screenshots, images, documents), dead-end steps and wrong conclusions with compact summaries.
 
 Edits apply when your current turn ends, not at once: after this call, end your turn with a one-line status. Unless "resume" is false, the session then resumes by itself with "resume_prompt" (default: "${DEFAULT_RESUME}").
 
 Ops (items of "edits"; every field shown is required):
-- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls whose results share a row: summarize the ones with media in one batch.
+- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
 - {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
-- {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a conclusion that turned out wrong.
+- {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a wrong conclusion.
 
 Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first.
 
-Clean in steps, by your judgment: take the earliest span with processed or excess content (used tool outputs, repeated reads, dead ends, media already seen: describe it if the task allows) and compress only that. Usually keep the person's messages, loaded rules and skills still in use, and recent work.
+Originals are archived to the file named in the replacement (original: <path>); Read it to get one back. Summaries must keep every fact, number, URL and source you may still need.
 
-Summaries must keep every fact, number, URL and source you may still need: the originals leave your context (they are archived to files named in the summary, which you can Read). Batch edits in one call; edit only when it frees a lot, since each edit resets the prompt cache from that row on.`
+Compress the block of a finished stage (${TAG} close), or without stages the earliest processed or excess span; usually keep verbatim the person's messages, rules and skills in force, and the working part. Stage record: goal; decisions with the reason and the person's words; facts with sources; changed artifacts; open questions. Batch edits: each resets the prompt cache from its row on. Guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for the most recently marked call.' }
@@ -116,14 +146,19 @@ const EDIT_SCHEMA = {
   required: ['edits'],
 }
 
-export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation ahead of time, at no token cost (tags live outside the conversation and show in ${LIST}). Each item of "tags" names its target by exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias) or "index" (a row in ${LIST}). Calls worth tagging (large outputs, search results) carry a line "[context-editor] id cN" right after their result: "ref":"cN" targets that call and "ref":"last" the most recently marked one, so you can tag right after reading, with no ${LIST} call.
+// [SP_CTX_02_11] At most MAX_DESCRIPTION chars, by the priorities of the spec.
+export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation and mark the stages of your work, at no token cost: tags and stages live outside the conversation and show in ${LIST}. Call it with {"tags":[...]}; the requests apply in order.
 
-Kinds:
-- "pin": nothing may edit the target, neither you nor the automatic replacements. The person's first prompt is pinned for you.
-- "disposable" + "note": once the context passes the next reminder threshold, the target is replaced by your note by itself (a tool result is summarized, an assistant text row rewritten); the original is archived. Write in the note every fact you still need. By index only your own assistant text rows can be disposable.
-- "review" (optional "ttl_turns"): a marker for yourself; it shows in ${LIST} once ttl_turns completed turns have passed. Large tool outputs and search results are marked for you.
+Targets of add and remove: exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias: calls worth tagging carry a line "[context-editor] id cN" after their result, "ref":"last" is the latest one, so you can tag right after reading) or "index" (a row in ${LIST}).
 
-{"op":"remove"} with the same target removes its tag. A new tag on a target replaces the old one.`
+Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, cleanup candidates, context telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
+
+Kinds (op "add"):
+- "pin": nothing may edit the target, neither you nor the replacements of disposable tags. The person's first prompt is pinned for you.
+- "disposable" + "note": once you close a stage or end a turn with the optimization mark, the target is replaced by your note (a tool result summarized, your text row rewritten); the original is archived. Write in the note every fact you still need. By index only your own assistant text rows.
+- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Large tool outputs and search results are marked for you.
+
+{"op":"remove"} with the same target removes its tag; a new tag on a target replaces the old one. Guide: skill ${PLUGIN}:${SKILL}.`
 
 const TAG_TARGET = {
   tool_use_id: { type: 'string', description: 'Target: a tool call and its result.' },
@@ -162,6 +197,16 @@ const TAG_SCHEMA = {
           { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'disposable' }, ...TAG_TARGET, note: { type: 'string', maxLength: MAX_TEXT } }, required: ['op', 'kind', 'note'] },
           { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'review' }, ...TAG_TARGET, ttl_turns: { type: 'integer', minimum: 1 } }, required: ['op', 'kind'] },
           { type: 'object', properties: { op: { const: 'remove' }, ...TAG_TARGET }, required: ['op'] },
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'open' },
+              stage: { type: 'string', maxLength: MAX_STAGE_NAME, description: 'The name of the stage.' },
+              index: { type: 'integer', description: `The first row of its block, from ${LIST}; default: the response that opens it.` },
+            },
+            required: ['op', 'stage'],
+          },
+          { type: 'object', properties: { op: { const: 'close' } }, required: ['op'] },
         ],
       },
     },
@@ -171,8 +216,6 @@ const TAG_SCHEMA = {
 
 // [SP_CTX_01_07] The session's storage, set up at session start.
 const storage: { dir?: string; sessionId?: string; reason: string } = { reason: 'not prepared yet' }
-// The threshold the model was last reminded at ([SP_CTX_02_09]).
-const nudged = { level: -1 }
 // [SP_CTX_01_14] The identity of the host process, read once per module
 // instance. [SP_CTX_02_18] [SP_CTX_DEC_10] A boundary counts when this host
 // process wrote it, or this instance in this session (ownBoundary): one left
@@ -332,6 +375,15 @@ function updateTags($: EngineInterface, change: (reg: TagRegistry) => TagRegistr
   })
 }
 
+// The same from the read state: undefined writes nothing; a failed write rejects.
+function changeTags($: EngineInterface, change: (read: Read<TagRegistry>) => TagRegistry | undefined): Promise<void> {
+  return serial('tags', async () => {
+    if (!(await ensureStorage($))) return
+    const next = change(await readTags($))
+    if (next) await writeTags($, next)
+  })
+}
+
 async function readQueueAt($: EngineInterface, dir: string): Promise<Read<Queue>> {
   const path = `${dir}/pending.json`
   if (!(await $.fs.exists(path))) return { state: 'missing', value: { ...EMPTY_QUEUE } }
@@ -373,7 +425,6 @@ async function prepareStorage($: EngineInterface, inCompaction = false): Promise
   const prev = storage.sessionId
   storage.dir = undefined
   storage.sessionId = await $.session.id()
-  nudged.level = -1
   ownBoundary.own = undefined
   listed.key = undefined
   const home = await $.env.get('HOME')
@@ -462,6 +513,17 @@ function aliasIO($: EngineInterface): AliasIO {
 function flushIO($: EngineInterface): FlushIO {
   return {
     readQueue: async () => ((await ensureStorage($)) ? readQueue($) : { state: 'unreadable', reason: `storage unavailable: ${storage.reason}` }),
+    updateQueue: change =>
+      serial('queue', async () => {
+        if (!(await ensureStorage($))) return false
+        const read = await readQueue($)
+        if (read.state === 'unreadable') return false
+        const next = change(read.value)
+        if (!next) return false
+        await writeQueue($, next)
+        return true
+      }),
+    readTags: async () => ((await ensureStorage($)) ? readTags($) : { state: 'unreadable', reason: `storage unavailable: ${storage.reason}` }),
     // one attempt; a refusal rejects with the host's text
     compact: async args => {
       await $.command.run({ command: 'compact', args })
@@ -476,13 +538,64 @@ function flushIO($: EngineInterface): FlushIO {
 }
 
 // [SP_CTX_02_08] RemoveDelivered: the delivered text leaves the current
-// session's queue, on its serial chain; shared by DeliverReport and Flush.
+// session's queue, on its serial chain; Flush's after its own prompt.
 function removeDelivered($: EngineInterface, delivered: string): Promise<void> {
   return serial('queue', async () => {
     if (!(await ensureStorage($))) return
     const now = await readQueue($)
     if (now.state === 'ok') await writeQueue($, withoutReport(now.value, delivered))
   })
+}
+
+// [SP_CTX_02_08] DeliverReport's write once the person's prompt entered: the
+// report, the optimization request and the loop guard, on the queue's chain.
+function settle($: EngineInterface, s: Settle): Promise<void> {
+  return serial('queue', async () => {
+    if (!(await ensureStorage($))) return
+    const now = await readQueue($)
+    if (now.state !== 'ok') return
+    const next = settledQueue(now.value, s)
+    if (next !== now.value) await writeQueue($, next)
+  })
+}
+
+// [SP_CTX_02_28] The usage with the breakdown the telemetry reads (no API request).
+function usageInfo($: EngineInterface): Promise<UsageInfo> {
+  return $.session.usage({ breakdown: 'summary' })
+}
+
+// [SP_CTX_02_29] BlockReport bound to the host.
+function blockIO($: EngineInterface): BlockIO {
+  return {
+    key: async () => (await view($)).key,
+    rows: () => conversation($),
+    readTags: () => readTags($),
+    media: async () => collectMedia(await apiMessages($)).found,
+    usage: () => usageInfo($),
+    setListed: key => {
+      listed.key = key
+    },
+  }
+}
+
+// [SP_CTX_02_30] DetectOptimize bound to the host: each queue change on the
+// queue's chain, each registry change on the registry's, never one inside
+// the other.
+function detectIO($: EngineInterface): DetectIO {
+  return {
+    ready: async () => !!(await ensureStorage($)),
+    readQueue: () => readQueue($),
+    updateQueue: change =>
+      serial('queue', async () => {
+        if (!(await ensureStorage($))) return
+        const next = change(await readQueue($))
+        if (next) await writeQueue($, next)
+      }),
+    updateTags: change => changeTags($, change),
+    rows: () => conversation($),
+    replace: () => serial('queue', () => queueTagReplacements(tagIO($))),
+    status: text => $.ui.status(text),
+  }
 }
 
 // [SP_CTX_02_21] The handoff bound to the host. Its timers come from the
@@ -584,12 +697,16 @@ async function pins($: EngineInterface, rows: readonly SessionMessage[]) {
   return read.state === 'unreadable' ? NO_PINS : pinnedTargets(rows, read.value)
 }
 
-// [SP_CTX_02_01] Tag labels for the listing, if the storage and registry allow.
+// [SP_CTX_02_01] Stage marks, then tag labels, for the listing, if the
+// storage and registry allow; the registry read for the telemetry.
 async function labels($: EngineInterface, rows: readonly SessionMessage[]) {
-  if (!(await ensureStorage($))) return { labels: new Map<number, string[]>(), note: '' }
+  const none = new Map<number, string[]>()
+  if (!(await ensureStorage($))) return { labels: none, note: '', reg: undefined }
   const read = await readTags($)
-  if (read.state === 'unreadable') return { labels: new Map<number, string[]>(), note: `\n(tags not shown: the tag registry cannot be read: ${read.reason})` }
-  return { labels: tagLabels(rows, read.value), note: '' }
+  if (read.state === 'unreadable') return { labels: none, note: `\n(tags and stages not shown: the tag registry cannot be read: ${read.reason})`, reg: undefined }
+  const merged = markLabels(rows, read.value)
+  for (const [i, list] of tagLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
+  return { labels: merged, note: '', reg: read.value }
 }
 
 // [SP_CTX_02_01] Aliases for the listing, if the storage and registry allow.
@@ -598,27 +715,6 @@ async function aliasNames($: EngineInterface) {
   const read = await readAliases($)
   if (read.state === 'unreadable') return { aliases: new Map<string, string>(), note: `\n(aliases not shown: the alias registry cannot be read: ${read.reason})` }
   return { aliases: aliasesById(read.value), note: '' }
-}
-
-// [SP_CTX_02_09]
-async function reviewCount($: EngineInterface): Promise<number> {
-  const read = await readTags($)
-  return read.state === 'unreadable' ? 0 : activeReviews(await conversation($), read.value)
-}
-
-// [SP_CTX_02_09] The reminder after a tool call, if one is due.
-async function nudgeLine($: EngineInterface): Promise<string | undefined> {
-  const tokens = (await $.session.usage()).context.tokens ?? 0
-  return nudge(
-    {
-      ready: async () => !!(await ensureStorage($)),
-      readQueue: () => readQueue($),
-      replace: () => serial('queue', () => queueTagReplacements(tagIO($))),
-      reviews: () => reviewCount($),
-    },
-    tokens,
-    nudged,
-  )
 }
 
 function deny(reason: string) {
@@ -636,7 +732,7 @@ export const register: Register = on => {
         type: 'object',
         properties: {
           from: { type: 'integer', description: 'Index of the first row to list (default 0, the oldest).' },
-          count: { type: 'integer', description: `How many rows to list (default ${LIST_COUNT}, at most 200).` },
+          count: { type: 'integer', description: `How many rows to list (default ${LIST_COUNT}, at most 200); 0 gives the header with the context telemetry alone.` },
         },
       },
       isDeferred: false,
@@ -657,16 +753,14 @@ export const register: Register = on => {
     const { found } = collectMedia(await apiMessages($))
     const tagged = await labels($, rows)
     const named = await aliasNames($)
-    const text = listRows(
-      rows,
-      typeof args.from === 'number' ? args.from : 0,
-      typeof args.count === 'number' ? args.count : LIST_COUNT,
-      found,
-      tagged.labels,
-      named.aliases,
-    )
-    // [SP_CTX_02_18] only a listing the agent receives renews its indexes
-    listed.key = key
+    const count = typeof args.count === 'number' && Number.isFinite(args.count) ? Math.trunc(args.count) : LIST_COUNT
+    // [SP_CTX_02_28] a failed telemetry never fails the listing
+    const tele = await telemetry(rows, tagged.reg, () => usageInfo($))
+      .then(telemetryText)
+      .catch((err: unknown) => `Context: size unavailable (${err instanceof Error ? err.message : String(err)})`)
+    const text = listRows(rows, typeof args.from === 'number' ? args.from : 0, count, found, tagged.labels, named.aliases, tele)
+    // [SP_CTX_02_18] only a listing with rows the agent receives renews its indexes
+    if (count >= 1) listed.key = key
     return { result: text + tagged.note + named.note }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`listing failed: ${next.error.kind}`)))
 
@@ -686,14 +780,21 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__context-editor__context_tag' }, async ($, e) => {
     const args = e as unknown as TagArgs
     const ready = e.agentId ? true : !!(await ensureStorage($))
-    const out = await serial('tags', async () =>
-      contextTag(
-        tagIO($),
-        { agentId: e.agentId, tags: args.tags },
-        ready ? undefined : storage.reason,
-        e.agentId ? NO_REFS : await resolver($),
-        !e.agentId && ready && (await staleIndexes($)),
-      ),
+    // the registry's read-modify-write on its chain; the replacements on the
+    // queue's afterwards, never one chain inside the other
+    const io: TagIO = {
+      ...tagIO($),
+      onRegistry: work => serial('tags', work),
+      replace: () => serial('queue', () => queueTagReplacements(tagIO($))),
+      report: (block, replaced) => blockReport(blockIO($), block, replaced),
+    }
+    const out = await contextTag(
+      io,
+      { agentId: e.agentId, tags: args.tags },
+      ready ? undefined : storage.reason,
+      e.agentId ? NO_REFS : await resolver($),
+      !e.agentId && ready && (await staleIndexes($)),
+      typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
     )
     return 'deny' in out ? deny(out.deny) : { result: out.result }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`tagging failed: ${next.error.kind}`)))
@@ -737,21 +838,27 @@ export const register: Register = on => {
     return stored
   }).catch(($, e, next) => next(e))
 
-  // [SP_CTX_02] [SP_CTX_02_12] [SP_CTX_02_21] [SP_CTX_02_06] The end of a turn
-  // of the main conversation: the counter first, then the review ttls, the
-  // handoff, and Flush. The deferred actions planned here have an origin the
-  // host queues commands from.
+  // [SP_CTX_02] [SP_CTX_02_30] [SP_CTX_02_12] [SP_CTX_02_06] [SP_CTX_02_21]
+  // The end of a turn of the main conversation: the counter first; then, in
+  // the background and in this order, DetectOptimize, the registry's turn
+  // count (the mark compares with the count not yet raised) and Flush (once
+  // the mark's replacements and request are queued); the handoff besides. The
+  // deferred actions planned here have an origin the host queues commands from.
   on('turn.complete', async ($, e, next) => {
     // nothing starts while the turn ends: the counter moves whatever `next` does
     if (!e.agentId) turnCompleted(turns, e.isAborted)
     const done = await next(e)
     if (e.agentId) return done
-    if (!e.isAborted)
-      void serial('tags', async () => {
-        if (await ensureStorage($)) await countTurn(tagIO($))
-      }).catch(() => undefined)
+    const answer = typeof e.answer === 'string' ? e.answer : ''
+    void (async () => {
+      await detectOptimize(detectIO($), { aborted: e.isAborted, answer }).catch(() => undefined)
+      if (!e.isAborted)
+        await serial('tags', async () => {
+          if (await ensureStorage($)) await countTurn(tagIO($))
+        }).catch(() => undefined)
+      await flushAfterTurn(flushIO($), flushState, e.isAborted).catch(() => undefined)
+    })()
     void handoffAfterTurn(handoffIO($), handoff, e.isAborted).catch(() => undefined)
-    void flushAfterTurn(flushIO($), flushState, e.isAborted).catch(() => undefined)
     return done
   }).catch(($, e, next) => next(e))
 
@@ -810,32 +917,32 @@ export const register: Register = on => {
     return { skip: out.skip }
   })
 
-  // [SP_CTX_02_16] [SP_CTX_02_09] After any other tool call of the main loop:
-  // the alias line of a call worth editing first, then the reminder. Neither
-  // ever changes the result itself; a failure of either only drops its line.
+  // [SP_CTX_02_16] After any other tool call of the main loop: the alias line
+  // of a call worth editing, and nothing else ([SP_CTX_02_09]: no reminder by
+  // size). It never changes the result itself; a failure only drops the line.
   on('tool.call', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId || done.deny !== undefined || String(e.tool).startsWith(OWN_TOOLS)) return done
-    const lines: string[] = []
     const facts = callFacts(e, done)
-    if (wantsMark(facts)) {
-      const alias = await serial('aliases', () => markCall(aliasIO($), facts)).catch(() => undefined)
-      if (alias) lines.push(alias)
-    }
-    const text = await nudgeLine($).catch(() => undefined)
-    if (text) lines.push(text)
-    return withContext(done, lines)
+    if (!wantsMark(facts)) return done
+    const alias = await serial('aliases', () => markCall(aliasIO($), facts)).catch(() => undefined)
+    return withContext(done, alias ? [alias] : [])
   }).catch(($, e, next) => next(e))
 
-  // [SP_CTX_02_08] The next prompt of the person (or another plugin) carries
-  // the report; it leaves the queue only once that prompt has entered. The
-  // host skips this hook for prompts the mod submits itself.
+  // [SP_CTX_02_08] [SP_CTX_02_27] The next prompt of the person (or another
+  // plugin) carries the session intro once, the report and the advice of an
+  // unserved optimization request; each leaves only once that prompt has
+  // entered. The host skips this hook for prompts the mod submits itself.
   on('prompt.submit', async ($, e, next) => {
     if (!(await ensureStorage($))) return next(e)
-    return deliverReport(
-      () => readQueue($),
-      report => (report ? next({ ...e, context: [...(e.context ?? []), report] }) : next(e)),
-      delivered => removeDelivered($, delivered),
-    )
+    return deliverReport({
+      readQueue: () => readQueue($),
+      intro: async () => introFor(await readTags($)),
+      advice: async () => adviceFor(await readTags($)),
+      inTurn: () => turns.inTurn,
+      enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),
+      markIntroduced: () => changeTags($, withIntroduced),
+      settle: s => settle($, s),
+    })
   }).catch(($, e, next) => next(e))
 }

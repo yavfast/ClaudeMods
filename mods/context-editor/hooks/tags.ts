@@ -18,13 +18,24 @@ import {
   type RefResolver,
 } from './edits'
 import { MAX_QUEUE_BYTES, queueBytes, type Queue, type Read } from './queue'
+import {
+  carrierRow,
+  closeStage,
+  markBefore,
+  MAX_STAGE_NAME,
+  normalizeLost,
+  reportFailed,
+  startOf,
+  type ClosedBlock,
+  type Replaced,
+  type RowMark,
+  type Stage,
+} from './stages'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
 export const SEARCH_TOOLS: readonly string[] = ['Glob', 'Grep', 'WebSearch', 'ToolSearch']
 export const SEARCH_TTL = 3
-export const NUDGE_FIRST = 80_000
-export const NUDGE_STEP = 40_000
 // [SP_CTX_01_10] The registry file stays readable by the host (4 MiB limit).
 export const MAX_REGISTRY_BYTES = MAX_QUEUE_BYTES
 
@@ -33,10 +44,19 @@ export type TagKind = 'pin' | 'disposable' | 'review'
 export type TagTarget = { tool_use_id: string } | { anchor: string; hint: number }
 export type Tag = { kind: TagKind; target: TagTarget; note?: string; ttl_turns?: number; created_turn: number }
 
-// [SP_CTX_01_10]
-export type TagRegistry = { tags: Tag[]; turn: number; firstPromptPinned: boolean }
+// [SP_CTX_01_10] [SP_CTX_01_18] `stage`: the open stage, one at most;
+// `lastClosed`: the last closed block; `introduced`: the session intro was
+// delivered in this session ([SP_CTX_02_27]).
+export type TagRegistry = {
+  tags: Tag[]
+  turn: number
+  firstPromptPinned: boolean
+  stage?: Stage
+  lastClosed?: ClosedBlock
+  introduced: boolean
+}
 
-export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false }
+export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false }
 
 const KINDS: readonly string[] = ['pin', 'disposable', 'review']
 // [SP_CTX_01_11] Who counts as the person for rule R1.
@@ -63,8 +83,32 @@ function isTag(raw: unknown): raw is Tag {
   return isCount(t.created_turn, 0)
 }
 
-// [SP_CTX_01_10] Read states as the queue's: a wrong field or tag makes the
-// whole file unreadable, never silently an empty registry.
+// [SP_CTX_01_18] A RowMark or null: a fingerprint that holds an id or text.
+function isMark(v: unknown): v is RowMark | null {
+  if (v === null) return true
+  if (typeof v !== 'object' || Array.isArray(v)) return false
+  const m = v as Record<string, unknown>
+  return typeof m.anchor === 'string' && !/^[a-z]+\|\|$/.test(m.anchor) && isCount(m.hint, 0)
+}
+
+function isStageName(v: unknown): v is string {
+  return typeof v === 'string' && v.trim().length >= 1 && v.trim().length <= MAX_STAGE_NAME
+}
+
+function isStage(v: unknown): v is Stage {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const s = v as Record<string, unknown>
+  return isStageName(s.name) && 'after' in s && isMark(s.after) && isCount(s.openedTurn, 0)
+}
+
+function isClosed(v: unknown): v is ClosedBlock {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const b = v as Record<string, unknown>
+  return (b.name === undefined || isStageName(b.name)) && 'after' in b && isMark(b.after) && 'end' in b && isMark(b.end) && isCount(b.turn, 0)
+}
+
+// [SP_CTX_01_10] Read states as the queue's: a wrong field, tag, stage or
+// closed block makes the whole file unreadable, never silently an empty registry.
 export function parseRegistry(text: string): Read<TagRegistry> {
   let raw: unknown
   try {
@@ -78,6 +122,9 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     !Array.isArray(reg.tags) && 'tags',
     !isCount(reg.turn, 0) && 'turn',
     typeof reg.firstPromptPinned !== 'boolean' && 'firstPromptPinned',
+    reg.stage !== undefined && !isStage(reg.stage) && 'stage',
+    reg.lastClosed !== undefined && !isClosed(reg.lastClosed) && 'lastClosed',
+    typeof reg.introduced !== 'boolean' && 'introduced',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badTag = reg.tags.findIndex(t => !isTag(t))
@@ -128,7 +175,7 @@ export function tagLabels(rows: readonly SessionMessage[], reg: TagRegistry): Ma
   return labels
 }
 
-// [SP_CTX_02_09] Active review tags whose targets are still there.
+// [SP_CTX_02_28] Active review tags whose targets are still there.
 export function activeReviews(rows: readonly SessionMessage[], reg: TagRegistry): number {
   return reg.tags.filter(t => t.kind === 'review' && isActive(t, reg.turn) && resolveTarget(rows, t.target)).length
 }
@@ -142,6 +189,14 @@ export type TagIO = {
   writeTags: (reg: TagRegistry) => Promise<void>
   readQueue: () => Promise<Read<Queue>>
   writeQueue: (q: Queue) => Promise<void>
+  // context_tag: runs its read-modify-write of the registry on the
+  // registry's serial chain (default: as it is)
+  onRegistry?: <T>(work: () => Promise<T>) => Promise<T>
+  // context_tag: QueueTagReplacements on the queue's serial chain, after the
+  // registry is written (default: queueTagReplacements on this io)
+  replace?: () => Promise<Replaced>
+  // context_tag: BlockReport of one close ([SP_CTX_02_29]); a throw is REPORT_FAILED
+  report?: (block: ClosedBlock, replaced?: Replaced) => Promise<string>
 }
 
 // [SP_CTX_02_11]
@@ -158,26 +213,78 @@ export type TagError =
   | 'BAD_TTL'
   | 'TAGS_FULL'
   | 'NO_TAG'
+  | 'STAGE_NAME_REQUIRED'
+  | 'STAGE_FIELDS'
+  | 'NO_STAGE'
 
-export type TagOutcome = { registry: TagRegistry; added: number; removed: number; rejected: { code: TagError; reason: string }[] }
+// [SP_CTX_02_11] A stage event of the batch, in request order: an open with
+// its text, or a close with its block.
+export type StageEvent = { open: string } | { close: ClosedBlock }
+
+export type TagOutcome = {
+  registry: TagRegistry
+  added: number
+  removed: number
+  rejected: { code: TagError; reason: string }[]
+  events: StageEvent[]
+  // the registry differs from the one read (tags, stages, a lost mark nulled)
+  changed: boolean
+}
+
+const OPEN_FIELDS = ['op', 'stage', 'index']
 
 // [SP_CTX_02_11] Applies the requests in order to the registry on the rows as
 // they are now; a rejected request leaves the rest of the batch going. A `ref`
-// is resolved to its tool_use_id here ([SP_CTX_02_17]). Pure.
+// is resolved to its tool_use_id here ([SP_CTX_02_17]). `carrier`: the row
+// that holds this call (len(rows) while it is not written). Pure.
 export function applyTagRequests(
   reg: TagRegistry,
   rows: readonly SessionMessage[],
   raws: readonly unknown[],
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
+  carrier = rows.length,
 ): TagOutcome {
   const tags = [...reg.tags]
   let size = bytes({ ...reg, tags })
-  const out: TagOutcome = { registry: reg, added: 0, removed: 0, rejected: [] }
+  // [SP_CTX_01_18] a lost start of the stage or of the last block becomes null
+  let stages: TagRegistry = normalizeLost(reg, rows)
+  const out: TagOutcome = { registry: reg, added: 0, removed: 0, rejected: [], events: [], changed: stages !== reg }
   raws.forEach((raw, n) => {
     const reject = (code: TagError, why: string) => void out.rejected.push({ code, reason: `tag ${n + 1}: ${why} (${code})` })
     const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
-    if (r.op !== 'add' && r.op !== 'remove') return reject('BAD_OP', `op must be "add" or "remove"`)
+    if (r.op !== 'add' && r.op !== 'remove' && r.op !== 'open' && r.op !== 'close') return reject('BAD_OP', `op must be "add", "remove", "open" or "close"`)
+    if (r.op === 'close') {
+      if (Object.keys(r).some(k => k !== 'op')) return reject('STAGE_FIELDS', 'close takes no field but "op"')
+      const closed = closeStage(stages, rows, carrier)
+      if (!closed)
+        return reject('NO_STAGE', 'no stage is open; to close a block you did not open, give {"op":"open","stage":"<name>","index":<its first row>} and {"op":"close"} in one call')
+      stages = closed.registry
+      out.events.push({ close: closed.block })
+      out.changed = true
+      return
+    }
+    if (r.op === 'open') {
+      if (Object.keys(r).some(k => !OPEN_FIELDS.includes(k))) return reject('STAGE_FIELDS', 'open takes only "stage" and "index"')
+      if (!isStageName(r.stage)) return reject('STAGE_NAME_REQUIRED', `open needs "stage", a name of 1..${MAX_STAGE_NAME} chars`)
+      let after: RowMark | null
+      if (r.index !== undefined) {
+        if (staleIndexes) return reject('INDEXES_STALE', STALE_INDEXES)
+        if (!Number.isInteger(r.index) || !rows[r.index as number]) return reject('TARGET_NOT_FOUND', `index out of range (0..${rows.length - 1}); refresh context_list`)
+        after = markBefore(rows, r.index as number)
+      } else after = markBefore(rows, carrier)
+      // an open stage closes first: its block ends before the row of this call
+      const closed = closeStage(stages, rows, carrier)
+      if (closed) {
+        stages = closed.registry
+        out.events.push({ close: closed.block })
+      }
+      const name = (r.stage as string).trim()
+      stages = { ...stages, stage: { name, after, openedTurn: reg.turn } }
+      out.events.push({ open: `Stage "${name}" opened; its block starts at #${startOf(rows, after)}.` })
+      out.changed = true
+      return
+    }
     if (r.op === 'add' && (typeof r.kind !== 'string' || !KINDS.includes(r.kind)))
       return reject('KIND_REQUIRED', 'kind must be "pin", "disposable" or "review"')
     const hasId = r.tool_use_id !== undefined
@@ -230,41 +337,78 @@ export function applyTagRequests(
     size += delta
     out.added++
   })
-  out.registry = { ...reg, tags }
+  if (out.added || out.removed) out.changed = true
+  out.registry = { ...stages, tags }
   return out
 }
 
 export type TagArgs = { agentId?: unknown; tags?: unknown }
 
-// [SP_CTX_02_11] The caller runs it on the registry's serial chain.
-// `storageDown` is why the storage is unavailable, if it is; `resolve` turns
-// a ref into its tool_use_id ([SP_CTX_02_17]).
+// [SP_CTX_02_11] `storageDown` is why the storage is unavailable, if it is;
+// `resolve` turns a ref into its tool_use_id ([SP_CTX_02_17]); `callId` is
+// this call's own tool_use_id, which finds the row that carries it. The
+// registry is read, changed and written on the registry's chain; only once it
+// is written, the replacements of the disposable tags are queued (once, after
+// any number of closes) and each close gets its report.
 export async function contextTag(
   io: TagIO,
   args: TagArgs,
   storageDown?: string,
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
+  callId?: string,
 ): Promise<{ result: string } | { deny: string; code: TagDeny }> {
   if (args.agentId) return { code: 'DENIED_SUBAGENT', deny: "a subagent's context cannot be tagged; only the main conversation's." }
   if (!Array.isArray(args.tags) || args.tags.length === 0 || args.tags.length > MAX_TAGS)
     return { code: 'DENIED_EMPTY', deny: `"tags" must be a list of 1..${MAX_TAGS} requests.` }
   if (storageDown !== undefined) return { code: 'DENIED_STORAGE', deny: `storage unavailable: ${storageDown}` }
-  const read = await io.readTags()
-  if (read.state === 'unreadable')
-    return { code: 'DENIED_REGISTRY_READ', deny: `the tag registry cannot be read (${read.reason}); it is left as it is.` }
-  const out = applyTagRequests(read.value, await io.rows(), args.tags, resolve, staleIndexes)
-  if (out.added || out.removed) {
+  const raws = args.tags
+  const onRegistry = io.onRegistry ?? (<T>(work: () => Promise<T>) => work())
+  const step = await onRegistry(async (): Promise<TagOutcome | { deny: string; code: TagDeny }> => {
+    const read = await io.readTags()
+    if (read.state === 'unreadable')
+      return { code: 'DENIED_REGISTRY_READ', deny: `the tag registry cannot be read (${read.reason}); it is left as it is.` }
+    const rows = await io.rows()
+    const out = applyTagRequests(read.value, rows, raws, resolve, staleIndexes, carrierRow(rows, callId))
+    if (out.changed) {
+      try {
+        await io.writeTags(out.registry)
+      } catch (err) {
+        // no stage opened or closed, no replacement queued
+        return { code: 'DENIED_REGISTRY_WRITE', deny: `could not save the tag registry: ${String(err)}` }
+      }
+    }
+    return out
+  })
+  if ('deny' in step) return step
+  const closes = step.events.flatMap(e => ('close' in e ? [e.close] : []))
+  let replaced: Replaced | undefined
+  if (closes.length) replaced = await (io.replace ?? (() => queueTagReplacements(io)))().catch(() => undefined)
+  const texts: string[] = []
+  let n = 0
+  for (const e of step.events) {
+    if ('open' in e) {
+      texts.push(e.open)
+      continue
+    }
+    n++
+    const last = n === closes.length
+    if (!io.report) {
+      texts.push(`${e.close.name !== undefined ? `Stage "${e.close.name}"` : 'The block'} closed.`)
+      continue
+    }
     try {
-      await io.writeTags(out.registry)
+      texts.push(await io.report(e.close, last ? replaced : undefined))
     } catch (err) {
-      return { code: 'DENIED_REGISTRY_WRITE', deny: `could not save the tag registry: ${String(err)}` }
+      // REPORT_FAILED: the stage is closed and the registry written
+      texts.push(reportFailed(e.close, err))
     }
   }
   return {
     result: [
-      `Tagged ${out.added}, removed ${out.removed}; ${out.registry.tags.length} tag(s) in the registry.`,
-      out.rejected.length ? `Rejected: ${out.rejected.map(x => x.reason).join('; ')}.` : '',
+      `Tagged ${step.added}, removed ${step.removed}; ${step.registry.tags.length} tag(s) in the registry.`,
+      step.rejected.length ? `Rejected: ${step.rejected.map(x => x.reason).join('; ')}.` : '',
+      ...texts,
     ]
       .filter(Boolean)
       .join('\n'),
@@ -403,27 +547,34 @@ function replacedSize(rows: readonly SessionMessage[], edit: QueuedEdit): number
   return rows[t.rows[0]!]!.text.length
 }
 
-// [SP_CTX_02_13] Queues the replacements of the disposable tags and returns
-// the estimated tokens they free; 0 when nothing was queued. The caller runs
-// it on the queue's serial chain.
-export async function queueTagReplacements(io: TagIO): Promise<number> {
+const NOTHING: Replaced = { queued: 0, freed: 0 }
+
+// [SP_CTX_02_13] Queues the replacements of the disposable tags whose
+// replacement is not in the queue yet, and returns how many it queued and the
+// estimated tokens they free; nothing when none was queued. Only a close of a
+// stage by the tool and the optimization mark run it; the indexes come from
+// Locate on the rows now, so there is no listedKey check. The caller runs it
+// on the queue's serial chain.
+export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const tags = await io.readTags()
   const read = await io.readQueue()
-  if (tags.state === 'unreadable' || read.state === 'unreadable') return 0
-  const rows = await io.rows()
-  const { queued } = prepare(rows, tagEdits(rows, tags.value), undefined, pinnedTargets(rows, tags.value))
+  if (tags.state === 'unreadable' || read.state === 'unreadable') return NOTHING
   const q = read.value
-  if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return 0
+  const inQueue = new Set(q.edits.map(tagEditKey).filter(k => k !== undefined))
+  const fresh = { ...tags.value, tags: tags.value.tags.filter(t => !inQueue.has(tagKey(t) ?? '')) }
+  const rows = await io.rows()
+  const { queued } = prepare(rows, tagEdits(rows, fresh), undefined, pinnedTargets(rows, tags.value))
+  if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return NOTHING
   const next: Queue = { ...q, edits: [...q.edits, ...queued], tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
-  if (queueBytes(next) > MAX_QUEUE_BYTES) return 0
+  if (queueBytes(next) > MAX_QUEUE_BYTES) return NOTHING
   try {
     await io.writeQueue(next)
   } catch {
-    return 0
+    return NOTHING
   }
   let chars = 0
   for (const edit of queued) chars += replacedSize(rows, edit) - (edit.op === 'summarize' ? edit.summary.length : edit.op === 'rewrite' ? edit.text.length : 0)
-  return Math.max(0, Math.round(chars / 4))
+  return { queued: queued.length, freed: Math.max(0, Math.round(chars / 4)) }
 }
 
 // Whether a batch edit is the replacement a disposable tag stands for.
@@ -473,42 +624,4 @@ export function rebindTags(
     tags.push({ ...tag, target: { anchor: tag.target.anchor, hint: now } })
   }
   return { ...reg, tags }
-}
-
-// What Nudge needs from the host; register.ts binds it to `$`.
-export type NudgeIO = {
-  ready: () => Promise<boolean>
-  readQueue: () => Promise<Read<Queue>>
-  // QueueTagReplacements on the queue's serial chain
-  replace: () => Promise<number>
-  reviews: () => Promise<number>
-}
-
-// [SP_CTX_02_09] [C_CTX_DEC_04] D: the next portion, chosen by the agent.
-export function nudgeText(tokens: number, freed: number, reviews: number): string {
-  return [
-    `context-editor: the context is ~${Math.round(tokens / 1000)}k tokens.`,
-    freed > 0 ? `Replacements from your disposable tags are queued (~${Math.round(freed / 1000)}k tokens freed when this turn ends), but that is not enough.` : '',
-    reviews > 0 ? `${reviews} row(s) are tagged [review].` : '',
-    `Attention degrades as context grows, so free the next portion, starting from the START of the conversation: call context_list (it lists the oldest rows first), then make ONE context_edit call that compresses what in the earliest spans is already processed or excess (tool outputs you have used, repeated reads, finished sub-tasks, dead ends; screenshots and documents you have looked at, by a description if the task allows), not the whole conversation. Usually leave unchanged the person's messages, loaded rules and skills that apply to the task, open questions, the decisions in force and the recent work; what to compress is your call. Then continue the task.`,
-  ]
-    .filter(Boolean)
-    .join(' ')
-}
-
-// [SP_CTX_02_09] The reminder to add after a tool call, if any. `nudged` is
-// the threshold level the model was last reminded at.
-export async function nudge(io: NudgeIO, tokens: number, nudged: { level: number }): Promise<string | undefined> {
-  const level = tokens < NUDGE_FIRST ? -1 : Math.floor((tokens - NUDGE_FIRST) / NUDGE_STEP)
-  if (level <= nudged.level) {
-    nudged.level = Math.min(nudged.level, level)
-    return undefined
-  }
-  if (!(await io.ready())) return undefined
-  const read = await io.readQueue()
-  if (read.state === 'unreadable' || read.value.edits.length) return undefined
-  nudged.level = level
-  const freed = await io.replace().catch(() => 0)
-  if (tokens - freed < NUDGE_FIRST + level * NUDGE_STEP) return undefined
-  return nudgeText(tokens, freed, await io.reviews().catch(() => 0))
 }

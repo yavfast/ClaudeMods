@@ -1,7 +1,23 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { MAX_QUEUE_EDITS } from '../hooks/edits'
-import { contextEdit, DEFAULT_RESUME, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, queueEdits, withoutReport, type Queue, type QueueIO, type Read } from '../hooks/queue'
+import {
+  contextEdit,
+  DEFAULT_RESUME,
+  deliverReport,
+  EMPTY_QUEUE,
+  MAX_QUEUE_BYTES,
+  parseQueue,
+  queueEdits,
+  settledQueue,
+  withoutReport,
+  type DeliverIO,
+  type Queue,
+  type QueueIO,
+  type Read,
+} from '../hooks/queue'
+import { adviceFor, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntroduced } from '../hooks/stages'
+import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
 const rows: SessionMessage[] = [
   { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
@@ -100,28 +116,135 @@ test('contextEdit refuses when the queue can neither be read nor moved, or canno
   expect('deny' in b && b.deny).toContain('disk full')
 })
 
+// A host for DeliverReport: the queue and the registry in memory, bound as
+// register.ts binds them (intro, advice and their writes from stages.ts).
+function deliverHarness(queue: Queue, reg: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }, over: Partial<DeliverIO<{ drop?: unknown }>> = {}) {
+  const log = { queue, reg, seen: [] as (readonly string[])[], inTurn: false }
+  const io: DeliverIO<{ drop?: unknown }> = {
+    readQueue: async () => ({ state: 'ok', value: log.queue }),
+    intro: async () => introFor(log.reg),
+    advice: async () => adviceFor(log.reg),
+    inTurn: () => log.inTurn,
+    enter: async context => (log.seen.push(context), {}),
+    markIntroduced: async () => {
+      const next = withIntroduced(log.reg)
+      if (next) log.reg = { state: 'ok', value: next }
+    },
+    settle: async s => void (log.queue = settledQueue(log.queue, s)),
+    ...over,
+  }
+  return { io, log }
+}
+
+const introduced = (): Read<TagRegistry> => ({ state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true } })
+const BLOCK_A = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 2 }, turn: 1 }
+
 test('deliverReport removes the report only once the prompt entered', async () => {
-  const read = async (): Promise<Read<Queue>> => ({ state: 'ok', value: { ...EMPTY_QUEUE, report: 'R', reportId: 3 } })
-  const settled: string[] = []
-  const seen: (string | undefined)[] = []
-  await deliverReport(read, async r => (seen.push(r), {}), async d => void settled.push(d))
-  expect(seen).toEqual(['R'])
-  expect(settled).toEqual(['R'])
-  const dropped: string[] = []
-  const out = await deliverReport(read, async () => ({ drop: 'refused' }), async d => void dropped.push(d))
+  const q: Queue = { ...EMPTY_QUEUE, report: 'R', reportId: 3 }
+  const ok = deliverHarness(q, introduced())
+  await deliverReport(ok.io)
+  expect(ok.log.seen).toEqual([['R']])
+  expect(ok.log.queue.report).toBeUndefined()
+  const refused = deliverHarness(q, introduced(), { enter: async () => ({ drop: 'refused' }) })
+  const out = await deliverReport(refused.io)
   expect(out.drop).toBe('refused')
-  expect(dropped).toEqual([])
-  const none: (string | undefined)[] = []
-  await deliverReport(async () => ({ state: 'missing', value: { ...EMPTY_QUEUE } }), async r => (none.push(r), {}), async () => undefined)
-  expect(none).toEqual([undefined])
+  expect(refused.log.queue.report).toBe('R')
+  const none = deliverHarness({ ...EMPTY_QUEUE }, introduced())
+  await deliverReport(none.io)
+  expect(none.log.seen).toEqual([[]])
 })
 
 test('DeliverReport — один раз: a report in the queue, two prompts in a row; only the first carries it', async () => {
-  let q: Queue = { ...EMPTY_QUEUE, report: 'R', reportId: 3, reportResume: true }
-  const read = async (): Promise<Read<Queue>> => ({ state: 'ok', value: q })
-  const seen: (string | undefined)[] = []
-  for (let i = 0; i < 2; i++) await deliverReport(read, async r => (seen.push(r), {}), async d => void (q = withoutReport(q, d)))
-  expect(seen).toEqual(['R', undefined])
-  expect(q.report).toBeUndefined()
-  expect(q.reportResume).toBe(false)
+  const h = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3, reportResume: true }, introduced())
+  for (let i = 0; i < 2; i++) await deliverReport(h.io)
+  expect(h.log.seen).toEqual([['R'], []])
+  expect(h.log.queue.report).toBeUndefined()
+  expect(h.log.queue.reportResume).toBe(false)
+})
+
+test('SessionIntro — перший промпт: the hidden context starts with INTRO_TEXT; once entered, introduced; the second prompt goes without it', async () => {
+  const h = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3 })
+  await deliverReport(h.io)
+  await deliverReport(h.io)
+  expect(h.log.seen).toEqual([[INTRO_TEXT, 'R'], []])
+  expect(h.log.reg.state === 'ok' && h.log.reg.value.introduced).toBe(true)
+  // a registry with introduced = false gets it too
+  const fresh = deliverHarness({ ...EMPTY_QUEUE }, { state: 'ok', value: { ...EMPTY_REGISTRY } })
+  await deliverReport(fresh.io)
+  expect(fresh.log.seen).toEqual([[INTRO_TEXT]])
+})
+
+test('SessionIntro — промпт відхилено / реєстр нечитабельний / INTRO_NOT_RECORDED', async () => {
+  const dropped = deliverHarness({ ...EMPTY_QUEUE }, undefined, { enter: async () => ({ drop: 'no' }) })
+  await deliverReport(dropped.io)
+  expect(dropped.log.reg.state).toBe('missing')
+  const broken = deliverHarness({ ...EMPTY_QUEUE }, { state: 'unreadable', reason: 'x' })
+  await deliverReport(broken.io)
+  expect(broken.log.seen).toEqual([[]])
+  const unwritten = deliverHarness({ ...EMPTY_QUEUE }, undefined, {
+    markIntroduced: async () => {
+      throw new Error('disk full')
+    },
+  })
+  await deliverReport(unwritten.io)
+  await deliverReport(unwritten.io)
+  expect(unwritten.log.seen).toEqual([[INTRO_TEXT], [INTRO_TEXT]])
+})
+
+test('DeliverReport — порада з промптом людини: PersonAdvice of block "A", no indexes; once entered, optimize is down', async () => {
+  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 4 }, { state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A } })
+  await deliverReport(h.io)
+  expect(h.log.seen.length).toBe(1)
+  const [report, advice] = h.log.seen[0]!
+  expect(report).toBe('R')
+  expect(advice).toBe(personAdvice(BLOCK_A))
+  expect(advice).toContain('stage "A"')
+  expect(advice).toContain('Last block #<a>..#<b>')
+  expect(advice).toContain(STAGE_ADVICE)
+  expect(/#\d/.test(advice!)).toBe(false)
+  expect(h.log.queue.optimize).toBe(false)
+  expect(h.log.queue.report).toBeUndefined()
+})
+
+test('DeliverReport — ADVICE_FAILED / без блоку: the prompt goes without advice; once entered, optimize is down', async () => {
+  const failing = deliverHarness({ ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 4 }, introduced(), {
+    advice: async () => {
+      throw new Error('boom')
+    },
+  })
+  await deliverReport(failing.io)
+  expect(failing.log.seen).toEqual([['R']])
+  expect(failing.log.queue.optimize).toBe(false)
+  for (const reg of [{ state: 'unreadable', reason: 'x' } as Read<TagRegistry>, introduced()]) {
+    const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, reg)
+    await deliverReport(h.io)
+    expect(h.log.seen).toEqual([[]])
+    expect(h.log.queue.optimize).toBe(false)
+  }
+  // a dropped prompt keeps the request
+  const kept = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, introduced(), { enter: async () => ({ drop: 'no' }) })
+  await deliverReport(kept.io)
+  expect(kept.log.queue.optimize).toBe(true)
+})
+
+test('DeliverReport — людина взяла хід: optimizePrompted goes down with a prompt between turns, stays with a message mid-turn', async () => {
+  const between = deliverHarness({ ...EMPTY_QUEUE, optimizePrompted: true }, introduced())
+  await deliverReport(between.io)
+  expect(between.log.queue.optimizePrompted).toBe(false)
+  const mid = deliverHarness({ ...EMPTY_QUEUE, optimizePrompted: true }, introduced())
+  mid.log.inTurn = true
+  await deliverReport(mid.io)
+  expect(mid.log.queue.optimizePrompted).toBe(true)
+})
+
+test('Queue: optimize and optimizePrompted parse as booleans and are kept by every other write', async () => {
+  expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, optimize: true })).state).toBe('ok')
+  expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, optimize: 'yes' })).state).toBe('unreadable')
+  expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, optimizePrompted: 1 })).state).toBe('unreadable')
+  const q: Queue = { ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 1 }
+  expect(withoutReport(q, 'R').optimize).toBe(true)
+  const out = queueEdits(q, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  expect('queue' in out && out.queue.optimize).toBe(true)
+  const prompted: Queue = { ...EMPTY_QUEUE, optimizePrompted: true }
+  expect(settledQueue(prompted, { delivered: undefined, optimizeDone: false, tookOver: false })).toBe(prompted)
 })

@@ -51,7 +51,7 @@
 - [x] [Phase 11 — Довіра межі, чесний звіт, реєстри після передачі](#PL_CTX_P11)
 - [x] [Phase 12 — Цілісна відповідь з thinking (backlog K, крок 1)](#PL_CTX_P12)
 - [x] [Phase 13 — Покрокове вибіркове чищення (C_CTX_DEC_04, D)](#PL_CTX_P13)
-- [ ] [Phase 14 — Етапи і свідомий тригер оптимізації: ядро](#PL_CTX_P14)
+- [x] [Phase 14 — Етапи і свідомий тригер оптимізації: ядро](#PL_CTX_P14)
 - [ ] [Phase 15 — Етапи: авторозмітка, діапазон, слот стану, журнал](#PL_CTX_P15)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
@@ -207,11 +207,13 @@ Pseudocode sketch:
 | Текст нагадування: наступна порція опрацьованого, не вся розмова; без змін — повідомлення людини, правила й навички, робоча частина | `mods/context-editor/hooks/tags.ts` (`nudgeText`); `tests/tags.test.ts` |
 | Порада в описі `context_edit` замість «one large collapse» | `mods/context-editor/hooks/register.ts` (`EDIT_DESCRIPTION`) |
 
-### Phase 14 — Етапи і свідомий тригер оптимізації: ядро [TODO]  {#PL_CTX_P14}
+### Phase 14 — Етапи і свідомий тригер оптимізації: ядро [DONE]  {#PL_CTX_P14}
 
 **Depends on:** Phase 13; [C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)–[DEC_17](./context_editor.concept.md#C_CTX_DEC_17); [SP_CTX_DEC_11](./context_editor.sp.md#SP_CTX_DEC_11)–[DEC_15](./context_editor.sp.md#SP_CTX_DEC_15); задача `.dev_flow/tasks/task_20261010_083402_stage-cleanup.md` (відкриті знахідки рев'ю 35 — «Перевірити на практиці»)
 **Implements:** [SP_CTX_01_04](./context_editor.sp.md#SP_CTX_01_04) (`optimize`, `optimizePrompted`), [01_05](./context_editor.sp.md#SP_CTX_01_05) (`produced`), [01_10](./context_editor.sp.md#SP_CTX_01_10) (`stage`, `lastClosed`, `introduced`), [01_12](./context_editor.sp.md#SP_CTX_01_12) (без NUDGE_*; OPTIMIZE_MARK, MESSAGES_ROW, MAX_STAGE_NAME, MAX_BLOCK_INDEXES, INTRO_TEXT, STAGE_ADVICE, SKILL), [01_17](./context_editor.sp.md#SP_CTX_01_17) (`carried`), [01_18](./context_editor.sp.md#SP_CTX_01_18), [01_20](./context_editor.sp.md#SP_CTX_01_20) без кандидатів за причинами, журналу і слоту стану; [02_01](./context_editor.sp.md#SP_CTX_02_01) з телеметрією, `count: 0`, `[stage ▶]`, `[block ▶]`/`[block end]`; [02_06](./context_editor.sp.md#SP_CTX_02_06) (Optimize); [02_07](./context_editor.sp.md#SP_CTX_02_07) (перенесення `optimize`, `optimizePrompted`; `produced`); [02_08](./context_editor.sp.md#SP_CTX_02_08) (вступ, PersonAdvice, `optimizePrompted`); [02_09](./context_editor.sp.md#SP_CTX_02_09) (вилучено); [02_11](./context_editor.sp.md#SP_CTX_02_11) `open`/`close`; [02_13](./context_editor.sp.md#SP_CTX_02_13) тригери закриття і мітки; [02_14](./context_editor.sp.md#SP_CTX_02_14) RelocateMark; [02_15](./context_editor.sp.md#SP_CTX_02_15), [02_16](./context_editor.sp.md#SP_CTX_02_16) без нагадування; [02_18](./context_editor.sp.md#SP_CTX_02_18) (`listedKey` звітом закриття); [02_21](./context_editor.sp.md#SP_CTX_02_21), [02_22](./context_editor.sp.md#SP_CTX_02_22) (мітки, `introduced`, `carried`); [02_27](./context_editor.sp.md#SP_CTX_02_27) (вступ і навичка — лише ядро), [02_28](./context_editor.sp.md#SP_CTX_02_28), [02_29](./context_editor.sp.md#SP_CTX_02_29), [02_30](./context_editor.sp.md#SP_CTX_02_30); [04_05](./context_editor.sp.md#SP_CTX_04_05), [04_06](./context_editor.sp.md#SP_CTX_04_06)
 **Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки контрактів зі списку Implements (Telemetry, StageBlock, DetectOptimize, Flush/Optimize, DeliverReport, context_tag `open`/`close`, RebindTags/RelocateMark, produced, HandleCompaction зберігає `optimize`), [05_02](./context_editor.sp.md#SP_CTX_05_02) інваріанти етапу й черги, [05_04](./context_editor.sp.md#SP_CTX_05_04) відповідні рядки; `claude plugin test`, `claude plugin validate`, tsc; живі сценарії [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03): «Етап: закриття і стискання блоку», «Мітка оптимізації, stream-json», «Мітка оптимізації, термінал», «Мітка при непорожній черзі», «Людина випереджає хід оптимізації», «Інструкція на початку сесії», «Межа етапу після застосування», «Вбудована компактизація при відкритому етапі»; результати живих прогонів — у задачі етапів (знахідки «Перевірити на практиці» підтвердити або закрити)
+
+**Результат (2026-10-10):** 304 модульні тести, validate, tsc 0; живі сценарії фази 14 — pass в обох хостах (`.dev_flow/cache/live-test/phase14-results.md`); знайдено й виправлено D1 (стискання паралельних викликів рвало пару — MergeCallRows, 02_04), D2 (телеметрія після `/compact` хоста), D3 (`~` у пораді); рев'ю коду раунд 36 — WARNINGS, виправлено. Практика: haiku етапів без вказівки не відкриває, sonnet обирає мітку — питання до фази 15 і навички.
 
 | Що | Де |
 |----|----|
@@ -387,3 +389,4 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-09 | Backlog: перегляд стратегії нагадувань (M), дослідження впливу змінного контексту на якість завдань |
 | 2026-10-10 | Backlog M злито з етапами завдання (окрема задача task_20261010_083402_stage-cleanup); фазу-кандидат 14 скасовано |
 | 2026-10-10 | Фази 14 (ядро етапів) і 15 (авторозмітка, діапазон, слот стану, журнал) за SP_CTX 2026-10-10; PL_CTX_DEC_05 — ядро спершу, практика перед фазою 15; фаза 13 закрита без живого Verify (нагадування прибирає фаза 14) |
+| 2026-10-10 | Фаза 14 виконана: етапи, мітка оптимізації, телеметрія, вступ і навичка, без нагадувань; 304 тести; живі сценарії pass в обох хостах; D1 MergeCallRows; рев'ю 36 |

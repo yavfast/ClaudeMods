@@ -2,6 +2,8 @@ import { expect, test } from 'claude-code/testing'
 import { MARKER } from '../hooks/compaction'
 import { enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, newFlushState, type FlushIO } from '../hooks/flush'
 import { EMPTY_QUEUE, withoutReport, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
+import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
+import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted, type Turns } from '../hooks/turns'
 
 const EDITS = [
@@ -11,11 +13,21 @@ const EDITS = [
 const HANDOFF: HandoffRequest = { mode: 'transcript', resume: true, resumePrompt: 'go', by: 'agent', state: 'queued', at: 0 }
 
 // A host whose /compact runs `onCompact` (the handler) before it returns.
-function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (log: Log) => void) {
-  const log: Log = { queue, compacts: [], submits: [], statuses: [], timers: [] }
+function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (log: Log) => void, tags: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }) {
+  const log: Log = { queue, compacts: [], submits: [], statuses: [], timers: [], tags, writes: 0 }
   const turns: Turns = newTurns()
   const io: FlushIO = {
     readQueue: async () => log.queue,
+    // the queue's chain: the change sees the queue as it is then
+    updateQueue: async change => {
+      if (log.queue.state === 'unreadable') return false
+      const next = change(log.queue.value)
+      if (!next) return false
+      log.queue = { state: 'ok', value: next }
+      log.writes++
+      return true
+    },
+    readTags: async () => log.tags,
     compact: async args => {
       log.compacts.push(args)
       onCompact?.(log)
@@ -32,7 +44,7 @@ function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (l
   }
   return { io, log, turns, state: newFlushState() }
 }
-type Log = { queue: Read<Queue>; compacts: string[]; submits: string[]; statuses: (string | undefined)[]; timers: { ms: number; fn: () => void }[] }
+type Log = { queue: Read<Queue>; compacts: string[]; submits: string[]; statuses: (string | undefined)[]; timers: { ms: number; fn: () => void }[]; tags: Read<TagRegistry>; writes: number }
 
 const ok = (q: Partial<Queue>): Read<Queue> => ({ state: 'ok', value: { ...EMPTY_QUEUE, ...q } })
 // what the handler leaves: the batch gone, a report that asks for the resume
@@ -220,4 +232,154 @@ test('Flush: scheduled is down after a throw too', async () => {
   await flush(io, state, 0).catch(() => (thrown = true))
   expect(thrown).toBe(true)
   expect(state.scheduled).toBe(false)
+})
+
+// ---- [SP_CTX_02_06] Optimize: the optimization turn
+
+const BLOCK_A: ClosedBlock = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 4 }, turn: 2 }
+const withBlock = (block: ClosedBlock = BLOCK_A): Read<TagRegistry> => ({ state: 'ok', value: { ...EMPTY_REGISTRY, tags: [], lastClosed: block } })
+const value = (log: Log) => (log.queue.state === 'ok' ? log.queue.value : undefined)!
+// [SP_CTX_05_02] never both
+const neverBoth = (log: Log) => expect(value(log).optimize && value(log).optimizePrompted).toBe(false)
+
+test('Flush — хід оптимізації без пакета: no command, no rows read; one OptimizeText prompt; the swap written before it', async () => {
+  const seenAtSubmit: Queue[] = []
+  const h = harness(ok({ optimize: true }), { submit: async text => void (h.log.submits.push(text), seenAtSubmit.push(value(h.log))) }, undefined, withBlock())
+  turnStarted(h.turns)
+  turnCompleted(h.turns, false)
+  expect(await flushAfterTurn(h.io, h.state, false)).toBe(true)
+  const out = await flush(h.io, h.state, h.turns.turns)
+  expect(out).toEqual({ outcome: 'no-command', resume: 'none', optimize: 'submitted' })
+  expect(h.log.compacts).toEqual([])
+  expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false)])
+  expect(h.log.submits[0]).toContain('"resume": false')
+  expect(seenAtSubmit[0]!.optimize).toBe(false)
+  expect(seenAtSubmit[0]!.optimizePrompted).toBe(true)
+  neverBoth(h.log)
+})
+
+test('Flush — хід оптимізації після пакета: one compact; one prompt: report + OptimizeText; the queue\'s resume text is not sent; RemoveDelivered after it', async () => {
+  const h = harness(
+    ok({ edits: EDITS, optimize: true, resume: true, resumePrompt: 'P-text' }),
+    {},
+    l => void (l.queue = ok({ report: 'context-editor: applied 2 edit(s)', reportId: 7, reportResume: true, reportPrompt: 'P-text', optimize: true })),
+    withBlock(),
+  )
+  const out = await flush(h.io, h.state, 0)
+  expect(out).toEqual({ outcome: 'compacted', resume: 'none', optimize: 'submitted' })
+  expect(h.log.compacts).toEqual([MARKER])
+  expect(h.log.submits).toEqual([`context-editor: applied 2 edit(s)\n\n${optimizeText(BLOCK_A, true)}`])
+  expect(h.log.submits[0]).not.toContain('P-text')
+  expect(h.log.submits[0]).toContain(STAGE_ADVICE)
+  expect(value(h.log).report).toBeUndefined()
+  expect(value(h.log).optimizePrompted).toBe(true)
+  expect(h.state.lastSubmittedReportId).toBe(7)
+})
+
+test('Flush — людина почала хід: before the command (PERSON_MOVED) or after it (OPTIMIZE_PERSON): no prompt; optimize stays; the report stays', async () => {
+  const before = harness(ok({ edits: EDITS, optimize: true }), {}, applied, withBlock())
+  turnStarted(before.turns)
+  expect((await flush(before.io, before.state, 0)).outcome).toBe('person-moved')
+  expect(before.log.compacts).toEqual([])
+  expect(value(before.log).optimize).toBe(true)
+  const during = harness(ok({ edits: EDITS, optimize: true }), {}, l => {
+    l.queue = ok({ report: 'R', reportId: 9, reportResume: true, optimize: true })
+    turnStarted(during.turns)
+  }, withBlock())
+  const out = await flush(during.io, during.state, 0)
+  expect(out.optimize).toBe('person')
+  expect(during.log.submits).toEqual([])
+  expect(value(during.log).optimize).toBe(true)
+  expect(value(during.log).report).toBe('R')
+  expect(during.state.lastSubmittedReportId).toBe(9)
+})
+
+test('Flush — людина під час команди: DeliverReport took optimize meanwhile; the compare-and-set finds it gone: nothing sent, optimizePrompted not written', async () => {
+  const h = harness(ok({ optimize: true, report: 'R', reportId: 3 }), {
+    // the person's prompt passes DeliverReport while Flush reads the block's name
+    readTags: async () => {
+      h.log.queue = ok({ optimize: false })
+      return withBlock()
+    },
+  })
+  const out = await flush(h.io, h.state, 0)
+  expect(out.optimize).toBe('person')
+  expect(h.log.submits).toEqual([])
+  expect(value(h.log).optimizePrompted).toBe(false)
+  expect(h.state.lastSubmittedReportId).toBe(3)
+})
+
+test('Flush — промпт ходу оптимізації відхилено: the swap undone in one write; the report stays; a status line', async () => {
+  const h = harness(ok({ optimize: true, report: 'R', reportId: 3 }), {
+    submit: async () => {
+      throw new Error('drop')
+    },
+  }, undefined, withBlock())
+  const out = await flush(h.io, h.state, 0)
+  expect(out.optimize).toBe('failed')
+  expect(value(h.log).optimize).toBe(true)
+  expect(value(h.log).optimizePrompted).toBe(false)
+  expect(value(h.log).report).toBe('R')
+  expect(h.state.lastSubmittedReportId).toBe(0)
+  expect(h.log.statuses).toContain('context-editor: could not start the optimization turn; the advice goes with your next prompt')
+  neverBoth(h.log)
+})
+
+test('Flush — OPTIMIZE_NO_BLOCK: an unreadable registry or no lastClosed: optimize down, a status line, the resume of the batch as without the mark', async () => {
+  for (const tags of [{ state: 'unreadable', reason: 'x' } as Read<TagRegistry>, { state: 'ok', value: { ...EMPTY_REGISTRY } } as Read<TagRegistry>]) {
+    const h = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on', optimize: true })), tags)
+    const out = await flush(h.io, h.state, 0)
+    expect(out).toEqual({ outcome: 'compacted', resume: 'submitted', optimize: 'no-block' })
+    expect(h.log.submits).toEqual(['T\n\ngo on'])
+    expect(value(h.log).optimize).toBe(false)
+    expect(h.log.statuses.some(s => s?.startsWith('context-editor: optimization turn skipped: '))).toBe(true)
+  }
+})
+
+test('Flush — OPTIMIZE_BUILD_FAILED: the batch asked for no resume — optimize stays, no prompt; it asked — optimize down and Resume', async () => {
+  const broken = { after: null, end: null, turn: 0 } as ClosedBlock
+  Object.defineProperty(broken, 'name', {
+    get() {
+      throw new Error('bad block')
+    },
+  })
+  const quiet = harness(ok({ optimize: true }), {}, undefined, withBlock(broken))
+  const a = await flush(quiet.io, quiet.state, 0)
+  expect(a.optimize).toBe('build-failed')
+  expect(quiet.log.submits).toEqual([])
+  expect(value(quiet.log).optimize).toBe(true)
+  expect(value(quiet.log).optimizePrompted).toBe(false)
+  const resuming = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on', optimize: true })), withBlock(broken))
+  const b = await flush(resuming.io, resuming.state, 0)
+  expect(b).toEqual({ outcome: 'compacted', resume: 'submitted', optimize: 'build-failed' })
+  expect(resuming.log.submits).toEqual(['T\n\ngo on'])
+  expect(value(resuming.log).optimize).toBe(false)
+})
+
+test('Flush — compacted за reportId: the command ran but the handler skipped without a report: OptimizeText without the batch sentence; without optimize nothing is resumed', async () => {
+  const h = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ optimize: true })), withBlock())
+  await flush(h.io, h.state, 0)
+  expect(h.log.compacts).toEqual([MARKER])
+  expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false)])
+  const plain = harness(ok({ edits: EDITS }), {}, l => void (l.queue = ok({})))
+  expect(await flush(plain.io, plain.state, 0)).toEqual({ outcome: 'compacted', resume: 'none' })
+  expect(plain.log.submits).toEqual([])
+})
+
+test('Flush: a refused command keeps the optimization request for the person\'s prompt (HOST_REFUSED)', async () => {
+  const h = harness(ok({ edits: EDITS, optimize: true }), {
+    compact: async () => {
+      throw new Error('not now')
+    },
+  }, undefined, withBlock())
+  expect((await flush(h.io, h.state, 0)).outcome).toBe('host-refused')
+  expect(value(h.log).optimize).toBe(true)
+  expect(h.log.submits).toEqual([])
+})
+
+test('Flush: an optimization request alone plans a Flush; with a handoff it does not', async () => {
+  const alone = harness(ok({ optimize: true }), {}, undefined, withBlock())
+  expect(await flushAfterTurn(alone.io, alone.state, false)).toBe(true)
+  const handoff = harness(ok({ optimize: true, handoff: HANDOFF }), {}, undefined, withBlock())
+  expect(await flushAfterTurn(handoff.io, handoff.state, false)).toBe(false)
 })

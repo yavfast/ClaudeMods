@@ -30,6 +30,15 @@ export type Queue = {
   reportResume: boolean
   reportPrompt: string
   handoff?: HandoffRequest
+  // [SP_CTX_02_30] the optimization mark was seen: the request waits for the
+  // optimization turn ([SP_CTX_02_06]) or a person's prompt ([SP_CTX_02_08]);
+  // its block is TagRegistry.lastClosed
+  optimize: boolean
+  // [SP_CTX_02_06] the optimization prompt entered: the mark in the next
+  // answer is ignored (the loop guard). Never true together with `optimize`.
+  // Only DetectOptimize, Flush and DeliverReport change these two; every other
+  // write of the queue carries them over as read ([SP_CTX_01_04]).
+  optimizePrompted: boolean
 }
 
 export type Read<T> = { state: 'missing' | 'ok'; value: T } | { state: 'unreadable'; reason: string }
@@ -41,6 +50,8 @@ export const EMPTY_QUEUE: Queue = {
   tagsOnly: false,
   reportResume: false,
   reportPrompt: DEFAULT_RESUME,
+  optimize: false,
+  optimizePrompted: false,
 }
 
 // [SP_CTX_01_04] Every field of the file is checked by type; a wrong one
@@ -64,6 +75,8 @@ export function parseQueue(text: string): Read<Queue> {
     typeof q.reportResume !== 'boolean' && 'reportResume',
     typeof q.reportPrompt !== 'string' && 'reportPrompt',
     q.handoff !== undefined && !isHandoff(q.handoff) && 'handoff',
+    typeof q.optimize !== 'boolean' && 'optimize',
+    typeof q.optimizePrompted !== 'boolean' && 'optimizePrompted',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badEdit = q.edits.findIndex(e => !isQueuedEdit(e))
@@ -187,18 +200,64 @@ export async function contextEdit(
   return { result: notice + queuedText(out.queue, out.queued, out.errors) }
 }
 
-// [SP_CTX_02_08] Hands the pending report to the prompt about to enter, and
-// removes it once that prompt entered. `enter` passes the prompt on with the
-// given context and resolves with the host's verdict.
-export async function deliverReport<R extends { drop?: unknown }>(
-  read: () => Promise<Read<Queue>>,
-  enter: (report?: string) => Promise<R>,
-  settle: (delivered: string) => Promise<void>,
-): Promise<R> {
-  const q = await read()
-  const report = q.state === 'ok' ? q.value.report : undefined
-  if (!report) return enter()
-  const entered = await enter(report)
-  if (entered.drop === undefined) await settle(report)
+// [SP_CTX_02_08] What changes in the queue once a person's prompt entered:
+// the delivered report leaves (RemoveDelivered), an optimization request
+// whose advice went (or could not be built) is done, and the loop guard is
+// down when the person took over between turns.
+export type Settle = { delivered?: string; optimizeDone: boolean; tookOver: boolean }
+
+// [SP_CTX_02_08] The queue after Settle; the same queue when nothing changes.
+export function settledQueue(q: Queue, s: Settle): Queue {
+  let next = s.delivered !== undefined ? withoutReport(q, s.delivered) : q
+  if (s.optimizeDone && next.optimize) next = { ...next, optimize: false }
+  if (s.tookOver && next.optimizePrompted) next = { ...next, optimizePrompted: false }
+  return next
+}
+
+// What DeliverReport needs from the host; register.ts binds it to `$`.
+export type DeliverIO<R> = {
+  readQueue: () => Promise<Read<Queue>>
+  // [SP_CTX_02_27] INTRO_TEXT while the registry (ok or missing) has not
+  // recorded it in this session; undefined otherwise
+  intro: () => Promise<string | undefined>
+  // [SP_CTX_02_29] PersonAdvice of TagRegistry.lastClosed as it is now;
+  // undefined without a readable registry or a block (ADVICE_NO_BLOCK); a
+  // throw is ADVICE_FAILED
+  advice: () => Promise<string | undefined>
+  // [SP_CTX_02] a turn runs now
+  inTurn: () => boolean
+  // passes the prompt on with the hidden context; resolves with the host's verdict
+  enter: (context: readonly string[]) => Promise<R>
+  // on the registry chain: introduced = true
+  markIntroduced: () => Promise<void>
+  // on the queue chain, the queue as it is then
+  settle: (s: Settle) => Promise<void>
+}
+
+// [SP_CTX_02_08] [SP_CTX_02_27] The person's prompt (or another plugin's)
+// carries the session intro once, the pending report, and the advice of an
+// optimization request that no optimization turn served; each leaves only
+// once that prompt entered. A failed step never holds the prompt back.
+export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<R>): Promise<R> {
+  const context: string[] = []
+  const intro = await io.intro().catch(() => undefined)
+  if (intro) context.push(intro)
+  const read = await io.readQueue().catch((): Read<Queue> => ({ state: 'unreadable', reason: 'read failed' }))
+  const q = read.state === 'ok' ? read.value : undefined
+  if (q?.report) context.push(q.report)
+  if (q?.optimize) {
+    // ADVICE_FAILED / ADVICE_NO_BLOCK: the prompt goes without it, once
+    const advice = await io.advice().catch(() => undefined)
+    if (advice) context.push(advice)
+  }
+  // the person took the turn between turns: the loop guard is no longer needed
+  const tookOver = !!q?.optimizePrompted && !io.inTurn()
+  const entered = await io.enter(context)
+  if (entered.drop !== undefined) return entered
+  // INTRO_NOT_RECORDED: the intro comes again with the next prompt
+  if (intro) await io.markIntroduced().catch(() => undefined)
+  if (q && (q.report || q.optimize || tookOver))
+    // DELIVERY_FAILED: the report goes again with the next prompt
+    await io.settle({ delivered: q.report || undefined, optimizeDone: q.optimize, tookOver }).catch(() => undefined)
   return entered
 }

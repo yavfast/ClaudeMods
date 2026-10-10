@@ -90,7 +90,7 @@ test('applies the batch: media archived, own calls dropped, charsAfter after the
   expect(written.media).toEqual(['/s/1000/1.png'])
   expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
   expect(out.messages.at(-1)!.toolResults![0]!.text).toContain('(media: /s/1000/1.png)')
-  expect(out.messages.at(-1)!.toolResults![0]!.text).toContain('(original: /s/1000.json)')
+  expect(out.messages.at(-1)!.toolResults![0]!.text).toContain('(original: /s/1000.json, open with Read)')
   const q = written.queue!
   expect(q.edits).toEqual([])
   expect(q.reportId).toBe(1000)
@@ -323,4 +323,40 @@ test('hostId — ще не прочитано: a compaction handler writes the b
   const fresh = newHostIdMemo()
   expect(peekHostId(fresh)).toBeUndefined()
   expect(fresh.promise).toBeUndefined()
+})
+
+// ---- [SP_CTX_01_04] [SP_CTX_02_07] the optimization request survives every write of the handler
+
+test('HandleCompaction — зберігає optimize: the apply, a failed archive and the failure branch keep optimize and optimizePrompted as read', async () => {
+  const flags = { optimize: true, optimizePrompted: false }
+  const applied = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }], flags))
+  expect('messages' in (await handleCompaction(applied.io, conversation()))).toBe(true)
+  expect(applied.written.queue!.optimize).toBe(true)
+  expect(applied.written.queue!.optimizePrompted).toBe(false)
+  const unarchived = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }], flags), { writeArchive: async () => false })
+  await handleCompaction(unarchived.io, conversation())
+  expect(unarchived.written.queue!.optimize).toBe(true)
+  const prompted = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }], { optimizePrompted: true }))
+  await handleCompaction(prompted.io, conversation())
+  expect(prompted.written.queue!.optimizePrompted).toBe(true)
+  const failed = failedQueue({ ...EMPTY_QUEUE, optimize: true, optimizePrompted: false }, 'boom', 5)
+  expect(failed.optimize).toBe(true)
+  expect(failedQueue({ ...EMPTY_QUEUE, optimizePrompted: true }, 'boom', 5).optimizePrompted).toBe(true)
+  expect(failedQueue(undefined, 'boom', 5).optimize).toBe(false)
+})
+
+test('HandleCompaction — produced and the stage marks: the made row in the returned list; a mark on a dropped service row moves back, one on a replaced row to the made row', async () => {
+  const rows = conversation()
+  const at = (i: number) => ({ anchor: fingerprint(rows[i]!), hint: i })
+  const tags: Read<TagRegistry> = {
+    state: 'ok',
+    value: { ...EMPTY_REGISTRY, tags: [], stage: { name: 'B', after: at(2), openedTurn: 0 }, lastClosed: { name: 'A', after: null, end: at(4), turn: 0 } },
+  }
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, tags)
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  // the context_list pair is gone: the made result row stands at #2 of the returned list
+  expect(out.messages.length).toBe(3)
+  expect(written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(out.messages[2]!), hint: 2 })
+  expect(written.tags!.stage!.after).toEqual({ anchor: fingerprint(rows[0]!), hint: 0 })
 })

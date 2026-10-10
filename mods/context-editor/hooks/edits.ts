@@ -21,8 +21,21 @@ export type ApplyReport = {
   charsBefore: number
   charsAfter: number
   originals: { edit: string; rows: SessionMessage[] }[]
+  // for each applied edit that replaces rows: the last row it made, by its
+  // index and fingerprint in the FINAL list (after DropOwnCalls in a
+  // compaction, after normalizing in a seed); a row gone from it has none
+  produced: Produced[]
   mediaFiles: string[]
 }
+
+// [SP_CTX_01_05] One entry of ApplyReport.produced.
+export type Produced = { edit: string; index: number; fingerprint: string }
+
+// [SP_CTX_02_04] What an applied replacing step made, as found again in a
+// later list: the result row of its new pair id (summarize, collapse with a
+// carrier), or its row by its exact text (collapse without one, rewrite,
+// describe). Rebuilding keeps both.
+export type Made = { edit: string; resultId?: string; text?: string }
 
 // [SP_CTX_01_12]
 export const MARK = '[context-editor]'
@@ -293,9 +306,16 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
   ]
 }
 
-// [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows.
-// `tags`: the tag labels of each row index ([SP_CTX_01_09]); `aliases`: the
-// alias of each tool_use_id ([SP_CTX_01_13]).
+// [SP_CTX_02_01] The legend of the listing's header.
+export const LIST_LEGEND =
+  `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media. Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
+  `Tags: [pin] no edit may touch it, [disposable: note] replaced by its note when you close a stage or end a turn with the optimization mark, [review] worth a look.`
+
+// [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows;
+// `count` 0 gives the header alone (its telemetry, no rows). `tags`: the
+// labels of each row index, the stage marks first, then the tags
+// ([SP_CTX_01_09]); `aliases`: the alias of each tool_use_id
+// ([SP_CTX_01_13]); `telemetry`: TelemetryText ([SP_CTX_02_28]).
 export function listRows(
   rows: readonly SessionMessage[],
   from: number,
@@ -303,10 +323,11 @@ export function listRows(
   media: MediaSizes = new Map(),
   tags: ReadonlyMap<number, readonly string[]> = new Map(),
   aliases: ReadonlyMap<string, string> = new Map(),
+  telemetry = '',
 ): string {
-  if (rows.length === 0) return '0 rows.'
+  if (rows.length === 0) return ['0 rows.', telemetry].filter(Boolean).join('\n')
   const start = Math.min(Math.max(0, Math.trunc(from)), rows.length - 1)
-  const size = Math.min(Math.max(1, Math.trunc(count)), MAX_LIST_COUNT)
+  const size = Math.min(Math.max(0, Math.trunc(Number.isFinite(count) ? count : LIST_COUNT)), MAX_LIST_COUNT)
   const stop = Math.min(rows.length, start + size)
   let before = 0
   for (let i = 0; i < start; i++) before += rowChars(rows[i]!)
@@ -335,11 +356,16 @@ export function listRows(
   }
   const total = totalChars(rows)
   const shown = rows.slice(start, stop).reduce((n, r) => n + rowChars(r), 0)
+  const sizes = `${rows.length} rows, ~${total} chars (~${Math.round(total / 4)} tokens), ${mediaCount} media (~${Math.ceil(mediaBytes / 1024)}KB).`
+  if (size === 0) return [sizes, telemetry].filter(Boolean).join('\n')
   return [
-    `${rows.length} rows, ~${total} chars (~${Math.round(total / 4)} tokens), ${mediaCount} media (~${Math.ceil(mediaBytes / 1024)}KB). Showing #${start}..#${stop - 1} (oldest first), ~${shown} chars; ~${before} chars come before it.`,
-    `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media. Tags: [pin] no edit may touch it, [disposable: note] replaced by its note at the next reminder threshold, [review] worth a look.${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
+    `${sizes} Showing #${start}..#${stop - 1} (oldest first), ~${shown} chars; ~${before} chars come before it.`,
+    telemetry,
+    `${LIST_LEGEND}${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
     ...lines,
-  ].join('\n')
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 // [SP_CTX_02_05] Removes this plugin's own calls and their results. An own
@@ -372,7 +398,7 @@ export function dropOwnCalls(
     })
   })
   // [SP_CTX_02_04] a rebuilt assistant row splits its response (pitfall 30)
-  return rebuildSplitResponses(dropped).filter(r => r.handle !== undefined || !isEmpty(r))
+  return mergeCallRows(rebuildSplitResponses(dropped).filter(r => r.handle !== undefined || !isEmpty(r)))
 }
 
 function findToolUse(rows: readonly SessionMessage[], id: string): number {
@@ -731,7 +757,7 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport } {
+): { rows: SessionMessage[]; report: ApplyReport; made: Made[] } {
   const rows = [...input]
   const report: ApplyReport = {
     applied: [],
@@ -739,9 +765,12 @@ export function applyEdits(
     charsBefore: totalChars(input),
     charsAfter: 0,
     originals: [],
+    produced: [],
     mediaFiles: [],
   }
-  const note = archive ? ` (original: ${archive})` : ''
+  const made: Made[] = []
+  // [C_CTX_DEC_18] the replacement itself says how to get the original back
+  const note = archive ? ` (original: ${archive}, open with Read)` : ''
   const mediaNote = (keys: readonly string[]) => {
     const paths = keys.flatMap(k => media.get(k) ?? [])
     return paths.length ? ` (media: ${paths.join(', ')})` : ''
@@ -805,6 +834,7 @@ export function applyEdits(
                       : stripResult(r),
                   ),
                 })
+                made.push({ edit: name, resultId: id })
               }
             : () => {
                 report.originals.push({ edit: name, rows: [rows[useAt]!, rows[resAt]!] })
@@ -866,6 +896,7 @@ export function applyEdits(
                 ]
               : [{ role: span[0]!.role, text, toolUses: [] }]
           rows.splice(from, span.length, ...replacement)
+          made.push(id ? { edit: name, resultId: id } : { edit: name, text })
         }
         break
       }
@@ -885,6 +916,7 @@ export function applyEdits(
               ? `${MARK} rewritten${note}: ${edit.text}`
               : `${MARK} media replaced${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
           rows[at] = plain(row, { text })
+          made.push({ edit: name, text })
         }
         break
       }
@@ -932,9 +964,30 @@ export function applyEdits(
     if (known && !results.every(t => known.has(t.tool_use_id))) return r
     return plain(r, {})
   })
-  const out = rebuildSplitResponses(relinked).filter(r => r.handle !== undefined || !isEmpty(r))
+  const out = mergeCallRows(rebuildSplitResponses(relinked).filter(r => r.handle !== undefined || !isEmpty(r)))
   report.charsAfter = totalChars(out)
-  return { rows: out, report }
+  report.produced = producedRows(out, made)
+  return { rows: out, report, made }
+}
+
+// [SP_CTX_02_04] Produced(final, steps): where the rows the applied replacing
+// steps made stand in `final`, the list the caller returns (after
+// DropOwnCalls, KeepResponsesWhole, a seed's normalizing). A step whose row
+// is gone has no entry. A text is matched to one row only. Pure.
+export function producedRows(final: readonly SessionMessage[], made: readonly Made[]): Produced[] {
+  const taken = new Set<number>()
+  const out: Produced[] = []
+  for (const m of made) {
+    // a made text row may have joined a rebuilt row with calls (MergeCallRows)
+    const k =
+      m.resultId !== undefined
+        ? final.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === m.resultId))
+        : final.findIndex((r, i) => !taken.has(i) && (r.text === m.text || r.text.split(JOIN).includes(m.text!)))
+    if (k < 0) continue
+    if (m.resultId === undefined) taken.add(k)
+    out.push({ edit: m.edit, index: k, fingerprint: fingerprint(final[k]!) })
+  }
+  return out
 }
 
 // [SP_CTX_02_04] The host merges assistant rows of one model response (one
@@ -971,6 +1024,38 @@ export function rebuildSplitResponses(rows: readonly SessionMessage[]): SessionM
     }
   })
   close(out.length)
+  return out
+}
+
+// How MergeCallRows joins the texts of the rows it merges.
+const JOIN = '\n\n'
+
+// [SP_CTX_02_04] MergeCallRows: rows without `handle` are sent as messages of
+// their own, each with a synthetic id, and the host merges only rows of one
+// `message.id`. A rebuilt assistant row with calls followed by another rebuilt
+// assistant row (parallel calls of one response written as separate rows)
+// would leave its tool_uses without the results right after them: the host
+// repairs that with "Tool result missing due to internal error"
+// (ensureToolResultPairing; live verify of phase 14, D1). So each such row
+// takes in the rebuilt assistant rows after it, up to the next row of another
+// role or with a handle: texts joined in order, calls in order. Consecutive
+// assistant rows are one response (a response never crosses a result or
+// prompt row); a text row before the calls stays a row of its own, as the
+// host takes it (spike context_editor_handoff_long, Entry 5). Pure.
+export function mergeCallRows(rows: readonly SessionMessage[]): SessionMessage[] {
+  const out: SessionMessage[] = []
+  for (const r of rows) {
+    const prev = out.at(-1)
+    if (prev && prev.role === 'assistant' && r.role === 'assistant' && prev.handle === undefined && r.handle === undefined && prev.toolUses.length > 0) {
+      out[out.length - 1] = {
+        role: 'assistant',
+        text: [prev.text, r.text].filter(Boolean).join(JOIN),
+        toolUses: [...prev.toolUses, ...r.toolUses.map(stripUse)],
+      }
+      continue
+    }
+    out.push(r)
+  }
   return out
 }
 

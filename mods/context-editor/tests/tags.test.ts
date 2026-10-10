@@ -12,7 +12,6 @@ import {
   EMPTY_REGISTRY,
   isPluginRow,
   MAX_TAGS,
-  nudge,
   parseRegistry,
   pinnedTargets,
   queueTagReplacements,
@@ -362,7 +361,8 @@ const disposables = reg([
 
 test('two disposable tags on an empty queue become two edits of a tags-only batch; context_edit clears tagsOnly', async () => {
   const { io, log } = harness({ state: 'ok', value: disposables })
-  const freed = await queueTagReplacements(io)
+  const { queued, freed } = await queueTagReplacements(io)
+  expect(queued).toBe(2)
   const q = log.queue!
   expect(q.edits.map(e => e.op)).toEqual(['summarize', 'rewrite'])
   expect(q.tagsOnly).toBe(true)
@@ -375,7 +375,7 @@ test('two disposable tags on an empty queue become two edits of a tags-only batc
 test('replacements join a non-empty queue without making it tags-only', async () => {
   const pending: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'b' }] }
   const { io, log } = harness({ state: 'ok', value: disposables }, { state: 'ok', value: pending })
-  expect((await queueTagReplacements(io)) > 0).toBe(true)
+  expect((await queueTagReplacements(io)).queued > 0).toBe(true)
   expect(log.queue!.edits.length).toBe(3)
   expect(log.queue!.tagsOnly).toBe(false)
 })
@@ -383,62 +383,19 @@ test('replacements join a non-empty queue without making it tags-only', async ()
 test('replacements are not queued past MAX_QUEUE_EDITS or MAX_QUEUE_BYTES, nor from an unreadable file', async () => {
   const many: Queue = { ...EMPTY_QUEUE, edits: Array.from({ length: MAX_QUEUE_EDITS - 1 }, (): QueuedEdit => ({ op: 'drop', tool_use_id: 'b' })) }
   const a = harness({ state: 'ok', value: disposables }, { state: 'ok', value: many })
-  expect(await queueTagReplacements(a.io)).toBe(0)
+  expect((await queueTagReplacements(a.io)).queued).toBe(0)
   expect(a.log.queue).toBeUndefined()
   const huge: Queue = { ...EMPTY_QUEUE, report: 'r'.repeat(MAX_QUEUE_BYTES) }
   const b = harness({ state: 'ok', value: disposables }, { state: 'ok', value: huge })
-  expect(await queueTagReplacements(b.io)).toBe(0)
+  expect((await queueTagReplacements(b.io)).queued).toBe(0)
   expect(b.log.queue).toBeUndefined()
   const c = harness({ state: 'unreadable', reason: 'x' })
-  expect(await queueTagReplacements(c.io)).toBe(0)
+  expect((await queueTagReplacements(c.io)).queued).toBe(0)
   const d = harness({ state: 'ok', value: disposables }, { state: 'unreadable', reason: 'x' })
-  expect(await queueTagReplacements(d.io)).toBe(0)
+  expect((await queueTagReplacements(d.io)).queued).toBe(0)
   const none = harness(empty())
-  expect(await queueTagReplacements(none.io)).toBe(0)
+  expect((await queueTagReplacements(none.io)).queued).toBe(0)
   expect(none.log.queue).toBeUndefined()
-})
-
-// ---- [SP_CTX_02_09] Nudge
-
-function nudgeIO(freed: number, edits = 0) {
-  const calls = { replace: 0 }
-  return {
-    calls,
-    io: {
-      ready: async () => true,
-      readQueue: async (): Promise<Read<Queue>> => ({ state: 'ok', value: { ...EMPTY_QUEUE, edits: Array.from({ length: edits }, (): QueuedEdit => ({ op: 'drop', tool_use_id: 'b' })) } }),
-      replace: async () => (calls.replace++, freed),
-      reviews: async () => 2,
-    },
-  }
-}
-
-test('no reminder when the tag replacements bring the context below the threshold', async () => {
-  const enough = nudgeIO(15_000)
-  const nudged = { level: -1 }
-  expect(await nudge(enough.io, 90_000, nudged)).toBeUndefined()
-  expect(enough.calls.replace).toBe(1)
-  expect(nudged.level).toBe(0)
-  const short = nudgeIO(5_000)
-  const text = await nudge(short.io, 90_000, { level: -1 })
-  expect(text).toContain('~90k tokens')
-  expect(text).toContain('~5k tokens freed')
-  expect(text).toContain('2 row(s) are tagged [review]')
-  const busy = nudgeIO(0, 1)
-  expect(await nudge(busy.io, 90_000, { level: -1 })).toBeUndefined()
-  expect(busy.calls.replace).toBe(0)
-  const below = nudgeIO(0)
-  expect(await nudge(below.io, 70_000, { level: -1 })).toBeUndefined()
-  expect(below.calls.replace).toBe(0)
-})
-
-// [C_CTX_DEC_04] D: the next portion, not the whole conversation
-test('Nudge — the text asks for the next portion', async () => {
-  const text = (await nudge(nudgeIO(5_000).io, 90_000, { level: -1 })) ?? ''
-  expect(text).toContain('the next portion')
-  expect(text).toContain('not the whole conversation')
-  expect(text).toContain("Usually leave unchanged the person's messages, loaded rules and skills")
-  expect(text).not.toContain('verbatim')
 })
 
 // ---- [SP_CTX_02_14] RebindTags
@@ -488,6 +445,22 @@ test('a tag on a pair the agent changed is removed and no replacement is queued 
   const out = rebindTags(r, before, after, edits, edits)
   expect(out.tags).toEqual([])
   const { io, log } = harness({ state: 'ok', value: r }, undefined, { rows: async () => after })
-  expect(await queueTagReplacements(io)).toBe(0)
+  expect((await queueTagReplacements(io)).queued).toBe(0)
   expect(log.queue).toBeUndefined()
+})
+
+// [SP_CTX_02_13]
+test('QueueTagReplacements — без повтору: a replacement already queued (a close by the tool, then the mark in the same turn) is not queued again', async () => {
+  const one = reg([{ kind: 'disposable', target: { tool_use_id: 'a' }, note: 'file A: KEY_0042 = ff', created_turn: 0 }])
+  const { io, log } = harness({ state: 'ok', value: one })
+  expect((await queueTagReplacements(io)).queued).toBe(1)
+  expect(log.queue!.edits.length).toBe(1)
+  expect(await queueTagReplacements(io)).toEqual({ queued: 0, freed: 0 })
+  expect(log.queue!.edits.length).toBe(1)
+})
+
+test('QueueTagReplacements keeps the optimization request of the queue it writes (05_02)', async () => {
+  const { io, log } = harness({ state: 'ok', value: disposables }, { state: 'ok', value: { ...EMPTY_QUEUE, optimize: true } })
+  await queueTagReplacements(io)
+  expect(log.queue!.optimize).toBe(true)
 })

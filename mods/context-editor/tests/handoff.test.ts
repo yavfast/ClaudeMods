@@ -445,11 +445,12 @@ function pendingSeed(over: Partial<HandoffSeed> = {}): HandoffSeed {
     rows: [text('user', 'task'), use('x'), result('x'), text('assistant', 'done')],
     file: '/s/old/1/seed.json',
     archive: '',
-    report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], mediaFiles: [] },
+    report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], mediaFiles: [] },
     visible: [],
     edits: [],
     fromSummary: false,
     unmatchedPromptMedia: 0,
+    carried: [],
     new: 'new',
     taken: false,
     ...over,
@@ -531,7 +532,7 @@ test('CurrentRows — межа засіяної сесії: /clear rows, the see
 test('PinSummary — реєстр нової сесії: none — made with one pin; full — no pin, a note; unreadable — the same', async () => {
   const row = text('user', SUMMARY)
   const made = pinSummary({ state: 'missing', value: { ...EMPTY_REGISTRY } }, row)
-  expect('registry' in made && made.registry).toEqual({ tags: [{ kind: 'pin', target: { anchor: fingerprint(row), hint: 0 }, created_turn: 0 }], turn: 0, firstPromptPinned: true })
+  expect('registry' in made && made.registry).toEqual({ tags: [{ kind: 'pin', target: { anchor: fingerprint(row), hint: 0 }, created_turn: 0 }], turn: 0, firstPromptPinned: true, introduced: false })
   const full: TagRegistry = { ...EMPTY_REGISTRY, tags: Array.from({ length: MAX_TAGS }, (_, i) => ({ kind: 'review' as const, target: { tool_use_id: `t${i}` }, created_turn: 0 })) }
   expect(pinSummary({ state: 'ok', value: full }, row)).toEqual({ note: ' The summary row was not pinned: the tag registry is full.' })
   expect(pinSummary({ state: 'unreadable', reason: 'x' }, row)).toEqual({ note: ' The summary row was not pinned: the tag registry is unreadable.' })
@@ -1611,4 +1612,56 @@ test('the end of a turn schedules a due request once, after an interrupted turn 
   const flying = host()
   flying.s.mem.inFlight = true
   expect(await handoffAfterTurn(flying.io, flying.s.mem, false)).toBe('none')
+})
+
+// [SP_CTX_02_21] [SP_CTX_02_14] [SP_CTX_02_27]
+test('RunHandoff — етапи в новій сесії: marks moved by RelocateMark from s.visible to s.rows; introduced = false', async () => {
+  const old = conversation()
+  const at = (i: number) => ({ anchor: fingerprint(old[i]!), hint: i })
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  s.tags.set('/s/old', {
+    ...EMPTY_REGISTRY,
+    tags: [],
+    introduced: true,
+    // the end of A on the result row of a (summarized in the seed); B after the result of b (CarryNote)
+    lastClosed: { name: 'A', after: at(1), end: at(3), turn: 0 },
+    stage: { name: 'B', after: at(5), openedTurn: 0 },
+  })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  const reg = s.tags.get('/s/new')!
+  // the new session's read: the /clear row first, then the seeded rows (s.rows)
+  const read = s.sessions.get('new')!
+  const seeded = read.slice(read.findIndex(r => r.text === 'task: find KEY_0042'))
+  expect(reg.introduced).toBe(false)
+  const madeAt = seeded.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id.startsWith('a_ce')))
+  expect(reg.lastClosed!.end).toEqual({ anchor: fingerprint(seeded[madeAt]!), hint: madeAt })
+  expect(reg.lastClosed!.after).toEqual({ anchor: fingerprint(seeded[1]!), hint: 1 })
+  // the result of b got CarryNote: the mark goes to the call row of b before it
+  const callB = seeded.findIndex(r => r.toolUses.some(u => u.tool_use_id === 'b'))
+  expect(reg.stage!.after).toEqual({ anchor: fingerprint(seeded[callB]!), hint: callB })
+})
+
+test('BuildSeed — carried names the results CarryNote extended; produced the made rows in the seeded list', async () => {
+  const seed = built((await seedOf({}, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out)
+  expect(seed.carried).toEqual(['b'])
+  expect(seed.report.produced.length).toBe(1)
+  const p = seed.report.produced[0]!
+  expect(p.edit).toBe('summarize a')
+  expect(p.fingerprint).toBe(fingerprint(seed.rows[p.index]!))
+})
+
+// [SP_CTX_02_22] [SP_CTX_02_04] MergeCallRows in the seed (live verify of phase 14, D1)
+test('BuildSeed — паралельні виклики в окремих рядках: the untouched calls of one response are one seeded row, its results right after it', async () => {
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'task: read both', toolUses: [], handle: 'h0' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }], handle: 'h1' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c', tool: 'Read', input: {} }], handle: 'h2' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A', isError: false }, { tool_use_id: 'c', text: 'C', isError: false }], handle: 'h3' },
+    { role: 'assistant', text: 'done', toolUses: [], handle: 'h4' },
+  ]
+  const seed = built((await seedOf({ rows, transcript: rows })).out)
+  expect(seed.rows.length).toBe(4)
+  expect(seed.rows[1]!.toolUses.map(u => u.tool_use_id)).toEqual(['a', 'c'])
+  expect(seed.rows[2]!.toolResults!.map(t => t.tool_use_id)).toEqual(['a', 'c'])
+  expect(checkSeed(seed.rows)).toBeUndefined()
 })

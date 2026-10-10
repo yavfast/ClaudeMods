@@ -1,0 +1,733 @@
+import type { SessionMessage } from 'claude-code'
+import { expect, test } from 'claude-code/testing'
+import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare, producedRows, type QueuedEdit } from '../hooks/edits'
+import { EMPTY_QUEUE, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
+import {
+  blockReport,
+  carrierRow,
+  detectOptimize,
+  distinctive,
+  hasOptimizeMark,
+  INTRO_TEXT,
+  LIST_HINT,
+  markBefore,
+  markClose,
+  markIndex,
+  markLabels,
+  MAX_BLOCK_INDEXES,
+  MESSAGES_ROW,
+  OPTIMIZE_MARK,
+  optimizeText,
+  personAdvice,
+  relocateStageMarks,
+  SKILL,
+  STAGE_ADVICE,
+  startOf,
+  telemetry,
+  telemetryText,
+  type BlockIO,
+  type ClosedBlock,
+  type DetectIO,
+  type RowMark,
+  type UsageInfo,
+} from '../hooks/stages'
+import { contextTag, EMPTY_REGISTRY, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
+
+const prompt = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+const say = (text: string): SessionMessage => ({ role: 'assistant', text, toolUses: [] })
+const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
+const use = (id: string, tool = 'Read'): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: { file_path: `/f/${id}` } }] })
+const result = (id: string, text = `out ${id}`): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] })
+const TAG_TOOL = 'mcp__context-editor__context_tag'
+
+// #0..#12: a prompt, four pairs with text between, the call of context_tag at #12 (callId "tc")
+function rows(): SessionMessage[] {
+  return [
+    prompt('task'),
+    use('a'),
+    result('a', 'x'.repeat(5000)),
+    say('plan'),
+    use('b', 'Grep'),
+    result('b'),
+    say('step'),
+    use('c'),
+    result('c'),
+    say('found'),
+    use('d'),
+    result('d'),
+    use('tc', TAG_TOOL),
+  ]
+}
+
+const mark = (r: readonly SessionMessage[], i: number): RowMark => ({ anchor: fingerprint(r[i]!), hint: i })
+
+const USAGE: UsageInfo = {
+  context: {
+    tokens: 90_000,
+    window: 200_000,
+    breakdown: {
+      categories: [
+        { name: 'System prompt', tokens: 20_000, kind: 'used' },
+        { name: MESSAGES_ROW, tokens: 12_000, kind: 'used' },
+        { name: 'Free space', tokens: 100_000, kind: 'free' },
+      ],
+      totalTokens: 82_000,
+      rawMaxTokens: 200_000,
+      autoCompactThreshold: 160_000,
+    },
+  },
+}
+
+// A host for context_tag with its close reports: the registry and queue in
+// memory, BlockReport over the same rows.
+function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Partial<TagIO> = {}) {
+  const log = { tags: start, queue: { ...EMPTY_QUEUE } as Queue, replaces: 0, listed: undefined as string | undefined, writes: 0 }
+  const block: BlockIO = {
+    key: async () => 'K',
+    rows: async () => list,
+    readTags: async () => ({ state: 'ok', value: log.tags }),
+    media: async () => new Map(),
+    usage: async () => USAGE,
+    setListed: key => void (log.listed = key),
+  }
+  const io: TagIO = {
+    rows: async () => list,
+    readTags: async () => ({ state: 'ok', value: log.tags }),
+    writeTags: async r => {
+      log.tags = r
+      log.writes++
+    },
+    readQueue: async () => ({ state: 'ok', value: log.queue }),
+    writeQueue: async q => void (log.queue = q),
+    replace: async () => (log.replaces++, { queued: 0, freed: 0 }),
+    report: (b, replaced) => blockReport(block, b, replaced),
+    ...over,
+  }
+  return { io, log, block }
+}
+
+const reg = (extra: Partial<TagRegistry> = {}): TagRegistry => ({ ...EMPTY_REGISTRY, tags: [], ...extra })
+
+async function tagCall(io: TagIO, tags: unknown[], stale = false, callId = 'tc') {
+  const out = await contextTag(io, { tags }, undefined, undefined, stale, callId)
+  if ('deny' in out) throw new Error(out.deny)
+  return out.result
+}
+
+// ---- [SP_CTX_01_18] RowMark functions
+
+test('MarkBefore skips thinking-only rows; MarkIndex and StartOf treat null as the head and a lost mark as the head', async () => {
+  const r = [prompt('p'), use('a'), result('a'), think(), use('b')]
+  expect(distinctive(think())).toBe(false)
+  expect(markBefore(r, 4)).toEqual(mark(r, 2))
+  expect(markBefore(r, 0)).toBe(null)
+  expect(markIndex(r, null)).toBe(-1)
+  expect(startOf(r, null)).toBe(0)
+  expect(markIndex(r, { anchor: 'user||gone', hint: 1 })).toBe('lost')
+  expect(startOf(r, { anchor: 'user||gone', hint: 1 })).toBe(0)
+  expect(startOf(r, mark(r, 2))).toBe(3)
+  expect(carrierRow(r, 'b')).toBe(4)
+  expect(carrierRow(r, 'zz')).toBe(5)
+})
+
+test('parseRegistry reads stage, lastClosed and introduced and refuses a bad one', async () => {
+  const good = reg({ stage: { name: 'A', after: null, openedTurn: 1 }, lastClosed: { after: { anchor: 'user||t', hint: 0 }, end: null, turn: 1 }, introduced: true })
+  expect(parseRegistry(JSON.stringify(good)).state).toBe('ok')
+  for (const bad of [
+    { stage: { name: '', after: null, openedTurn: 0 } },
+    { stage: { name: 'x'.repeat(81), after: null, openedTurn: 0 } },
+    { stage: { name: 'A', openedTurn: 0 } },
+    { stage: { name: 'A', after: { anchor: 'assistant||', hint: 0 }, openedTurn: 0 } },
+    { lastClosed: { after: null, end: { anchor: 'user||t', hint: -1 }, turn: 0 } },
+    { lastClosed: { after: null, turn: 0 } },
+    { introduced: 'yes' },
+  ]) {
+    const out = parseRegistry(JSON.stringify({ ...reg(), ...bad }))
+    expect(out.state).toBe('unreadable')
+  }
+})
+
+// ---- [SP_CTX_02_11] context_tag open / close
+
+test('context_tag — відкриття без index: the call at #8, a result at #7: stage.after = #7; "its block starts at #8"', async () => {
+  const list = [prompt('p'), use('a'), result('a'), say('s'), use('b'), result('b'), use('c'), result('c'), use('op', TAG_TOOL), say('x')]
+  const { io, log } = harness(reg({ turn: 3 }), list)
+  const text = await tagCall(io, [{ op: 'open', stage: 'A' }], false, 'op')
+  expect(log.tags.stage).toEqual({ name: 'A', after: mark(list, 7), openedTurn: 3 })
+  expect(text).toContain('Stage "A" opened; its block starts at #8.')
+})
+
+test('context_tag — рядок виклику ще не записано / межа не на thinking', async () => {
+  const list = [prompt('p'), use('a'), result('a'), say('s'), use('b'), result('b'), result('b2'), think(), use('c'), say('end')]
+  const missing = harness(reg(), list)
+  await tagCall(missing.io, [{ op: 'open', stage: 'A' }], false, 'not-yet')
+  expect(missing.log.tags.stage!.after).toEqual(mark(list, 9))
+  const thinking = harness(reg(), list)
+  await tagCall(thinking.io, [{ op: 'open', stage: 'A' }], false, 'c')
+  expect(thinking.log.tags.stage!.after).toEqual(mark(list, 6))
+})
+
+test('context_tag — відкриття з index: index 4 gives after #3, index 0 the head', async () => {
+  const four = harness(reg())
+  await tagCall(four.io, [{ op: 'open', stage: 'A', index: 4 }])
+  expect(four.log.tags.stage!.after).toEqual(mark(rows(), 3))
+  const zero = harness(reg())
+  await tagCall(zero.io, [{ op: 'open', stage: 'A', index: 0 }])
+  expect(zero.log.tags.stage!.after).toBe(null)
+})
+
+test('context_tag — закриття: a stage after #3, the close call at #12: block #4..#11 with telemetry and STAGE_ADVICE; replacements once', async () => {
+  const r = rows()
+  const { io, log } = harness(reg({ turn: 5, stage: { name: 'A', after: mark(r, 3), openedTurn: 2 } }))
+  const text = await tagCall(io, [{ op: 'close' }])
+  expect(log.tags.stage).toBeUndefined()
+  expect(log.tags.lastClosed).toEqual({ name: 'A', after: mark(r, 3), end: mark(r, 11), turn: 5 })
+  expect(log.replaces).toBe(1)
+  expect(text).toContain('Stage "A" closed: rows #4..#11, ~')
+  expect(text).toContain('Candidates in the block: none.')
+  expect(text).toContain('Context: conversation ~12k tokens; fixed part (system prompt, tools, skills, memory) ~70k; window 200k; auto-compaction in ~78k')
+  expect(text).toContain('Last block "A" #4..#11')
+  expect(text).toContain(STAGE_ADVICE)
+  // the report lists the block's indexes: listedKey renewed
+  expect(log.listed).toBe('K')
+})
+
+test('context_tag — open при відкритому етапі: A closes with its report, B opens at the same mark as the end of A', async () => {
+  const r = rows()
+  const { io, log } = harness(reg({ stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } }))
+  const text = await tagCall(io, [{ op: 'open', stage: 'B' }])
+  expect(log.tags.lastClosed!.name).toBe('A')
+  expect(log.tags.stage!.name).toBe('B')
+  expect(log.tags.stage!.after).toEqual(log.tags.lastClosed!.end)
+  expect(text).toContain('Stage "A" closed: rows #4..#11')
+  expect(text).toContain('Stage "B" opened; its block starts at #12.')
+  expect(log.replaces).toBe(1)
+})
+
+test('context_tag — закриття без етапу: NO_STAGE; open with index + close in one call closes the block from index', async () => {
+  const none = harness(reg())
+  const refused = await tagCall(none.io, [{ op: 'close' }])
+  expect(refused).toContain('(NO_STAGE)')
+  expect(none.log.writes).toBe(0)
+  expect(none.log.replaces).toBe(0)
+  const both = harness(reg())
+  const text = await tagCall(both.io, [{ op: 'open', stage: 'late', index: 4 }, { op: 'close' }])
+  expect(both.log.tags.lastClosed).toEqual({ name: 'late', after: mark(rows(), 3), end: mark(rows(), 11), turn: 0 })
+  expect(both.log.tags.stage).toBeUndefined()
+  expect(text).toContain('Stage "late" closed: rows #4..#11')
+})
+
+test('context_tag — порожній блок: close right after open gives "no rows in it." without STAGE_ADVICE; BlockReport does not renew listedKey', async () => {
+  const { io, log } = harness(reg())
+  const text = await tagCall(io, [{ op: 'open', stage: 'A' }, { op: 'close' }])
+  expect(text).toContain('Stage "A" closed: no rows in it.')
+  expect(text).not.toContain(STAGE_ADVICE)
+  expect(log.listed).toBeUndefined()
+})
+
+test('context_tag — REPORT_FAILED: the stage is closed and written; the result says the report failed', async () => {
+  const r = rows()
+  const { io, log } = harness(reg({ stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } }), r, {
+    report: async () => {
+      throw new Error('api down')
+    },
+  })
+  const text = await tagCall(io, [{ op: 'close' }])
+  expect(log.tags.lastClosed!.name).toBe('A')
+  expect(text).toContain('Stage "A" closed; its report failed: api down; call context_list')
+})
+
+test('context_tag — stage errors: STAGE_FIELDS, STAGE_NAME_REQUIRED, TARGET_NOT_FOUND, INDEXES_STALE, BAD_OP', async () => {
+  const cases: [unknown, string, boolean?][] = [
+    [{ op: 'open', stage: 'A', kind: 'pin' }, 'STAGE_FIELDS'],
+    [{ op: 'close', stage: 'A' }, 'STAGE_FIELDS'],
+    [{ op: 'open' }, 'STAGE_NAME_REQUIRED'],
+    [{ op: 'open', stage: '   ' }, 'STAGE_NAME_REQUIRED'],
+    [{ op: 'open', stage: 'x'.repeat(81) }, 'STAGE_NAME_REQUIRED'],
+    [{ op: 'open', stage: 'A', index: 99 }, 'TARGET_NOT_FOUND'],
+    [{ op: 'open', stage: 'A', index: 4 }, 'INDEXES_STALE', true],
+    [{ op: 'start', stage: 'A' }, 'BAD_OP'],
+  ]
+  for (const [request, code, stale] of cases) {
+    const { io, log } = harness(reg())
+    const text = await tagCall(io, [request], stale)
+    expect(text).toContain(`(${code})`)
+    expect(log.tags.stage).toBeUndefined()
+  }
+})
+
+test('context_tag — DENIED_REGISTRY_WRITE: no stage opened or closed, no replacement queued', async () => {
+  const r = rows()
+  const { io, log } = harness(reg({ stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } }), r, {
+    writeTags: async () => {
+      throw new Error('disk full')
+    },
+  })
+  const out = await contextTag(io, { tags: [{ op: 'close' }] }, undefined, undefined, false, 'tc')
+  expect('code' in out && out.code).toBe('DENIED_REGISTRY_WRITE')
+  expect(log.replaces).toBe(0)
+})
+
+test('context_tag — загублена межа: stage.after becomes null; a lost lastClosed.end stays as it was', async () => {
+  const gone: RowMark = { anchor: 'user||gone', hint: 3 }
+  const { io, log } = harness(reg({ stage: { name: 'A', after: gone, openedTurn: 0 }, lastClosed: { name: 'Z', after: gone, end: gone, turn: 0 } }))
+  await tagCall(io, [{ op: 'add', kind: 'pin', tool_use_id: 'a' }])
+  expect(log.tags.stage!.after).toBe(null)
+  expect(log.tags.lastClosed!.after).toBe(null)
+  expect(log.tags.lastClosed!.end).toEqual(gone)
+})
+
+test('no more than one open stage after any request (05_02)', async () => {
+  const { io, log } = harness(reg())
+  await tagCall(io, [{ op: 'open', stage: 'A' }, { op: 'open', stage: 'B' }, { op: 'open', stage: 'C', index: 2 }])
+  expect(log.tags.stage!.name).toBe('C')
+  expect(log.tags.lastClosed!.name).toBe('B')
+})
+
+// ---- [SP_CTX_02_29] BlockReport
+
+function blockIO(list: SessionMessage[], tags: TagRegistry, listed: { key?: string } = {}): BlockIO {
+  return {
+    key: async () => 'K',
+    rows: async () => list,
+    readTags: async () => ({ state: 'ok', value: tags }),
+    media: async () => new Map([['u:c', [{ mediaType: 'image/png', bytes: 2048 }]]]),
+    usage: async () => USAGE,
+    setListed: key => void (listed.key = key),
+  }
+}
+
+test('BlockReport — межа індексів: 25 active reviews in the block name 20 indexes, then "+5 more"; media of the block counted', async () => {
+  const list = [prompt('p'), ...Array.from({ length: 25 }, (_, i) => [use(`r${i}`), result(`r${i}`)]).flat(), use('c'), result('c')]
+  const reviews: Tag[] = Array.from({ length: 25 }, (_, i) => ({ kind: 'review', target: { tool_use_id: `r${i}` }, created_turn: 0 }))
+  const tags = reg({ tags: [...reviews, { kind: 'disposable', target: { tool_use_id: 'c' }, note: 'n', created_turn: 0 }] })
+  const block: ClosedBlock = { name: 'A', after: mark(list, 0), end: mark(list, list.length - 1), turn: 0 }
+  const text = await blockReport(blockIO(list, tags), block, { queued: 1, freed: 3 })
+  const line = text.split('\n').find(l => l.startsWith('Candidates in the block'))!
+  expect(line.match(/#\d+/g)!.length).toBe(MAX_BLOCK_INDEXES + 1)
+  expect(line).toContain('+5 more')
+  expect(line).toContain('disposable #51')
+  expect(text).toContain('1 media (~2KB)')
+  expect(text).toContain('Replacements from your disposable tags queued: 1 (~3 tokens freed when this turn ends).')
+})
+
+test('BlockReport — без рядків: a lost end says its end row is gone, not "no rows in it."; listedKey stays', async () => {
+  const listed: { key?: string } = {}
+  const text = await blockReport(blockIO(rows(), reg(), listed), { name: 'A', after: mark(rows(), 3), end: { anchor: 'user||gone', hint: 9 }, turn: 0 })
+  expect(text).toContain('Stage "A" closed: its end row is gone; call context_list.')
+  expect(text).not.toContain('no rows in it')
+  expect(text).not.toContain(STAGE_ADVICE)
+  expect(listed.key).toBeUndefined()
+})
+
+// ---- [SP_CTX_02_28] Telemetry
+
+test('Telemetry — рядок Messages / без рядка Messages / ще невідомо / збій / автокомпактизація вимкнена', async () => {
+  const r = rows()
+  const text = async (u: () => Promise<UsageInfo>) => telemetryText(await telemetry(r, reg(), u))
+  expect(await text(async () => USAGE)).toContain('Context: conversation ~12k tokens; fixed part (system prompt, tools, skills, memory) ~70k; window 200k; auto-compaction in ~78k')
+  const noRow: UsageInfo = { context: { ...USAGE.context, breakdown: { ...USAGE.context.breakdown!, categories: [{ name: 'Other', tokens: 5, kind: 'used' }] } } }
+  expect(await text(async () => noRow)).toContain('Context: last request ~90k tokens, the fixed part (system prompt, tools, skills, memory) included; window 200k; auto-compaction in ~78k')
+  expect(await text(async () => ({ context: { tokens: 900, window: 200_000 } }))).toContain('Context: last request ~900 tokens, the fixed part (system prompt, tools, skills, memory) included; window 200k')
+  expect(await text(async () => ({ context: { window: 200_000 } }))).toContain('Context: size unknown yet (no model response since the session start or the last compaction); window 200k')
+  const failed = await text(async () => {
+    throw new Error('no usage')
+  })
+  expect(failed).toContain('Context: size unavailable (no usage)')
+  expect(failed).toContain('No open stage')
+  const off: UsageInfo = { context: { ...USAGE.context, breakdown: { ...USAGE.context.breakdown!, autoCompactThreshold: undefined } } }
+  expect(await text(async () => off)).toContain('; auto-compaction off')
+})
+
+test('Telemetry — stage, blocks and candidates', async () => {
+  const r = rows()
+  const gone: RowMark = { anchor: 'user||gone', hint: 3 }
+  const stage = { name: 'S', after: mark(r, 9), openedTurn: 1 }
+  const tags: Tag[] = [
+    { kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', target: { tool_use_id: 'b' }, ttl_turns: 9, created_turn: 0 },
+    { kind: 'review', target: { tool_use_id: 'c' }, created_turn: 0 },
+    { kind: 'disposable', target: { tool_use_id: 'gone' }, note: 'n', created_turn: 0 },
+  ]
+  const t = async (extra: Partial<TagRegistry>) => telemetryText(await telemetry(r, reg({ turn: 4, tags, ...extra }), async () => USAGE))
+  const open = await t({ stage })
+  expect(open).toContain('Stage "S" open from #10 (opened 3 turn(s) ago), ~')
+  expect(open).toContain('Candidates: review 2; disposable 0')
+  expect(await t({ stage: { ...stage, after: gone } })).toContain('Stage "S" open from #0 (opened 3 turn(s) ago), ~')
+  expect(await t({ stage: { ...stage, after: gone } })).toContain('; its start row is gone, so it runs from #0')
+  expect(await t({ lastClosed: { name: 'A', after: mark(r, 3), end: mark(r, 9), turn: 0 } })).toContain('Last block "A" #4..#9 (~')
+  expect(await t({ lastClosed: { after: mark(r, 3), end: null, turn: 0 } })).toContain('Last block (no stage): it is empty')
+  expect(await t({ lastClosed: { name: 'A', after: mark(r, 9), end: mark(r, 3), turn: 0 } })).toContain('Last block "A": it is empty')
+  const lostEnd = await t({ lastClosed: { name: 'A', after: mark(r, 3), end: gone, turn: 0 } })
+  expect(lostEnd).toContain('Last block "A" from #4: its end row is gone')
+  expect(lostEnd).not.toContain('it is empty')
+  expect(await t({ lastClosed: { name: 'A', after: gone, end: mark(r, 9), turn: 0 } })).toContain('Last block "A" #0..#9 (~1k tokens); its start row is gone, so it runs from #0')
+})
+
+// ---- [SP_CTX_02_01] the listing's marks
+
+test('context_list — останній закритий блок, позначки етапу: [stage ▶], [block ▶ A] .. [block end]; unnamed; lost end; lost start', async () => {
+  const r = rows()
+  const list = (extra: Partial<TagRegistry>) => listRows(r, 0, 20, new Map(), markLabels(r, reg(extra)))
+  const line = (text: string, i: number) => text.split('\n').find(l => l.startsWith(`#${i} `) || l.startsWith(`#${i}!`))!
+  const named = list({ lastClosed: { name: 'A', after: mark(r, 3), end: mark(r, 9), turn: 0 }, stage: { name: 'S', after: mark(r, 9), openedTurn: 0 } })
+  expect(line(named, 4)).toContain('[block ▶ A]')
+  expect(line(named, 9)).toContain('[block end]')
+  expect(line(named, 10)).toContain('[stage ▶ S]')
+  const unnamed = list({ lastClosed: { after: mark(r, 3), end: mark(r, 9), turn: 0 } })
+  expect(line(unnamed, 4)).toContain('[block ▶]')
+  const gone: RowMark = { anchor: 'user||gone', hint: 9 }
+  const lostEnd = list({ lastClosed: { name: 'A', after: mark(r, 3), end: gone, turn: 0 } })
+  expect(line(lostEnd, 4)).toContain('[block ▶ A]')
+  const rowLines = (text: string) => text.split('\n').filter(l => l.startsWith('#')).join('\n')
+  expect(rowLines(lostEnd)).not.toContain('[block end]')
+  const lostStart = list({ lastClosed: { name: 'A', after: gone, end: mark(r, 9), turn: 0 }, stage: { name: 'S', after: gone, openedTurn: 0 } })
+  expect(line(lostStart, 0)).toContain('[stage ▶ S]')
+  expect(line(lostStart, 0)).toContain('[block ▶ A]')
+  expect(line(lostStart, 9)).toContain('[block end]')
+  const empty = list({ lastClosed: { name: 'A', after: mark(r, 3), end: null, turn: 0 } })
+  expect(rowLines(empty)).not.toContain('[block')
+  // marks come before the tags of the row
+  const both = markLabels(r, reg({ stage: { name: 'S', after: mark(r, 0), openedTurn: 0 } }))
+  for (const [i, l] of tagLabels(r, reg({ tags: [{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }] }))) both.set(i, [...(both.get(i) ?? []), ...l])
+  expect(line(listRows(r, 0, 5, new Map(), both), 1)).toContain('[stage ▶ S] [pin]')
+})
+
+test('context_list — лише телеметрія / порожня розмова: count 0 gives the header and the telemetry, no rows, no next page', async () => {
+  const r = rows()
+  const text = listRows(r, 0, 0, new Map(), new Map(), new Map(), 'Context: X')
+  expect(text.split('\n')).toEqual([expect.stringContaining('13 rows'), 'Context: X'])
+  expect(text).not.toContain('Next page')
+  expect(listRows([], 0, 5, new Map(), new Map(), new Map(), 'Context: X')).toBe('0 rows.\nContext: X')
+  expect(listRows(r, 0, 4, new Map(), new Map(), new Map(), 'Context: X').split('\n')[1]).toBe('Context: X')
+})
+
+// ---- [SP_CTX_02_29] OptimizeText and PersonAdvice
+
+test('OptimizeText — без індексів: the block name, ListHint, STAGE_ADVICE, the advice to stop; the batch sentence only when compacted', async () => {
+  const a: ClosedBlock = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 7 }, turn: 2 }
+  const plain = optimizeText(a, false)
+  expect(plain).toContain('optimization turn for stage "A"')
+  expect(plain).toContain(LIST_HINT)
+  expect(plain).toContain('Last block #<a>..#<b>')
+  expect(plain).toContain('from=<a>')
+  expect(plain).toContain(STAGE_ADVICE)
+  expect(plain).toContain('"resume": false')
+  expect(plain).not.toContain('The batch queued in that turn')
+  expect(/#\d/.test(plain)).toBe(false)
+  const done = optimizeText({ ...a, name: undefined }, true)
+  expect(done).toContain('optimization turn for the last block (no stage)')
+  expect(done).toContain('The batch queued in that turn, with the replacements from your disposable tags, was processed (see the report above)')
+  expect(done).not.toContain('applied')
+  expect(personAdvice(a)).toContain('you asked to optimize stage "A" after your previous answer')
+  expect(personAdvice(a)).toContain(LIST_HINT)
+})
+
+// ---- [SP_CTX_02_27] SessionIntro
+
+test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
+  expect(INTRO_TEXT.length <= 1000).toBe(true)
+  expect(INTRO_TEXT.length).toBe(748)
+  expect(INTRO_TEXT).toContain(OPTIMIZE_MARK)
+  expect(INTRO_TEXT).toContain('"op":"open"')
+  expect(INTRO_TEXT).toContain('"op":"close"')
+  expect(INTRO_TEXT).toContain('"count":0')
+  expect(INTRO_TEXT).toContain(`context-editor:${SKILL}`)
+})
+
+// ---- [SP_CTX_02_30] DetectOptimize
+
+const HANDOFF: HandoffRequest = { mode: 'transcript', resume: true, resumePrompt: 'go', by: 'agent', state: 'queued', at: 0 }
+
+function longRows(): SessionMessage[] {
+  return [prompt('p'), ...Array.from({ length: 10 }, (_, i) => [use(`p${i}`), result(`p${i}`)]).flat()]
+}
+
+function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = { state: 'ok', value: { ...EMPTY_QUEUE } }, over: Partial<DetectIO> = {}) {
+  const log = { tags, queue, statuses: [] as string[], replaces: 0, order: [] as string[] }
+  const list = longRows()
+  const io: DetectIO = {
+    ready: async () => true,
+    readQueue: async () => log.queue,
+    updateQueue: async change => {
+      const next = change(log.queue)
+      if (next) {
+        log.queue = { state: 'ok', value: next }
+        log.order.push(next.optimize ? 'optimize' : 'queue')
+      }
+    },
+    updateTags: async change => {
+      const next = change(log.tags)
+      if (next) {
+        log.tags = { state: 'ok', value: next }
+        log.order.push('tags')
+      }
+    },
+    rows: async () => list,
+    replace: async () => {
+      log.replaces++
+      log.order.push('replace')
+    },
+    status: text => void log.statuses.push(text),
+    ...over,
+  }
+  return { io, log, list }
+}
+
+const answer = `Done.\n\n${OPTIMIZE_MARK}`
+const regOf = (h: { log: { tags: Read<TagRegistry> } }) => (h.log.tags.state === 'unreadable' ? undefined : h.log.tags.value)
+const queueOf = (h: { log: { queue: Read<Queue> } }) => (h.log.queue.state === 'unreadable' ? undefined : h.log.queue.value)
+
+test('DetectOptimize — мітка з відкритим етапом: the stage closes at the end of the turn (#20); optimize written; replacements queued before it', async () => {
+  const h = detectHarness({ state: 'ok', value: reg({ turn: 6, stage: { name: 'S', after: null, openedTurn: 2 } }) })
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('requested')
+  expect(regOf(h)!.lastClosed).toEqual({ name: 'S', after: null, end: mark(h.list, 20), turn: 6 })
+  expect(regOf(h)!.stage).toBeUndefined()
+  expect(queueOf(h)!.optimize).toBe(true)
+  expect(h.log.order).toEqual(['tags', 'replace', 'optimize'])
+})
+
+test('DetectOptimize — без етапу / перший блок: an unnamed block from the previous end (#8) or from the head', async () => {
+  const list = longRows()
+  const after8 = detectHarness({ state: 'ok', value: reg({ turn: 3, lastClosed: { name: 'A', after: null, end: mark(list, 8), turn: 1 } }) })
+  await detectOptimize(after8.io, { aborted: false, answer })
+  expect(regOf(after8)!.lastClosed).toEqual({ after: mark(list, 8), end: mark(list, 20), turn: 3 })
+  const first = detectHarness({ state: 'missing', value: reg() })
+  await detectOptimize(first.io, { aborted: false, answer })
+  expect(regOf(first)!.lastClosed).toEqual({ after: null, end: mark(list, 20), turn: 0 })
+})
+
+test('DetectOptimize — закрито інструментом у цьому ході: lastClosed and the new stage stay; optimize written', async () => {
+  const list = longRows()
+  const start = reg({ turn: 4, lastClosed: { name: 'A', after: null, end: mark(list, 8), turn: 4 }, stage: { name: 'B', after: mark(list, 8), openedTurn: 4 } })
+  const h = detectHarness({ state: 'ok', value: start })
+  await detectOptimize(h.io, { aborted: false, answer })
+  expect(regOf(h)!.lastClosed).toEqual(start.lastClosed)
+  expect(regOf(h)!.stage).toEqual(start.stage)
+  expect(queueOf(h)!.optimize).toBe(true)
+})
+
+test('DetectOptimize — the mark only as the last line, verbatim', async () => {
+  expect(hasOptimizeMark('text\n\n  [context-editor: optimize]  \n\n')).toBe(true)
+  for (const no of [
+    'x\n[context-editor:optimize]',
+    'x\n[Context-Editor: optimize]',
+    'put [context-editor: optimize] on the last line\nmore',
+    'x\nsee [context-editor: optimize]',
+    '',
+  ])
+    expect(hasOptimizeMark(no)).toBe(false)
+  const h = detectHarness({ state: 'ok', value: reg() })
+  expect(await detectOptimize(h.io, { aborted: false, answer: 'put [context-editor: optimize] on the last line\nok' })).toBe('none')
+  expect(h.log.order).toEqual([])
+})
+
+test('DetectOptimize — ігнорується: handoff / unreadable queue / aborted / no storage; status lines', async () => {
+  const handoff = detectHarness({ state: 'ok', value: reg() }, { state: 'ok', value: { ...EMPTY_QUEUE, handoff: HANDOFF } })
+  expect(await detectOptimize(handoff.io, { aborted: false, answer })).toBe('handoff')
+  expect(handoff.log.statuses).toEqual(['context-editor: optimization mark ignored: a handoff is pending'])
+  expect(handoff.log.order).toEqual([])
+  const unread = detectHarness({ state: 'ok', value: reg() }, { state: 'unreadable', reason: 'x' })
+  expect(await detectOptimize(unread.io, { aborted: false, answer })).toBe('queue-unreadable')
+  expect(unread.log.statuses).toEqual(['context-editor: optimization mark ignored: the queue is unreadable'])
+  const aborted = detectHarness({ state: 'ok', value: reg() })
+  expect(await detectOptimize(aborted.io, { aborted: true, answer })).toBe('none')
+  expect(aborted.log.order).toEqual([])
+  const down = detectHarness({ state: 'ok', value: reg() }, undefined, { ready: async () => false })
+  expect(await detectOptimize(down.io, { aborted: false, answer })).toBe('no-storage')
+  expect(down.log.statuses).toEqual(['context-editor: optimization mark ignored: storage unavailable'])
+})
+
+test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable registry: no block, no optimize', async () => {
+  const unread = detectHarness({ state: 'unreadable', reason: 'x' })
+  expect(await detectOptimize(unread.io, { aborted: false, answer })).toBe('registry-unreadable')
+  expect(queueOf(unread)!.optimize).toBe(false)
+  expect(unread.log.statuses[0]).toContain('the tag registry is unreadable')
+  const unwritten = detectHarness({ state: 'ok', value: reg() }, undefined, {
+    updateTags: async () => {
+      throw new Error('disk full')
+    },
+  })
+  expect(await detectOptimize(unwritten.io, { aborted: false, answer })).toBe('registry-unreadable')
+  expect(unwritten.log.statuses).toEqual(['context-editor: optimization mark ignored: disk full'])
+  expect(unwritten.log.replaces).toBe(0)
+})
+
+test('DetectOptimize — MARK_NOT_QUEUED / MARK_NO_REPLACEMENTS', async () => {
+  const failing = detectHarness({ state: 'ok', value: reg({ stage: { name: 'S', after: null, openedTurn: 0 } }) })
+  failing.io.updateQueue = async change => {
+    if (change(failing.log.queue)?.optimize) throw new Error('disk full')
+  }
+  expect(await detectOptimize(failing.io, { aborted: false, answer })).toBe('not-queued')
+  expect(regOf(failing)!.lastClosed!.name).toBe('S')
+  expect(queueOf(failing)!.optimize).toBe(false)
+  expect(failing.log.statuses).toEqual(['context-editor: optimization mark: the block is closed, but no optimization turn: disk full'])
+  // a handoff found on the re-read
+  const late = detectHarness({ state: 'ok', value: reg() })
+  late.io.replace = async () => void (late.log.queue = { state: 'ok', value: { ...EMPTY_QUEUE, handoff: HANDOFF } })
+  expect(await detectOptimize(late.io, { aborted: false, answer })).toBe('not-queued')
+  expect(late.log.statuses[0]).toContain('a handoff is pending')
+  const throwing = detectHarness({ state: 'ok', value: reg() }, undefined, {
+    replace: async () => {
+      throw new Error('boom')
+    },
+  })
+  expect(await detectOptimize(throwing.io, { aborted: false, answer })).toBe('requested')
+  expect(queueOf(throwing)!.optimize).toBe(true)
+  expect(regOf(throwing)!.lastClosed).toBeDefined()
+})
+
+test('DetectOptimize — запобіжник петлі: after the optimization prompt the mark is ignored; the flag goes down in all three cases', async () => {
+  for (const [ans, aborted] of [
+    [answer, false],
+    ['no mark', false],
+    [answer, true],
+  ] as [string, boolean][]) {
+    const h = detectHarness({ state: 'ok', value: reg({ stage: { name: 'S', after: null, openedTurn: 0 } }) }, { state: 'ok', value: { ...EMPTY_QUEUE, optimizePrompted: true } })
+    const out = await detectOptimize(h.io, { aborted, answer: ans })
+    expect(out === 'in-optimization' || out === 'none').toBe(true)
+    expect(queueOf(h)!.optimizePrompted).toBe(false)
+    expect(queueOf(h)!.optimize).toBe(false)
+    expect(regOf(h)!.stage!.name).toBe('S')
+    expect(regOf(h)!.lastClosed).toBeUndefined()
+  }
+})
+
+test('markClose: a lost stage start becomes null; a lost lastClosed.end stays as the next block start', async () => {
+  const list = longRows()
+  const gone: RowMark = { anchor: 'user||gone', hint: 2 }
+  const out = markClose(reg({ turn: 1, lastClosed: { after: gone, end: gone, turn: 0 } }), list)
+  expect(out.lastClosed).toEqual({ after: gone, end: mark(list, 20), turn: 1 })
+  const staged = markClose(reg({ turn: 1, stage: { name: 'S', after: gone, openedTurn: 0 } }), list)
+  expect(staged.lastClosed).toEqual({ name: 'S', after: null, end: mark(list, 20), turn: 1 })
+})
+
+// ---- [SP_CTX_02_14] RelocateMark (RebindTags of the stage marks)
+
+// An apply as HandleCompaction runs it: ApplyEdits, DropOwnCalls, Produced.
+function apply(before: SessionMessage[], raw: unknown[]) {
+  const edits = prepare(before, raw).queued
+  const applied = applyEdits(before, edits, '/s/1.json')
+  const after = dropOwnCalls(applied.rows)
+  const produced = producedRows(after, applied.made)
+  const names = new Set(applied.report.applied)
+  const done = edits.filter(e => names.has(describeEdit(e)))
+  return { after, produced, done, edits }
+}
+const relocate = (before: SessionMessage[], r: TagRegistry, x: ReturnType<typeof apply>, carried: string[] = []) =>
+  relocateStageMarks(rebindTags(r, before, x.after, x.done, x.edits), before, x.after, x.done, x.produced, carried)
+
+test('RebindTags — межа після перегляду: after the context_list result (#7); DropOwnCalls drops #6, #7: the mark goes to #5 with its new index', async () => {
+  const before = [prompt('p'), use('a'), result('a', 'x'.repeat(100)), say('s'), say('t'), say('text'), use('l', 'mcp__context-editor__context_list'), result('l'), say('next')]
+  const x = apply(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }])
+  const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 7), openedTurn: 0 } }), x)
+  expect(out.stage!.after).toEqual({ anchor: fingerprint(before[5]!), hint: 5 })
+  expect(out.stage!.after).toEqual(mark(x.after, 5))
+})
+
+test('RebindTags — межа на переписаному рядку / на згорнутому діапазоні: the mark goes to the made row (report.produced)', async () => {
+  const before = rows()
+  const rw = apply(before, [{ op: 'rewrite', index: 9, text: 'found it' }])
+  const out = relocate(before, reg({ lastClosed: { name: 'A', after: mark(before, 3), end: mark(before, 9), turn: 0 } }), rw)
+  expect(out.lastClosed!.end).toEqual(mark(rw.after, 9))
+  expect(rw.after[9]!.text).toContain('rewritten')
+  const co = apply(before, [{ op: 'collapse', from_index: 4, to_index: 7 + 1, summary: 'S' }])
+  const moved = relocate(before, reg({ stage: { name: 'S', after: mark(before, 6), openedTurn: 0 } }), co)
+  // the carrier's result row
+  expect(moved.stage!.after).toEqual(mark(co.after, 5))
+  expect(co.after[5]!.toolResults![0]!.text).toContain('rows collapsed')
+})
+
+test('RebindTags — закриття, стискання і новий етап: the result row of the last pair of A (#11), summarized: both marks on the FreshId result row', async () => {
+  const before = rows()
+  const x = apply(before, [{ op: 'summarize', tool_use_id: 'd', summary: 'D' }])
+  const out = relocate(before, reg({ lastClosed: { name: 'A', after: mark(before, 3), end: mark(before, 11), turn: 0 }, stage: { name: 'B', after: mark(before, 11), openedTurn: 0 } }), x)
+  expect(out.lastClosed!.end).toEqual(mark(x.after, 11))
+  expect(out.stage!.after).toEqual(mark(x.after, 11))
+  expect(x.after[11]!.toolResults![0]!.tool_use_id).toContain('d_ce')
+})
+
+test('RebindTags — найпізніший створений рядок / спільний рядок результатів: the mark on the made row with the largest index', async () => {
+  const par: SessionMessage = { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }, { tool_use_id: 'b', tool: 'Read', input: {} }] }
+  const before = [prompt('p'), par, result('a'), say('mid'), result('b'), say('end')]
+  const x = apply(before, [
+    { op: 'summarize', tool_use_id: 'a', summary: 'A' },
+    { op: 'summarize', tool_use_id: 'b', summary: 'B' },
+  ])
+  expect(x.produced.map(p => p.index).sort()).toEqual([2, 4])
+  const out = relocate(before, reg({ lastClosed: { after: null, end: mark(before, 1), turn: 0 } }), x)
+  expect(out.lastClosed!.end).toEqual(mark(x.after, 4))
+  const shared: SessionMessage = { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A0', isError: false }, { tool_use_id: 'b', text: 'B0', isError: false }] }
+  const before2 = [prompt('p'), par, shared, say('end')]
+  const y = apply(before2, [
+    { op: 'summarize', tool_use_id: 'a', summary: 'A' },
+    { op: 'summarize', tool_use_id: 'b', summary: 'B' },
+  ])
+  expect(y.produced.length).toBe(2)
+  const out2 = relocate(before2, reg({ lastClosed: { after: null, end: mark(before2, 2), turn: 0 } }), y)
+  expect(out2.lastClosed!.end).toEqual(mark(y.after, 2))
+})
+
+test('RebindTags — межа на прибраній парі / без попередників / на перезібраному рядку', async () => {
+  const before = rows()
+  const x = apply(before, [{ op: 'drop', tool_use_id: 'c' }])
+  const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 8), openedTurn: 0 } }), x)
+  expect(out.stage!.after).toEqual(mark(x.after, 6))
+  const first = [use('x'), result('x'), say('a'), say('b')]
+  const y = apply(first, [{ op: 'drop', tool_use_id: 'x' }])
+  expect(relocate(first, reg({ stage: { name: 'S', after: mark(first, 1), openedTurn: 0 } }), y).stage!.after).toBe(null)
+  // a row rebuilt with the same content keeps the mark, with its new index
+  const withHandle = [prompt('p'), { ...say('kept'), handle: 'h' }, use('a'), result('a', 'x'.repeat(100))]
+  const z = apply(withHandle, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }])
+  expect(z.after[1]!.handle).toBeUndefined()
+  expect(relocate(withHandle, reg({ stage: { name: 'S', after: mark(withHandle, 1), openedTurn: 0 } }), z).stage!.after).toEqual(mark(z.after, 1))
+})
+
+test('RebindTags — засів з CarryNote: a mark on a result row the seed extended moves to the nearest earlier unchanged row', async () => {
+  const before = rows()
+  const seeded = before.map(r => (r.toolResults?.[0]?.tool_use_id === 'c' ? { ...r, toolResults: [{ tool_use_id: 'c', text: 'out c\n\n[context-editor] media carried as files', isError: false }] } : r))
+  const x = { after: seeded, produced: [], done: [] as QueuedEdit[], edits: [] as QueuedEdit[] }
+  const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 8), openedTurn: 0 } }), x, ['c'])
+  expect(out.stage!.after).toEqual(mark(seeded, 7))
+})
+
+test('Межі етапів — розрізняльні рядки (05_02): every mark after an apply is null or names a distinctive row', async () => {
+  const before = [prompt('p'), use('a'), result('a'), think(), use('b'), result('b'), say('x')]
+  const x = apply(before, [{ op: 'summarize', tool_use_id: 'b', summary: 'B' }])
+  const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 5), openedTurn: 0 }, lastClosed: { after: mark(before, 2), end: mark(before, 5), turn: 0 } }), x)
+  for (const m of [out.stage!.after, out.lastClosed!.after, out.lastClosed!.end]) {
+    expect(m === null || !/^[a-z]+\|\|$/.test(m.anchor)).toBe(true)
+  }
+})
+
+// [SP_CTX_02_28] live verify of phase 14, D2
+test('Telemetry — щойно після компактизації: tokens still the request before it, but no API usage in the live window: size unknown yet, not a stale Messages row', async () => {
+  const stale: UsageInfo = { context: { ...USAGE.context, breakdown: { ...USAGE.context.breakdown!, apiUsage: null, categories: [{ name: MESSAGES_ROW, tokens: 15, kind: 'used' }] } } }
+  const text = telemetryText(await telemetry(rows(), reg(), async () => stale))
+  expect(text).toContain('Context: size unknown yet (no model response since the session start or the last compaction); window 200k')
+  expect(text).not.toContain('~15')
+  const live: UsageInfo = { context: { ...USAGE.context, breakdown: { ...USAGE.context.breakdown!, apiUsage: { input_tokens: 1 } } } }
+  expect(telemetryText(await telemetry(rows(), reg(), async () => live))).toContain('Context: conversation ~12k tokens')
+})
+
+// [SP_CTX_02_28] live re-verify of phase 14, D2: after the host's /compact the
+// breakdown overestimates the fixed part and clamps the Messages row
+test('Telemetry — розбивка більша за запит: the whole request, not a clamped Messages row', async () => {
+  const clamped: UsageInfo = { context: { ...USAGE.context, tokens: 36_979, breakdown: { ...USAGE.context.breakdown!, totalTokens: 43_062, categories: [{ name: MESSAGES_ROW, tokens: 15, kind: 'used' }] } } }
+  const text = telemetryText(await telemetry(rows(), reg(), async () => clamped))
+  expect(text).toContain('Context: last request ~37k tokens, the fixed part (system prompt, tools, skills, memory) included')
+  expect(text).not.toContain('conversation ~')
+})
+
+// [SP_CTX_02_28] review round 36, W2: rows estimated after the last response
+// push the total above the request; the fixed part still fits, so it stays
+test('Telemetry — сума трохи більша за запит: the Messages row stays the measure while the fixed part fits in the request', async () => {
+  const ahead: UsageInfo = { context: { ...USAGE.context, tokens: 57_471, breakdown: { ...USAGE.context.breakdown!, totalTokens: 60_000, categories: [{ name: MESSAGES_ROW, tokens: 17_000, kind: 'used' }] } } }
+  expect(telemetryText(await telemetry(rows(), reg(), async () => ahead))).toContain('Context: conversation ~17k tokens')
+})
+
+// [SP_CTX_01_12] live verify of phase 14, D3: the listing of phase 14 has no `~` flag
+test('STAGE_ADVICE names the reproducible tools without the `~` flag', async () => {
+  expect(STAGE_ADVICE).not.toContain('~')
+  expect(STAGE_ADVICE).toContain('Pairs from Read, Grep and Glob are reproducible')
+})

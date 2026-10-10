@@ -9,6 +9,7 @@ import {
   formatReport,
   ownerKey,
   PINNED,
+  producedRows,
   replacedOwners,
   totalChars,
   touchesPin,
@@ -18,6 +19,7 @@ import {
   type QueuedEdit,
 } from './edits'
 import { DEFAULT_RESUME, EMPTY_QUEUE, type Queue, type Read } from './queue'
+import { relocateStageMarks } from './stages'
 import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
 
 const EXT: Record<string, string> = {
@@ -132,6 +134,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
         applied: [],
         failed: [...refused, ...edits.map(e => `${describeEdit(e)}: originals could not be archived`)],
         charsAfter: applied.report.charsBefore,
+        produced: [],
         mediaFiles: [],
       },
       '',
@@ -144,17 +147,23 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const archived = archive
   const rows = dropOwnCalls(applied.rows, mediaOwners, knownResults)
   applied.report.charsAfter = totalChars(rows)
+  // [SP_CTX_01_05] where the made rows stand in the list returned
+  applied.report.produced = producedRows(rows, applied.made)
 
   // An abandoned dispatch changes nothing: the batch stays queued for the
   // next turn, and the files written so far are only orphans in the archive.
   if (io.isAborted()) return { skip: 'context-editor: compaction abandoned; the batch stays queued' }
 
   // [SP_CTX_02_14] Best effort: a stale tag only names a target that is gone.
-  // With nothing applied the conversation stays as it was.
+  // With nothing applied the conversation stays as it was. The stage marks
+  // move with the rows, never vanish.
   const names = new Set(applied.report.applied)
   const done = edits.filter(e => names.has(describeEdit(e)))
   const after = done.length ? rows : messages
-  await io.updateTags(reg => rebindTags(reg, messages, after, done, q.edits)).catch(() => undefined)
+  const produced = applied.report.produced
+  await io
+    .updateTags(reg => relocateStageMarks(rebindTags(reg, messages, after, done, q.edits), messages, after, done, produced))
+    .catch(() => undefined)
   // An alias of a changed or vanished pair has done its job: it no longer resolves.
   await io.updateAliases(reg => pruneAliases(reg, messages, after, done)).catch(() => undefined)
 
@@ -258,7 +267,8 @@ export async function archiveMedia(
 }
 
 // The queue once a batch was handled: the batch cleared, its report added
-// after any report not yet delivered.
+// after any report not yet delivered. [SP_CTX_01_04] The fields of other
+// steps (the optimization request, a handoff) stay as read.
 function reported(q: Queue, text: string, id: number): Queue {
   return {
     ...EMPTY_QUEUE,
@@ -266,6 +276,9 @@ function reported(q: Queue, text: string, id: number): Queue {
     reportId: id,
     reportResume: q.resume && !q.tagsOnly,
     reportPrompt: q.resumePrompt,
+    optimize: q.optimize,
+    optimizePrompted: q.optimizePrompted,
+    ...(q.handoff ? { handoff: q.handoff } : {}),
   }
 }
 
@@ -278,5 +291,9 @@ export function failedQueue(q: Queue | undefined, reason: string, now: number): 
     reportId: now,
     reportResume: false,
     reportPrompt: DEFAULT_RESUME,
+    // [SP_CTX_01_04] the fields of other steps stay as read
+    optimize: q?.optimize ?? false,
+    optimizePrompted: q?.optimizePrompted ?? false,
+    ...(q?.handoff ? { handoff: q.handoff } : {}),
   }
 }

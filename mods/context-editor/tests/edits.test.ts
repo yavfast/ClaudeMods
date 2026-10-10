@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, collectMedia, dropOwnCalls, formatReport, freshId, listRows, MARK, ownerKey, prepare, replacedOwners, ROW_WINDOW } from '../hooks/edits'
+import { applyEdits, collectMedia, dropOwnCalls, fingerprint, formatReport, freshId, listRows, MARK, mergeCallRows, ownerKey, prepare, producedRows, replacedOwners, ROW_WINDOW } from '../hooks/edits'
 
 const BIG = 'x'.repeat(5000)
 
@@ -92,11 +92,14 @@ test('a split response: summarize the first Read; the second Read\'s row is rebu
   expect(out.rows[1]!.handle).toBeUndefined()
   expect(out.rows[1]!.text).toBe('Reading both files.')
   expect(byId('b').handle).toBeUndefined()
-  expect(byId('b').toolUses[0]!.input).toEqual({ q: 'b' })
+  // [SP_CTX_02_04] MergeCallRows: both rebuilt call rows of the response are one row, calls in order
+  expect(byId('b').toolUses.map(u => u.tool)).toEqual(['Read', 'Read'])
+  expect(byId('b').toolUses[0]!.tool_use_id.startsWith('a_ce')).toBe(true)
+  expect(byId('b').toolUses[1]!.input).toEqual({ q: 'b' })
   expect(out.rows.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'b'))!.handle).toBe('r5')
   // a thinking-only row after it, rebuilt, is left empty and goes
   expect(out.rows.some(r => r.handle === 'thinking6')).toBe(false)
-  expect(out.rows.length).toBe(input.length - 1)
+  expect(out.rows.length).toBe(input.length - 2)
 })
 
 test('an interleaved response: summarize a and drop b; the emptied result row of b does not end the stretch', async () => {
@@ -493,7 +496,7 @@ test('the report names what applied, what failed and where the originals are', a
 
 // [SP_CTX_01_05]
 test('FormatReport — форми: compaction without an applied edit / seed with nothing / an applied edit', async () => {
-  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], mediaFiles: [] }
+  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], produced: [], mediaFiles: [] }
   const none = formatReport({ ...empty, failed: ['x'] }, '/a.json', 'compaction')
   expect(none).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: x.')
   expect(none).not.toContain('Conversation ~')
@@ -503,4 +506,116 @@ test('FormatReport — форми: compaction without an applied edit / seed wit
   const done = formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'seed')
   expect(done).toBe('context-editor: applied 1 edit(s): y. Conversation ~100 -> ~60 chars (~10 tokens freed).')
   expect(formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'compaction')).toContain('Conversation ~100 -> ~60 chars (~10 tokens freed).')
+})
+
+// [SP_CTX_01_05] [SP_CTX_02_04]
+test('ApplyEdits — produced після DropOwnCalls: a summarize whose result row shares a context_list result: index and fingerprint of the row after the service result went', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [] },
+    {
+      role: 'assistant',
+      text: '',
+      toolUses: [
+        { tool_use_id: 'a', tool: 'Read', input: {} },
+        { tool_use_id: 'l', tool: 'mcp__context-editor__context_list', input: {} },
+      ],
+    },
+    {
+      role: 'user',
+      text: '',
+      toolUses: [],
+      toolResults: [
+        { tool_use_id: 'a', text: 'x'.repeat(300), isError: false },
+        { tool_use_id: 'l', text: 'listing', isError: false },
+      ],
+    },
+  ]
+  const applied = applyEdits(input, prepare(input, [{ op: 'summarize', tool_use_id: 'a', summary: 's' }]).queued, '/s/1.json')
+  const final = dropOwnCalls(applied.rows)
+  const produced = producedRows(final, applied.made)
+  expect(produced.length).toBe(1)
+  expect(produced[0]!.edit).toBe('summarize a')
+  expect(produced[0]!.index).toBe(2)
+  expect(produced[0]!.fingerprint).toBe(fingerprint(final[2]!))
+  expect(produced[0]!.fingerprint).not.toContain('r:l')
+  // a made row no longer in the final list has no entry
+  expect(producedRows(final.slice(0, 2), applied.made)).toEqual([])
+})
+
+test('ApplyEdits — примітка оригіналу: the replacement says where the original is and how to open it', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [] },
+    { role: 'assistant', text: 'wrong', toolUses: [] },
+  ]
+  const out = applyEdits(input, prepare(input, [{ op: 'rewrite', index: 1, text: 'right' }]).queued, '/s/1.json')
+  expect(out.rows[1]!.text).toBe('[context-editor] rewritten (original: /s/1.json, open with Read): right')
+  expect(out.report.produced).toEqual([{ edit: 'rewrite #1', index: 1, fingerprint: fingerprint(out.rows[1]!) }])
+})
+
+// [SP_CTX_02_04] MergeCallRows (live verify of phase 14, D1)
+test('ApplyEdits — паралельні виклики в окремих рядках: summarize both: one assistant row with both tool_uses, the results row right after it', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'read X and Y', toolUses: [], handle: 'p0' },
+    use('x', 'Read', 'ux'),
+    use('y', 'Read', 'uy'),
+    { role: 'user', text: '', toolUses: [], toolResults: [
+      { tool_use_id: 'x', text: BIG, isError: false },
+      { tool_use_id: 'y', text: BIG, isError: false },
+    ], handle: 'rxy' },
+    { role: 'assistant', text: 'Both read.', toolUses: [], handle: 'a4' },
+  ]
+  const edits = prepare(input, [
+    { op: 'summarize', tool_use_id: 'x', summary: 'X' },
+    { op: 'summarize', tool_use_id: 'y', summary: 'Y' },
+  ]).queued
+  const out = applyEdits(input, edits, '/s/1.json')
+  expect(out.report.applied.length).toBe(2)
+  expect(out.rows.length).toBe(4)
+  const calls = out.rows[1]!
+  expect(calls.role).toBe('assistant')
+  expect(calls.handle).toBeUndefined()
+  expect(calls.toolUses.map(u => u.tool_use_id.replace(/_ce.*/, ''))).toEqual(['x', 'y'])
+  // every call row is followed at once by the row of its results
+  expect(out.rows[2]!.toolResults!.map(t => t.tool_use_id)).toEqual(calls.toolUses.map(u => u.tool_use_id))
+  // produced: both edits made the one results row
+  expect(out.report.produced.map(p => p.index)).toEqual([2, 2])
+})
+
+test('MergeCallRows — змішані рядки: a text row before the calls stays apart; rows with a handle, results and prompts end a run; a text row after the calls joins them', async () => {
+  const text = (role: 'user' | 'assistant', t: string, handle?: string): SessionMessage => ({ role, text: t, toolUses: [], ...(handle ? { handle } : {}) })
+  const plainUse = (id: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: {} }] })
+  const rows: SessionMessage[] = [
+    text('user', 'p'),
+    text('assistant', 'first I read'),
+    plainUse('a'),
+    plainUse('b'),
+    text('assistant', 'and note'),
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A', isError: false }, { tool_use_id: 'b', text: 'B', isError: false }] },
+    plainUse('c'),
+    { ...plainUse('d'), handle: 'hd' },
+  ]
+  const out = mergeCallRows(rows)
+  expect(out.map(r => r.toolUses.map(u => u.tool_use_id).join(',') || r.text)).toEqual(['p', 'first I read', 'a,b', 'A', 'c', 'd'].map((x, i) => (i === 3 ? '' : x)))
+  expect(out[2]!.text).toBe('and note')
+  expect(out[5]!.handle).toBe('hd')
+  // nothing to merge: the same rows
+  expect(mergeCallRows(rows.slice(0, 3))).toEqual(rows.slice(0, 3))
+})
+
+test('DropOwnCalls — a parallel own call between two calls of one response: the rebuilt call rows become one', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'p', toolUses: [], handle: 'p0' },
+    use('a', 'Read', 'ua'),
+    use('l', 'mcp__context-editor__context_list', 'ul'),
+    use('b', 'Read', 'ub'),
+    { role: 'user', text: '', toolUses: [], toolResults: [
+      { tool_use_id: 'a', text: 'A', isError: false },
+      { tool_use_id: 'l', text: 'listing', isError: false },
+      { tool_use_id: 'b', text: 'B', isError: false },
+    ], handle: 'r' },
+  ]
+  const out = dropOwnCalls(input)
+  expect(out.length).toBe(3)
+  expect(out[1]!.toolUses.map(u => u.tool_use_id)).toEqual(['a', 'b'])
+  expect(out[2]!.toolResults!.map(t => t.tool_use_id)).toEqual(['a', 'b'])
 })
