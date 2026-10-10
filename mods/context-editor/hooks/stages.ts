@@ -7,9 +7,9 @@
 // tag functions from tags.ts: the cycle holds functions only, no top-level
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
-import { describeEdit, fingerprint, locate, ownerKey, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import { describeEdit, estimate, fingerprint, locate, ownerKey, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
 import type { Queue, Read } from './queue'
-import { activeReviews, EMPTY_REGISTRY, isActive, resolveTarget, type Tag, type TagRegistry } from './tags'
+import { dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, type Tag, type TagRegistry } from './tags'
 import { blockNotes, notesHint } from './notes'
 
 // ---- [SP_CTX_01_12] constants
@@ -21,6 +21,11 @@ export const MESSAGES_ROW = 'Messages'
 export const MAX_STAGE_NAME = 80
 export const MAX_BLOCK_INDEXES = 20
 export const SKILL = 'context-stages'
+// [SP_CTX_02_34] the bounds of chars per token, and the least conversation
+// size in tokens a calibration is trusted at
+export const CALIB_MIN = 1.0
+export const CALIB_MAX = 8.0
+export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT =
@@ -30,7 +35,9 @@ export const INTRO_TEXT =
 // optimization turn. Phase 14 names the reproducible tools; the `~` flag of
 // the listing (phase 15) comes back into this text with it ([SP_CTX_01_12]).
 export const STAGE_ADVICE =
-  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason and the person's words; verified facts with sources (paths, lines, versions); changed artifacts; open questions. Pairs from Read, Grep and Glob are reproducible: they can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
+  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Pairs from Read, Grep and Glob are reproducible: they can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
+
+export { estimate }
 
 // ---- [SP_CTX_01_18] Stage, ClosedBlock and RowMark
 
@@ -222,12 +229,17 @@ export type Telemetry = {
   registry: boolean
   stage?: { name: string; first: number; chars: number; turnsAgo: number; lost: boolean }
   lastClosed?: { name?: string; start: number; end?: number; chars?: number; lost: boolean; startLost: boolean }
-  // [SP_CTX_01_20] active reviews and disposables whose target is in the
-  // conversation; by reason in phase 15
-  reviews: number
+  // [SP_CTX_01_20] active reviews whose target is in the conversation, by the
+  // first row of each target (by reason in phase 15), and disposables
+  reviews: number[]
   disposable: number
+  // [SP_CTX_02_34] the chars per token the estimates of this telemetry use; absent: approx.
+  ratio?: number
   // [SP_CTX_01_21] the notes of the registry and how many wait for a reminder
   notes: { count: number; reminders: number }
+  // [SP_CTX_02_28] the measured change of the request since the last apply,
+  // shown once after the first model response after it
+  measuredFreed?: number
 }
 
 function errorText(err: unknown): string {
@@ -240,12 +252,49 @@ function charsOf(rows: readonly SessionMessage[], from: number, to: number): num
   return n
 }
 
+// [SP_CTX_02_34] Calibrate: chars of the current conversation per token of
+// its rows from the telemetry, when the conversation is large enough to
+// trust; the stored ratio otherwise. `save` is asked only when the ratio moved
+// by more than 5 %. Pure but for `save`.
+export async function calibrate(
+  rows: readonly SessionMessage[],
+  t: Pick<Telemetry, 'measure' | 'conversation'>,
+  reg: Pick<TagRegistry, 'charsPerToken'>,
+  save?: (ratio: number) => Promise<void>,
+): Promise<number | undefined> {
+  const c = rows.reduce((n, r) => n + rowChars(r), 0)
+  if (t.measure !== 'messages' || (t.conversation ?? 0) < CALIB_TOKENS || c <= 0) return reg.charsPerToken
+  const r = Math.min(CALIB_MAX, Math.max(CALIB_MIN, c / t.conversation!))
+  const old = reg.charsPerToken
+  // a failed write: this call uses the new ratio, the next ones the old
+  if (save && (old === undefined || Math.abs(r - old) > 0.05 * old)) await save(r).catch(() => undefined)
+  return r
+}
+
+// [SP_CTX_02_01] The one size of the listing's header: the conversation's
+// tokens from the telemetry, else an Estimate of its chars.
+export function headerSize(t: Pick<Telemetry, 'measure' | 'conversation' | 'ratio'>, chars: number): string {
+  if (t.measure === 'messages' && t.conversation !== undefined) return `~${tokensText(t.conversation)} tokens`
+  return t.ratio ? `${estimate(chars, t.ratio)} (calibrated estimate)` : estimate(chars)
+}
+
 // [SP_CTX_02_28] Telemetry(rows, reg): the size from the MESSAGES_ROW of the
 // breakdown, else the whole request; a failed usage read leaves the rest.
-export async function telemetry(rows: readonly SessionMessage[], reg: TagRegistry | undefined, usage: () => Promise<UsageInfo>): Promise<Telemetry> {
-  const t: Telemetry = { measure: 'unavailable', autoCompactOff: false, registry: reg !== undefined, reviews: 0, disposable: 0, notes: { count: 0, reminders: 0 } }
+// `update` changes the registry on its chain: a new calibration
+// ([SP_CTX_02_34]), the measured apply consumed ([SP_CTX_02_28]).
+export type RegistryUpdate = (change: (reg: TagRegistry) => TagRegistry) => Promise<void>
+
+export async function telemetry(
+  rows: readonly SessionMessage[],
+  reg: TagRegistry | undefined,
+  usage: () => Promise<UsageInfo>,
+  update?: RegistryUpdate,
+): Promise<Telemetry> {
+  let tokensNow: number | undefined
+  const t: Telemetry = { measure: 'unavailable', autoCompactOff: false, registry: reg !== undefined, reviews: [], disposable: 0, notes: { count: 0, reminders: 0 } }
   try {
     const u = await usage()
+    tokensNow = u.context.tokens
     const b = u.context.breakdown
     const row = b?.categories.find(c => c.kind === 'used' && c.name === MESSAGES_ROW)
     // no response yet in the live window (a fresh session, just after a
@@ -276,6 +325,15 @@ export async function telemetry(rows: readonly SessionMessage[], reg: TagRegistr
     t.error = errorText(err)
   }
   if (!reg) return t
+  const save = update ? (ratio: number) => update(r => ({ ...r, charsPerToken: ratio })) : undefined
+  t.ratio = await calibrate(rows, t, reg, save)
+  // the first model response after an apply: the request now against the one before it
+  const last = reg.lastApply
+  if (last && (t.measure === 'messages' || t.measure === 'request') && tokensNow !== undefined && tokensNow !== last.tokensBefore) {
+    // a negative change (more rows added than freed) is no freeing: not shown
+    if (last.tokensBefore > tokensNow) t.measuredFreed = last.tokensBefore - tokensNow
+    if (update) await update(r => (r.lastApply?.at === last.at ? dropLastApply(r) : r)).catch(() => undefined)
+  }
   if (reg.stage) {
     const first = startOf(rows, reg.stage.after)
     t.stage = {
@@ -300,7 +358,13 @@ export async function telemetry(rows: readonly SessionMessage[], reg: TagRegistr
       startLost: markIndex(rows, b.after) === 'lost',
     }
   }
-  t.reviews = activeReviews(rows, reg)
+  t.reviews = reg.tags
+    .filter(tag => tag.kind === 'review' && isActive(tag, reg.turn))
+    .flatMap(tag => {
+      const at = resolveTarget(rows, tag.target)
+      return at ? [Math.min(...at)] : []
+    })
+    .sort((x, y) => x - y)
   t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target)).length
   t.notes = { count: reg.notes.length, reminders: reg.notes.filter(n => n.remindAt !== undefined).length }
   return t
@@ -339,7 +403,7 @@ export function telemetryText(t: Telemetry): string {
   const startGone = '; its start row is gone, so it runs from #0'
   lines.push(
     t.stage
-      ? `Stage "${t.stage.name}" open from #${t.stage.first} (opened ${t.stage.turnsAgo} turn(s) ago), ~${tokensText(t.stage.chars / 4)} tokens${t.stage.lost ? startGone : ''}`
+      ? `Stage "${t.stage.name}" open from #${t.stage.first} (opened ${t.stage.turnsAgo} turn(s) ago), ${estimate(t.stage.chars, t.ratio)}${t.stage.lost ? startGone : ''}`
       : 'No open stage',
   )
   const b = t.lastClosed
@@ -349,11 +413,15 @@ export function telemetryText(t: Telemetry): string {
       ? `${head} from #${b.start}: its end row is gone`
       : b.end === undefined || b.start > b.end
         ? `${head}: it is empty`
-        : `${head} #${b.start}..#${b.end} (~${tokensText((b.chars ?? 0) / 4)} tokens)`
+        : `${head} #${b.start}..#${b.end} (${estimate(b.chars ?? 0, t.ratio)})`
     lines.push(body + (b.startLost ? startGone : ''))
   }
-  lines.push(`Candidates: review ${t.reviews}; disposable ${t.disposable}`)
+  // reasons come with phase 15: the rows of every active review together
+  const rows = t.reviews.length ? ` (${t.reviews.slice(0, MAX_BLOCK_INDEXES).map(i => `#${i}`).join(', ')}${t.reviews.length > MAX_BLOCK_INDEXES ? `, +${t.reviews.length - MAX_BLOCK_INDEXES} more` : ''})` : ''
+  lines.push(`Candidates: review ${t.reviews.length}${rows}; disposable ${t.disposable}`)
   if (t.notes.count) lines.push(`Notes: ${t.notes.count} (${t.notes.reminders} with a reminder pending)`)
+  if (t.measuredFreed !== undefined)
+    lines.push(`Last apply: ~${tokensText(t.measuredFreed)} tokens freed (measured: request before it − request now; net of the rows added since)`)
   return lines.join('\n')
 }
 
@@ -368,12 +436,15 @@ export type BlockIO = {
   // media sizes by owner key, from CollectMedia over the API form
   media: () => Promise<MediaSizes>
   usage: () => Promise<UsageInfo>
+  // [SP_CTX_02_34] stores a new calibration in the registry, on its chain
+  updateRegistry?: RegistryUpdate
   // [SP_CTX_02_18] listedKey = key: the report lists the block's row indexes
   setListed: (key: string) => void
 }
 
 // [SP_CTX_02_13] What QueueTagReplacements queued.
-export type Replaced = { queued: number; freed: number }
+// `freed`: Estimate of the replaced text less the notes ([SP_CTX_02_34])
+export type Replaced = { queued: number; freed: string }
 
 // The rows of a tag's target that lie in a..e, the first of them, or -1.
 function firstIn(rows: readonly SessionMessage[], tag: Tag, a: number, e: number): number {
@@ -397,6 +468,9 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   const rows = await io.rows()
   const read = await io.readTags()
   const reg = read.state === 'unreadable' ? undefined : read.value
+  // first: the calibration gives the ratio, so the block's size and the
+  // telemetry below use one ratio (review round 39)
+  const t = await telemetry(rows, reg, io.usage, io.updateRegistry)
   const a = startOf(rows, block.after)
   const e = markIndex(rows, block.end)
   const hasRows = e !== 'lost' && block.end !== null && a <= e
@@ -415,7 +489,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
           bytes += m.bytes
         }
     }
-    head += `rows #${a}..#${e}, ~${Math.round(charsOf(rows, a, e) / 4)} tokens, ${count} media (~${Math.ceil(bytes / 1024)}KB).`
+    head += `rows #${a}..#${e}, ${estimate(charsOf(rows, a, e), t.ratio)}, ${count} media (~${Math.ceil(bytes / 1024)}KB).`
   }
   let text = head
   if (hasRows) {
@@ -438,8 +512,8 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     if (notes) text += `\nYour notes in the block: ${notes}`
   }
   if (replaced && replaced.queued > 0)
-    text += `\nReplacements from your disposable tags queued: ${replaced.queued} (~${replaced.freed} tokens freed when this turn ends).`
-  text += '\n' + telemetryText(await telemetry(rows, reg, io.usage))
+    text += `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
+  text += '\n' + telemetryText(t)
   if (hasRows) {
     text += '\n' + STAGE_ADVICE
     io.setListed(key)

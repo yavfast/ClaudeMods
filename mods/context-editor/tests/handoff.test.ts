@@ -373,7 +373,7 @@ test('BuildSeed — засів без правок: an empty queue, or every edi
   )
   for (const text of [empty.s.submitted[0]!, failing.s.submitted[0]!]) {
     expect(text).not.toContain('Conversation ~')
-    expect(text).not.toContain('tokens freed')
+    expect(text).not.toContain('freed')
   }
 })
 
@@ -1690,4 +1690,23 @@ test('RunHandoff — нотатки в новій сесії: a note on an untou
   expect(reg.notes[1]!.target).toEqual({ anchor: fingerprint(seeded[k]!), hint: k })
   expect(reg.nextNote).toBe(4)
   expect(s.submitted[0]).toContain('Notes dropped (their rows were removed): n3.')
+})
+
+// [SP_CTX_02_34] phase 17: the seed's report estimates with the old session's calibration
+test('BuildSeed / RunHandoff — the seed report\'s "freed" uses TagRegistry.charsPerToken of the old session', async () => {
+  const report = { applied: ['summarize a'], failed: [], charsBefore: 1000, charsAfter: 200, originals: [], produced: [], notesDropped: [], mediaFiles: [] }
+  expect(seedReportTail({ report, archive: '', ratio: 2 })).toContain('(estimate: ~400 tokens freed;')
+  expect(seedReportTail({ report, archive: '' })).toContain('(estimate: ~200 tokens (approx.) freed;')
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [], charsPerToken: 2 })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.submitted[0]).toMatch(/\(estimate: ~\d+ tokens freed;/)
+})
+
+// [SP_CTX_01_10] review round 40
+test('RunHandoff — lastApply of the old session does not reach the new one', async () => {
+  const { io, s } = host()
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [], lastApply: { at: 3, tokensBefore: 500_000 } })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.tags.get('/s/new')!.lastApply).toBeUndefined()
 })

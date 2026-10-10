@@ -1,10 +1,14 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, describeEdit, MARK, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
 export const MAX_QUEUE_BYTES = 3 * 1024 * 1024
 export const MAX_DOCUMENT = 60_000
+// [SP_CTX_01_12] tools whose result is the person's message (an answer to the agent's question)
+export const PERSON_TOOLS: readonly string[] = ['AskUserQuestion']
+// [SP_CTX_02_02] how many rows a warning names per edit; as MAX_BLOCK_INDEXES
+const MAX_WARNED_ROWS = 20
 
 // [SP_CTX_01_15] A request to move the conversation into a new session.
 export type HandoffRequest = {
@@ -111,6 +115,74 @@ export function queueBytes(q: Queue): number {
 
 export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown }
 
+// [SP_CTX_02_02] Rows the host writes as user rows that are no message of
+// the person: a plugin's prompt in its frame, and rows of host tags.
+const PLUGIN_FRAME = /^The .+ plugin sent a message:/
+// (`<command-message>` alone, without `<command-name>`, is the host's notice of a running command)
+const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-notification>', '<command-message>']
+// leading closed spans the host puts before the person's words (VS Code: the open file)
+const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)>[\s\S]*?<\/\1>/
+// [SP_CTX_01_12] The mod's compaction marks (compaction.ts re-exports them):
+// queue.ts must not import compaction.ts, which imports it.
+export const MARKER = 'context-editor: apply queued edits'
+export const HANDOFF_MARKER = 'context-editor: seed the handed-off conversation'
+// [SP_CTX_01_12] The start of a built-in compaction's summary (spike
+// context_editor_handoff_long, Entry 2).
+export const SUMMARY_OPENER = 'This session is being continued from a previous conversation'
+
+// [SP_CTX_02_02] PersonText: what the person wrote in a user row; "" for a
+// row that is no message of the person. Leading `<ide_opened_file>` and
+// `<system-reminder>` spans are taken off; a slash command's arguments are
+// the person's words, except the mod's own /compact (review round 40).
+export function personText(raw: string): string {
+  let t = raw.trim()
+  for (let m = LEADING_SPAN.exec(t); m; m = LEADING_SPAN.exec(t)) t = t.slice(m[0].length).trim()
+  if (t.includes('<command-name>')) {
+    const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(t)?.[1]?.trim()
+    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim() ?? ''
+    // only the mod's own /compact with its exact marker (review round 41)
+    if (name === '/compact' && (args === MARKER || args === HANDOFF_MARKER)) return ''
+    return args
+  }
+  if (t.startsWith(MARK) || t.startsWith('context-editor:') || t.startsWith(SUMMARY_OPENER)) return ''
+  if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''
+  return t
+}
+
+// [SP_CTX_02_02] PersonRow: a user row without results whose PersonText is not empty.
+export function personRow(rows: readonly SessionMessage[], i: number): boolean {
+  const r = rows[i]
+  return !!r && r.role === 'user' && !(r.toolResults ?? []).length && personText(r.text) !== ''
+}
+
+// [SP_CTX_02_02] PersonPair: the call with this id is a tool in PERSON_TOOLS.
+export function personPair(rows: readonly SessionMessage[], id: string): boolean {
+  return rows.some(r => r.toolUses.some(u => u.tool_use_id === id && PERSON_TOOLS.includes(u.tool)))
+}
+
+// [SP_CTX_02_02] [C_CTX_DEC_21] PersonWarnings: a queued edit that covers
+// the person's messages is not refused, but the result names those rows; what
+// to compress stays the agent's call. Pure.
+export function personWarnings(rows: readonly SessionMessage[], queued: readonly QueuedEdit[]): string[] {
+  const out: string[] = []
+  for (const e of queued) {
+    const hits: string[] = []
+    if (e.op === 'collapse') {
+      for (const i of touchedBy(rows, e)?.rows ?? []) {
+        if (personRow(rows, i)) hits.push(`#${i} (prompt)`)
+        for (const t of rows[i]!.toolResults ?? []) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
+      }
+    } else if ((e.op === 'summarize' || e.op === 'drop') && personPair(rows, e.tool_use_id)) {
+      const res = touchedBy(rows, e)?.rows[1]
+      if (res !== undefined) hits.push(`#${res} (AskUserQuestion answer)`)
+    }
+    if (!hits.length) continue
+    const named = hits.slice(0, MAX_WARNED_ROWS).join(', ') + (hits.length > MAX_WARNED_ROWS ? `, +${hits.length - MAX_WARNED_ROWS} more` : '')
+    out.push(`Warning: ${describeEdit(e)} covers the person's messages: ${named}. Keep them verbatim unless you drop them deliberately.`)
+  }
+  return out
+}
+
 // [SP_CTX_02_02] The queue after a context_edit call, or why it is refused.
 // Pure: the caller reads the queue, the rows, the pinned targets and the
 // aliases, and writes the result. A `ref` is resolved here, before
@@ -122,7 +194,7 @@ export function queueEdits(
   pinned: Pinned = NO_PINS,
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
-): { queue: Queue; queued: number; errors: string[] } | { deny: string } {
+): { queue: Queue; queued: number; errors: string[]; warnings: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.length > MAX_TEXT)
@@ -136,13 +208,14 @@ export function queueEdits(
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.trim()) next.resumePrompt = args.resume_prompt
   if (queueBytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
-  return { queue: next, queued: queued.length, errors }
+  return { queue: next, queued: queued.length, errors, warnings: personWarnings(rows, queued) }
 }
 
-export function queuedText(q: Queue, queued: number, errors: readonly string[]): string {
+export function queuedText(q: Queue, queued: number, errors: readonly string[], warnings: readonly string[] = []): string {
   return [
     `Queued ${queued} edit(s); ${q.edits.length} pending in total.`,
     errors.length ? `Rejected: ${errors.join('; ')}.` : '',
+    ...warnings,
     q.edits.length
       ? `They apply when this turn ends. End your turn now with a one-line status.${q.resume ? ` The session then resumes by itself with: "${q.resumePrompt}"` : ''}`
       : '',
@@ -197,7 +270,7 @@ export async function contextEdit(
   } catch (err) {
     return { deny: `could not save the queue: ${String(err)}` }
   }
-  return { result: notice + queuedText(out.queue, out.queued, out.errors) }
+  return { result: notice + queuedText(out.queue, out.queued, out.errors, out.warnings) }
 }
 
 // [SP_CTX_02_08] What changes in the queue once a person's prompt entered:

@@ -315,8 +315,20 @@ export const LIST_LEGEND =
   `Tags: [pin] no edit may touch it, [disposable: note] replaced by its note when you close a stage or end a turn with the optimization mark, [review] worth a look. ` +
   `[nN] your note (full text under the page).`
 
-// [SP_CTX_02_01] One line of the `Notes:` block under a page, by the row it belongs to.
-export type PageNote = { row: number; line: string }
+// [SP_CTX_02_01] One note for the listing: the row it shows on (undefined:
+// its target is not found) and its line for the `Notes:` block.
+export type PageNote = { id: string; row?: number; line: string }
+
+// [SP_CTX_02_01] How many notes off the page the header names; as MAX_BLOCK_INDEXES.
+const NOTES_ELSEWHERE = 20
+// [SP_CTX_01_12]
+export const MAX_FULL_ROW = 20_000
+
+// [SP_CTX_02_34] Estimate(chars, ratio): tokens by the calibrated chars per
+// token, else chars/4 marked approx.
+export function estimate(chars: number, ratio?: number): string {
+  return ratio ? `~${Math.round(chars / ratio)} tokens` : `~${Math.round(chars / 4)} tokens (approx.)`
+}
 
 // [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows;
 // `count` 0 gives the header alone (its telemetry, no rows). `tags`: the
@@ -333,6 +345,8 @@ export function listRows(
   telemetry = '',
   // [SP_CTX_02_01] the full text of the notes; those whose row is on the page show under it
   notes: readonly PageNote[] = [],
+  // [SP_CTX_02_01] the one size of the header: the telemetry's, else an Estimate
+  sizeText?: string,
 ): string {
   if (rows.length === 0) return ['0 rows.', telemetry].filter(Boolean).join('\n')
   const start = Math.min(Math.max(0, Math.trunc(from)), rows.length - 1)
@@ -361,16 +375,20 @@ export function listRows(
     const chars = rowChars(row)
     const flags = (isEdited(row) ? '*' : '') + (chars >= BIG_ROW ? '!' : '') + (own.length ? '@' : '')
     const labels = tags.get(i) ?? []
-    lines.push(`#${i}${flags} ${row.role} ${chars}c: ${parts.join(' | ') || '(empty)'}${labels.length ? ' ' + labels.join(' ') : ''}`)
+    // [SP_CTX_02_01] a thinking-only row: no target for a note or a tag by index
+    const body = parts.join(' | ') || (row.role === 'assistant' ? '(thinking)' : '(empty)')
+    lines.push(`#${i}${flags} ${row.role} ${chars}c: ${body}${labels.length ? ' ' + labels.join(' ') : ''}`)
   }
   const total = totalChars(rows)
   const shown = rows.slice(start, stop).reduce((n, r) => n + rowChars(r), 0)
-  const sizes = `${rows.length} rows, ~${total} chars (~${Math.round(total / 4)} tokens), ${mediaCount} media (~${Math.ceil(mediaBytes / 1024)}KB).`
-  if (size === 0) return [sizes, telemetry].filter(Boolean).join('\n')
+  const sizes = `${rows.length} rows, ${sizeText ?? estimate(total)}, ${mediaCount} media (~${Math.ceil(mediaBytes / 1024)}KB).`
+  // [SP_CTX_02_01] without a page every note is elsewhere
+  if (size === 0) return [sizes, telemetry, notesElsewhere(notes, 0, 0)].filter(Boolean).join('\n')
   return [
     `${sizes} Showing #${start}..#${stop - 1} (oldest first), ~${shown} chars; ~${before} chars come before it.`,
     telemetry,
     `${LIST_LEGEND}${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
+    notesElsewhere(notes, start, stop),
     ...lines,
     ...pageNotes(notes, start, stop),
   ]
@@ -378,9 +396,60 @@ export function listRows(
     .join('\n')
 }
 
+function onPage(n: PageNote, start: number, stop: number): boolean {
+  return n.row !== undefined && n.row >= start && n.row < stop
+}
+
 function pageNotes(notes: readonly PageNote[], start: number, stop: number): string[] {
-  const on = notes.filter(n => n.row >= start && n.row < stop)
+  const on = notes.filter(n => onPage(n, start, stop))
   return on.length ? ['Notes:', ...on.map(n => n.line)] : []
+}
+
+// [SP_CTX_02_01] The notes off this page, so the agent does not take them for
+// lost: by row, those whose target is not found last.
+function notesElsewhere(notes: readonly PageNote[], start: number, stop: number): string {
+  const off = notes.filter(n => !onPage(n, start, stop))
+  if (!off.length) return ''
+  off.sort((x, y) => (x.row ?? Infinity) - (y.row ?? Infinity))
+  const named = off.slice(0, NOTES_ELSEWHERE).map(n => (n.row === undefined ? `${n.id} (row not found)` : `${n.id} #${n.row}`))
+  return `Notes elsewhere: ${named.join(', ')}${off.length > NOTES_ELSEWHERE ? `, +${off.length - NOTES_ELSEWHERE} more` : ''}`
+}
+
+// [SP_CTX_02_01] context_list with `index` and `full`: one row whole, cut to
+// MAX_FULL_ROW chars. `labels`: its marks and tags; `notes`: the full text of
+// its notes.
+export function fullRow(
+  rows: readonly SessionMessage[],
+  index: number,
+  media: MediaSizes = new Map(),
+  labels: readonly string[] = [],
+  notes: readonly string[] = [],
+): string {
+  const row = rows[index]!
+  const parts: string[] = [`Row #${index} ${row.role} ${rowChars(row)}c`]
+  if (row.text) parts.push(`text:\n${row.text}`)
+  for (const u of row.toolUses) parts.push(`tool_use ${u.tool} id=${u.tool_use_id} input:\n${JSON.stringify(u.input ?? {})}`)
+  for (const r of row.toolResults ?? []) parts.push(`tool_result id=${r.tool_use_id}${r.isError ? ' ERROR' : ''}:\n${r.text}`)
+  const own = rowMedia(row, index, media)
+  if (own.length) parts.push(`media: ${own.map(m => `${m.mediaType} ~${Math.ceil(m.bytes / 1024)}KB`).join(', ')}`)
+  if (labels.length) parts.push(`tags: ${labels.join(' ')}`)
+  for (const n of notes) parts.push(`note ${n}`)
+  const text = parts.join('\n')
+  if (text.length <= MAX_FULL_ROW) return text
+  return `${text.slice(0, MAX_FULL_ROW)}… (+${text.length - MAX_FULL_ROW} chars; the original, if this row was edited, is in the archive named in its text)`
+}
+
+// [SP_CTX_02_01] The arguments of context_list: a page, one row whole, or
+// BAD_FULL (full without a valid index, an index without full).
+export function listMode(args: { from?: unknown; count?: unknown; index?: unknown; full?: unknown }, len: number): { page: { from: number; count: number } } | { full: number } | { bad: string } {
+  if (args.full === true) {
+    if (typeof args.index !== 'number' || !Number.isInteger(args.index) || args.index < 0 || args.index >= len)
+      return { bad: `"full": true needs "index", a row of the listing (0..${len - 1}) (BAD_FULL)` }
+    return { full: args.index }
+  }
+  if (args.index !== undefined) return { bad: '"index" goes with "full": true, to show that row whole (BAD_FULL)' }
+  const count = typeof args.count === 'number' && Number.isFinite(args.count) ? Math.trunc(args.count) : LIST_COUNT
+  return { page: { from: typeof args.from === 'number' ? args.from : 0, count } }
 }
 
 // [SP_CTX_02_05] Removes this plugin's own calls and their results. An own
@@ -1082,15 +1151,15 @@ export function mergeCallRows(rows: readonly SessionMessage[]): SessionMessage[]
 // neither applied nor failed edits has no report at all ("").
 export type ReportKind = 'compaction' | 'seed'
 
-export function formatReport(r: ApplyReport, archive: string, kind: ReportKind): string {
-  const base = baseReport(r, archive, kind)
+export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: number): string {
+  const base = baseReport(r, archive, kind, ratio)
   // [SP_CTX_01_05] after any form: the notes whose rows went
   if (!r.notesDropped.length) return base
   const dropped = `Notes dropped (their rows were removed): ${r.notesDropped.join(', ')}.`
   return base ? `${base} ${dropped}` : `context-editor: ${dropped}`
 }
 
-function baseReport(r: ApplyReport, archive: string, kind: ReportKind): string {
+function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: number): string {
   const notApplied = r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : ''
   if (!r.applied.length) {
     if (kind === 'compaction') return ['context-editor: no edit was applied; the conversation was not changed.', notApplied].filter(Boolean).join(' ')
@@ -1100,7 +1169,9 @@ function baseReport(r: ApplyReport, archive: string, kind: ReportKind): string {
   return [
     `context-editor: applied ${r.applied.length} edit(s): ${r.applied.join('; ')}.`,
     notApplied,
-    `Conversation ~${r.charsBefore} -> ~${r.charsAfter} chars (~${Math.round(saved / 4)} tokens freed).`,
+    // [SP_CTX_02_34] "freed" by the registry's calibrated ratio; no telemetry here
+    // the measured change comes with the telemetry after the next response ([SP_CTX_02_28])
+    `Conversation ~${r.charsBefore} -> ~${r.charsAfter} chars (estimate: ${estimate(saved, ratio)} freed; context_list telemetry shows the measured change after the next response).`,
     archive && r.originals.length ? `Originals archived at ${archive}.` : '',
     r.mediaFiles.length ? `Media archived: ${r.mediaFiles.join(', ')}.` : '',
   ]

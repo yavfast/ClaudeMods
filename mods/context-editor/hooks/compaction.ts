@@ -18,7 +18,7 @@ import {
   type MediaRef,
   type QueuedEdit,
 } from './edits'
-import { DEFAULT_RESUME, EMPTY_QUEUE, type Queue, type Read } from './queue'
+import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_MARKER, MARKER, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
 import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
@@ -43,8 +43,7 @@ const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
 // [SP_CTX_01_12] The args of the built-in /compact the mod runs: the handler
 // sees them as `instructions`, and the model reads them in the command's rows,
 // so they explain themselves.
-export const MARKER = 'context-editor: apply queued edits'
-export const HANDOFF_MARKER = 'context-editor: seed the handed-off conversation'
+export { HANDOFF_MARKER, MARKER } from './queue'
 
 function isOwnInstruction(instructions: string | undefined): boolean {
   return instructions === MARKER || instructions === HANDOFF_MARKER
@@ -102,6 +101,9 @@ export type CompactionIO = {
   // [SP_CTX_01_14] hostId if its read has ended, else absent: a compaction
   // handler never waits for it nor starts a process
   hostId: () => string | undefined
+  // [SP_CTX_02_07] the size of the request before the apply: the plain usage
+  // (1–3 ms, no breakdown); undefined when unknown
+  requestTokens?: () => Promise<number | undefined>
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -116,7 +118,11 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
 
   if (q.handoff) return { skip: 'context-editor: handoff pending' }
 
-  const { edits, refused } = screenPinned(messages, q.edits, await io.readTags())
+  const tokensBefore = await (io.requestTokens?.() ?? Promise.resolve(undefined)).catch(() => undefined)
+  const tagsRead = await io.readTags()
+  const { edits, refused } = screenPinned(messages, q.edits, tagsRead)
+  // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
+  const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
   const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(await io.readApi())
   const mediaOwners = new Set(found.keys())
   const id = io.now()
@@ -169,7 +175,8 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
     .updateTags(reg => {
       const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits), messages, after, done, produced), messages, after, done, produced)
       dropped = out.dropped
-      return out.registry
+      // [SP_CTX_02_28] the telemetry measures what this apply freed
+      return done.length && tokensBefore !== undefined ? { ...out.registry, lastApply: { at: id, tokensBefore } } : out.registry
     })
     .then(() => void (applied.report.notesDropped = dropped))
     .catch(() => undefined)
@@ -177,7 +184,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   await io.updateAliases(reg => pruneAliases(reg, messages, after, done)).catch(() => undefined)
 
   // [SP_CTX_01_05] without an applied edit: "not changed", no size line
-  const text = formatReport(applied.report, archived, 'compaction')
+  const text = formatReport(applied.report, archived, 'compaction', ratio)
   await io.writeQueue(reported(q, text, id))
   io.toast(text.slice(0, 200))
   if (applied.report.applied.length === 0) return { skip: 'context-editor: no edit could be applied' }

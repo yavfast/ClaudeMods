@@ -132,7 +132,7 @@ test('a failed archive write refuses the whole batch and changes nothing', async
   expect(written.queue!.edits).toEqual([])
   expect(written.queue!.report).toContain('summarize a: originals could not be archived')
   expect(written.queue!.report!.startsWith('context-editor: no edit was applied; the conversation was not changed.')).toBe(true)
-  expect(written.queue!.report).not.toContain('tokens freed')
+  expect(written.queue!.report).not.toContain('freed')
 })
 
 test('media that cannot be written blocks the edit and keeps the media row', async () => {
@@ -272,7 +272,7 @@ test('HandleCompaction — жодної правки: every edit of the batch fa
   const out = await handleCompaction(io, conversation())
   expect('skip' in out && out.skip).toBe('context-editor: no edit could be applied')
   expect(written.queue!.report).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: drop gone: call or result not found.')
-  expect(written.queue!.report).not.toContain('tokens freed')
+  expect(written.queue!.report).not.toContain('freed')
   expect(written.queue!.report).not.toContain('Conversation ~')
   expect(written.boundary).toBeUndefined()
 })
@@ -283,7 +283,7 @@ test('HandleCompaction — правки застосовано: the report carri
   if (!('messages' in out)) throw new Error(out.skip)
   const before = totalChars(conversation())
   const after = totalChars(out.messages)
-  expect(written.queue!.report).toContain(`Conversation ~${before} -> ~${after} chars (~${Math.round((before - after) / 4)} tokens freed).`)
+  expect(written.queue!.report).toContain(`Conversation ~${before} -> ~${after} chars (estimate: ~${Math.round((before - after) / 4)} tokens (approx.) freed; context_list telemetry shows the measured change after the next response).`)
 })
 
 test('RecordBoundary — host (HandleCompaction): with hostId read the boundary carries it; without it, none', async () => {
@@ -380,4 +380,29 @@ test('HandleCompaction — notes: a note on a summarized pair moves; the report 
   }, tags)
   await handleCompaction(failing.io, conversation())
   expect(failing.written.queue!.report).not.toContain('Notes dropped')
+})
+
+// [SP_CTX_01_05] [SP_CTX_02_34] phase 17
+test('HandleCompaction — правки застосовано з відношенням: charsPerToken 2.0 / absent; the handler asks for no telemetry', async () => {
+  const run = async (charsPerToken?: number) => {
+    const tags: Read<TagRegistry> = { state: 'ok', value: { ...EMPTY_REGISTRY, tags: [], ...(charsPerToken ? { charsPerToken } : {}) } }
+    const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, tags)
+    const out = await handleCompaction(io, conversation())
+    if (!('messages' in out)) throw new Error(out.skip)
+    return { report: written.queue!.report!, freed: totalChars(conversation()) - totalChars(out.messages) }
+  }
+  const calibrated = await run(2)
+  expect(calibrated.report).toContain(`(estimate: ~${Math.round(calibrated.freed / 2)} tokens freed;`)
+  const plain = await run()
+  expect(plain.report).toContain(`(estimate: ~${Math.round(plain.freed / 4)} tokens (approx.) freed;`)
+})
+
+// [SP_CTX_02_07] review round 39
+test('HandleCompaction — розмір перед застосуванням: the request size before the apply goes into lastApply; unknown, nothing', async () => {
+  const known = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { requestTokens: async () => 574_000 })
+  await handleCompaction(known.io, conversation())
+  expect(known.written.tags!.lastApply).toEqual({ at: 1000, tokensBefore: 574_000 })
+  const unknown = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { requestTokens: async () => undefined })
+  await handleCompaction(unknown.io, conversation())
+  expect(unknown.written.tags!.lastApply).toBeUndefined()
 })

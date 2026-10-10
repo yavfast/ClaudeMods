@@ -8,7 +8,10 @@ import {
   EMPTY_QUEUE,
   MAX_QUEUE_BYTES,
   parseQueue,
+  personRow,
+  personText,
   queueEdits,
+  queuedText,
   settledQueue,
   withoutReport,
   type DeliverIO,
@@ -255,4 +258,94 @@ test('DeliverReport — the advice with the person\'s prompt carries the note co
   await deliverReport(h.io)
   expect(h.log.seen[0]![0]).toBe(personAdvice(BLOCK_A, 1))
   expect(h.log.seen[0]![0]).toContain('You have 1 note(s)')
+})
+
+// ---- [SP_CTX_02_02] phase 17: the person's messages in an edit
+
+const personRows = (): SessionMessage[] => [
+  { role: 'user', text: 'the task', toolUses: [] },
+  { role: 'assistant', text: 'plan', toolUses: [] },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'r', tool: 'Read', input: {} }] },
+  { role: 'user', text: 'also check B', toolUses: [] },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r', text: 'file', isError: false }] },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'q', tool: 'AskUserQuestion', input: {} }] },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'q', text: 'User answered: B', isError: false }] },
+  { role: 'assistant', text: 'ok', toolUses: [] },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: 's', tool: 'Grep', input: {} }] },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 's', text: 'hits', isError: false }] },
+  { role: 'user', text: '[context-editor] rewritten: x', toolUses: [] },
+  { role: 'user', text: 'context-editor: applied 1 edit(s)', toolUses: [] },
+  { role: 'user', text: '<command-name>/compact</command-name><command-args>context-editor: apply queued edits</command-args>', toolUses: [] },
+  { role: 'assistant', text: 'end', toolUses: [] },
+]
+
+test('context_edit — повідомлення людини: collapse 2..9 over a prompt and an AskUserQuestion answer; summarize of the answer; a collapse without them', async () => {
+  const r = personRows()
+  const out = queueEdits(EMPTY_QUEUE, r, {
+    edits: [
+      { op: 'collapse', from_index: 2, to_index: 9, summary: 's' },
+      { op: 'summarize', tool_use_id: 'q', summary: 'B chosen' },
+      { op: 'collapse', from_index: 7, to_index: 9, summary: 's' },
+    ],
+  })
+  if ('deny' in out) throw new Error(out.deny)
+  // queued: a warning, never a refusal
+  expect(out.queued).toBe(3)
+  expect(out.warnings).toEqual([
+    "Warning: collapse #2..#9 covers the person's messages: #3 (prompt), #6 (AskUserQuestion answer). Keep them verbatim unless you drop them deliberately.",
+    "Warning: summarize q covers the person's messages: #6 (AskUserQuestion answer). Keep them verbatim unless you drop them deliberately.",
+  ])
+  expect(queuedText(out.queue, out.queued, out.errors, out.warnings)).toContain('covers the person')
+})
+
+test('context_edit — не промпти людини: a mod report row, the /compact MARKER row, a changed row: no warning', async () => {
+  const r = personRows()
+  expect(personRow(r, 10)).toBe(false)
+  expect(personRow(r, 11)).toBe(false)
+  expect(personRow(r, 12)).toBe(false)
+  expect(personRow(r, 3)).toBe(true)
+  const out = queueEdits(EMPTY_QUEUE, r, { edits: [{ op: 'collapse', from_index: 10, to_index: 13, summary: 's' }] })
+  expect('warnings' in out && out.warnings).toEqual([])
+})
+
+// [SP_CTX_02_02] review round 39: rows the host writes as user rows that are no message of the person
+test('PersonRow — not the person: a plugin prompt in the host frame, host tag rows, the compaction summary', async () => {
+  const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+  const r = [
+    user('The context-editor plugin sent a message:\ncontext-editor: optimization turn for stage "A"'),
+    user('The other-tool plugin sent a message:\nhello'),
+    user('<local-command-stdout>Compacted </local-command-stdout>'),
+    user('<local-command-caveat>Caveat: …</local-command-caveat>'),
+    user('<command-name>/dev-flow</command-name><command-message>dev-flow</command-message>'),
+    user('<command-message>dev-flow is running…</command-message>'),
+    user('<ide_opened_file>The user opened x.ts</ide_opened_file>'),
+    user('<task-notification>agent done</task-notification>'),
+    user('This session is being continued from a previous conversation that ran out of context.'),
+    user('Please also check the plugin sent a message: earlier'),
+  ]
+  expect(r.map((_, i) => personRow(r, i))).toEqual([false, false, false, false, false, false, false, false, false, true])
+  const out = queueEdits(EMPTY_QUEUE, [...r, { role: 'assistant', text: 'end', toolUses: [] }], { edits: [{ op: 'collapse', from_index: 0, to_index: 8, summary: 's' }] })
+  expect('warnings' in out && out.warnings).toEqual([])
+})
+
+// [SP_CTX_02_02] review round 40: real person rows with host framing
+test('PersonText — the person\'s words behind an open-file span, and the arguments of a slash command', async () => {
+  const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+  const vscode = user('<ide_opened_file>The user opened the file /repo/docs/plan.md in the IDE. This may or may not be related to the current task.</ide_opened_file>\nПродовжуй з фазою 17')
+  const reminder = user('<system-reminder>\nnote\n</system-reminder>\n<ide_opened_file>The user opened x.ts</ide_opened_file>\nfix it')
+  const slash = user('<command-message>dev-flow</command-message>\n<command-name>/dev-flow</command-name>\n<command-args>research the stage cleanup</command-args>')
+  const bare = user('<command-message>dev-flow</command-message>\n<command-name>/dev-flow</command-name>')
+  const opened = user('<ide_opened_file>The user opened x.ts</ide_opened_file>')
+  const mod = user('<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>context-editor: apply queued edits</command-args>')
+  expect(personText(vscode.text)).toBe('Продовжуй з фазою 17')
+  expect(personText(reminder.text)).toBe('fix it')
+  expect(personText(slash.text)).toBe('research the stage cleanup')
+  // review round 41: only the mod's own /compact with its exact marker is excluded
+  const talksAboutIt = '<command-message>dev-flow</command-message>\n<command-name>/dev-flow</command-name>\n<command-args>do fix the /compact race in context-editor: apply queued edits</command-args>'
+  expect(personText(talksAboutIt)).toBe('do fix the /compact race in context-editor: apply queued edits')
+  expect(personText('<command-name>/compact</command-name>\n<command-args>context-editor: apply queued edits</command-args>')).toBe('')
+  const r = [vscode, reminder, slash, bare, opened, mod]
+  expect(r.map((_, i) => personRow(r, i))).toEqual([true, true, true, false, false, false])
+  const out = queueEdits(EMPTY_QUEUE, [...r, { role: 'assistant', text: 'end', toolUses: [] }], { edits: [{ op: 'collapse', from_index: 0, to_index: 5, summary: 's' }] })
+  expect('warnings' in out && out.warnings[0]).toContain('#0 (prompt), #1 (prompt), #2 (prompt).')
 })

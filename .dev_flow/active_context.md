@@ -5,7 +5,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 ## Resume
 
 - `/dev-flow resume task_C_CTX` — `plan` — next: наступна робота на вибір розробника (фази 4–5, I, решта K; живий Verify фази 13 pending) — M злито в задачу етапів — 2026-10-10 08:45
-- `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: commit sign-off фази 16 (нотатки), далі спостереження на реальних задачах; фаза 15 за практикою — 2026-10-10 15:42
+- `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: commit sign-off фази 17; спайк втрати вкладень queued_command (docs/context_editor_attachments.spike.md) → рішення — 2026-10-10 16:52
 
 ## Active Tasks
 

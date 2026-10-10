@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCalls, fingerprint, formatReport, listRows, mergeCallRows, prepare, producedRows, type QueuedEdit } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import {
+  afterReminders,
   applyNoteRequests,
   blockNotes,
   contextNote,
@@ -15,6 +16,8 @@ import {
   noteReminders,
   rebindNotes,
   remindable,
+  remindsAfter,
+  withReminderLines,
   type Note,
 } from '../hooks/notes'
 import { blockReport, optimizeText, personAdvice, telemetry, telemetryText, type BlockIO, type UsageInfo } from '../hooks/stages'
@@ -265,7 +268,9 @@ test('context_list — нотатки на сторінці: [n1] on #3, [n2 #5.
   expect(block).toContain('n1 #3: text of n1')
   expect(block).toContain('n2 #5: text of n2')
   expect(block).toContain('n4 #9: text of n4 (reminder in 2 turn(s))')
-  expect(text).not.toContain('n3')
+  // n3 is off the page: named in the header, not in the block
+  expect(text).toContain('Notes elsewhere: n3 #70')
+  expect(block.some(l => l.startsWith('n3'))).toBe(false)
   // a pair note shows on both rows of the pair
   const pair = noteLabels(r, reg({ notes: [note('n1', { tool_use_id: 'a' })] }))
   expect([...pair.keys()]).toEqual([1, 2])
@@ -275,7 +280,7 @@ test('Вбудована компактизація хоста з нотатка
   const r = rows()
   const g = reg({ notes: [note('n1', { anchor: 'user||gone', hint: 3 })], nextNote: 2 })
   expect(noteLabels(r, g).size).toBe(0)
-  expect(noteLines(r, g)).toEqual([])
+  expect(noteLines(r, g)).toEqual([{ id: 'n1', line: 'n1: text of n1' }])
   expect(telemetryText(await telemetry(r, g, async () => ({ context: { window: 1000 } })))).toContain('Notes: 1 (0 with a reminder pending)')
 })
 
@@ -410,4 +415,40 @@ test('context_note — рядок без тексту: a thinking-only row by in
   // a distinctive row stays tracked through an application that changes nothing
   const ok = applyNoteRequests(reg(), list, [{ op: 'add', index: 4, text: 't' }]).registry
   expect(rebindNotes(ok, list, list, [], []).dropped).toEqual([])
+})
+
+// [SP_CTX_02_01] phase 17
+test('context_list — нотатки поза сторінкою: page 0..59, notes on #70 and #300, one not found: Notes elsewhere names them', async () => {
+  const r = rows(310)
+  const g = reg({ notes: [note('n3', at(r, 70)), note('n5', at(r, 300)), note('n7', { anchor: 'user||gone', hint: 2 }), note('n8', at(r, 3))], nextNote: 9 })
+  const text = listRows(r, 0, 60, new Map(), noteLabels(r, g), new Map(), '', noteLines(r, g))
+  expect(text).toContain('Notes elsewhere: n3 #70, n5 #300, n7 (row not found)')
+  expect(text).toContain('n8 #3: text of n8')
+  // count 0: no page, so the header names every note
+  expect(listRows(r, 0, 0, new Map(), new Map(), new Map(), '', noteLines(r, g))).toContain('Notes elsewhere: n8 #3, n3 #70, n5 #300, n7 (row not found)')
+})
+
+// [SP_CTX_02_33] phase 17
+test('NoteReminders — після інструмента мода: the lines go at the end of the tool\'s own result; a refused call gets none', async () => {
+  expect(withReminderLines({ result: 'listing' }, ['[context-editor] reminder n1 (set 2 turn(s) ago): t'])).toEqual({ result: 'listing\n[context-editor] reminder n1 (set 2 turn(s) ago): t' })
+  const refused = { deny: 'no' }
+  expect(withReminderLines(refused, ['x'])).toBe(refused)
+  const none = { result: 'r' }
+  expect(withReminderLines(none, [])).toBe(none)
+})
+
+// [SP_CTX_02_33] review round 39
+test('NoteReminders — не з context_edit і context_handoff: their calls go with the apply they trigger; the others carry reminders', async () => {
+  expect(remindsAfter('mcp__context-editor__context_edit')).toBe(false)
+  expect(remindsAfter('mcp__context-editor__context_handoff')).toBe(false)
+  for (const t of ['context_list', 'context_tag', 'context_note']) expect(remindsAfter(`mcp__context-editor__${t}`)).toBe(true)
+})
+
+// [SP_CTX_02_33] review round 40: the listing counts as if delivered, and delivers only once built
+test('afterReminders — the registry the listing counts: due reminders taken as delivered, the rest pending', async () => {
+  const g = reg({ turn: 5, notes: [note('n1', { tool_use_id: 'a' }, { remindAt: 5 }), note('n2', { tool_use_id: 'b' }, { remindAt: 9 })], nextNote: 3 })
+  const counted = afterReminders(g)
+  expect(counted.notes.map(n => n.remindAt)).toEqual([undefined, 9])
+  expect(g.notes[0]!.remindAt).toBe(5)
+  expect(telemetryText(await telemetry(rows(), counted, async () => ({ context: { window: 1000 } })))).toContain('Notes: 2 (1 with a reminder pending)')
 })

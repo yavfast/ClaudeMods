@@ -125,16 +125,21 @@ export function noteLabels(rows: readonly SessionMessage[], reg: Pick<TagRegistr
 export type NoteLine = PageNote
 
 // [SP_CTX_02_01] `<id> #<i>: <text>` + the turns left to a pending reminder;
-// listRows keeps the lines whose row is on its page.
+// listRows keeps the lines whose row is on its page and names the others in
+// `Notes elsewhere` (a note whose target is not found: no row).
 export function noteLines(rows: readonly SessionMessage[], reg: Pick<TagRegistry, 'notes' | 'turn'>): NoteLine[] {
   const out: NoteLine[] = []
   for (const n of reg.notes) {
     const at = placeOf(rows, n)
-    if (!at) continue
     const remind = n.remindAt !== undefined ? ` (reminder in ${Math.max(0, n.remindAt - reg.turn)} turn(s))` : ''
-    out.push({ row: at.first, line: `${n.id} #${at.first}: ${n.text}${remind}` })
+    out.push(at ? { id: n.id, row: at.first, line: `${n.id} #${at.first}: ${n.text}${remind}` } : { id: n.id, line: `${n.id}: ${n.text}${remind}` })
   }
   return out
+}
+
+// [SP_CTX_02_01] The notes on one row, in full, for the whole-row view.
+export function rowNotes(rows: readonly SessionMessage[], reg: Pick<TagRegistry, 'notes'>, index: number): string[] {
+  return reg.notes.filter(n => (noteRows(rows, n.target) ?? []).includes(index)).map(n => `${n.id}: ${n.text}`)
 }
 
 // ---- [SP_CTX_02_29] notes in the close report
@@ -393,10 +398,31 @@ export function dueReminders(reg: TagRegistry): { registry: TagRegistry; lines: 
   return { registry: { ...reg, notes }, lines }
 }
 
+// [SP_CTX_02_33] Which of the mod's own tools carry reminders: not
+// context_edit and context_handoff, whose calls DropOwnCalls removes at the
+// very apply or seed they trigger (review round 39); `remindAt` stays.
+export function remindsAfter(tool: string): boolean {
+  const name = tool.replace(/^mcp__context-editor__/, '')
+  return name !== 'context_edit' && name !== 'context_handoff'
+}
+
+// [SP_CTX_02_33] After one of the mod's own tools, the reminders go at the
+// end of its own result; a refused call gets none.
+export function withReminderLines<T extends object>(out: T, lines: readonly string[]): T {
+  if (!lines.length || !('result' in out) || typeof (out as { result?: unknown }).result !== 'string') return out
+  return { ...out, result: `${(out as { result: string }).result}\n${lines.join('\n')}` }
+}
+
 // [SP_CTX_02_16] [SP_CTX_02_33] Reminders come only with a finished call of
 // the main loop, not denied, not of the mod's own tools, with a tool_use_id.
 export function remindable(f: { agentId?: unknown; denied: boolean; tool: string; tool_use_id?: string }): boolean {
   return !f.agentId && !f.denied && !f.tool.startsWith(OWN_TOOLS) && !!f.tool_use_id
+}
+
+// [SP_CTX_02_33] The registry as it is once this call's due reminders are
+// delivered: what context_list counts before it delivers them.
+export function afterReminders(reg: TagRegistry): TagRegistry {
+  return dueReminders(reg)?.registry ?? reg
 }
 
 // [SP_CTX_02_33] The caller runs it on the registry's chain, after the alias

@@ -367,7 +367,7 @@ test('two disposable tags on an empty queue become two edits of a tags-only batc
   expect(q.edits.map(e => e.op)).toEqual(['summarize', 'rewrite'])
   expect(q.tagsOnly).toBe(true)
   const replaced = BIG.length + 'A long dead-end reasoning that turned out wrong.'.length
-  expect(freed).toBe(Math.round((replaced - 'file A: KEY_0042 = ff'.length - 'dead end'.length) / 4))
+  expect(freed).toBe(`~${Math.round((replaced - 'file A: KEY_0042 = ff'.length - 'dead end'.length) / 4)} tokens (approx.)`)
   const after = queueEdits(q, rows(), { edits: [{ op: 'drop', tool_use_id: 'b' }] })
   expect('queue' in after && after.queue.tagsOnly).toBe(false)
 })
@@ -455,7 +455,7 @@ test('QueueTagReplacements — без повтору: a replacement already queu
   const { io, log } = harness({ state: 'ok', value: one })
   expect((await queueTagReplacements(io)).queued).toBe(1)
   expect(log.queue!.edits.length).toBe(1)
-  expect(await queueTagReplacements(io)).toEqual({ queued: 0, freed: 0 })
+  expect(await queueTagReplacements(io)).toEqual({ queued: 0, freed: '' })
   expect(log.queue!.edits.length).toBe(1)
 })
 

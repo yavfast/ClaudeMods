@@ -22,6 +22,9 @@ import {
   carrierRow,
   closeStage,
   markBefore,
+  CALIB_MAX,
+  CALIB_MIN,
+  estimate,
   MAX_STAGE_NAME,
   normalizeLost,
   reportFailed,
@@ -58,6 +61,11 @@ export type TagRegistry = {
   // [SP_CTX_01_21] the agent's service notes, and the number of the next one
   notes: Note[]
   nextNote: number
+  // [SP_CTX_02_34] the last calibration: chars of the conversation per token
+  charsPerToken?: number
+  // [SP_CTX_01_10] the last application with edits and the request size
+  // before it; the telemetry measures the change once ([SP_CTX_02_28])
+  lastApply?: { at: number; tokensBefore: number }
 }
 
 export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false, notes: [], nextNote: 1 }
@@ -111,6 +119,20 @@ function isClosed(v: unknown): v is ClosedBlock {
   return (b.name === undefined || isStageName(b.name)) && 'after' in b && isMark(b.after) && 'end' in b && isMark(b.end) && isCount(b.turn, 0)
 }
 
+// [SP_CTX_01_10] The registry without lastApply: a handoff or a compaction
+// that is not the mod's apply leaves nothing to measure.
+export function dropLastApply(reg: TagRegistry): TagRegistry {
+  if (!reg.lastApply) return reg
+  const { lastApply: _l, ...rest } = reg
+  return rest as TagRegistry
+}
+
+function isLastApply(v: unknown): boolean {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const a = v as Record<string, unknown>
+  return isCount(a.at, 0) && isCount(a.tokensBefore, 0)
+}
+
 // [SP_CTX_01_10] Read states as the queue's: a wrong field, tag, stage,
 // closed block or note makes the whole file unreadable, never silently an empty registry.
 export function parseRegistry(text: string): Read<TagRegistry> {
@@ -130,6 +152,8 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     reg.lastClosed !== undefined && !isClosed(reg.lastClosed) && 'lastClosed',
     typeof reg.introduced !== 'boolean' && 'introduced',
     badNoteFields(reg.notes, reg.nextNote),
+    reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
+    reg.charsPerToken !== undefined && !(typeof reg.charsPerToken === 'number' && reg.charsPerToken >= CALIB_MIN && reg.charsPerToken <= CALIB_MAX) && 'charsPerToken',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badTag = reg.tags.findIndex(t => !isTag(t))
@@ -552,7 +576,7 @@ function replacedSize(rows: readonly SessionMessage[], edit: QueuedEdit): number
   return rows[t.rows[0]!]!.text.length
 }
 
-const NOTHING: Replaced = { queued: 0, freed: 0 }
+const NOTHING: Replaced = { queued: 0, freed: '' }
 
 // [SP_CTX_02_13] Queues the replacements of the disposable tags whose
 // replacement is not in the queue yet, and returns how many it queued and the
@@ -579,7 +603,8 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   }
   let chars = 0
   for (const edit of queued) chars += replacedSize(rows, edit) - (edit.op === 'summarize' ? edit.summary.length : edit.op === 'rewrite' ? edit.text.length : 0)
-  return { queued: queued.length, freed: Math.max(0, Math.round(chars / 4)) }
+  // [SP_CTX_02_34] by the registry's calibrated ratio
+  return { queued: queued.length, freed: estimate(Math.max(0, chars), tags.value.charsPerToken) }
 }
 
 // Whether a batch edit is the replacement a disposable tag stands for.

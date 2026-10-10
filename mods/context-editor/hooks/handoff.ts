@@ -26,10 +26,10 @@ import {
   type MediaRef,
   type QueuedEdit,
 } from './edits'
-import { DEFAULT_RESUME, MAX_DOCUMENT, type HandoffRequest, type Queue, type Read } from './queue'
+import { DEFAULT_RESUME, MAX_DOCUMENT, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
-import { EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
+import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
 
 export { ROW_WINDOW }
@@ -43,7 +43,7 @@ export const SEED_ROOM = 16
 export const SEED_PROBE = 80
 export const SEED_WAIT_MS = 2_000
 export const SEED_POLL_MS = 100
-export const SUMMARY_OPENER = 'This session is being continued from a previous conversation'
+export { SUMMARY_OPENER }
 export const TRANSCRIPT_LINE = 'read the full transcript at:'
 
 function errorText(err: unknown): string {
@@ -76,6 +76,8 @@ export type HandoffSeed = {
   // [SP_CTX_01_17] the results whose text CarryNote extended: their rows are
   // "changed by the seed" although their fingerprint stays ([SP_CTX_02_14])
   carried: string[]
+  // [SP_CTX_02_34] TagRegistry.charsPerToken of the old session, for the report's estimate
+  ratio?: number
   new?: string
   taken: boolean
 }
@@ -649,7 +651,8 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
   try {
     const { transcript, rows } = await io.view()
     const api = await io.readApi()
-    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags: await io.readTags(), folder, archive, writeMedia: io.writeMedia })
+    const tags = await io.readTags()
+    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia })
     if ('refuse' in built) {
       await clean(false)
       return { reason: built.reason }
@@ -686,6 +689,8 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
         fromSummary: built.fromSummary,
         unmatchedPromptMedia: built.unmatchedPromptMedia,
         carried: built.carried,
+        // [SP_CTX_02_34] the old session's calibration, for the seed's report
+        ratio: tags.state === 'unreadable' ? undefined : tags.value.charsPerToken,
         taken: false,
       },
     }
@@ -724,7 +729,8 @@ export async function carryRegistries(
         const marks = relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits), s.visible, s.rows, done, s.report.produced, s.carried)
         const out = rebindNotes(marks, s.visible, s.rows, done, s.report.produced)
         dropped = out.dropped
-        return { ...out.registry, introduced: false }
+        // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one
+        return { ...dropLastApply(out.registry), introduced: false }
       })
       if (carried === 'carried') s.report.notesDropped = dropped
       return carried
@@ -743,8 +749,8 @@ export async function carryRegistries(
 
 // [SP_CTX_01_05] [SP_CTX_02_21] The seed's FormatReport after the first line
 // of the new session's report: on a line of its own, nothing when it is empty.
-export function seedReportTail(s: Pick<HandoffSeed, 'report' | 'archive'>): string {
-  const text = formatReport(s.report, s.archive, 'seed')
+export function seedReportTail(s: Pick<HandoffSeed, 'report' | 'archive' | 'ratio'>): string {
+  const text = formatReport(s.report, s.archive, 'seed', s.ratio)
   return text ? `\n${text}` : ''
 }
 

@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, collectMedia, dropOwnCalls, fingerprint, formatReport, freshId, listRows, MARK, mergeCallRows, ownerKey, prepare, producedRows, replacedOwners, ROW_WINDOW } from '../hooks/edits'
+import { applyEdits, collectMedia, dropOwnCalls, fingerprint, formatReport, freshId, fullRow, listMode, listRows, MARK, MAX_FULL_ROW, mergeCallRows, ownerKey, prepare, producedRows, replacedOwners, ROW_WINDOW } from '../hooks/edits'
 
 const BIG = 'x'.repeat(5000)
 
@@ -500,12 +500,14 @@ test('FormatReport — форми: compaction without an applied edit / seed wit
   const none = formatReport({ ...empty, failed: ['x'] }, '/a.json', 'compaction')
   expect(none).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: x.')
   expect(none).not.toContain('Conversation ~')
-  expect(none).not.toContain('tokens freed')
+  expect(none).not.toContain('freed')
   expect(formatReport(empty, '/a.json', 'seed')).toBe('')
   expect(formatReport({ ...empty, failed: ['x'] }, '/a.json', 'seed')).toBe('context-editor: no queued edit was applied. Not applied: x.')
   const done = formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'seed')
-  expect(done).toBe('context-editor: applied 1 edit(s): y. Conversation ~100 -> ~60 chars (~10 tokens freed).')
-  expect(formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'compaction')).toContain('Conversation ~100 -> ~60 chars (~10 tokens freed).')
+  expect(done).toBe('context-editor: applied 1 edit(s): y. Conversation ~100 -> ~60 chars (estimate: ~10 tokens (approx.) freed; context_list telemetry shows the measured change after the next response).')
+  expect(formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'compaction')).toContain('Conversation ~100 -> ~60 chars (estimate: ~10 tokens (approx.) freed;')
+  // [SP_CTX_02_34] with the registry's calibration
+  expect(formatReport({ ...empty, applied: ['y'], charsAfter: 60 }, '/a.json', 'compaction', 2)).toContain('Conversation ~100 -> ~60 chars (estimate: ~20 tokens freed;')
 })
 
 // [SP_CTX_01_05] [SP_CTX_02_04]
@@ -618,4 +620,21 @@ test('DropOwnCalls — a parallel own call between two calls of one response: th
   expect(out.length).toBe(3)
   expect(out[1]!.toolUses.map(u => u.tool_use_id)).toEqual(['a', 'b'])
   expect(out[2]!.toolResults!.map(t => t.tool_use_id)).toEqual(['a', 'b'])
+})
+
+// [SP_CTX_02_01] phase 17: one row whole
+test('context_list — повний рядок: index 12 with full shows the row whole up to MAX_FULL_ROW with the tail; BAD_FULL otherwise', async () => {
+  const input: SessionMessage[] = Array.from({ length: 13 }, (_, i) => ({ role: 'assistant' as const, text: i === 12 ? 'y'.repeat(30_000) : `r${i}`, toolUses: [] }))
+  const text = fullRow(input, 12, new Map(), ['[pin]'], ['n1: check it'])
+  expect(text.startsWith('Row #12 assistant 30000c')).toBe(true)
+  expect(text.length < MAX_FULL_ROW + 200).toBe(true)
+  expect(/… \(\+1\d{4} chars; the original, if this row was edited, is in the archive named in its text\)$/.test(text)).toBe(true)
+  const small = fullRow([{ role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: { file_path: '/x' } }] }, { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'the whole result', isError: false }] }], 1, new Map(), [], ['n2: a note'])
+  expect(small).toContain('tool_result id=a:\nthe whole result')
+  expect(small).toContain('note n2: a note')
+  expect(listMode({ index: 12, full: true }, 13)).toEqual({ full: 12 })
+  expect('bad' in listMode({ full: true }, 13) && listMode({ full: true }, 13)).toBeTruthy()
+  expect(JSON.stringify(listMode({ full: true, index: 13 }, 13))).toContain('BAD_FULL')
+  expect(JSON.stringify(listMode({ index: 3 }, 13))).toContain('BAD_FULL')
+  expect(listMode({ from: 5, count: 0 }, 13)).toEqual({ page: { from: 5, count: 0 } })
 })

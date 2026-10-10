@@ -4,6 +4,12 @@ import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare,
 import { EMPTY_QUEUE, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
 import {
   blockReport,
+  calibrate,
+  CALIB_MAX,
+  CALIB_MIN,
+  CALIB_TOKENS,
+  estimate,
+  headerSize,
   carrierRow,
   detectOptimize,
   distinctive,
@@ -99,7 +105,7 @@ function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Part
     },
     readQueue: async () => ({ state: 'ok', value: log.queue }),
     writeQueue: async q => void (log.queue = q),
-    replace: async () => (log.replaces++, { queued: 0, freed: 0 }),
+    replace: async () => (log.replaces++, { queued: 0, freed: '' }),
     report: (b, replaced) => blockReport(block, b, replaced),
     ...over,
   }
@@ -302,7 +308,7 @@ test('BlockReport — межа індексів: 25 active reviews in the block 
   const reviews: Tag[] = Array.from({ length: 25 }, (_, i) => ({ kind: 'review', target: { tool_use_id: `r${i}` }, created_turn: 0 }))
   const tags = reg({ tags: [...reviews, { kind: 'disposable', target: { tool_use_id: 'c' }, note: 'n', created_turn: 0 }] })
   const block: ClosedBlock = { name: 'A', after: mark(list, 0), end: mark(list, list.length - 1), turn: 0 }
-  const text = await blockReport(blockIO(list, tags), block, { queued: 1, freed: 3 })
+  const text = await blockReport(blockIO(list, tags), block, { queued: 1, freed: '~3 tokens' })
   const line = text.split('\n').find(l => l.startsWith('Candidates in the block'))!
   expect(line.match(/#\d+/g)!.length).toBe(MAX_BLOCK_INDEXES + 1)
   expect(line).toContain('+5 more')
@@ -352,7 +358,7 @@ test('Telemetry — stage, blocks and candidates', async () => {
   const t = async (extra: Partial<TagRegistry>) => telemetryText(await telemetry(r, reg({ turn: 4, tags, ...extra }), async () => USAGE))
   const open = await t({ stage })
   expect(open).toContain('Stage "S" open from #10 (opened 3 turn(s) ago), ~')
-  expect(open).toContain('Candidates: review 2; disposable 0')
+  expect(open).toContain('Candidates: review 2 (#1, #7); disposable 0')
   expect(await t({ stage: { ...stage, after: gone } })).toContain('Stage "S" open from #0 (opened 3 turn(s) ago), ~')
   expect(await t({ stage: { ...stage, after: gone } })).toContain('; its start row is gone, so it runs from #0')
   expect(await t({ lastClosed: { name: 'A', after: mark(r, 3), end: mark(r, 9), turn: 0 } })).toContain('Last block "A" #4..#9 (~')
@@ -361,7 +367,7 @@ test('Telemetry — stage, blocks and candidates', async () => {
   const lostEnd = await t({ lastClosed: { name: 'A', after: mark(r, 3), end: gone, turn: 0 } })
   expect(lostEnd).toContain('Last block "A" from #4: its end row is gone')
   expect(lostEnd).not.toContain('it is empty')
-  expect(await t({ lastClosed: { name: 'A', after: gone, end: mark(r, 9), turn: 0 } })).toContain('Last block "A" #0..#9 (~1k tokens); its start row is gone, so it runs from #0')
+  expect(await t({ lastClosed: { name: 'A', after: gone, end: mark(r, 9), turn: 0 } })).toContain('Last block "A" #0..#9 (~1272 tokens (approx.)); its start row is gone, so it runs from #0')
 })
 
 // ---- [SP_CTX_02_01] the listing's marks
@@ -730,4 +736,122 @@ test('Telemetry — сума трохи більша за запит: the Messag
 test('STAGE_ADVICE names the reproducible tools without the `~` flag', async () => {
   expect(STAGE_ADVICE).not.toContain('~')
   expect(STAGE_ADVICE).toContain('Pairs from Read, Grep and Glob are reproducible')
+})
+
+// ---- [SP_CTX_02_34] Calibrate and Estimate (phase 17)
+
+const big = (chars: number): SessionMessage[] => [prompt('p'), say('x'.repeat(chars - 1))]
+const messagesUsage = (conversation: number): UsageInfo => ({
+  context: { tokens: conversation + 40_000, window: 1_000_000, breakdown: { categories: [{ name: MESSAGES_ROW, tokens: conversation, kind: 'used' }], totalTokens: conversation + 40_000, rawMaxTokens: 1_000_000, autoCompactThreshold: 900_000 } },
+})
+
+test('Calibrate — калібрування: messages 268 000, 482 400 chars: ratio 1.8, written', async () => {
+  const saved: number[] = []
+  const r = await calibrate(big(482_400), { measure: 'messages', conversation: 268_000 }, {}, async v => void saved.push(v))
+  expect(r).toBe(1.8)
+  expect(saved).toEqual([1.8])
+  // through the telemetry
+  const t = await telemetry(big(482_400), reg(), async () => messagesUsage(268_000), async change => void saved.push(change(reg()).charsPerToken!))
+  expect(t.ratio).toBe(1.8)
+  expect(saved.length).toBe(2)
+})
+
+test('Calibrate — без калібрування: request / too small / within 5 % of the stored one: the stored ratio; nothing written', async () => {
+  const saved: number[] = []
+  const save = async (v: number) => void saved.push(v)
+  expect(await calibrate(big(482_400), { measure: 'request' }, { charsPerToken: 2.5 }, save)).toBe(2.5)
+  expect(await calibrate(big(3000), { measure: 'messages', conversation: CALIB_TOKENS - 1 }, { charsPerToken: 2.5 }, save)).toBe(2.5)
+  expect(await calibrate(big(482_400), { measure: 'messages', conversation: 268_000 }, { charsPerToken: 1.75 }, save)).toBe(1.8)
+  expect(saved).toEqual([])
+  expect(await calibrate(big(100), { measure: 'unknown' }, {}, save)).toBeUndefined()
+})
+
+test('Calibrate — межі: 0.5 and 12 chars per token are held to 1.0 and 8.0', async () => {
+  expect(await calibrate(big(20_000), { measure: 'messages', conversation: 40_000 }, {})).toBe(CALIB_MIN)
+  expect(await calibrate(big(480_000), { measure: 'messages', conversation: 40_000 }, {})).toBe(CALIB_MAX)
+})
+
+test('Estimate — форми: 9000 chars, ratio 1.8 / none', async () => {
+  expect(estimate(9000, 1.8)).toBe('~5000 tokens')
+  expect(estimate(9000)).toBe('~2250 tokens (approx.)')
+})
+
+test('context_list — один розмір: the header names the telemetry\'s tokens only; without telemetry an Estimate', async () => {
+  const r = big(482_400)
+  const t = await telemetry(r, reg(), async () => messagesUsage(268_000))
+  const head = listRows(r, 0, 5, new Map(), new Map(), new Map(), telemetryText(t), [], headerSize(t, 482_400)).split('\n')[0]!
+  expect(head).toContain('2 rows, ~268k tokens, 0 media')
+  expect(head).not.toContain('chars (~')
+  expect(headerSize({ measure: 'unknown' }, 9000)).toBe('~2250 tokens (approx.)')
+  expect(headerSize({ measure: 'unknown', ratio: 1.8 }, 9000)).toBe('~5000 tokens (calibrated estimate)')
+})
+
+test('Telemetry — кандидати з рядками: active reviews by the first row of their target (by reason in phase 15)', async () => {
+  const r = rows()
+  const tags: Tag[] = [
+    { kind: 'review', target: { tool_use_id: 'c' }, created_turn: 0 },
+    { kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', target: mark(r, 9), created_turn: 0 },
+  ]
+  expect(telemetryText(await telemetry(r, reg({ tags }), async () => USAGE))).toContain('Candidates: review 3 (#1, #7, #9); disposable 0')
+})
+
+test('Калібрування без телеметрії (05_04): estimates chars/4 marked approx.; a stored ratio stays in use', async () => {
+  const r = rows()
+  const plain = await telemetry(r, reg({ stage: { name: 'S', after: null, openedTurn: 0 } }), async () => ({ context: { window: 1000 } }))
+  expect(telemetryText(plain)).toContain('tokens (approx.)')
+  const stored = await telemetry(r, reg({ charsPerToken: 2, stage: { name: 'S', after: null, openedTurn: 0 } }), async () => ({ context: { window: 1000 } }))
+  expect(stored.ratio).toBe(2)
+  expect(telemetryText(stored)).not.toContain('approx.')
+  const parsed = parseRegistry(JSON.stringify(reg({ charsPerToken: 1.8 })))
+  expect(parsed.state === 'ok' && parsed.value.charsPerToken).toBe(1.8)
+  expect(parseRegistry(JSON.stringify(reg({ charsPerToken: 9 }))).state).toBe('unreadable')
+})
+
+// ---- [SP_CTX_02_28] review round 39: the measured change of the last apply
+
+test('Telemetry — виміряне звільнення: after the first response the line shows request before − now once and lastApply goes; before it, nothing', async () => {
+  const r = rows()
+  let state = reg({ lastApply: { at: 5, tokensBefore: 574_000 } })
+  const update = async (change: (g: TagRegistry) => TagRegistry) => void (state = change(state))
+  const after: UsageInfo = { context: { tokens: 261_000, window: 1_000_000 } }
+  const text = telemetryText(await telemetry(r, state, async () => after, update))
+  expect(text).toContain('Last apply: ~313k tokens freed (measured: request before it − request now; net of the rows added since)')
+  expect(state.lastApply).toBeUndefined()
+  expect(telemetryText(await telemetry(r, state, async () => after, update))).not.toContain('Last apply')
+  // no response since the apply yet: unknown, the field stays
+  let waiting = reg({ lastApply: { at: 5, tokensBefore: 574_000 } })
+  const t = await telemetry(r, waiting, async () => ({ context: { window: 1000 } }), async change => void (waiting = change(waiting)))
+  expect(telemetryText(t)).not.toContain('Last apply')
+  expect(waiting.lastApply).toEqual({ at: 5, tokensBefore: 574_000 })
+  expect(parseRegistry(JSON.stringify(reg({ lastApply: { at: 1, tokensBefore: 2 } }))).state).toBe('ok')
+  expect(parseRegistry(JSON.stringify({ ...reg(), lastApply: { at: 1 } })).state).toBe('unreadable')
+})
+
+test('BlockReport — one ratio: the block size uses the calibration the same report\'s telemetry made', async () => {
+  const list = [prompt('p'), say('x'.repeat(90_000)), use('a'), result('a'), use('tc', TAG_TOOL)]
+  const io: BlockIO = {
+    key: async () => 'K',
+    rows: async () => list,
+    readTags: async () => ({ state: 'ok', value: reg() }),
+    media: async () => new Map(),
+    usage: async () => messagesUsage(30_000),
+    setListed: () => undefined,
+  }
+  const text = await blockReport(io, { name: 'A', after: mark(list, 0), end: mark(list, 3), turn: 0 })
+  expect(text).toContain('rows #1..#3, ~')
+  expect(text.split('\n')[0]).not.toContain('approx.')
+})
+
+test('context_list — a thinking-only row shows as (thinking)', async () => {
+  expect(listRows([prompt('p'), think(), say('x')], 0, 5)).toContain('#1 assistant 0c: (thinking)')
+})
+
+// [SP_CTX_02_28] review round 40
+test('Telemetry — a negative measured change (more rows added than freed) is not shown; lastApply goes anyway', async () => {
+  let state = reg({ lastApply: { at: 5, tokensBefore: 200_000 } })
+  const t = await telemetry(rows(), state, async () => ({ context: { tokens: 210_000, window: 1_000_000 } }), async change => void (state = change(state)))
+  expect(t.measuredFreed).toBeUndefined()
+  expect(telemetryText(t)).not.toContain('Last apply')
+  expect(state.lastApply).toBeUndefined()
 })
