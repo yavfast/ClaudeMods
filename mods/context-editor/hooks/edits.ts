@@ -563,8 +563,11 @@ function isIndex(value: unknown): value is number {
 export type RefResolver = (ref: string) => string | undefined
 export const NO_REFS: RefResolver = () => undefined
 
-// [SP_CTX_02_18] Why an index from an earlier listing is refused.
-export const STALE_INDEXES = 'the conversation was compacted since your last context_list; call context_list again for current indexes'
+// [SP_CTX_02_18] [SP_CTX_02_03] Why an index from an earlier listing is
+// refused; a listing with count 0 or one row in full renews nothing, so the
+// text says so.
+export const STALE_INDEXES =
+  'the conversation was compacted since your last context_list; call context_list with a page of rows (count > 0) for current indexes — count 0 and "full" do not renew them'
 
 export const REF_HINT = 'marked calls carry a "[context-editor] id cN" line after their result'
 
@@ -1218,6 +1221,16 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   return !text || parts[0] ? text : `context-editor: ${text}`
 }
 
+// [SP_CTX_01_05] NowIndex: each applied edit with a `produced` entry names
+// where its replacement row stands in the final list, the one the next
+// context_list shows (`rewrite #23 (now #18)`); the others stay as they are.
+// Only the text changes: `applied` is how callers match the batch.
+export function nowIndexes(r: Pick<ApplyReport, 'applied' | 'produced'>): string[] {
+  const at = new Map<string, number>()
+  for (const p of r.produced ?? []) if (!at.has(p.edit)) at.set(p.edit, p.index)
+  return r.applied.map(a => (at.has(a) ? `${a} (now #${at.get(a)})` : a))
+}
+
 function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: number): string {
   const notApplied = r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : ''
   if (!r.applied.length) {
@@ -1226,7 +1239,7 @@ function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: n
   }
   const saved = r.charsBefore - r.charsAfter
   return [
-    `context-editor: applied ${r.applied.length} edit(s): ${r.applied.join('; ')}.`,
+    `context-editor: applied ${r.applied.length} edit(s): ${nowIndexes(r).join('; ')}.`,
     notApplied,
     // [SP_CTX_02_34] "freed" by the registry's calibrated ratio; no telemetry here
     // the measured change comes with the telemetry after the next response ([SP_CTX_02_28])

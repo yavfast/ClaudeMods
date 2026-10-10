@@ -12,7 +12,7 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `plan` — фази 13–14, 16–17 виконані; етапи, нотатки і їх подальша робота ведуться в [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md); відкриті тут — фази 4–5, backlog I, K |
-| **Pipeline phase** | `research` — фаза 4 PL_CTX (спайк медіа в промптах) |
+| **Pipeline phase** | `plan` — фази 4–5 закомічені (180beb9); відкриті — backlog плану |
 | **Traceable ID** | `PL_CTX_P13` (Verify pending) → `PL_CTX_P4`/`P5`, backlog I, K; задача етапів |
 
 ## Intent
@@ -27,8 +27,26 @@
 
 ## Subtasks
 
-### Subtask: фази 4–5 PL_CTX — спайк медіа в промптах людини, операція describe
+### Subtask: фаза 18 PL_CTX — дрібні знахідки практики (INDEXES_STALE, індекси у звіті, P15)
 > Author: `claude-session-d5614704` — Created: 2026-10-10 — Last updated: 2026-10-10 — Status: `in-progress`
+
+Розробник: «Ок. Роби.» (2026-10-10) на пропозицію зробити однією фазою: текст відмови `INDEXES_STALE` (backlog), індекси у звіті застосування (backlog), P15 з [задачі етапів](task_20261010_083402_stage-cleanup.md) — мітка після завершеного завдання і `resumePrompt` «Continue the task…».
+
+- [x] Дослідження P15 і проєкт (субагент): спец 01_04, 01_05 (NowIndex), 02_02, 02_03, 02_06, 02_18, 02_27, 02_29, 04_06, 05_01, 05_03; план PL_CTX_P18; SP_CTX_DEC_16 `proposed` (A як є / B нейтральний текст / C без продовження за замовчуванням у ході оптимізації — рекомендація / D порада в навичці); у прогоні manim хибного «continue» не було (агент передав `resume: false`)
+- [x] SP_CTX_DEC_16 — розробник: «C: без продовження» (2026-10-10)
+- [x] DEC_16 resolved, концепт DEC_03 уточнено; код фази 18 (субагент): STALE_INDEXES, `(now #k)` за produced, правило `resume` у ході оптимізації, OptimizeText, рядок навички (7987/8000); 422 → 431 тест, validate, tsc — перевірено головною сесією
+- [x] Рев'ю раунд 46 — WARNINGS: should — відхилений перший виклик (INDEXES_STALE) скасовує явне `resume: true` (queue.ts:242,251) → поле `resumeSet`; should — перенесений пакет ходу з міткою обходить DEC_16 (swapOptimize); prefer — явне речення про зупинку в результаті, застряглий `optimizePrompted`, `context_handoff` поза правилом, застарілі тексти (05_03 фази 14, SKILL.md:38, STALE_INDEXES і `full`)
+- [x] Живий прогін фази 18 (stream-json, haiku, 2.1.296): завершене завдання без `resume` — без промпту продовження; `(now #k)`; звіт із промптом людини; посеред завдання з `resume: true` — продовження; INDEXES_STALE — pass (`.dev_flow/cache/live-test/phase18-results.md`); F1 (агент не впізнає своїх підсумків) → backlog плану; F2 (EDIT_DESCRIPTION обіцяє продовження) → у виправлення
+- [x] Виправлення раунду 46 + F2 (субагент): `resumeSet`, скидання вибору в swapOptimize для перенесеного пакета, речення про зупинку в результаті, документація (застряглий `optimizePrompted`, `context_handoff` поза правилом), застарілі тексти, EDIT_DESCRIPTION 2045/2048, SKILL.md 7991/8000; 434 тести, validate — перевірено головною сесією (старий `pending.json` без `resumeSet` читається як false — queue.ts:75); раунд 47 — confirm (main): усі should/prefer закрито механічно
+- [x] Повтор живих сценаріїв 1, 2, 2b після виправлень — pass (F1 повторилась; дрібниця: відхилений виклик не каже, що `resume: true` записано)
+- [ ] **Next:** commit sign-off фази 18
+- [ ] Код, тест, рев'ю, живий прогін, commit sign-off
+
+**Activity:**
+- 2026-10-10 — розробник погодив фазу з трьох пунктів
+
+### Subtask: фази 4–5 PL_CTX — спайк медіа в промптах людини, операція describe
+> Author: `claude-session-d5614704` — Created: 2026-10-10 — Last updated: 2026-10-10 — Status: `done`
 
 Розробник: «продовжуй фази 4–5 PL_CTX» (`/dev-flow do`, 2026-10-10). Фаза 4 — спайк (time-box одна сесія), закриває [SP_CTX_DEC_06](../../docs/context_editor.sp.md): як зіставити повідомлення API-подання з медіа в промпті людини з рядком розмови (A — рівність тексту, B — позиція, C — відмова від `describe`). Фаза 5 (`describe`) — лише за рішення A або B, після design sign-off.
 
@@ -38,7 +56,7 @@
 - [x] Рев'ю раунд 44 — FAIL: must — `describe` застосовується без архіву медіа, коли PromptMatch на час застосування дає «немає» (відтворено тестом; HandleCompaction і BuildSeed) → вимагати архів власника `{row}`, інакше відмова; should — вкладення промпту (`@файл`) губляться → рішення головної сесії: задокументувати й попередити (вміст відтворюваний); тести; prefer 4–7 → виправлення субагентом
 - [x] Рев'ю раунд 45 (delta) — PASS, усі 7 закрито; prefer: причина відмови `describe` для знайденого, але не заархівованого медіа → виправлено головною сесією (`media could not be archived`), тест, спец 01_12/02_04/05_01; 422 тести, validate, tsc
 - [x] Живий сценарій 05_03 «Зображення в промпті людини» — pass в обох хостах (2.1.296, haiku; `.dev_flow/cache/live-test/phase5-results.md`); дефектів немає
-- [ ] **Next:** commit sign-off фаз 4–5
+- [x] Commit sign-off — «Ок»; фази 4–5 закомічені (180beb9)
 - [ ] Рев'ю, живий сценарій «Зображення в промпті людини» (обидва хости), commit sign-off
 
 **Activity:**

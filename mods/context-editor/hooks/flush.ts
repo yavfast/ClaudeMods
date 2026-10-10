@@ -71,8 +71,12 @@ function errorText(err: unknown): string {
 
 // [SP_CTX_04_06] requested → prompted: one compare-and-set write, only while
 // `optimize` is still true. The other way when the prompt was refused.
+// [SP_CTX_DEC_16] A batch still queued (its compaction was abandoned) loses
+// its continuation: the agent's choice in the optimization turn decides it.
 export function swapOptimize(q: Queue): Queue | undefined {
-  return q.optimize ? { ...q, optimize: false, optimizePrompted: true } : undefined
+  if (!q.optimize) return undefined
+  const carried = q.edits.length > 0 ? { resume: false, resumeSet: false } : {}
+  return { ...q, ...carried, optimize: false, optimizePrompted: true }
 }
 
 export function unswapOptimize(q: Queue): Queue | undefined {

@@ -28,6 +28,9 @@ export type Queue = {
   edits: QueuedEdit[]
   resume: boolean
   resumePrompt: string
+  // [SP_CTX_01_04] [SP_CTX_DEC_16] the agent chose the continuation of this
+  // batch ("resume" given, or a non-empty resume_prompt); reset with the batch
+  resumeSet: boolean
   tagsOnly: boolean
   report?: string
   reportId?: number
@@ -51,6 +54,7 @@ export const EMPTY_QUEUE: Queue = {
   edits: [],
   resume: true,
   resumePrompt: DEFAULT_RESUME,
+  resumeSet: false,
   tagsOnly: false,
   reportResume: false,
   reportPrompt: DEFAULT_RESUME,
@@ -73,6 +77,7 @@ export function parseQueue(text: string): Read<Queue> {
     !Array.isArray(q.edits) && 'edits',
     typeof q.resume !== 'boolean' && 'resume',
     typeof q.resumePrompt !== 'string' && 'resumePrompt',
+    typeof q.resumeSet !== 'boolean' && 'resumeSet',
     typeof q.tagsOnly !== 'boolean' && 'tagsOnly',
     q.report !== undefined && typeof q.report !== 'string' && 'report',
     q.reportId !== undefined && typeof q.reportId !== 'number' && 'reportId',
@@ -240,8 +245,15 @@ export function queueEdits(
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
   if (queued.length) next.tagsOnly = false
+  const prompt = typeof args.resume_prompt === 'string' && args.resume_prompt.trim() !== ''
+  // [SP_CTX_02_02] [SP_CTX_DEC_16] the optimization turn follows an answer
+  // the agent already finished for the person: its batch resumes only when
+  // asked to, by "resume" or by a resume_prompt of its own. A choice made
+  // once in the batch (even by a call that queued nothing) stays.
   if (typeof args.resume === 'boolean') next.resume = args.resume
-  if (typeof args.resume_prompt === 'string' && args.resume_prompt.trim()) next.resumePrompt = args.resume_prompt
+  else if (q.optimizePrompted && !q.resumeSet) next.resume = prompt
+  if (typeof args.resume === 'boolean' || prompt) next.resumeSet = true
+  if (prompt) next.resumePrompt = args.resume_prompt as string
   if (queueBytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
   const warnings = personWarnings(rows, queued)
@@ -255,7 +267,14 @@ export function queuedText(q: Queue, queued: number, errors: readonly string[], 
     errors.length ? `Rejected: ${errors.join('; ')}.` : '',
     ...warnings,
     q.edits.length
-      ? `They apply when this turn ends. End your turn now with a one-line status.${q.resume ? ` The session then resumes by itself with: "${q.resumePrompt}"` : ''}`
+      ? `They apply when this turn ends. End your turn now with a one-line status.${
+          q.resume
+            ? ` The session then resumes by itself with: "${q.resumePrompt}"`
+            : // [SP_CTX_DEC_16] the optimization turn's batch stops the session
+              q.optimizePrompted
+              ? ' The session then stops; pass "resume": true to go on.'
+              : ''
+        }`
       : '',
   ]
     .filter(Boolean)

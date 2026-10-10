@@ -33,9 +33,9 @@ Write a stage record in place of the processed rows, e.g. as the summary of a `c
 
 Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: shrink them to a pointer (what, where, what was found; read again if needed). Everything else needs a careful summary or stays: live probes, subagent reports, web content, and above all the person's messages, including answers to your questions (`AskUserQuestion`); `context_edit` warns when an edit covers them.
 
-Usually keep verbatim: the person's messages, the rules and skills still in force, and the conclusions you need next. A target tagged `[pin]` cannot be edited (the person's first prompt is pinned for you).
+Usually keep verbatim: the person's messages, the rules and skills still in force, and the conclusions you need next. A `[pin]` target cannot be edited (the person's first prompt is pinned for you).
 
-Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt`. Each edit resets the prompt cache from its row on, so batch a block's edits in one call. When edits apply, your own `context_*` calls are removed from the conversation; your tags and notes stay (see `context_list`). `{"index":i,"full":true}` in `context_list` shows a row whole.
+Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt` (in an optimization turn only with `"resume": true`). Each edit resets the prompt cache from its row on, so batch a block's edits in one call. When edits apply, your own `context_*` calls leave the conversation; tags and notes stay (see `context_list`). `{"index":i,"full":true}` in `context_list` shows a row whole.
 
 ## Dead ends
 
@@ -50,7 +50,7 @@ When you finish your turn for the person and want the block optimized, make this
 - It works only alone on the last non-empty line: quoted mid-text, with other text on its line, or inside the optimization turn it does nothing.
 - It closes the open stage at the end of the turn; with none open, the block since the last closed one. If you closed a stage with the tool in that turn, the mark refers to it. Your `disposable` replacements join that turn's batch.
 - An ordinary optimization turn follows, without indexes: take the range from `Last block #a..#b` in the header of `context_list`, then list from `from = a` before you edit by index.
-- Usually stop after it (`"resume": false`). Mid-work, close the stage with the tool instead.
+- Then the session stops unless `"resume": true`. Mid-work, close the stage with the tool.
 
 ## Telemetry
 
@@ -60,7 +60,7 @@ When you finish your turn for the person and want the block optimized, make this
 - `State slot: #i`, or that its row is gone;
 - `Last apply: ~N tokens freed (measured …)`, once after an apply.
 
-Sizes are calibrated estimates (`approx.` until known). Decide by the logical state of the work, not by the numbers alone.
+Sizes are calibrated estimates (`approx.` until known). Decide by the state of the work, not the numbers.
 
 ## Candidates
 

@@ -23,6 +23,7 @@ import {
   type ViewIO,
 } from '../hooks/edits'
 import { applyTagRequests, EMPTY_REGISTRY } from '../hooks/tags'
+import { applyNoteRequests } from '../hooks/notes'
 import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/register'
 
 function row(role: 'user' | 'assistant', text: string): SessionMessage {
@@ -97,6 +98,8 @@ test('every tool description reaches the model whole (the five tools)', async ()
 test('опис інструмента (phase 15): the state slot, the range, the review reasons and the ~ flag are named', async () => {
   expect(EDIT_DESCRIPTION).toContain('A row tagged [state] changes only by a rewrite of that row.')
   expect(EDIT_DESCRIPTION).not.toContain('the working part')
+  // [SP_CTX_DEC_16] phase 18, review 46 F2: the optimization turn's exception
+  expect(EDIT_DESCRIPTION).toContain('unless "resume" is false; in an optimization turn only on "resume": true or "resume_prompt".')
   expect(TAG_DESCRIPTION).toContain('"state"')
   expect(TAG_DESCRIPTION).toContain('"index" and "to"')
   expect(TAG_DESCRIPTION).toContain('big, search, stale (the file changed since), duplicate')
@@ -136,6 +139,29 @@ test('stale indexes: a tag by index is refused, a tag by id is added', async () 
   const out = applyTagRequests({ ...EMPTY_REGISTRY }, rows, [{ op: 'add', kind: 'pin', index: 3 }, { op: 'add', kind: 'pin', tool_use_id: 'a' }], undefined, true)
   expect(out.added).toBe(1)
   expect(out.rejected.map(r => r.code)).toEqual(['INDEXES_STALE'])
+})
+
+// [SP_CTX_02_03] [SP_CTX_02_18] phase 18: a listing with count 0 renews no
+// indexes, so every INDEXES_STALE refusal asks for a listing with rows
+test('stale indexes: the refusal of context_edit, context_tag and context_note asks for a listing with rows (count > 0)', async () => {
+  const rows: SessionMessage[] = [
+    row('user', 'task'),
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'x', isError: false }] },
+    row('assistant', 'done'),
+  ]
+  const edit = prepare(rows, [{ op: 'rewrite', index: 3, text: 't' }], undefined, undefined, true)
+  const tag = applyTagRequests({ ...EMPTY_REGISTRY }, rows, [{ op: 'add', kind: 'pin', index: 3 }], undefined, true)
+  const note = applyNoteRequests({ ...EMPTY_REGISTRY, notes: [] }, rows, [{ op: 'add', text: 'n', index: 3 }], undefined, true)
+  const reasons = [edit.errors[0], tag.rejected[0]?.reason, note.rejected[0]?.reason]
+  for (const reason of reasons) {
+    expect(reason ?? '').toContain('call context_list with a page of rows (count > 0) for current indexes')
+    expect(reason ?? '').toContain('count 0 and "full" do not renew them')
+  }
+  // once a listing with rows renewed the key, the same targets are taken
+  expect(prepare(rows, [{ op: 'rewrite', index: 3, text: 't' }]).queued.length).toBe(1)
+  expect(applyTagRequests({ ...EMPTY_REGISTRY }, rows, [{ op: 'add', kind: 'pin', index: 3 }]).added).toBe(1)
+  expect(applyNoteRequests({ ...EMPTY_REGISTRY, notes: [] }, rows, [{ op: 'add', text: 'n', index: 3 }]).added.length).toBe(1)
 })
 
 // ---- [SP_CTX_01_14] the host process's identity, [SP_CTX_02_18] Trusted(b)

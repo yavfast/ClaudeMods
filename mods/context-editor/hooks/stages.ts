@@ -608,7 +608,8 @@ export function optimizeText(block: ClosedBlock, compacted: boolean, notes = 0):
     notesHint(notes) +
     '\n' +
     STAGE_ADVICE +
-    '\nYou asked for this while finishing your turn for the person, so usually stop after it: pass "resume": false in context_edit unless the task should go on, then end your turn. The mark has no effect in this turn.'
+    // [SP_CTX_DEC_16] the batch of this turn does not resume unless asked to (queueEdits)
+    '\nYou asked for this while finishing your turn for the person, so the session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if the task should go on, then end your turn. The mark has no effect in this turn.'
   )
 }
 

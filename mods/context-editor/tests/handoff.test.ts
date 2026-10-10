@@ -133,6 +133,16 @@ test('BuildSeed — правки й медіа: summarize and drop applied, the 
   expect(checkSeed(seed.rows)).toBeUndefined()
 })
 
+// [SP_CTX_01_05] phase 18
+test('BuildSeed — NowIndex у засіві: the report names the summarized pair by its result row in the seeded list', async () => {
+  const seed = built((await seedOf({}, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out)
+  const k = seed.rows.findIndex(r => (r.toolResults ?? []).some(t => t.text.includes('summarized')))
+  expect(k).toBeGreaterThan(0)
+  expect(seed.report.produced.map(p => p.index)).toEqual([k])
+  expect(seedReportTail({ report: seed.report, archive: '/s/old/1.json' })).toContain(`applied 1 edit(s): summarize a (now #${k}).`)
+  expect(seed.report.applied).toEqual(['summarize a'])
+})
+
 test('BuildSeed — однакові ролі поспіль: two assistant rows in a row stay apart and CheckSeed takes them', async () => {
   const seed = built((await seedOf()).out)
   expect(seed.rows[1]!.text).toBe('reading')
@@ -388,7 +398,8 @@ test('BuildSeed — засів з правками: charsBefore is the visible r
   const note = carryNote([{ mediaType: 'image/png', bytes: 8, data: PNG }], [`${FOLDER}/1.png`])
   expect(seed.report.charsAfter).toBe(totalChars(seed.rows) - note.length)
   const text = seedReportTail({ report: seed.report, archive: '/s/old/1.json' })
-  expect(text.startsWith('\ncontext-editor: applied 1 edit(s): summarize a.')).toBe(true)
+  // [SP_CTX_01_05] NowIndex: the result row in the seeded list
+  expect(text.startsWith(`\ncontext-editor: applied 1 edit(s): summarize a (now #${seed.report.produced[0]!.index}).`)).toBe(true)
   expect(text).toContain(`Conversation ~${totalChars(rows)} -> ~${seed.report.charsAfter} chars`)
 })
 

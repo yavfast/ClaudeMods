@@ -117,9 +117,9 @@ export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a p
 The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, the cleanup candidates by reason with their rows, and, when there is something to show, the effect of applications and your state slot. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest 4096 rows are visible.`
 
 // [SP_CTX_02_02] At most MAX_DESCRIPTION chars, by the priorities of the spec.
-export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have already processed (screenshots and documents too), dead-end steps and wrong conclusions with compact summaries.
+export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have processed (screenshots and documents too), dead-end steps and wrong conclusions with summaries.
 
-Edits apply when your turn ends, not at once: after this call, end your turn with a one-line status. Unless "resume" is false, the session then resumes by itself with "resume_prompt" (default: "${DEFAULT_RESUME}").
+Edits apply when your turn ends: after this call, end your turn with a one-line status. The session then resumes by itself with "resume_prompt" (default: "${DEFAULT_RESUME}") unless "resume" is false; in an optimization turn only on "resume": true or "resume_prompt".
 
 Ops (items of "edits"; every field shown is required):
 - {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
@@ -128,9 +128,9 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a wrong conclusion.
 - {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
 
-Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
+Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
-Originals are archived to the file named in the replacement (original: <path>); Read it to get one back. Summaries keep every fact, number, URL and source you may still need.
+Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
 Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call. Record template and guide: skill ${PLUGIN}:${SKILL}.`
 

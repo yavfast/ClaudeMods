@@ -35,6 +35,11 @@ test('parseQueue reads a good file and refuses bad JSON or a field of the wrong 
   expect(bad.state).toBe('unreadable')
   expect(bad.state === 'unreadable' && bad.reason).toContain('resume')
   expect(parseQueue('[]').state).toBe('unreadable')
+  // [SP_CTX_01_04] resumeSet: a boolean; absent in an older file, false
+  expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, resumeSet: 'x' })).state).toBe('unreadable')
+  const { resumeSet: _r, ...older } = EMPTY_QUEUE
+  const old = parseQueue(JSON.stringify(older))
+  expect(old.state === 'ok' && old.value.resumeSet).toBe(false)
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [42] })).state).toBe('unreadable')
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a', anchors: [1] }] })).state).toBe('unreadable')
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a' }] })).state).toBe('ok')
@@ -63,6 +68,68 @@ test('queueEdits sets the batch fields and keeps rejections beside accepted edit
   expect(out.queue.tagsOnly).toBe(false)
   expect(out.queue.resume).toBe(false)
   expect(out.queue.resumePrompt).toBe('go on')
+})
+
+// [SP_CTX_02_02] [SP_CTX_DEC_16] phase 18: the batch of the optimization turn
+const drop = [{ op: 'drop', tool_use_id: 'a' }]
+const inOptimization: Queue = { ...EMPTY_QUEUE, optimizePrompted: true }
+function batch(q: Queue, args: Record<string, unknown>): Queue {
+  const out = queueEdits(q, rows, { edits: drop, ...args })
+  if ('deny' in out) throw new Error(out.deny)
+  return out.queue
+}
+
+test('context_edit — хід оптимізації без resume: an empty queue or only tag replacements; the batch does not resume and the result says nothing of resuming', async () => {
+  for (const start of [inOptimization, { ...inOptimization, edits: [{ op: 'drop' as const, tool_use_id: 'a' }], tagsOnly: true }]) {
+    const q = batch(start, {})
+    expect(q.resume).toBe(false)
+    expect(q.resumePrompt).toBe(DEFAULT_RESUME)
+    expect(queuedText(q, 1, [])).not.toContain('resumes by itself')
+  }
+})
+
+test('context_edit — хід оптимізації з продовженням: resume true / only a resume_prompt / resume false with a prompt', async () => {
+  expect(batch(inOptimization, { resume: true }).resume).toBe(true)
+  const prompted = batch(inOptimization, { resume_prompt: 'P' })
+  expect(prompted.resume).toBe(true)
+  expect(prompted.resumePrompt).toBe('P')
+  expect(queuedText(prompted, 1, [])).toContain('The session then resumes by itself with: "P"')
+  const off = batch(inOptimization, { resume: false, resume_prompt: 'P' })
+  expect(off.resume).toBe(false)
+  expect(off.resumePrompt).toBe('P')
+  // a blank prompt is no request to go on
+  expect(batch(inOptimization, { resume_prompt: '   ' }).resume).toBe(false)
+})
+
+test('context_edit — хід оптимізації, другий виклик: a call without resume or a prompt keeps the choice of the first', async () => {
+  expect(batch(batch(inOptimization, { resume: true }), {}).resume).toBe(true)
+  expect(batch(batch(inOptimization, {}), {}).resume).toBe(false)
+})
+
+// review 46: an explicit choice survives a call that queued nothing
+test('context_edit — хід оптимізації, повтор після відмови: resume true on a call whose edits were all refused stays for the retry without resume', async () => {
+  const refused = queueEdits(inOptimization, rows, { edits: [{ op: 'drop', tool_use_id: 'zz' }], resume: true })
+  if ('deny' in refused) throw new Error(refused.deny)
+  expect(refused.queued).toBe(0)
+  expect(refused.queue.resume).toBe(true)
+  expect(refused.queue.resumeSet).toBe(true)
+  const retry = batch(refused.queue, {})
+  expect(retry.edits.length).toBe(1)
+  expect(retry.resume).toBe(true)
+  // the same with a resume_prompt alone, and a later prompt does not undo resume false
+  expect(batch(batch(inOptimization, { resume_prompt: 'P' }), {}).resume).toBe(true)
+  expect(batch(batch(inOptimization, { resume: false }), { resume_prompt: 'Q' }).resume).toBe(false)
+})
+
+test('queuedText — хід оптимізації: a batch that stops the session says so; outside the optimization turn nothing is added', async () => {
+  expect(queuedText(batch(inOptimization, {}), 1, [])).toContain('The session then stops; pass "resume": true to go on.')
+  expect(queuedText(batch(EMPTY_QUEUE, { resume: false }), 1, [])).not.toContain('stops')
+})
+
+test('context_edit — поза ходом оптимізації: without resume the batch keeps its setting (true by default)', async () => {
+  expect(batch(EMPTY_QUEUE, {}).resume).toBe(true)
+  expect(batch(batch(EMPTY_QUEUE, { resume: false }), {}).resume).toBe(false)
+  expect(batch(EMPTY_QUEUE, { resume_prompt: 'P' }).resume).toBe(true)
 })
 
 test('withoutReport removes only the delivered text', async () => {

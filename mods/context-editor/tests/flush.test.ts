@@ -1,7 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { MARKER } from '../hooks/compaction'
-import { enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, newFlushState, type FlushIO } from '../hooks/flush'
-import { EMPTY_QUEUE, withoutReport, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
+import { enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, newFlushState, swapOptimize, type FlushIO } from '../hooks/flush'
+import { EMPTY_QUEUE, queueEdits, withoutReport, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
 import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted, type Turns } from '../hooks/turns'
@@ -252,7 +252,7 @@ test('Flush — хід оптимізації без пакета: no command, n
   expect(out).toEqual({ outcome: 'no-command', resume: 'none', optimize: 'submitted' })
   expect(h.log.compacts).toEqual([])
   expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false)])
-  expect(h.log.submits[0]).toContain('"resume": false')
+  expect(h.log.submits[0]).toContain('the session stops after this batch')
   expect(seenAtSubmit[0]!.optimize).toBe(false)
   expect(seenAtSubmit[0]!.optimizePrompted).toBe(true)
   neverBoth(h.log)
@@ -390,4 +390,31 @@ test('Flush — the optimization prompt carries the note count of the registry (
   await flush(h.io, h.state, 0)
   expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false, 2)])
   expect(h.log.submits[0]).toContain('You have 2 note(s)')
+})
+
+// [SP_CTX_DEC_16] [SP_CTX_04_06] review 46: a batch of the marked turn still
+// queued (its compaction was abandoned) does not keep its continuation
+test('swapOptimize — перенесений пакет: a queued batch loses resume and resumeSet; the optimization turn decides; an empty queue keeps the defaults', async () => {
+  const carried = swapOptimize({ ...EMPTY_QUEUE, edits: EDITS, optimize: true, resume: true, resumeSet: true, resumePrompt: 'P' })!
+  expect(carried.optimize).toBe(false)
+  expect(carried.optimizePrompted).toBe(true)
+  expect(carried.resume).toBe(false)
+  expect(carried.resumeSet).toBe(false)
+  // the optimization turn adds an edit without resume: the batch stops
+  const rows = [
+    { role: 'user' as const, text: 'task', toolUses: [] },
+    { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: 'c', tool: 'Read', input: {} }] },
+    { role: 'user' as const, text: '', toolUses: [], toolResults: [{ tool_use_id: 'c', text: 'x', isError: false }] },
+  ]
+  const out = queueEdits(carried, rows, { edits: [{ op: 'drop', tool_use_id: 'c' }] })
+  if ('deny' in out) throw new Error(out.deny)
+  expect(out.queue.resume).toBe(false)
+  const asked = queueEdits(carried, rows, { edits: [{ op: 'drop', tool_use_id: 'c' }], resume: true })
+  if ('deny' in asked) throw new Error(asked.deny)
+  expect(asked.queue.resume).toBe(true)
+  // nothing queued: resume stays the default for the next batch
+  const empty = swapOptimize({ ...EMPTY_QUEUE, optimize: true })!
+  expect(empty.resume).toBe(true)
+  expect(empty.resumeSet).toBe(false)
+  expect(swapOptimize({ ...EMPTY_QUEUE })).toBeUndefined()
 })

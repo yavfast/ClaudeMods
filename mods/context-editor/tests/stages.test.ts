@@ -421,7 +421,9 @@ test('OptimizeText — без індексів: the block name, ListHint, STAGE_
   expect(plain).toContain('Last block #<a>..#<b>')
   expect(plain).toContain('from=<a>')
   expect(plain).toContain(STAGE_ADVICE)
-  expect(plain).toContain('"resume": false')
+  // [SP_CTX_DEC_16] phase 18: the session stops unless the agent asks to go on
+  expect(plain).toContain('the session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if the task should go on')
+  expect(plain).not.toContain('"resume": false')
   expect(plain).not.toContain('The batch queued in that turn')
   expect(/#\d/.test(plain)).toBe(false)
   const done = optimizeText({ ...a, name: undefined }, true)

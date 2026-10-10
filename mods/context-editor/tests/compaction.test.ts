@@ -362,6 +362,26 @@ test('HandleCompaction — produced and the stage marks: the made row in the ret
   expect(written.tags!.stage!.after).toEqual({ anchor: fingerprint(rows[0]!), hint: 0 })
 })
 
+// [SP_CTX_01_05] phase 18: NowIndex after DropOwnCalls
+test('HandleCompaction — NowIndex після DropOwnCalls: the report names the rewritten row by its index in the returned list; applied matches the batch', async () => {
+  const rows: SessionMessage[] = [
+    ...conversation(),
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'y', tool: 'mcp__context-editor__context_note', input: {} }], handle: 'h5' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'y', text: 'noted', isError: false }], handle: 'h6' },
+    { role: 'assistant', text: 'a long conclusion', toolUses: [], handle: 'h7' },
+  ]
+  const edits = prepare(rows, [{ op: 'rewrite', index: 7, text: 'short' }, { op: 'summarize', tool_use_id: 'a', summary: 's' }]).queued
+  const { io, written } = harness({ state: 'ok', value: { ...EMPTY_QUEUE, edits } })
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  // two own pairs went: the rewritten row is #3, the summarized result #2
+  expect(out.messages[3]!.text).toContain('[context-editor] rewritten')
+  expect(out.messages[2]!.toolResults![0]!.text).toContain('[context-editor] summarized')
+  expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #3); summarize a (now #2).')
+  // the stage marks still follow the edits matched by their plain descriptions
+  expect(written.tags).toBeDefined()
+})
+
 // [SP_CTX_02_14] [SP_CTX_01_05] notesDropped
 test('HandleCompaction — notes: a note on a summarized pair moves; the report names the notes whose rows went; nothing named when the registry write fails', async () => {
   const tags: Read<TagRegistry> = {

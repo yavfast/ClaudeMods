@@ -706,6 +706,39 @@ test('DropOwnCalls — лічильник: the context_note and context_list pai
   expect(dropOwnCallsCounted(rows()).removed).toBe(0)
 })
 
+// [SP_CTX_01_05] phase 18
+test('FormatReport — NowIndex: applied edits with a produced entry name their row in the final list; applied stays unchanged', async () => {
+  const report = {
+    applied: ['rewrite #23', 'summarize a', 'drop b', 'collapse #3..#6'],
+    failed: ['rewrite #40: the row it named is no longer there'],
+    charsBefore: 100,
+    charsAfter: 60,
+    originals: [],
+    produced: [
+      { edit: 'rewrite #23', index: 18, fingerprint: 'f1' },
+      { edit: 'summarize a', index: 9, fingerprint: 'f2' },
+      { edit: 'collapse #3..#6', index: 4, fingerprint: 'f3' },
+    ],
+    notesDropped: [],
+    ownCallsRemoved: 0,
+    mediaFiles: [],
+  }
+  const text = formatReport(report, '', 'compaction')
+  expect(text).toContain('applied 4 edit(s): rewrite #23 (now #18); summarize a (now #9); drop b; collapse #3..#6 (now #4).')
+  // a failed edit made nothing: no suffix
+  expect(text).toContain('Not applied: rewrite #40: the row it named is no longer there.')
+  expect(report.applied).toEqual(['rewrite #23', 'summarize a', 'drop b', 'collapse #3..#6'])
+  expect(formatReport(report, '', 'seed')).toContain('rewrite #23 (now #18)')
+})
+
+test('FormatReport — NowIndex без запису: no produced entry leaves the edit as it is; an unchanged index still shows', async () => {
+  const base = { failed: [], charsBefore: 100, charsAfter: 60, originals: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }
+  expect(formatReport({ ...base, applied: ['rewrite #5'], produced: [] }, '', 'compaction')).toContain('applied 1 edit(s): rewrite #5. ')
+  expect(formatReport({ ...base, applied: ['describe #0'], produced: [{ edit: 'describe #0', index: 0, fingerprint: 'f' }] }, '', 'compaction')).toContain(
+    'applied 1 edit(s): describe #0 (now #0).',
+  )
+})
+
 test('FormatReport — власні виклики (P13): applied with 2 removed / 0 removed / no edit applied / a seed without edits with 1 removed', async () => {
   const base = { applied: ['drop c'], failed: [], charsBefore: 100, charsAfter: 60, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 2, mediaFiles: [] }
   const sentence = 'Your own context-editor calls (2) were removed; tags and notes stay — see context_list.'
