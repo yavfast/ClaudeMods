@@ -28,6 +28,9 @@ export type ApplyReport = {
   // [SP_CTX_02_14] the notes whose rows this application removed without a
   // replacement; filled once RebindTags has written the registry
   notesDropped: string[]
+  // [SP_CTX_01_05] [SP_CTX_02_05] how many of the mod's own call pairs
+  // DropOwnCalls removed from the list that replaces the conversation
+  ownCallsRemoved: number
   mediaFiles: string[]
 }
 
@@ -56,6 +59,10 @@ export const ROW_WINDOW = 4096
 export const HOST_ID_WAIT_MS = 2000
 // The longest tool description the host passes to the model; it cuts the rest.
 export const MAX_DESCRIPTION = 2048
+// [SP_CTX_01_12] Tools whose output is reproducible from disk, and the flag
+// of their pairs in the listing ([C_CTX_03_04], reproducibility).
+export const REPRODUCIBLE_TOOLS: readonly string[] = ['Read', 'Grep', 'Glob']
+export const REPRO_FLAG = '~'
 
 export function ownerKey(owner: MediaOwner): string {
   return 'tool_use_id' in owner ? `u:${owner.tool_use_id}` : `r:${owner.row}`
@@ -311,8 +318,8 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
 
 // [SP_CTX_02_01] The legend of the listing's header.
 export const LIST_LEGEND =
-  `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media. Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
-  `Tags: [pin] no edit may touch it, [disposable: note] replaced by its note when you close a stage or end a turn with the optimization mark, [review] worth a look. ` +
+  `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media; ${REPRO_FLAG} after tool_use/tool_result: reproducible (Read, Grep, Glob). Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
+  `Tags: [pin] no edit may touch it, [state] your state slot (rewrite only), [disposable: note] (a range: [disposable #a..#b: note]) replaced by its note when you close a stage or end a turn with the optimization mark, [review: reason] worth a look. ` +
   `[nN] your note (full text under the page).`
 
 // [SP_CTX_02_01] One note for the listing: the row it shows on (undefined:
@@ -362,14 +369,18 @@ export function listRows(
       mediaBytes += m.bytes
     }
   const lines: string[] = []
+  // [SP_CTX_02_01] REPRO_FLAG: the tool of a result is the one of its call
+  const toolOf = new Map<string, string>()
+  for (const r of rows) for (const u of r.toolUses) toolOf.set(u.tool_use_id, u.tool)
+  const repro = (tool: string | undefined) => (tool !== undefined && REPRODUCIBLE_TOOLS.includes(tool) ? REPRO_FLAG : '')
   for (let i = start; i < stop; i++) {
     const row = rows[i]!
     const parts: string[] = []
     if (row.text) parts.push(`text "${oneLine(row.text, 90)}"`)
     for (const u of row.toolUses)
-      parts.push(`tool_use ${u.tool} id=${u.tool_use_id}${aliases.has(u.tool_use_id) ? ` (${aliases.get(u.tool_use_id)})` : ''} input="${oneLine(JSON.stringify(u.input ?? {}), 70)}"`)
+      parts.push(`tool_use ${u.tool}${repro(u.tool)} id=${u.tool_use_id}${aliases.has(u.tool_use_id) ? ` (${aliases.get(u.tool_use_id)})` : ''} input="${oneLine(JSON.stringify(u.input ?? {}), 70)}"`)
     for (const r of row.toolResults ?? [])
-      parts.push(`tool_result id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
+      parts.push(`tool_result${repro(toolOf.get(r.tool_use_id))} id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
     const own = rowMedia(row, i, media)
     for (const m of own) parts.push(`media ${m.mediaType} ~${Math.ceil(m.bytes / 1024)}KB`)
     const chars = rowChars(row)
@@ -460,6 +471,18 @@ export function dropOwnCalls(
   mediaOwners: ReadonlySet<string> = new Set(),
   knownResults?: ReadonlySet<string>,
 ): SessionMessage[] {
+  return dropOwnCallsCounted(input, mediaOwners, knownResults).rows
+}
+
+// [SP_CTX_02_05] DropOwnCalls with `removed`: the own pairs it removed (a call
+// with its result counts once; the pairs kept by media or outside the API
+// window do not count). HandleCompaction and BuildSeed write it into
+// `report.ownCallsRemoved` ([SP_CTX_01_05]).
+export function dropOwnCallsCounted(
+  input: readonly SessionMessage[],
+  mediaOwners: ReadonlySet<string> = new Set(),
+  knownResults?: ReadonlySet<string>,
+): { rows: SessionMessage[]; removed: number } {
   const own = new Set(input.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
   const kept = new Set<string>()
   for (const r of input) {
@@ -471,7 +494,7 @@ export function dropOwnCalls(
     if (risky) for (const t of results) if (own.has(t.tool_use_id)) kept.add(t.tool_use_id)
   }
   const ids = new Set([...own].filter(id => !kept.has(id)))
-  if (ids.size === 0) return [...input]
+  if (ids.size === 0) return { rows: [...input], removed: 0 }
   const dropped = input.map(r => {
     const hasUse = r.toolUses.some(u => ids.has(u.tool_use_id))
     const hasResult = (r.toolResults ?? []).some(t => ids.has(t.tool_use_id))
@@ -482,7 +505,7 @@ export function dropOwnCalls(
     })
   })
   // [SP_CTX_02_04] a rebuilt assistant row splits its response (pitfall 30)
-  return mergeCallRows(rebuildSplitResponses(dropped).filter(r => r.handle !== undefined || !isEmpty(r)))
+  return { rows: mergeCallRows(rebuildSplitResponses(dropped).filter(r => r.handle !== undefined || !isEmpty(r))), removed: ids.size }
 }
 
 function findToolUse(rows: readonly SessionMessage[], id: string): number {
@@ -589,8 +612,9 @@ export function checkShape(raw: unknown): Edit | string {
 }
 
 // [SP_CTX_02_03] Targets carrying a `pin` tag, resolved on one row list:
-// pairs by tool_use_id and rows by index. Data, so prepare stays pure.
-export type Pinned = { ids: ReadonlySet<string>; rows: ReadonlySet<number> }
+// pairs by tool_use_id and rows by index; `state`: the row of the state slot,
+// if it is found. Data, so prepare stays pure.
+export type Pinned = { ids: ReadonlySet<string>; rows: ReadonlySet<number>; state?: number }
 export const NO_PINS: Pinned = { ids: new Set(), rows: new Set() }
 
 // The rows and pairs an edit changes, resolved on `rows` (anchors through
@@ -630,6 +654,17 @@ export function touchesPin(rows: readonly SessionMessage[], edit: QueuedEdit, pi
 
 export const PINNED = 'target is pinned; remove the pin with context_tag first'
 
+// [SP_CTX_02_03] [C_CTX_DEC_19] Whether an edit would change the row of the
+// state slot: only a rewrite of that very row may.
+export function touchesState(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned): boolean {
+  if (pinned.state === undefined) return false
+  const t = touchedBy(rows, edit)
+  if (!t || !t.rows.includes(pinned.state)) return false
+  return !(edit.op === 'rewrite' && t.rows[0] === pinned.state)
+}
+
+export const STATE_SLOT = 'target holds the state slot; change it only by rewrite of that row, or remove its state tag first'
+
 // [SP_CTX_02_03] Checks raw edits against the conversation as it is now and
 // stamps the index-based ones with anchors. `hasMedia` answers whether a
 // person's prompt row has media ([SP_CTX_02_10]); `pinned` names the targets
@@ -655,6 +690,7 @@ export function prepare(
     const checked = checkTarget(rows, edit, hasMedia)
     if (typeof checked === 'string') return void errors.push(`${name}: ${checked}`)
     if (touchesPin(rows, checked, pinned)) return void errors.push(`${name}: ${PINNED}`)
+    if (touchesState(rows, checked, pinned)) return void errors.push(`${name}: ${STATE_SLOT}`)
     queued.push(checked)
   })
   return { queued, errors }
@@ -851,6 +887,7 @@ export function applyEdits(
     originals: [],
     produced: [],
     notesDropped: [],
+    ownCallsRemoved: 0,
     mediaFiles: [],
   }
   const made: Made[] = []
@@ -1152,11 +1189,15 @@ export function mergeCallRows(rows: readonly SessionMessage[]): SessionMessage[]
 export type ReportKind = 'compaction' | 'seed'
 
 export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: number): string {
-  const base = baseReport(r, archive, kind, ratio)
+  const parts = [baseReport(r, archive, kind, ratio)]
   // [SP_CTX_01_05] after any form: the notes whose rows went
-  if (!r.notesDropped.length) return base
-  const dropped = `Notes dropped (their rows were removed): ${r.notesDropped.join(', ')}.`
-  return base ? `${base} ${dropped}` : `context-editor: ${dropped}`
+  if (r.notesDropped.length) parts.push(`Notes dropped (their rows were removed): ${r.notesDropped.join(', ')}.`)
+  // [SP_CTX_01_05] P13: the agent's own context_* calls left the conversation
+  // when the returned list replaces it (a compaction with an applied edit; a seed always)
+  if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length))
+    parts.push(`Your own context-editor calls (${r.ownCallsRemoved}) were removed; tags and notes stay — see context_list.`)
+  const text = parts.filter(Boolean).join(' ')
+  return !text || parts[0] ? text : `context-editor: ${text}`
 }
 
 function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: number): string {

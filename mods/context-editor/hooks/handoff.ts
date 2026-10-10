@@ -7,7 +7,7 @@ import {
   boundaryOf,
   collectMedia,
   describeEdit,
-  dropOwnCalls,
+  dropOwnCallsCounted,
   fingerprint,
   formatReport,
   HEAD_ROWS,
@@ -320,7 +320,9 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
   const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))))
-  const kept = dropOwnCalls(applied.rows, new Set(), knownResults)
+  // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
+  const { rows: kept, removed } = dropOwnCallsCounted(applied.rows, new Set(), knownResults)
+  report.ownCallsRemoved = removed
   // [SP_CTX_01_05] "freed" counts the edits only: before CarryNote and the head
   report.charsAfter = totalChars(kept)
   const carried: string[] = []
@@ -726,7 +728,7 @@ export async function carryRegistries(
       // [SP_CTX_02_21] the notes move like at an application; the seed's report names the dropped ones
       let dropped: string[] = []
       const carried = await io.carryTags(oldDir, newDir, reg => {
-        const marks = relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits), s.visible, s.rows, done, s.report.produced, s.carried)
+        const marks = relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits, s.report.produced), s.visible, s.rows, done, s.report.produced, s.carried)
         const out = rebindNotes(marks, s.visible, s.rows, done, s.report.produced)
         dropped = out.dropped
         // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one

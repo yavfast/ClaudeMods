@@ -257,8 +257,8 @@ test('context_tag rejects an unknown ref and a ref beside another target', async
 
 test('the listing shows the alias after the tool_use id', async () => {
   const text = listRows(rows(), 0, 10, new Map(), new Map(), aliasesById(aliases({ c7: 'a' })))
-  expect(text).toContain('tool_use Read id=a (c7) input=')
-  expect(text).toContain('tool_use Grep id=b input=')
+  expect(text).toContain('tool_use Read~ id=a (c7) input=')
+  expect(text).toContain('tool_use Grep~ id=b input=')
 })
 
 // ---- [SP_CTX_02_14] aliases after an apply

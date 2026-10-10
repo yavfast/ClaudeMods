@@ -160,27 +160,49 @@ export function personPair(rows: readonly SessionMessage[], id: string): boolean
   return rows.some(r => r.toolUses.some(u => u.tool_use_id === id && PERSON_TOOLS.includes(u.tool)))
 }
 
+// [SP_CTX_02_02] The rows of the person's messages an edit covers: prompt
+// rows and AskUserQuestion answers in a collapse's span, the answer row of a
+// summarize or drop of an AskUserQuestion pair.
+function personHits(rows: readonly SessionMessage[], e: QueuedEdit): string[] {
+  const hits: string[] = []
+  if (e.op === 'collapse') {
+    for (const i of touchedBy(rows, e)?.rows ?? []) {
+      if (personRow(rows, i)) hits.push(`#${i} (prompt)`)
+      for (const t of rows[i]!.toolResults ?? []) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
+    }
+  } else if ((e.op === 'summarize' || e.op === 'drop') && personPair(rows, e.tool_use_id)) {
+    const res = touchedBy(rows, e)?.rows[1]
+    if (res !== undefined) hits.push(`#${res} (AskUserQuestion answer)`)
+  }
+  return hits
+}
+
+function personWarning(label: string, hits: readonly string[]): string {
+  const named = hits.slice(0, MAX_WARNED_ROWS).join(', ') + (hits.length > MAX_WARNED_ROWS ? `, +${hits.length - MAX_WARNED_ROWS} more` : '')
+  return `Warning: ${label} covers the person's messages: ${named}. Keep them verbatim unless you drop them deliberately.`
+}
+
 // [SP_CTX_02_02] [C_CTX_DEC_21] PersonWarnings: a queued edit that covers
 // the person's messages is not refused, but the result names those rows; what
 // to compress stays the agent's call. Pure.
 export function personWarnings(rows: readonly SessionMessage[], queued: readonly QueuedEdit[]): string[] {
   const out: string[] = []
   for (const e of queued) {
-    const hits: string[] = []
-    if (e.op === 'collapse') {
-      for (const i of touchedBy(rows, e)?.rows ?? []) {
-        if (personRow(rows, i)) hits.push(`#${i} (prompt)`)
-        for (const t of rows[i]!.toolResults ?? []) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
-      }
-    } else if ((e.op === 'summarize' || e.op === 'drop') && personPair(rows, e.tool_use_id)) {
-      const res = touchedBy(rows, e)?.rows[1]
-      if (res !== undefined) hits.push(`#${res} (AskUserQuestion answer)`)
-    }
-    if (!hits.length) continue
-    const named = hits.slice(0, MAX_WARNED_ROWS).join(', ') + (hits.length > MAX_WARNED_ROWS ? `, +${hits.length - MAX_WARNED_ROWS} more` : '')
-    out.push(`Warning: ${describeEdit(e)} covers the person's messages: ${named}. Keep them verbatim unless you drop them deliberately.`)
+    const hits = personHits(rows, e)
+    if (hits.length) out.push(personWarning(describeEdit(e), hits))
   }
   return out
+}
+
+// [SP_CTX_02_02] [SP_CTX_02_11] PersonTagWarnings: the same for a disposable
+// tag just added, a range `from..to` or a pair; its replacement is queued
+// later without a warning. Pure.
+export function personTagWarning(rows: readonly SessionMessage[], target: { from: number; to: number } | { tool_use_id: string }): string | undefined {
+  const e: QueuedEdit =
+    'tool_use_id' in target ? { op: 'summarize', tool_use_id: target.tool_use_id, summary: '-' } : { op: 'collapse', from_index: target.from, to_index: target.to, summary: '-' }
+  const hits = personHits(rows, e)
+  if (!hits.length) return undefined
+  return personWarning('tool_use_id' in target ? `disposable ${target.tool_use_id}` : `disposable #${target.from}..#${target.to}`, hits)
 }
 
 // [SP_CTX_02_02] The queue after a context_edit call, or why it is refused.

@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { fingerprint, listRows, MAX_QUEUE_EDITS, prepare, type QueuedEdit } from '../hooks/edits'
+import { describeEdit, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, STATE_SLOT, type QueuedEdit } from '../hooks/edits'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue, type Read } from '../hooks/queue'
 import {
   activeReviews,
@@ -15,8 +15,14 @@ import {
   parseRegistry,
   pinnedTargets,
   queueTagReplacements,
+  callFollowUp,
+  isCompactionCopy,
+  markDuplicates,
+  markStale,
   rebindTags,
+  resultIds,
   SEARCH_TTL,
+  stateRow,
   tagLabels,
   type AppendFacts,
   type Tag,
@@ -208,11 +214,11 @@ test('the listing shows pin, a short disposable note and only active reviews', a
   expect(text.split('\n').find(l => l.startsWith('#6'))).toContain('[review]')
   // the ttl of the Grep review has not passed at turn 3 (created at 1, ttl 3)
   expect(text.split('\n').find(l => l.startsWith('#5'))!.includes('[review]')).toBe(false)
-  expect(activeReviews(rows(), r)).toBe(1)
+  expect(activeReviews(rows(), r)).toEqual(new Map([['none', [6]]]))
   // ...and has at turn 4
   const later = { ...r, turn: 4 }
   expect(listRows(rows(), 5, 1, new Map(), tagLabels(rows(), later))).toContain('[review]')
-  expect(activeReviews(rows(), later)).toBe(2)
+  expect(activeReviews(rows(), later)).toEqual(new Map([['none', [4, 6]]]))
 })
 
 // ---- [SP_CTX_02_03] pin
@@ -246,7 +252,7 @@ test('prepare refuses every edit that touches a pinned pair or row', async () =>
 // ---- [SP_CTX_02_12] AutoTag
 
 function fact(over: Partial<AppendFacts>): AppendFacts {
-  return { door: 'prompt', origin: 'composer', ids: [], size: 0, text: '', ...over }
+  return { door: 'prompt', origin: 'composer', ids: [], size: 0, text: '', results: [], ...over }
 }
 
 test('appendFacts reads door, origin, tool, ids and size from an appended row', async () => {
@@ -260,7 +266,18 @@ test('appendFacts reads door, origin, tool, ids and size from an appended row', 
       ],
     },
   })
-  expect(f).toEqual({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['r1', 'r2'], size: 5, text: '' })
+  expect(f).toEqual({
+    door: 'tool-result',
+    origin: 'tool',
+    tool: 'Read',
+    ids: ['r1', 'r2'],
+    size: 5,
+    text: '',
+    results: [
+      { id: 'r1', text: 'abc' },
+      { id: 'r2', text: 'de' },
+    ],
+  })
   const p = appendFacts({ door: 'prompt', origin: { kind: 'composer' }, message: { content: [{ type: 'text', text: 'hi' }] } })
   expect(p.text).toBe('hi')
   expect(p.tool).toBeUndefined()
@@ -303,7 +320,7 @@ test('AutoTag — копія промпту: a prompt row a compaction returned,
   expect(applyRules(EMPTY_REGISTRY, copy, anchorOf(0))).toBe(EMPTY_REGISTRY)
 })
 
-test('AutoTag — копія великого результату: a 5000-char Read result copy with plugin origin gets neither R2 nor R3', async () => {
+test('AutoTag — копія великого результату (plugin origin): a 5000-char Read result copy with plugin origin gets neither R2 nor R3', async () => {
   const copy = appendFacts({
     door: 'tool-result',
     origin: { kind: 'plugin' },
@@ -321,9 +338,9 @@ test('AutoTag — копія великого результату: a 5000-char 
 
 test('R2 marks a big output, R3 a search output with a ttl; own tools and small outputs get nothing', async () => {
   const r2 = applyRules(EMPTY_REGISTRY, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 5000 }))
-  expect(r2.tags).toEqual([{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }])
+  expect(r2.tags).toEqual([{ kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 }])
   const r3 = applyRules({ ...EMPTY_REGISTRY, turn: 2 }, fact({ door: 'tool-result', origin: 'tool', tool: 'Grep', ids: ['b'], size: 10 }))
-  expect(r3.tags).toEqual([{ kind: 'review', target: { tool_use_id: 'b' }, ttl_turns: SEARCH_TTL, created_turn: 2 }])
+  expect(r3.tags).toEqual([{ kind: 'review', reason: 'search', target: { tool_use_id: 'b' }, ttl_turns: SEARCH_TTL, created_turn: 2 }])
   const small = applyRules(EMPTY_REGISTRY, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['c'], size: 10 }))
   expect(small).toBe(EMPTY_REGISTRY)
   const own = applyRules(EMPTY_REGISTRY, fact({ door: 'tool-result', origin: 'tool', tool: 'mcp__context-editor__context_list', ids: ['d'], size: 9000 }))
@@ -463,4 +480,382 @@ test('QueueTagReplacements keeps the optimization request of the queue it writes
   const { io, log } = harness({ state: 'ok', value: disposables }, { state: 'ok', value: { ...EMPTY_QUEUE, optimize: true } })
   await queueTagReplacements(io)
   expect(log.queue!.optimize).toBe(true)
+})
+
+// ---- phase 15: state slot, ranges, reasons, R4, R5, copies
+
+const ASK = 'AskUserQuestion'
+
+function rows15(): SessionMessage[] {
+  return [
+    { role: 'user', text: 'the task', toolUses: [] },
+    { role: 'assistant', text: 'plan: step 1', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: { file_path: '/p/f' } }] },
+    result('a', BIG),
+    { role: 'assistant', text: 'a dead end', toolUses: [] },
+    use('q', ASK),
+    result('q', 'answer: yes'),
+    { role: 'user', text: 'the person adds a constraint', toolUses: [] },
+    use('b', 'Grep'),
+    result('b', 'match'),
+    { role: 'assistant', text: 'conclusion', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [] },
+  ]
+}
+
+const at15 = (i: number) => ({ anchor: fingerprint(rows15()[i]!), hint: i })
+
+function harness15(start: TagRegistry = reg([])) {
+  return harness({ state: 'ok', value: start }, undefined, { rows: async () => rows15() })
+}
+
+async function tag15(start: TagRegistry, tags: unknown[]) {
+  const h = harness15(start)
+  const out = await contextTag(h.io, { tags })
+  return { text: 'result' in out ? out.result : out.deny, tags: h.log.tags?.tags ?? start.tags }
+}
+
+test('context_tag — слот стану: add state on #1, then on #10: one state tag on #10; the result names the move', async () => {
+  const first = await tag15(reg([]), [{ op: 'add', kind: 'state', index: 1 }])
+  expect(first.tags).toEqual([{ kind: 'state', target: at15(1), created_turn: 0 }])
+  const second = await tag15(reg(first.tags), [{ op: 'add', kind: 'state', index: 10 }])
+  expect(second.tags).toEqual([{ kind: 'state', target: at15(10), created_turn: 0 }])
+  expect(second.text).toContain('The state slot moved from #1 to #10.')
+})
+
+test('context_tag — слот стану не там: a row with a call, a pair by tool_use_id, a thinking-only row, a person\'s row: BAD_TARGET', async () => {
+  for (const req of [
+    { op: 'add', kind: 'state', index: 2 },
+    { op: 'add', kind: 'state', tool_use_id: 'a' },
+    { op: 'add', kind: 'state', index: 11 },
+    { op: 'add', kind: 'state', index: 0 },
+  ]) {
+    const out = await tag15(reg([]), [req])
+    expect(out.text).toContain('(BAD_TARGET)')
+    expect(out.tags).toEqual([])
+  }
+})
+
+test('context_tag — діапазон: index 2 to 3 is a range; a split pair, a pin inside, the state slot inside, "to" without disposable or index: BAD_RANGE', async () => {
+  const ok = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 2, to: 4, note: 'dead end: f has no key' }])
+  expect(ok.tags).toEqual([{ kind: 'disposable', target: { ...at15(2), toAnchor: fingerprint(rows15()[4]!), toHint: 4 }, note: 'dead end: f has no key', created_turn: 0 }])
+  const pinned = reg([{ kind: 'pin', target: at15(4), created_turn: 0 }])
+  const pinnedPair = reg([{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }])
+  const state = reg([{ kind: 'state', target: at15(4), created_turn: 0 }])
+  const cases: [TagRegistry, unknown][] = [
+    [reg([]), { op: 'add', kind: 'disposable', index: 1, to: 2, note: 'n' }],
+    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 2, note: 'n' }],
+    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 99, note: 'n' }],
+    [pinned, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }],
+    [pinnedPair, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }],
+    [state, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }],
+    [reg([]), { op: 'add', kind: 'pin', index: 1, to: 4 }],
+    [reg([]), { op: 'add', kind: 'disposable', tool_use_id: 'a', to: 4, note: 'n' }],
+    [reg([]), { op: 'remove', index: 1, to: 4 }],
+  ]
+  for (const [start, req] of cases) {
+    const out = await tag15(start, [req])
+    expect(out.text).toContain('(BAD_RANGE)')
+    expect(out.tags).toEqual(start.tags)
+  }
+})
+
+test('context_tag — зняття діапазону: remove with index 2 drops the range that starts on #2', async () => {
+  const range: Tag = { kind: 'disposable', target: { ...at15(2), toAnchor: fingerprint(rows15()[4]!), toHint: 4 }, note: 'n', created_turn: 0 }
+  const out = await tag15(reg([range]), [{ op: 'remove', index: 2 }])
+  expect(out.text).toContain('removed 1')
+  expect(out.tags).toEqual([])
+})
+
+test('context_tag — агентський review: the agent\'s review gets reason agent', async () => {
+  const out = await tag15(reg([]), [{ op: 'add', kind: 'review', tool_use_id: 'b', ttl_turns: 2 }])
+  expect(out.tags).toEqual([{ kind: 'review', reason: 'agent', target: { tool_use_id: 'b' }, ttl_turns: 2, created_turn: 0 }])
+})
+
+test('context_tag — попередження про людину: a range over a prompt and an AskUserQuestion answer, a disposable on the AskUserQuestion pair; none without the person\'s rows', async () => {
+  const range = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 4, to: 9, note: 'n' }])
+  expect(range.tags.length).toBe(1)
+  expect(range.text).toContain(
+    "Warning: disposable #4..#9 covers the person's messages: #6 (AskUserQuestion answer), #7 (prompt). Keep them verbatim unless you drop them deliberately.",
+  )
+  const pair = await tag15(reg([]), [{ op: 'add', kind: 'disposable', tool_use_id: 'q', note: 'n' }])
+  expect(pair.tags.length).toBe(1)
+  expect(pair.text).toContain("Warning: disposable q covers the person's messages: #6 (AskUserQuestion answer).")
+  const plain = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 2, to: 4, note: 'n' }])
+  expect(plain.text).not.toContain('Warning')
+})
+
+test('context_list — позначки: [state], [review: stale] on both rows of a pair, a range on its first row only; `review` без причини — [review], an agent\'s — [review: agent]', async () => {
+  const r = reg([
+    { kind: 'state', target: at15(1), created_turn: 0 },
+    { kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(rows15()[10]!), toHint: 10 }, note: 'grep found nothing new', created_turn: 0 },
+    { kind: 'review', target: at15(4), created_turn: 0 },
+    { kind: 'review', reason: 'agent', target: { tool_use_id: 'q' }, created_turn: 0 },
+  ])
+  const labels = tagLabels(rows15(), r)
+  expect(labels.get(1)).toEqual(['[state]'])
+  expect(labels.get(2)).toEqual(['[review: stale]'])
+  expect(labels.get(3)).toEqual(['[review: stale]'])
+  expect(labels.get(8)).toEqual(['[disposable #8..#10: "grep found nothing new"]'])
+  expect(labels.get(9)).toBeUndefined()
+  expect(labels.get(4)).toEqual(['[review]'])
+  expect(labels.get(5)).toEqual(['[review: agent]'])
+})
+
+test('parseRegistry — phase 15 fields: state by anchor, a disposable range, review reasons; a range or a reason on the wrong kind is unreadable', async () => {
+  const good = reg([
+    { kind: 'state', target: { anchor: 'assistant||x', hint: 1 }, created_turn: 0 },
+    { kind: 'disposable', target: { anchor: 'a', hint: 2, toAnchor: 'b', toHint: 4 }, note: 'n', created_turn: 0 },
+    { kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 0 },
+  ])
+  expect(parseRegistry(JSON.stringify(good)).state).toBe('ok')
+  for (const bad of [
+    { kind: 'state', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'pin', target: { anchor: 'a', hint: 2, toAnchor: 'b', toHint: 4 }, created_turn: 0 },
+    { kind: 'disposable', target: { anchor: 'a', hint: 4, toAnchor: 'b', toHint: 4 }, note: 'n', created_turn: 0 },
+    { kind: 'pin', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', reason: 'other', target: { tool_use_id: 'a' }, created_turn: 0 },
+  ])
+    expect(parseRegistry(JSON.stringify(reg([bad as Tag]))).state).toBe('unreadable')
+})
+
+test('PrepareEdits — слот стану: rewrite of the state row passes; a collapse over it is refused; after the tag is removed it passes', async () => {
+  const r = rows15()
+  const withState = pinnedTargets(r, reg([{ kind: 'state', target: at15(4), created_turn: 0 }]))
+  expect(withState.state).toBe(4)
+  const out = prepare(
+    r,
+    [
+      { op: 'rewrite', index: 4, text: 'state: done' },
+      { op: 'collapse', from_index: 2, to_index: 6, summary: 's' },
+    ],
+    undefined,
+    withState,
+  )
+  expect(out.queued.map(describeEdit)).toEqual(['rewrite #4'])
+  expect(out.errors).toEqual([`collapse #2..#6: ${STATE_SLOT}`])
+  expect(prepare(r, [{ op: 'collapse', from_index: 2, to_index: 6, summary: 's' }], undefined, pinnedTargets(r, reg([]))).queued.length).toBe(1)
+  expect(stateRow(r, reg([]))).toBeUndefined()
+  expect(stateRow(r.slice(0, 3), reg([{ kind: 'state', target: at15(4), created_turn: 0 }]))).toBe(-1)
+})
+
+test('AutoTag — R1, R2, R3: R2 gives reason big, R3 reason search with SEARCH_TTL', async () => {
+  const { io, log } = harness(empty())
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 5000, results: [{ id: 'a', text: BIG }] }))
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Grep', ids: ['b'], size: 10, results: [{ id: 'b', text: 'match list' }] }))
+  expect(log.tags!.tags).toEqual([
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', reason: 'search', target: { tool_use_id: 'b' }, ttl_turns: SEARCH_TTL, created_turn: 0 },
+  ])
+})
+
+// [SP_CTX_02_12] phase 15 diagnosis: in stream-json a compaction's result row
+// passes session.append again with its tool's origin (probe: door tool-result,
+// origin { kind: tool, tool: Read }), so the plugin-origin filter missed it
+test('AutoTag — копія великого результату: a result row the last compaction returned comes with its tool\'s origin and gets no tag; a fresh result does', async () => {
+  const copy = appendFacts({
+    door: 'tool-result',
+    origin: { kind: 'tool', tool: 'Read' },
+    message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: [{ type: 'text', text: BIG }] }] },
+  })
+  const copied = new Set(resultIds(rows()))
+  expect(isCompactionCopy(copy, copied)).toBe(true)
+  const { io, log } = harness(empty())
+  await autoTag(io, copy, isCompactionCopy(copy, copied))
+  expect(log.tagWrites).toBe(0)
+  // after the next turn starts the set is empty: the same shape is a new row
+  await autoTag(io, copy, isCompactionCopy(copy, new Set()))
+  expect(log.tags!.tags).toEqual([{ kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 }])
+  // a row with a fresh result beside a copied one is no copy
+  expect(isCompactionCopy({ ...copy, ids: ['a', 'new'] }, copied)).toBe(false)
+  expect(isCompactionCopy({ ...copy, door: 'prompt' }, copied)).toBe(false)
+})
+
+// ---- [SP_CTX_01_11] R5 (a)
+
+function readUse(id: string, input: Record<string, unknown>): SessionMessage {
+  return { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input }] }
+}
+
+test('AutoTag — R5 однаковий результат: two Reads with the same 5000-char text: duplicate on the first pair; the second gets R2 big', async () => {
+  const r: SessionMessage[] = [{ role: 'user', text: 'task', toolUses: [] }, readUse('a', { file_path: '/x' }), result('a', BIG), readUse('b', { file_path: '/y' }), result('b', BIG)]
+  const { io, log } = harness(empty(), undefined, { rows: async () => r })
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['b'], size: 5000, results: [{ id: 'b', text: BIG }] }))
+  expect(log.tags!.tags).toEqual([
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'b' }, created_turn: 0 },
+    { kind: 'review', reason: 'duplicate', target: { tool_use_id: 'a' }, created_turn: 0 },
+  ])
+})
+
+test('AutoTag — R5 той самий діапазон: the same Read range with another text marks the earlier pair; another offset or a small text does not', async () => {
+  const other = 'y'.repeat(5000)
+  const same: SessionMessage[] = [readUse('a', { file_path: '/f', offset: 10, limit: 50 }), result('a', BIG), readUse('b', { file_path: '/f', offset: 10, limit: 50 }), result('b', other)]
+  expect(markDuplicates(reg([]), same, [{ id: 'b', text: other }]).tags).toEqual([{ kind: 'review', reason: 'duplicate', target: { tool_use_id: 'a' }, created_turn: 0 }])
+  const moved: SessionMessage[] = [readUse('a', { file_path: '/f', offset: 10 }), result('a', BIG), readUse('b', { file_path: '/f', offset: 60 }), result('b', other)]
+  expect(markDuplicates(reg([]), moved, [{ id: 'b', text: other }]).tags).toEqual([])
+  const small: SessionMessage[] = [readUse('a', { file_path: '/f', offset: 10, limit: 50 }), result('a', 's'.repeat(300)), readUse('b', { file_path: '/f', offset: 10, limit: 50 }), result('b', 't'.repeat(300))]
+  const r = reg([])
+  expect(markDuplicates(r, small, [{ id: 'b', text: 't'.repeat(300) }])).toBe(r)
+})
+
+test('AutoTag — R5 паралельні виклики: one row with parallel Read and Grep results, both repeating earlier ones: duplicate on both earlier pairs', async () => {
+  const g = 'g'.repeat(5000)
+  const r: SessionMessage[] = [
+    readUse('a', { file_path: '/f' }),
+    result('a', BIG),
+    use('b', 'Grep'),
+    result('b', g),
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c', tool: 'Read', input: { file_path: '/other' } }, { tool_use_id: 'd', tool: 'Grep', input: {} }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'c', text: BIG, isError: false }, { tool_use_id: 'd', text: g, isError: false }] },
+  ]
+  const out = markDuplicates(reg([]), r, [{ id: 'c', text: BIG }, { id: 'd', text: g }])
+  expect(out.tags.map(t => ('tool_use_id' in t.target ? `${t.target.tool_use_id}:${t.reason}` : ''))).toEqual(['a:duplicate', 'b:duplicate'])
+})
+
+test('AutoTag — R5 перезапис: an earlier review big becomes duplicate; stale and pin stay; an own tool\'s result is no duplicate', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/x' }), result('a', BIG), readUse('b', { file_path: '/y' }), result('b', BIG)]
+  const res = [{ id: 'b', text: BIG }]
+  const tagOf = (start: Tag) => markDuplicates(reg([start]), r, res).tags[0]
+  expect(tagOf({ kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 })!.reason).toBe('duplicate')
+  expect(tagOf({ kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 0 })!.reason).toBe('stale')
+  expect(tagOf({ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 })!.kind).toBe('pin')
+  const own: SessionMessage[] = [use('a', 'mcp__context-editor__context_list'), result('a', BIG), use('b', 'mcp__context-editor__context_list'), result('b', BIG)]
+  expect(markDuplicates(reg([]), own, res).tags).toEqual([])
+})
+
+test('AutoTag — R5 рядок без результатів: R5 (b) is not built (the probe: a skill insertion is no conversation row); a large user row of another door changes nothing', async () => {
+  const text = 'z'.repeat(6000)
+  const r: SessionMessage[] = [{ role: 'user', text, toolUses: [] }, { role: 'assistant', text: 'ok', toolUses: [] }, { role: 'user', text, toolUses: [] }]
+  const { io, log } = harness({ state: 'ok', value: reg([], { firstPromptPinned: true }) }, undefined, { rows: async () => r })
+  await autoTag(io, fact({ door: 'attachment', origin: 'engine', size: 6000, text }))
+  expect(log.tagWrites).toBe(0)
+})
+
+// ---- [SP_CTX_01_11] R4
+
+test('MarkCall — R4 застаріле читання: Read f (review big), Read g, Edit f: the Read f pair becomes stale, g stays', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', BIG), readUse('b', { file_path: '/g' }), result('b', 'g'), { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'w', tool: 'Edit', input: { file_path: '/f' } }] }]
+  const out = markStale(reg([{ kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 }], { turn: 3 }), r, '/f', 'w')
+  expect(out.tags).toEqual([{ kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 3 }])
+})
+
+test('MarkCall — R4 не чіпає інших тегів: a pin or a disposable on the Read stays', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', BIG)]
+  for (const t of [{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }, { kind: 'disposable', target: { tool_use_id: 'a' }, note: 'n', created_turn: 0 }] as Tag[]) {
+    const start = reg([t])
+    expect(markStale(start, r, '/f', 'w')).toBe(start)
+  }
+})
+
+test('MarkCall — R4 відмова чи помилка, NotebookEdit: an Edit with an error follows up with nothing; NotebookEdit uses notebook_path; Read is a reread check', async () => {
+  expect(callFollowUp('Edit', { file_path: '/f' }, true)).toBeUndefined()
+  expect(callFollowUp('Edit', { file_path: '/f' }, false)).toEqual({ write: '/f' })
+  expect(callFollowUp('Write', { file_path: '/f' }, false)).toEqual({ write: '/f' })
+  expect(callFollowUp('NotebookEdit', { notebook_path: '/n.ipynb' }, false)).toEqual({ write: '/n.ipynb' })
+  expect(callFollowUp('Read', { file_path: '/f' }, false)).toEqual({ read: '/f' })
+  expect(callFollowUp('Read', { file_path: '/f' }, true)).toBeUndefined()
+  expect(callFollowUp('Grep', { pattern: 'x' }, false)).toBeUndefined()
+  const r: SessionMessage[] = [readUse('a', { file_path: '/n.ipynb' }), result('a', 'cells')]
+  expect(markStale(reg([]), r, '/n.ipynb', 'w').tags[0]!.reason).toBe('stale')
+})
+
+test('MarkCall — R4 лише раніші читання: one response with Edit f then a parallel Read f: only the earlier Read of f is stale', async () => {
+  const r: SessionMessage[] = [
+    readUse('old', { file_path: '/f' }),
+    result('old', 'v1'),
+    {
+      role: 'assistant',
+      text: '',
+      toolUses: [
+        { tool_use_id: 'w', tool: 'Edit', input: { file_path: '/f' } },
+        { tool_use_id: 'new', tool: 'Read', input: { file_path: '/f' } },
+      ],
+    },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'w', text: 'ok', isError: false }, { tool_use_id: 'new', text: 'v2', isError: false }] },
+  ]
+  expect(markStale(reg([]), r, '/f', 'w').tags.map(t => ('tool_use_id' in t.target ? t.target.tool_use_id : ''))).toEqual(['old'])
+  // the write's row not written yet: every read counts as earlier
+  expect(markStale(reg([]), r.slice(0, 2), '/f', 'w').tags.length).toBe(1)
+})
+
+// ---- [SP_CTX_02_14] RebindTags, phase 15
+
+test('RebindTags — слот стану переписано: the state tag moves to the rewritten row (report.produced)', async () => {
+  const before = rows15()
+  const edits = prepare(before, [{ op: 'rewrite', index: 1, text: 'plan: step 2' }]).queued
+  const made = { role: 'assistant' as const, text: '[context-editor] rewritten (original: /s/1.json, open with Read): plan: step 2', toolUses: [] }
+  const after = [before[0]!, made, ...before.slice(2)]
+  const produced = [{ edit: 'rewrite #1', index: 1, fingerprint: fingerprint(made) }]
+  const out = rebindTags(reg([{ kind: 'state', target: at15(1), created_turn: 0 }]), before, after, edits, edits, produced)
+  expect(out.tags).toEqual([{ kind: 'state', target: { anchor: fingerprint(made), hint: 1 }, created_turn: 0 }])
+  // without the produced entry the row is gone: the tag goes
+  expect(rebindTags(reg([{ kind: 'state', target: at15(1), created_turn: 0 }]), before, after, edits, edits).tags).toEqual([])
+})
+
+test('RebindTags — діапазон: a summarize inside drops the range tag; a shift of 2 rows without edits inside moves both hints', async () => {
+  const before = rows15()
+  const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(before[10]!), toHint: 10 }, note: 'n', created_turn: 0 }
+  const inside = prepare(before, [{ op: 'drop', tool_use_id: 'b' }]).queued
+  expect(rebindTags(reg([range]), before, before.filter((_, i) => i !== 8 && i !== 9), inside, inside).tags).toEqual([])
+  const outside = prepare(before, [{ op: 'drop', tool_use_id: 'a' }]).queued
+  const after = before.filter((_, i) => i !== 2 && i !== 3)
+  expect(rebindTags(reg([range]), before, after, outside, outside).tags[0]!.target).toEqual({ ...at15(8), hint: 6, toAnchor: fingerprint(before[10]!), toHint: 8 })
+})
+
+test('RebindTags — заміна діапазону в пакеті: the collapse of the range with its note in the batch drops the tag, applied or not', async () => {
+  const before = rows15()
+  const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(before[10]!), toHint: 10 }, note: 'N', created_turn: 0 }
+  const batch = prepare(before, [{ op: 'collapse', from_index: 8, to_index: 10, summary: 'N' }]).queued
+  expect(rebindTags(reg([range]), before, before, [], batch).tags).toEqual([])
+})
+
+// ---- [SP_CTX_02_13] QueueTagReplacements, phase 15
+
+test('QueueTagReplacements — діапазон: a disposable range #8..#10 becomes collapse 8..10 with the note and anchors of both ends; freed counts the rows', async () => {
+  const r = rows15()
+  const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(r[10]!), toHint: 10 }, note: 'N', created_turn: 0 }
+  const { io, log } = harness({ state: 'ok', value: reg([range]) }, undefined, { rows: async () => r })
+  const out = await queueTagReplacements(io)
+  expect(out.queued).toBe(1)
+  expect(log.queue!.edits).toEqual([{ op: 'collapse', from_index: 8, to_index: 10, summary: 'N', anchors: [fingerprint(r[8]!), fingerprint(r[10]!)] }])
+  // 2 + 5 + 10 chars of the three rows less the note's one
+  expect(out.freed).toBe('~4 tokens (approx.)')
+  // the replacement is keyed: queued once
+  expect((await queueTagReplacements(io)).queued).toBe(0)
+})
+
+test('QueueTagReplacements — слот стану в діапазоні: a state row inside the range refuses the collapse; the queue stays, the tag stays', async () => {
+  const r = rows15()
+  const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(r[10]!), toHint: 10 }, note: 'N', created_turn: 0 }
+  const { io, log } = harness({ state: 'ok', value: reg([range, { kind: 'state', target: at15(10), created_turn: 0 }]) }, undefined, { rows: async () => r })
+  expect((await queueTagReplacements(io)).queued).toBe(0)
+  expect(log.queue).toBeUndefined()
+})
+
+test('AutoTag — R5 стиснута раніша пара: an earlier Read of the same range already summarized (its text starts with MARK) is no duplicate', async () => {
+  const other = 'y'.repeat(5000)
+  const r: SessionMessage[] = [
+    readUse('a_ce1x', { file_path: '/f', offset: 10, limit: 50 }),
+    result('a_ce1x', '[context-editor] summarized (original: /s/1.json, open with Read): f lines 10..60 hold KEY'),
+    readUse('b', { file_path: '/f', offset: 10, limit: 50 }),
+    result('b', other),
+  ]
+  const start = reg([])
+  expect(markDuplicates(start, r, [{ id: 'b', text: other }])).toBe(start)
+})
+
+test('context_tag — disposable на слоті стану: a single disposable by index on the state row is BAD_TARGET; the state tag stays', async () => {
+  const start = reg([{ kind: 'state', target: at15(1), created_turn: 0 }])
+  const out = await tag15(start, [{ op: 'add', kind: 'disposable', index: 1, note: 'n' }])
+  expect(out.text).toContain('(BAD_TARGET)')
+  expect(out.tags).toEqual(start.tags)
+  // another text row of the agent stays allowed
+  expect((await tag15(start, [{ op: 'add', kind: 'disposable', index: 4, note: 'n' }])).tags.length).toBe(2)
+})
+
+test('MarkCall — R4 повторний запис: a pair already stale stays as it is; the registry is not rewritten', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', BIG)]
+  const start = reg([{ kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 1 }], { turn: 5 })
+  expect(markStale(start, r, '/f', 'w2')).toBe(start)
 })

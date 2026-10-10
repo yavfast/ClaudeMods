@@ -5,19 +5,22 @@ import {
   boundaryOf,
   collectMedia,
   describeEdit,
-  dropOwnCalls,
+  dropOwnCallsCounted,
   formatReport,
   ownerKey,
   PINNED,
   producedRows,
   replacedOwners,
+  STATE_SLOT,
   totalChars,
   touchesPin,
+  touchesState,
   type ApplyReport,
   type Boundary,
   type MediaRef,
   type QueuedEdit,
 } from './edits'
+import { applyEntry, type JournalEntry } from './journal'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_MARKER, MARKER, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
@@ -104,6 +107,9 @@ export type CompactionIO = {
   // [SP_CTX_02_07] the size of the request before the apply: the plain usage
   // (1–3 ms, no breakdown); undefined when unknown
   requestTokens?: () => Promise<number | undefined>
+  // [SP_CTX_02_31] JournalApply in the background, on the journal's chain:
+  // never awaited, its failure changes nothing
+  journal?: (entry: JournalEntry) => void
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -152,7 +158,9 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
     return { skip: 'context-editor: originals could not be archived' }
   }
   const archived = archive
-  const rows = dropOwnCalls(applied.rows, mediaOwners, knownResults)
+  // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
+  const { rows, removed } = dropOwnCallsCounted(applied.rows, mediaOwners, knownResults)
+  applied.report.ownCallsRemoved = removed
   applied.report.charsAfter = totalChars(rows)
   // [SP_CTX_01_05] where the made rows stand in the list returned
   applied.report.produced = producedRows(rows, applied.made)
@@ -173,7 +181,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   let dropped: string[] = []
   await io
     .updateTags(reg => {
-      const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits), messages, after, done, produced), messages, after, done, produced)
+      const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits, produced), messages, after, done, produced), messages, after, done, produced)
       dropped = out.dropped
       // [SP_CTX_02_28] the telemetry measures what this apply freed
       return done.length && tokensBefore !== undefined ? { ...out.registry, lastApply: { at: id, tokensBefore } } : out.registry
@@ -191,6 +199,14 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // [SP_CTX_02_18] RecordBoundary: with `host` only when hostId is already read
   const boundary = boundaryOf(rows, io.hostId())
   if (boundary) await io.writeBoundary(boundary).catch(() => undefined)
+  // [SP_CTX_02_31] what this application compressed; never delays the answer
+  const entry = applyEntry(id, applied.report, archived, messages, edits)
+  if (entry && io.journal)
+    try {
+      io.journal(entry)
+    } catch {
+      // the journal is no part of the application
+    }
   return { messages: rows }
 }
 
@@ -236,8 +252,10 @@ function withoutMediaData(value: unknown, note: string): unknown {
   )
 }
 
-// [SP_CTX_02_07] [SP_CTX_03_01] No edit touches a pinned target, however
-// it was queued; without a readable registry no edit can be checked.
+// [SP_CTX_02_03] [SP_CTX_02_07] [SP_CTX_03_01] ScreenPinned, shared by the
+// application and the seed: no edit touches a pinned target, and only a
+// rewrite of its own row touches the state slot, however it was queued;
+// without a readable registry no edit can be checked.
 export function screenPinned(
   messages: readonly SessionMessage[],
   queued: readonly QueuedEdit[],
@@ -249,6 +267,7 @@ export function screenPinned(
   const refused: string[] = []
   for (const e of queued) {
     if (touchesPin(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${PINNED}`)
+    else if (touchesState(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${STATE_SLOT}`)
     else edits.push(e)
   }
   return { edits, refused }

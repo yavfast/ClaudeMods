@@ -27,7 +27,7 @@ npx -p typescript@5.6.3 tsc -p mods/context-editor/tsconfig.json --noEmit
 
 ### One plugin that both runs and handles the compaction
 
-`mods/context-editor` gives the agent the MCP tools `context_list`, `context_edit`, `context_tag` and `context_handoff`, and the person the command `/handoff`. Edits are not applied right away. They go into a queue file. After a turn of the main conversation, Flush runs the built-in `/compact` with the marker `context-editor: apply queued edits` through `$.command.run`, and the mod's own `session.compact` handler, matching on that `instructions` text, applies the queue and returns the new rows. Then Flush sends the resume prompt.
+`mods/context-editor` gives the agent the MCP tools `context_list`, `context_edit`, `context_tag`, `context_note` and `context_handoff`, the skill `context-editor:context-stages`, and the person the command `/handoff`. The agent decides when to optimize: it closes a task stage with `context_tag`, or ends an answer with the `[context-editor: optimize]` line, which starts an optimization turn; there are no size reminders, and `context_list` shows context telemetry on request. Edits are not applied right away. They go into a queue file. After a turn of the main conversation, Flush runs the built-in `/compact` with the marker `context-editor: apply queued edits` through `$.command.run`, and the mod's own `session.compact` handler, matching on that `instructions` text, applies the queue and returns the new rows. Then Flush sends the resume prompt.
 
 A plugin's `$.command.run({ command: 'compact', args })` reaches that plugin's own hooks, works in the non-interactive host too, and arrives with `trigger: 'manual'`. `$.session.compact` is never used: the host skips the calling plugin's own hooks for it, and the non-interactive host refuses it outright. That is why the mod no longer needs a second plugin or a ready file.
 
@@ -35,7 +35,7 @@ The handoff (`context_handoff`, `/handoff`) builds a seed from what the model se
 
 Commands run only from a deferred action (`$.clock.after`) planned in `turn.complete` or in the `/handoff` command handler, never from a timer made in a `tool.call` or `prompt.submit` hook. Each command gets one attempt; the host's refusal text goes into the reasons or the status line.
 
-Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a directory with mode 700. It holds `pending.json` (the queue), `tags.json`, `aliases.json`, `boundary.json`, archives of the replaced originals with their media, and the handoff's seed files.
+Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a directory with mode 700. It holds `pending.json` (the queue), `tags.json`, `aliases.json`, `boundary.json`, `journal.json` (the journal of effect), archives of the replaced originals with their media, and the handoff's seed files.
 
 ### Ports pattern (how the code is split for testing)
 
@@ -47,7 +47,10 @@ Faking the whole host `$` is expensive, so the logic sits in pure modules behind
 - `hooks/flush.ts` (`FlushIO`): running the compaction command after a turn and the resume prompt.
 - `hooks/turns.ts`: the turn counter Flush, AutoTag and the handoff share.
 - `hooks/handoff.ts` (`HandoffIO`, `SeedIO`): the handoff request, BuildSeed, CheckSeed, CheckSeeded, RunHandoff and HandleSeed.
-- `hooks/tags.ts` (`TagIO`), `hooks/aliases.ts` (`AliasIO`): tags, auto-tagging rules, reminders, and the `cN` call aliases.
+- `hooks/tags.ts` (`TagIO`), `hooks/aliases.ts` (`AliasIO`): tags, auto-tagging rules, `context_tag` (incl. stage open/close), and the `cN` call aliases.
+- `hooks/stages.ts`: stages and their row marks, the close report, the optimization mark and turn texts, telemetry and calibrated size estimates.
+- `hooks/notes.ts`: the agent's service notes (`context_note`), their relocation after edits, and note reminders.
+- `hooks/journal.ts` (`JournalIO`): the journal of effect: what each application compressed, own writes of compressed paths, rereads of compressed content and archives.
 - `hooks/register.ts`: tool schemas and descriptions, the event hooks, and storage I/O. It has its own `serial()` chain per file so that read-modify-write cycles never overlap.
 
 Tests in `tests/*.test.ts` use `claude-code/testing`, call these pure functions with fake IO objects, and build `SessionMessage` rows by hand. New logic belongs in a ports module with a test. `register.ts` should only do the binding.
@@ -65,7 +68,7 @@ Code comments and commit subjects cite IDs from `docs/`: `C_CTX_*` (concept), `S
 - Never await `$.prompt.submit` inside a `session.compact` hook: it deadlocks. A refused prompt resolves with `{ drop }`. It does not throw.
 - `$.command.run` queues a command until the session is idle and returns after the work (`compact` once the handler answered, `clear` once `$.session.id()` is new). Its refusal is final. It refuses a call from a timer made inside a `tool.call` hook. The mod's own `/clear` and `/compact` raise no `prompt.submit`, `turn.start` or `turn.complete`.
 - The non-interactive host (VS Code, SDK, stream-json) has no `/resume` for `$.command.run`, and `$.session.compact` always fails there; `clear` and `compact` work. In a one-shot `claude -p "<prompt>"`, every `$.command.*` after the last turn fails with "no session is bound in this process".
-- In stream-json every row a compaction handler returns passes through `session.append` again with `origin.kind = 'plugin'`; in the terminal those rows and the command's rows bypass `session.append`.
+- In stream-json every row a compaction handler returns passes through `session.append` again, with an origin that depends on the row: prompt rows `origin.kind = 'plugin'`, assistant rows `model '<synthetic>'`, tool-result rows `origin.kind = 'tool'` (so an origin filter does not catch copied results; the mod remembers their `tool_use_id`s until the next turn). In the terminal those rows and the command's rows bypass `session.append`.
 - A row without `handle`, or with a `handle` from another session, loses its media and thinking blocks.
 - A compaction runs only between turns; a command started mid-turn waits for the turn's end, and a turn may start meanwhile, so recheck the turn counter after each command. `/clear` and `/resume` change `session_id` without a `session.start`, so check the session before each storage operation. The read of the conversation is "originals + copies" only in the host process that ran the compaction; after `--resume` or `/resume` it is the loaded chain. So `boundary.json` is trusted by host process: it carries `host` = `<CONTEXT_EDITOR_HOST token>:<ppid>` (one read per module instance, awaited by readers, only peeked by compaction handlers), or this module instance wrote it in this session; a session switch in the same process strips `host` from the new session's boundary (SP_CTX_DEC_10).
 - `$.fs.read` and `$.fs.write` are capped at 4 MiB. Write larger files through `$.process.run(['sh','-c','umask 077 && cat > "$1"','sh',path], { stdin })`.

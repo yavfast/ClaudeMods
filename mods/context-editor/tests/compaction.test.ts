@@ -10,6 +10,7 @@ import {
   MARKER,
   MEDIA_DATA,
   observedBoundary,
+  screenPinned,
   type CompactionIO,
 } from '../hooks/compaction'
 import {
@@ -405,4 +406,49 @@ test('HandleCompaction — розмір перед застосуванням: t
   const unknown = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { requestTokens: async () => undefined })
   await handleCompaction(unknown.io, conversation())
   expect(unknown.written.tags!.lastApply).toBeUndefined()
+})
+
+// ---- phase 15
+
+test('ScreenPinned — `pin` і `state`: a summarize of a pinned pair and a collapse over the state row are refused, the rewrite of the state row stays; an unreadable registry refuses all', async () => {
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [] },
+    { role: 'assistant', text: 'state: step 1', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A', isError: false }] },
+  ]
+  const edits = prepare(rows, [
+    { op: 'summarize', tool_use_id: 'a', summary: 's' },
+    { op: 'collapse', from_index: 0, to_index: 1, summary: 's' },
+    { op: 'rewrite', index: 1, text: 'state: step 2' },
+  ]).queued
+  const reg: TagRegistry = {
+    ...EMPTY_REGISTRY,
+    tags: [
+      { kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'state', target: { anchor: fingerprint(rows[1]!), hint: 1 }, created_turn: 0 },
+    ],
+  }
+  const out = screenPinned(rows, edits, { state: 'ok', value: reg })
+  expect(out.edits.map(e => e.op)).toEqual(['rewrite'])
+  expect(out.refused[0]).toContain('target is pinned')
+  expect(out.refused[1]).toContain('target holds the state slot')
+  const none = screenPinned(rows, edits, { state: 'unreadable', reason: 'x' })
+  expect(none.edits).toEqual([])
+  expect(none.refused.every(r => r.endsWith('tag registry unreadable'))).toBe(true)
+})
+
+test('HandleCompaction — P13 and the journal: the own call removed is counted in the report; the journal gets one apply entry with the Read paths', async () => {
+  const entries: unknown[] = []
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), { journal: e => void entries.push(e) })
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed; tags and notes stay — see context_list.')
+  expect(entries).toEqual([{ kind: 'apply', at: 1000, edits: 1, archive: '/s/1000.json', compressed: [] }])
+  // a batch whose edits all fail: no journal entry, no sentence
+  const failed: unknown[] = []
+  const none = harness({ state: 'ok', value: { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'gone' }] } }, { journal: e => void failed.push(e) })
+  await handleCompaction(none.io, conversation())
+  expect(failed).toEqual([])
+  expect(none.written.queue!.report).not.toContain('Your own')
 })

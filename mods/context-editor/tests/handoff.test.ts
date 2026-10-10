@@ -364,12 +364,15 @@ test('BuildSeed — засів без правок: an empty queue, or every edi
   const rows = withListing()
   const empty = host({ rows, api: listingApi() })
   expect(await runHandoff(empty.io, empty.s.mem, 0)).toBe('transcript')
-  expect(empty.s.submitted[0]).toBe('context-editor: this session continues old (transcript).\n\ngo on')
+  // [SP_CTX_01_05] P13: a seed always replaces the conversation, so the removed own calls are named
+  expect(empty.s.submitted[0]).toBe(
+    'context-editor: this session continues old (transcript).\ncontext-editor: Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ngo on',
+  )
   const failing = host({ rows, api: listingApi() })
   failing.s.queues.set('/s/old', { ...failing.oldQueue(), edits: [{ op: 'drop', tool_use_id: 'gone' }] })
   expect(await runHandoff(failing.io, failing.s.mem, 0)).toBe('transcript')
   expect(failing.s.submitted[0]).toBe(
-    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found.\n\ngo on',
+    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found. Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ngo on',
   )
   for (const text of [empty.s.submitted[0]!, failing.s.submitted[0]!]) {
     expect(text).not.toContain('Conversation ~')
@@ -387,6 +390,23 @@ test('BuildSeed — засів з правками: charsBefore is the visible r
   const text = seedReportTail({ report: seed.report, archive: '/s/old/1.json' })
   expect(text.startsWith('\ncontext-editor: applied 1 edit(s): summarize a.')).toBe(true)
   expect(text).toContain(`Conversation ~${totalChars(rows)} -> ~${seed.report.charsAfter} chars`)
+})
+
+test('BuildSeed — ScreenPinned: the state slot inside a collapse is refused as at an application; the rewrite of its row passes', async () => {
+  const rows = conversation()
+  const state: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'state', target: { anchor: fingerprint(rows[1]!), hint: 1 }, created_turn: 0 }] }
+  const out = built(
+    (
+      await seedOf({ tags: { state: 'ok', value: state } }, [
+        { op: 'collapse', from_index: 1, to_index: 3, summary: 's' },
+        { op: 'rewrite', index: 1, text: 'state: handed off' },
+      ])
+    ).out,
+  )
+  expect(out.report.failed.join()).toContain('collapse #1..#3: target holds the state slot')
+  expect(out.report.applied).toEqual(['rewrite #1'])
+  // [SP_CTX_02_05] the context_handoff pair went with DropOwnCalls
+  expect(out.report.ownCallsRemoved).toBe(1)
 })
 
 test('BuildSeed: an unreadable tag registry fails every edit; a pinned target is refused', async () => {
@@ -445,7 +465,7 @@ function pendingSeed(over: Partial<HandoffSeed> = {}): HandoffSeed {
     rows: [text('user', 'task'), use('x'), result('x'), text('assistant', 'done')],
     file: '/s/old/1/seed.json',
     archive: '',
-    report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], notesDropped: [], mediaFiles: [] },
+    report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] },
     visible: [],
     edits: [],
     fromSummary: false,
@@ -1694,7 +1714,7 @@ test('RunHandoff — нотатки в новій сесії: a note on an untou
 
 // [SP_CTX_02_34] phase 17: the seed's report estimates with the old session's calibration
 test('BuildSeed / RunHandoff — the seed report\'s "freed" uses TagRegistry.charsPerToken of the old session', async () => {
-  const report = { applied: ['summarize a'], failed: [], charsBefore: 1000, charsAfter: 200, originals: [], produced: [], notesDropped: [], mediaFiles: [] }
+  const report = { applied: ['summarize a'], failed: [], charsBefore: 1000, charsAfter: 200, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }
   expect(seedReportTail({ report, archive: '', ratio: 2 })).toContain('(estimate: ~400 tokens freed;')
   expect(seedReportTail({ report, archive: '' })).toContain('(estimate: ~200 tokens (approx.) freed;')
   const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })

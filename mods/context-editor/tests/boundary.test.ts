@@ -93,6 +93,20 @@ test('every tool description reaches the model whole (the five tools)', async ()
   for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION, NOTE_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
 })
 
+// [SP_CTX_02_01] [SP_CTX_02_02] [SP_CTX_02_11] the content phase 15 adds
+test('опис інструмента (phase 15): the state slot, the range, the review reasons and the ~ flag are named', async () => {
+  expect(EDIT_DESCRIPTION).toContain('A row tagged [state] changes only by a rewrite of that row.')
+  expect(EDIT_DESCRIPTION).not.toContain('the working part')
+  expect(TAG_DESCRIPTION).toContain('"state"')
+  expect(TAG_DESCRIPTION).toContain('"index" and "to"')
+  expect(TAG_DESCRIPTION).toContain('big, search, stale (the file changed since), duplicate')
+  expect(TAG_DESCRIPTION).toContain('A new tag on a target replaces the old one; "remove" drops it.')
+  expect(LIST_DESCRIPTION).toContain('~ after tool_use/tool_result')
+  expect(LIST_DESCRIPTION).toContain('[review: reason]')
+  expect(LIST_DESCRIPTION).toContain('[state]')
+  expect(LIST_DESCRIPTION).toContain('[disposable #a..#b: note]')
+})
+
 test('stale indexes: collapse and rewrite are refused, edits by id still queue', async () => {
   const rows: SessionMessage[] = [
     row('user', 'task'),

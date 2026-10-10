@@ -190,7 +190,8 @@ test('context_tag — закриття: a stage after #3, the close call at #12:
   expect(log.tags.lastClosed).toEqual({ name: 'A', after: mark(r, 3), end: mark(r, 11), turn: 5 })
   expect(log.replaces).toBe(1)
   expect(text).toContain('Stage "A" closed: rows #4..#11, ~')
-  expect(text).toContain('Candidates in the block: none.')
+  // [SP_CTX_02_29] no review or disposable in the block; its Read/Grep/Glob pairs are counted
+  expect(text).toContain('Candidates in the block: reproducible pairs (~) 3.')
   expect(text).toContain('Context: conversation ~12k tokens; fixed part (system prompt, tools, skills, memory) ~70k; window 200k; auto-compaction in ~78k')
   expect(text).toContain('Last block "A" #4..#11')
   expect(text).toContain(STAGE_ADVICE)
@@ -303,14 +304,15 @@ function blockIO(list: SessionMessage[], tags: TagRegistry, listed: { key?: stri
   }
 }
 
-test('BlockReport — межа індексів: 25 active reviews in the block name 20 indexes, then "+5 more"; media of the block counted', async () => {
+test('BlockReport — межа індексів: 25 active reviews with reason big in the block name 20 indexes, then "+5 more"; media of the block counted', async () => {
   const list = [prompt('p'), ...Array.from({ length: 25 }, (_, i) => [use(`r${i}`), result(`r${i}`)]).flat(), use('c'), result('c')]
-  const reviews: Tag[] = Array.from({ length: 25 }, (_, i) => ({ kind: 'review', target: { tool_use_id: `r${i}` }, created_turn: 0 }))
+  const reviews: Tag[] = Array.from({ length: 25 }, (_, i) => ({ kind: 'review', reason: 'big', target: { tool_use_id: `r${i}` }, created_turn: 0 }))
   const tags = reg({ tags: [...reviews, { kind: 'disposable', target: { tool_use_id: 'c' }, note: 'n', created_turn: 0 }] })
   const block: ClosedBlock = { name: 'A', after: mark(list, 0), end: mark(list, list.length - 1), turn: 0 }
   const text = await blockReport(blockIO(list, tags), block, { queued: 1, freed: '~3 tokens' })
   const line = text.split('\n').find(l => l.startsWith('Candidates in the block'))!
   expect(line.match(/#\d+/g)!.length).toBe(MAX_BLOCK_INDEXES + 1)
+  expect(line).toContain('Candidates in the block: big #1, #3, ')
   expect(line).toContain('+5 more')
   expect(line).toContain('disposable #51')
   expect(text).toContain('1 media (~2KB)')
@@ -358,7 +360,8 @@ test('Telemetry — stage, blocks and candidates', async () => {
   const t = async (extra: Partial<TagRegistry>) => telemetryText(await telemetry(r, reg({ turn: 4, tags, ...extra }), async () => USAGE))
   const open = await t({ stage })
   expect(open).toContain('Stage "S" open from #10 (opened 3 turn(s) ago), ~')
-  expect(open).toContain('Candidates: review 2 (#1, #7); disposable 0')
+  // tags without a reason were written before phase 15: the group "no reason"
+  expect(open).toContain('Candidates: review 2 (no reason 2: #1, #7); disposable 0')
   expect(await t({ stage: { ...stage, after: gone } })).toContain('Stage "S" open from #0 (opened 3 turn(s) ago), ~')
   expect(await t({ stage: { ...stage, after: gone } })).toContain('; its start row is gone, so it runs from #0')
   expect(await t({ lastClosed: { name: 'A', after: mark(r, 3), end: mark(r, 9), turn: 0 } })).toContain('Last block "A" #4..#9 (~')
@@ -433,7 +436,9 @@ test('OptimizeText — без індексів: the block name, ListHint, STAGE_
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
-  expect(INTRO_TEXT.length).toBe(748)
+  expect(INTRO_TEXT.length).toBe(866)
+  // [SP_CTX_01_12] P13: the sentence about the agent's own calls
+  expect(INTRO_TEXT).toContain('When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list).')
   expect(INTRO_TEXT).toContain(OPTIMIZE_MARK)
   expect(INTRO_TEXT).toContain('"op":"open"')
   expect(INTRO_TEXT).toContain('"op":"close"')
@@ -732,10 +737,9 @@ test('Telemetry — сума трохи більша за запит: the Messag
   expect(telemetryText(await telemetry(rows(), reg(), async () => ahead))).toContain('Context: conversation ~17k tokens')
 })
 
-// [SP_CTX_01_12] live verify of phase 14, D3: the listing of phase 14 has no `~` flag
-test('STAGE_ADVICE names the reproducible tools without the `~` flag', async () => {
-  expect(STAGE_ADVICE).not.toContain('~')
-  expect(STAGE_ADVICE).toContain('Pairs from Read, Grep and Glob are reproducible')
+// [SP_CTX_01_12] phase 15: the listing flags reproducible pairs with `~`, and the advice names it
+test('STAGE_ADVICE names the reproducible pairs by the `~` flag', async () => {
+  expect(STAGE_ADVICE).toContain('Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer')
 })
 
 // ---- [SP_CTX_02_34] Calibrate and Estimate (phase 17)
@@ -786,14 +790,14 @@ test('context_list — один розмір: the header names the telemetry\'s 
   expect(headerSize({ measure: 'unknown', ratio: 1.8 }, 9000)).toBe('~5000 tokens (calibrated estimate)')
 })
 
-test('Telemetry — кандидати з рядками: active reviews by the first row of their target (by reason in phase 15)', async () => {
+test('Telemetry — кандидати з рядками: active reviews by reason, each with the first row of its target', async () => {
   const r = rows()
   const tags: Tag[] = [
-    { kind: 'review', target: { tool_use_id: 'c' }, created_turn: 0 },
-    { kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 },
-    { kind: 'review', target: mark(r, 9), created_turn: 0 },
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'c' }, created_turn: 0 },
+    { kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', reason: 'big', target: mark(r, 9), created_turn: 0 },
   ]
-  expect(telemetryText(await telemetry(r, reg({ tags }), async () => USAGE))).toContain('Candidates: review 3 (#1, #7, #9); disposable 0')
+  expect(telemetryText(await telemetry(r, reg({ tags }), async () => USAGE))).toContain('Candidates: review 3 (big 2: #7, #9; stale 1: #1); disposable 0')
 })
 
 test('Калібрування без телеметрії (05_04): estimates chars/4 marked approx.; a stored ratio stays in use', async () => {
@@ -854,4 +858,54 @@ test('Telemetry — a negative measured change (more rows added than freed) is n
   expect(t.measuredFreed).toBeUndefined()
   expect(telemetryText(t)).not.toContain('Last apply')
   expect(state.lastApply).toBeUndefined()
+})
+
+// ---- phase 15: telemetry and the close report by reason, journal, state slot
+
+test('Telemetry — кандидати: big #12, stale #5, a tag without reason #7, an agent review whose ttl has not passed, a disposable whose target is gone', async () => {
+  const r = [prompt('p'), ...Array.from({ length: 7 }, (_, i) => [use(`r${i}`), result(`r${i}`)]).flat()]
+  const tags: Tag[] = [
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'r5' }, created_turn: 0 },
+    { kind: 'review', reason: 'stale', target: { tool_use_id: 'r2' }, created_turn: 0 },
+    { kind: 'review', target: mark(r, 7), created_turn: 0 },
+    { kind: 'review', reason: 'agent', target: { tool_use_id: 'r6' }, ttl_turns: 5, created_turn: 0 },
+    { kind: 'disposable', target: { tool_use_id: 'gone' }, note: 'n', created_turn: 0 },
+  ]
+  const text = telemetryText(await telemetry(r, reg({ tags, turn: 1 }), async () => USAGE))
+  expect(text).toContain('Candidates: review 3 (big 1: #11; stale 1: #5; no reason 1: #7); disposable 0')
+})
+
+test('Telemetry — журнал: none or zero entries give no Effect line; 2 applications, 3 rereads (1 of archives); an unreadable journal says why', async () => {
+  const r = rows()
+  const none = telemetryText(await telemetry(r, reg(), async () => USAGE))
+  expect(none).not.toContain('Effect')
+  expect(telemetryText(await telemetry(r, reg(), async () => USAGE, undefined, { applications: 0, rereads: 0, archiveRereads: 0 }))).not.toContain('Effect')
+  const some = telemetryText(await telemetry(r, reg(), async () => USAGE, undefined, { applications: 2, rereads: 3, archiveRereads: 1 }))
+  expect(some).toContain('Effect: 2 application(s); 3 reread(s) of compressed content (1 of archives)')
+  expect(some).not.toContain('freed')
+  expect(telemetryText(await telemetry(r, reg(), async () => USAGE, undefined, { unreadable: 'not JSON' }))).toContain('Effect: journal unreadable (not JSON)')
+})
+
+test('Telemetry — слот стану: the state tag found / not found / absent', async () => {
+  const r = rows()
+  const at = (target: RowMark) => reg({ tags: [{ kind: 'state', target, created_turn: 0 }] })
+  expect(telemetryText(await telemetry(r, at(mark(r, 3)), async () => USAGE))).toContain('State slot: #3')
+  expect(telemetryText(await telemetry(r, at({ anchor: 'assistant||gone', hint: 3 }), async () => USAGE))).toContain('State slot: its row is no longer in the conversation')
+  expect(telemetryText(await telemetry(r, reg(), async () => USAGE))).not.toContain('State slot')
+})
+
+test('BlockReport — кандидати блоку за причинами: reasons in order, "no reason" for an old tag, disposables, the reproducible pairs of the block', async () => {
+  const r = rows()
+  const tags: Tag[] = [
+    { kind: 'review', reason: 'search', target: { tool_use_id: 'b' }, created_turn: 0 },
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', target: { tool_use_id: 'c' }, created_turn: 0 },
+    { kind: 'disposable', target: mark(r, 6), note: 'n', created_turn: 0 },
+  ]
+  const text = await blockReport(blockIO(r, reg({ tags })), { name: 'A', after: null, end: mark(r, 11), turn: 0 })
+  // pairs a, c, d (Read) and b (Grep) lie in #0..#11
+  expect(text).toContain('Candidates in the block: big #1; search #4; no reason #7; disposable #6; reproducible pairs (~) 4.')
+  // the telemetry of the report carries the journal when the port gives one
+  const withJournal = await blockReport({ ...blockIO(r, reg({ tags })), journal: async () => ({ applications: 1, rereads: 0, archiveRereads: 0 }) }, { name: 'A', after: null, end: mark(r, 11), turn: 0 })
+  expect(withJournal).toContain('Effect: 1 application(s); 0 reread(s) of compressed content (0 of archives)')
 })

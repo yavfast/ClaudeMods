@@ -1,6 +1,25 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, collectMedia, dropOwnCalls, fingerprint, formatReport, freshId, fullRow, listMode, listRows, MARK, MAX_FULL_ROW, mergeCallRows, ownerKey, prepare, producedRows, replacedOwners, ROW_WINDOW } from '../hooks/edits'
+import {
+  applyEdits,
+  collectMedia,
+  dropOwnCalls,
+  dropOwnCallsCounted,
+  fingerprint,
+  formatReport,
+  freshId,
+  fullRow,
+  listMode,
+  listRows,
+  MARK,
+  MAX_FULL_ROW,
+  mergeCallRows,
+  ownerKey,
+  prepare,
+  producedRows,
+  replacedOwners,
+  ROW_WINDOW,
+} from '../hooks/edits'
 
 const BIG = 'x'.repeat(5000)
 
@@ -496,7 +515,7 @@ test('the report names what applied, what failed and where the originals are', a
 
 // [SP_CTX_01_05]
 test('FormatReport — форми: compaction without an applied edit / seed with nothing / an applied edit', async () => {
-  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], produced: [], notesDropped: [], mediaFiles: [] }
+  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }
   const none = formatReport({ ...empty, failed: ['x'] }, '/a.json', 'compaction')
   expect(none).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: x.')
   expect(none).not.toContain('Conversation ~')
@@ -637,4 +656,65 @@ test('context_list — повний рядок: index 12 with full shows the row
   expect(JSON.stringify(listMode({ full: true, index: 13 }, 13))).toContain('BAD_FULL')
   expect(JSON.stringify(listMode({ index: 3 }, 13))).toContain('BAD_FULL')
   expect(listMode({ from: 5, count: 0 }, 13)).toEqual({ page: { from: 5, count: 0 } })
+})
+
+// ---- phase 15
+
+test('context_list — `~` у змішаному рядку: parallel Read and WebFetch: only the Read parts carry ~', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'r', tool: 'Read', input: {} }, { tool_use_id: 'w', tool: 'WebFetch', input: {} }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r', text: 'file', isError: false }, { tool_use_id: 'w', text: 'page', isError: false }] },
+  ]
+  const text = listRows(input, 0, 10)
+  expect(text).toContain('tool_use Read~ id=r')
+  expect(text).toContain('tool_use WebFetch id=w')
+  expect(text).toContain('tool_result~ id=r "file"')
+  expect(text).toContain('tool_result id=w "page"')
+})
+
+test('DropOwnCalls — лічильник: the context_note and context_list pairs are removed (2); the context_tag pair next to media stays and does not count', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
+    use('n', 'mcp__context-editor__context_note', 'h1'),
+    result('n', 'noted', 'h2'),
+    use('l', 'mcp__context-editor__context_list', 'h3'),
+    result('l', 'listing', 'h4'),
+    {
+      role: 'assistant',
+      text: '',
+      handle: 'h5',
+      toolUses: [
+        { tool_use_id: 't', tool: 'mcp__context-editor__context_tag', input: {} },
+        { tool_use_id: 'shot', tool: 'Read', input: {} },
+      ],
+    },
+    {
+      role: 'user',
+      text: '',
+      handle: 'h6',
+      toolResults: [
+        { tool_use_id: 't', text: 'tagged', isError: false },
+        { tool_use_id: 'shot', text: '', isError: false },
+      ],
+      toolUses: [],
+    },
+  ]
+  const out = dropOwnCallsCounted(input, new Set([ownerKey({ tool_use_id: 'shot' })]))
+  expect(out.removed).toBe(2)
+  expect(out.rows.some(r => r.toolUses.some(u => u.tool_use_id === 't'))).toBe(true)
+  expect(dropOwnCallsCounted(rows()).removed).toBe(0)
+})
+
+test('FormatReport — власні виклики (P13): applied with 2 removed / 0 removed / no edit applied / a seed without edits with 1 removed', async () => {
+  const base = { applied: ['drop c'], failed: [], charsBefore: 100, charsAfter: 60, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 2, mediaFiles: [] }
+  const sentence = 'Your own context-editor calls (2) were removed; tags and notes stay — see context_list.'
+  expect(formatReport(base, '', 'compaction').endsWith(` ${sentence}`)).toBe(true)
+  expect(formatReport({ ...base, ownCallsRemoved: 0 }, '', 'compaction')).not.toContain('Your own')
+  expect(formatReport({ ...base, applied: [], failed: ['x'] }, '', 'compaction')).not.toContain('Your own')
+  expect(formatReport({ ...base, applied: [], ownCallsRemoved: 1 }, '', 'seed')).toBe(
+    'context-editor: Your own context-editor calls (1) were removed; tags and notes stay — see context_list.',
+  )
+  // after the notes dropped
+  expect(formatReport({ ...base, notesDropped: ['n2'] }, '', 'compaction')).toContain(`Notes dropped (their rows were removed): n2. ${sentence}`)
 })

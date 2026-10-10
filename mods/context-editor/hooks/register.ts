@@ -80,6 +80,7 @@ import {
 } from './stages'
 import { contextNote, MAX_NOTE, MAX_NOTES, MAX_REMIND, noteLabels, noteLines, noteReminders, remindable, afterReminders, remindsAfter, rowNotes, withReminderLines, type NoteArgs } from './notes'
 import { newTurns, turnCompleted, turnStarted } from './turns'
+import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
   appendFacts,
   autoTag,
@@ -91,6 +92,10 @@ import {
   parseRegistry,
   pinnedTargets,
   queueTagReplacements,
+  callFollowUp,
+  isCompactionCopy,
+  resultIds,
+  staleReads,
   tagLabels,
   type TagArgs,
   type TagIO,
@@ -105,9 +110,9 @@ const HANDOFF = 'context_handoff'
 const NOTE = 'context_note'
 
 // [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
-export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [disposable: note], [review]) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
+export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
 
-The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, and the cleanup candidates with their rows. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest 4096 rows are visible.`
+The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, the cleanup candidates by reason with their rows, and, when there is something to show, the effect of applications and your state slot. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest 4096 rows are visible.`
 
 // [SP_CTX_02_02] At most MAX_DESCRIPTION chars, by the priorities of the spec.
 export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have already processed (screenshots and documents too), dead-end steps and wrong conclusions with compact summaries.
@@ -120,11 +125,11 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a wrong conclusion.
 
-Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first.
+Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A target tagged [pin] cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
 Originals are archived to the file named in the replacement (original: <path>); Read it to get one back. Summaries keep every fact, number, URL and source you may still need.
 
-Compress a finished stage's block (${TAG} close), or without stages the earliest processed or excess span; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force, and the working part. Stage record: goal; decisions with reason, the person's verbatim words and why alternatives were rejected; facts with sources; changed artifacts; open questions. Batch edits in one call. Guide: skill ${PLUGIN}:${SKILL}.`
+Compress a finished stage's block; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Stage record: goal; decisions with reason, the person's verbatim words and why alternatives were rejected; facts with sources; changed artifacts; open questions. Batch edits in one call. Guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for the most recently marked call.' }
@@ -156,16 +161,17 @@ const EDIT_SCHEMA = {
 // [SP_CTX_02_11] At most MAX_DESCRIPTION chars, by the priorities of the spec.
 export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation and mark the stages of your work, at no token cost: tags and stages live outside the conversation and show in ${LIST}. Call it with {"tags":[...]}; the requests apply in order.
 
-Targets of add and remove: exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias: calls worth tagging carry a line "[context-editor] id cN" after their result, "ref":"last" is the latest one, so you can tag right after reading) or "index" (a row in ${LIST}).
+Targets of add and remove: exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias "cN" or "last") or "index" (a row in ${LIST}); a disposable range: "index" and "to", its last row.
 
 Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, cleanup candidates, context telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
 
 Kinds (op "add"):
 - "pin": nothing may edit the target, neither you nor the replacements of disposable tags. The person's first prompt is pinned for you.
-- "disposable" + "note": once you close a stage or end a turn with the optimization mark, the target is replaced by your note (a tool result summarized, your text row rewritten); the original is archived. Write in the note every fact you still need. By index only your own assistant text rows.
-- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Large tool outputs and search results are marked for you.
+- "disposable" + "note": once you close a stage or end a turn with the optimization mark, the target is replaced by your note (a tool result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
+- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (the file changed since), duplicate.
+- "state": your one state slot (task state, plan), an assistant text row by "index"; change it only by a rewrite of that row, never append a new one. A new state tag moves the slot.
 
-{"op":"remove"} with the same target removes its tag; a new tag on a target replaces the old one. Guide: skill ${PLUGIN}:${SKILL}.`
+A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PLUGIN}:${SKILL}.`
 
 const TAG_TARGET = {
   tool_use_id: { type: 'string', description: 'Target: a tool call and its result.' },
@@ -236,8 +242,23 @@ const TAG_SCHEMA = {
       items: {
         oneOf: [
           { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'pin' }, ...TAG_TARGET }, required: ['op', 'kind'] },
-          { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'disposable' }, ...TAG_TARGET, note: { type: 'string', maxLength: MAX_TEXT } }, required: ['op', 'kind', 'note'] },
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'add' },
+              kind: { const: 'disposable' },
+              ...TAG_TARGET,
+              to: { type: 'integer', description: 'With "index": the last row of a range, included; the range holds every tool call with its result.' },
+              note: { type: 'string', maxLength: MAX_TEXT },
+            },
+            required: ['op', 'kind', 'note'],
+          },
           { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'review' }, ...TAG_TARGET, ttl_turns: { type: 'integer', minimum: 1 } }, required: ['op', 'kind'] },
+          {
+            type: 'object',
+            properties: { op: { const: 'add' }, kind: { const: 'state' }, index: { type: 'integer', description: `Your assistant text row from ${LIST} that holds the state.` } },
+            required: ['op', 'kind', 'index'],
+          },
           { type: 'object', properties: { op: { const: 'remove' }, ...TAG_TARGET }, required: ['op'] },
           {
             type: 'object',
@@ -272,6 +293,16 @@ const turns = newTurns()
 const flushState = newFlushState()
 // [SP_CTX_01_15] The handoff of this module instance; `instance` marks its claims.
 const handoff = newHandoffMemory(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`)
+// [SP_CTX_02_12] The result ids of the rows the last compaction returned: in
+// stream-json each one passes session.append again, with its tool's origin;
+// AutoTag skips them. A turn start ends the copies (they come between turns).
+const copied = new Set<string>()
+
+function noteCopies(rows: readonly SessionMessage[] | undefined): void {
+  copied.clear()
+  for (const id of resultIds(rows ?? [])) copied.add(id)
+}
+
 // [SP_CTX_02] One serial chain per file: no two read-modify-writes overlap.
 const chains = new Map<string, Promise<unknown>>()
 
@@ -459,6 +490,40 @@ function writeQueue($: EngineInterface, q: Queue): Promise<void> {
   return writeQueueAt($, storage.dir!, q)
 }
 
+// [SP_CTX_01_19] The journal of effect of the current session.
+async function readJournal($: EngineInterface): Promise<Read<Journal>> {
+  const path = `${storage.dir}/journal.json`
+  if (!(await $.fs.exists(path))) return { state: 'missing', value: { ...EMPTY_JOURNAL, entries: [] } }
+  try {
+    return parseJournal(await $.fs.read(path))
+  } catch (err) {
+    return { state: 'unreadable', reason: String(err) }
+  }
+}
+
+// [SP_CTX_02_31] Each change on the journal's own chain, in the session whose
+// storage is set when it runs.
+function journalIO($: EngineInterface): JournalIO {
+  return {
+    read: () => readJournal($),
+    write: async j => {
+      await $.fs.write(`${storage.dir}/journal.json`, JSON.stringify(j))
+    },
+  }
+}
+
+function onJournal($: EngineInterface, work: (io: JournalIO) => Promise<void>): void {
+  void serial('journal', async () => {
+    if (await ensureStorage($)) await work(journalIO($))
+  }).catch(() => undefined)
+}
+
+// [SP_CTX_02_28] The journal's part of the telemetry; a failed read says why.
+async function journalNow($: EngineInterface): Promise<JournalSummary | undefined> {
+  if (!storage.dir) return undefined
+  return journalSummary(await readJournal($).catch((err): Read<Journal> => ({ state: 'unreadable', reason: String(err) })))
+}
+
 // [SP_CTX_02_02] An unreadable queue is moved aside so the session can go on.
 async function quarantineQueue($: EngineInterface): Promise<string | undefined> {
   const moved = `${queuePath()}.bad-${Date.now()}`
@@ -643,6 +708,7 @@ function blockIO($: EngineInterface): BlockIO {
     updateRegistry: change => updateRegistry($, change),
     media: async () => collectMedia(await apiMessages($)).found,
     usage: () => usageInfo($),
+    journal: async () => (await journalNow($)) ?? { applications: 0, rereads: 0, archiveRereads: 0 },
     setListed: key => {
       listed.key = key
     },
@@ -790,6 +856,21 @@ async function aliasNames($: EngineInterface) {
   return { aliases: aliasesById(read.value), note: '' }
 }
 
+// [SP_CTX_02_16] [SP_CTX_02_31] After a call without error: a write tool
+// marks the earlier reads of its path stale (R4) and journals the change of a
+// compressed path; a Read journals a reread of compressed content or of an
+// archive. Each on its own chain, in the background.
+function afterCall($: EngineInterface, tool: string, input: Record<string, unknown>, id: string, isError: boolean): void {
+  const next = callFollowUp(tool, input, isError)
+  if (!next) return
+  if ('write' in next) {
+    void serial('tags', async () => {
+      if (await ensureStorage($)) await staleReads(tagIO($), next.write, id)
+    }).catch(() => undefined)
+    onJournal($, io => journalChanged(io, next.write, Date.now()))
+  } else onJournal($, io => journalReread(io, next.read, id, storage.dir!, Date.now()))
+}
+
 function deny(reason: string) {
   return { deny: `${PLUGIN}: ${reason}` }
 }
@@ -844,7 +925,7 @@ export const register: Register = on => {
     try {
       // [SP_CTX_02_33] counted as if this call's due reminders were delivered;
       // they are delivered only once the listing is built (a failure keeps them)
-      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), change => updateRegistry($, change))
+      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), change => updateRegistry($, change), await journalNow($))
       tele = telemetryText(t)
       size = headerSize(t, totalChars(rows))
     } catch (err) {
@@ -912,6 +993,8 @@ export const register: Register = on => {
   // the mod's own commands raise no turn events.
   on('turn.start', async ($, e, next) => {
     turnStarted(turns)
+    // [SP_CTX_02_12] the copies of the last compaction came before this turn
+    copied.clear()
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -932,14 +1015,17 @@ export const register: Register = on => {
 
   // [SP_CTX_02_12] The row is stored first and returned unchanged; the rules
   // run after it, on the registry's chain, and never hold the row back. A row
-  // of plugin origin (a compaction's copy, a plugin's note) is no new row.
+  // of plugin origin (a compaction's copy, a plugin's note) is no new row, nor
+  // a result row the last compaction returned (it comes with its tool's origin).
   on('session.append', async ($, e, next) => {
     const stored = await next(e)
     try {
       if (!e.agentId && stored.deny === undefined && (e.door === 'prompt' || e.door === 'tool-result')) {
         const facts = appendFacts(e)
+        // decided now: the next compaction or turn start changes the set
+        const copy = isCompactionCopy(facts, copied)
         void serial('tags', async () => {
-          if (await ensureStorage($)) await autoTag(tagIO($), facts)
+          if (await ensureStorage($)) await autoTag(tagIO($), facts, copy)
         }).catch(() => undefined)
       }
     } catch {
@@ -981,6 +1067,8 @@ export const register: Register = on => {
     const route = compactionRoute(e)
     if (route === 'pass') {
       const done = await next(e)
+      // [SP_CTX_02_12] its returned result rows may pass session.append again
+      if (!e.agentId && done.skip === undefined) noteCopies(done.messages)
       try {
         // [SP_CTX_01_14] a compaction handler never waits for hostId
         const b = observedBoundary(e, done, peekHostId(hostId))
@@ -994,10 +1082,14 @@ export const register: Register = on => {
       }
       return done
     }
-    if (route === 'seed') return handleSeed(seedIO($), handoff, e.messages)
+    if (route === 'seed') {
+      const seeded = await handleSeed(seedIO($), handoff, e.messages)
+      if ('messages' in seeded) noteCopies(seeded.messages)
+      return seeded
+    }
     const dir = await ensureStorage($, true)
     if (!dir) return { skip: `${PLUGIN}: storage unavailable` }
-    return serial('queue', () =>
+    const outcome = await serial('queue', () =>
       handleCompaction(
         {
           dir,
@@ -1016,10 +1108,14 @@ export const register: Register = on => {
           hostId: () => peekHostId(hostId),
           // [SP_CTX_02_07] the plain usage: no breakdown, no API request
           requestTokens: () => requestTokens($),
+          // [SP_CTX_02_31] on the journal's chain, never awaited here
+          journal: entry => onJournal($, io => journalApply(io, entry)),
         },
         e.messages,
       ),
     )
+    if ('messages' in outcome) noteCopies(outcome.messages)
+    return outcome
   }).catch(($, e, next) => {
     // Never let a failure fall through to a real, summarizing compaction:
     // answer at once, and record a failed batch in the background.
@@ -1049,6 +1145,10 @@ export const register: Register = on => {
       if (alias) lines.push(alias)
     }
     if (await ensureStorage($).catch(() => undefined)) lines.push(...(await serial('tags', () => noteReminders(tagIO($))).catch((): string[] => [])))
+    // [SP_CTX_02_16] R4 and the journal in the background, queued only once the
+    // lines are built: the result waits for neither (the reminders above share
+    // the registry's chain with R4)
+    afterCall($, String(e.tool), e as unknown as Record<string, unknown>, facts.tool_use_id!, done.isError === true)
     return withContext(done, lines)
   }).catch(($, e, next) => next(e))
 

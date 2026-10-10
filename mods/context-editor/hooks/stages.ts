@@ -7,9 +7,10 @@
 // tag functions from tags.ts: the cycle holds functions only, no top-level
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
-import { describeEdit, estimate, fingerprint, locate, ownerKey, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import { describeEdit, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import type { JournalSummary } from './journal'
 import type { Queue, Read } from './queue'
-import { dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, type Tag, type TagRegistry } from './tags'
+import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, type ReviewGroup, type Tag, type TagRegistry } from './tags'
 import { blockNotes, notesHint } from './notes'
 
 // ---- [SP_CTX_01_12] constants
@@ -29,13 +30,13 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT =
-  'context-editor: you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. Nothing reminds you by size: decide by the logical state of the work. Guide: skill context-editor:context-stages.'
+  'context-editor: you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. Nothing reminds you by size: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.'
 
 // [SP_CTX_02_29] [C_CTX_DEC_04] D: the advice of a closed stage and of the
-// optimization turn. Phase 14 names the reproducible tools; the `~` flag of
-// the listing (phase 15) comes back into this text with it ([SP_CTX_01_12]).
+// optimization turn; it names the reproducible pairs by the listing's `~`
+// flag (REPRO_FLAG, [SP_CTX_01_12]).
 export const STAGE_ADVICE =
-  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Pairs from Read, Grep and Glob are reproducible: they can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
+  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
 
 export { estimate }
 
@@ -229,10 +230,15 @@ export type Telemetry = {
   registry: boolean
   stage?: { name: string; first: number; chars: number; turnsAgo: number; lost: boolean }
   lastClosed?: { name?: string; start: number; end?: number; chars?: number; lost: boolean; startLost: boolean }
-  // [SP_CTX_01_20] active reviews whose target is in the conversation, by the
-  // first row of each target (by reason in phase 15), and disposables
-  reviews: number[]
+  // [SP_CTX_01_20] active reviews whose target is in the conversation, by
+  // reason (`none`: a tag written before phase 15), with the first row of
+  // each target; and disposables
+  reviews: Map<ReviewGroup, number[]>
   disposable: number
+  // [SP_CTX_01_20] the journal of effect; absent: not read (no line)
+  journal?: JournalSummary
+  // [SP_CTX_01_20] the state slot: its row, no tag, or its row is gone
+  state: { row: number } | 'none' | 'lost'
   // [SP_CTX_02_34] the chars per token the estimates of this telemetry use; absent: approx.
   ratio?: number
   // [SP_CTX_01_21] the notes of the registry and how many wait for a reminder
@@ -289,9 +295,20 @@ export async function telemetry(
   reg: TagRegistry | undefined,
   usage: () => Promise<UsageInfo>,
   update?: RegistryUpdate,
+  // [SP_CTX_02_31] the journal's summary, read by the caller
+  journal?: JournalSummary,
 ): Promise<Telemetry> {
   let tokensNow: number | undefined
-  const t: Telemetry = { measure: 'unavailable', autoCompactOff: false, registry: reg !== undefined, reviews: [], disposable: 0, notes: { count: 0, reminders: 0 } }
+  const t: Telemetry = {
+    measure: 'unavailable',
+    autoCompactOff: false,
+    registry: reg !== undefined,
+    reviews: new Map(),
+    disposable: 0,
+    state: 'none',
+    notes: { count: 0, reminders: 0 },
+    ...(journal ? { journal } : {}),
+  }
   try {
     const u = await usage()
     tokensNow = u.context.tokens
@@ -358,13 +375,9 @@ export async function telemetry(
       startLost: markIndex(rows, b.after) === 'lost',
     }
   }
-  t.reviews = reg.tags
-    .filter(tag => tag.kind === 'review' && isActive(tag, reg.turn))
-    .flatMap(tag => {
-      const at = resolveTarget(rows, tag.target)
-      return at ? [Math.min(...at)] : []
-    })
-    .sort((x, y) => x - y)
+  t.reviews = activeReviews(rows, reg)
+  const slot = stateRow(rows, reg)
+  t.state = slot === undefined ? 'none' : slot < 0 ? 'lost' : { row: slot }
   t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target)).length
   t.notes = { count: reg.notes.length, reminders: reg.notes.filter(n => n.remindAt !== undefined).length }
   return t
@@ -374,6 +387,17 @@ export async function telemetry(
 export function tokensText(n: number): string {
   const v = Math.round(n)
   return Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : `${v}`
+}
+
+// [SP_CTX_01_20] The name of a review group in a text: `no reason` for `none`.
+function groupName(g: ReviewGroup): string {
+  return g === 'none' ? 'no reason' : g
+}
+
+// Row indexes, at most MAX_BLOCK_INDEXES, then "+<n> more".
+function shortList(at: readonly number[]): string {
+  const shown = at.slice(0, MAX_BLOCK_INDEXES).map(i => `#${i}`).join(', ')
+  return at.length > MAX_BLOCK_INDEXES ? `${shown}, +${at.length - MAX_BLOCK_INDEXES} more` : shown
 }
 
 function blockLabel(name: string | undefined): string {
@@ -416,9 +440,23 @@ export function telemetryText(t: Telemetry): string {
         : `${head} #${b.start}..#${b.end} (${estimate(b.chars ?? 0, t.ratio)})`
     lines.push(body + (b.startLost ? startGone : ''))
   }
-  // reasons come with phase 15: the rows of every active review together
-  const rows = t.reviews.length ? ` (${t.reviews.slice(0, MAX_BLOCK_INDEXES).map(i => `#${i}`).join(', ')}${t.reviews.length > MAX_BLOCK_INDEXES ? `, +${t.reviews.length - MAX_BLOCK_INDEXES} more` : ''})` : ''
-  lines.push(`Candidates: review ${t.reviews.length}${rows}; disposable ${t.disposable}`)
+  // [SP_CTX_02_28] by reason, with their rows; reasons with none omitted
+  let total = 0
+  const groups: string[] = []
+  for (const g of REVIEW_GROUPS) {
+    const at = t.reviews.get(g) ?? []
+    if (!at.length) continue
+    total += at.length
+    groups.push(`${groupName(g)} ${at.length}: ${shortList(at)}`)
+  }
+  lines.push(`Candidates: review ${total}${groups.length ? ` (${groups.join('; ')})` : ''}; disposable ${t.disposable}`)
+  // [SP_CTX_02_28] the journal and the state slot only when there is something to show
+  const j = t.journal
+  if (j && 'unreadable' in j) lines.push(`Effect: journal unreadable (${j.unreadable})`)
+  else if (j && j.applications + j.rereads > 0)
+    lines.push(`Effect: ${j.applications} application(s); ${j.rereads} reread(s) of compressed content (${j.archiveRereads} of archives)`)
+  if (t.state === 'lost') lines.push('State slot: its row is no longer in the conversation')
+  else if (t.state !== 'none') lines.push(`State slot: #${t.state.row}`)
   if (t.notes.count) lines.push(`Notes: ${t.notes.count} (${t.notes.reminders} with a reminder pending)`)
   if (t.measuredFreed !== undefined)
     lines.push(`Last apply: ~${tokensText(t.measuredFreed)} tokens freed (measured: request before it − request now; net of the rows added since)`)
@@ -438,6 +476,8 @@ export type BlockIO = {
   usage: () => Promise<UsageInfo>
   // [SP_CTX_02_34] stores a new calibration in the registry, on its chain
   updateRegistry?: RegistryUpdate
+  // [SP_CTX_02_31] the journal's summary for the telemetry; absent: no line
+  journal?: () => Promise<JournalSummary>
   // [SP_CTX_02_18] listedKey = key: the report lists the block's row indexes
   setListed: (key: string) => void
 }
@@ -460,6 +500,18 @@ function indexList(name: string, at: number[]): string {
   return `${name} ${shown.join(', ')}${more}`
 }
 
+// [SP_CTX_02_29] The pairs of REPRODUCIBLE_TOOLS whose call and result rows lie in a..e.
+function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number): number {
+  let n = 0
+  for (let i = a; i <= e; i++)
+    for (const u of rows[i]!.toolUses) {
+      if (!REPRODUCIBLE_TOOLS.includes(u.tool)) continue
+      const res = rows.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === u.tool_use_id))
+      if (res >= a && res <= e) n++
+    }
+  return n
+}
+
 // [SP_CTX_02_29] BlockReport: only for a close by the tool, where no
 // compaction comes between the close and the report, so its indexes hold; a
 // report with the block's rows renews listedKey as a listing does.
@@ -470,7 +522,8 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   const reg = read.state === 'unreadable' ? undefined : read.value
   // first: the calibration gives the ratio, so the block's size and the
   // telemetry below use one ratio (review round 39)
-  const t = await telemetry(rows, reg, io.usage, io.updateRegistry)
+  const journal = io.journal ? await io.journal().catch((err): JournalSummary => ({ unreadable: errorText(err) })) : undefined
+  const t = await telemetry(rows, reg, io.usage, io.updateRegistry, journal)
   const a = startOf(rows, block.after)
   const e = markIndex(rows, block.end)
   const hasRows = e !== 'lost' && block.end !== null && a <= e
@@ -493,19 +546,28 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   }
   let text = head
   if (hasRows) {
-    const reviews: number[] = []
+    // [SP_CTX_02_29] the reviews by reason (`no reason`: written before
+    // phase 15), the disposables, and the reproducible pairs of the block
+    const reviews = new Map<ReviewGroup, number[]>()
     const disposables: number[] = []
     for (const tag of reg?.tags ?? []) {
       if (tag.kind === 'review' && isActive(tag, reg!.turn)) {
         const at = firstIn(rows, tag, a, e as number)
-        if (at >= 0) reviews.push(at)
+        if (at >= 0) reviews.set(reviewGroup(tag), [...(reviews.get(reviewGroup(tag)) ?? []), at])
       }
       if (tag.kind === 'disposable') {
         const at = firstIn(rows, tag, a, e as number)
         if (at >= 0) disposables.push(at)
       }
     }
-    const cand = [indexList('review', reviews), indexList('disposable', disposables)].filter(Boolean).join('; ')
+    const repro = reproduciblePairs(rows, a, e as number)
+    const cand = [
+      ...REVIEW_GROUPS.map(g => indexList(groupName(g), reviews.get(g) ?? [])),
+      indexList('disposable', disposables),
+      repro ? `reproducible pairs (${REPRO_FLAG}) ${repro}` : '',
+    ]
+      .filter(Boolean)
+      .join('; ')
     text += `\nCandidates in the block: ${cand || 'none'}.`
     // [SP_CTX_02_32] the agent's notes on rows of the block
     const notes = reg ? blockNotes(rows, reg, a, e as number, MAX_BLOCK_INDEXES) : ''
