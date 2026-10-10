@@ -10,6 +10,7 @@ import type { SessionMessage } from 'claude-code'
 import { describeEdit, fingerprint, locate, ownerKey, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
 import type { Queue, Read } from './queue'
 import { activeReviews, EMPTY_REGISTRY, isActive, resolveTarget, type Tag, type TagRegistry } from './tags'
+import { blockNotes, notesHint } from './notes'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -225,6 +226,8 @@ export type Telemetry = {
   // conversation; by reason in phase 15
   reviews: number
   disposable: number
+  // [SP_CTX_01_21] the notes of the registry and how many wait for a reminder
+  notes: { count: number; reminders: number }
 }
 
 function errorText(err: unknown): string {
@@ -240,7 +243,7 @@ function charsOf(rows: readonly SessionMessage[], from: number, to: number): num
 // [SP_CTX_02_28] Telemetry(rows, reg): the size from the MESSAGES_ROW of the
 // breakdown, else the whole request; a failed usage read leaves the rest.
 export async function telemetry(rows: readonly SessionMessage[], reg: TagRegistry | undefined, usage: () => Promise<UsageInfo>): Promise<Telemetry> {
-  const t: Telemetry = { measure: 'unavailable', autoCompactOff: false, registry: reg !== undefined, reviews: 0, disposable: 0 }
+  const t: Telemetry = { measure: 'unavailable', autoCompactOff: false, registry: reg !== undefined, reviews: 0, disposable: 0, notes: { count: 0, reminders: 0 } }
   try {
     const u = await usage()
     const b = u.context.breakdown
@@ -299,6 +302,7 @@ export async function telemetry(rows: readonly SessionMessage[], reg: TagRegistr
   }
   t.reviews = activeReviews(rows, reg)
   t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target)).length
+  t.notes = { count: reg.notes.length, reminders: reg.notes.filter(n => n.remindAt !== undefined).length }
   return t
 }
 
@@ -349,6 +353,7 @@ export function telemetryText(t: Telemetry): string {
     lines.push(body + (b.startLost ? startGone : ''))
   }
   lines.push(`Candidates: review ${t.reviews}; disposable ${t.disposable}`)
+  if (t.notes.count) lines.push(`Notes: ${t.notes.count} (${t.notes.reminders} with a reminder pending)`)
   return lines.join('\n')
 }
 
@@ -428,6 +433,9 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     }
     const cand = [indexList('review', reviews), indexList('disposable', disposables)].filter(Boolean).join('; ')
     text += `\nCandidates in the block: ${cand || 'none'}.`
+    // [SP_CTX_02_32] the agent's notes on rows of the block
+    const notes = reg ? blockNotes(rows, reg, a, e as number, MAX_BLOCK_INDEXES) : ''
+    if (notes) text += `\nYour notes in the block: ${notes}`
   }
   if (replaced && replaced.queued > 0)
     text += `\nReplacements from your disposable tags queued: ${replaced.queued} (~${replaced.freed} tokens freed when this turn ends).`
@@ -454,13 +462,14 @@ export const LIST_HINT =
 
 // [SP_CTX_02_29] [SP_CTX_DEC_15] The optimization turn's prompt: no indexes,
 // sizes or candidates; the listing shows the block's bounds.
-export function optimizeText(block: ClosedBlock, compacted: boolean): string {
+export function optimizeText(block: ClosedBlock, compacted: boolean, notes = 0): string {
   return (
     `context-editor: optimization turn for ${blockName(block)} (you ended your last answer with ${OPTIMIZE_MARK}).` +
     (compacted
       ? ' The batch queued in that turn, with the replacements from your disposable tags, was processed (see the report above); if it changed the conversation, indexes from earlier listings no longer hold.'
       : '') +
     LIST_HINT +
+    notesHint(notes) +
     '\n' +
     STAGE_ADVICE +
     '\nYou asked for this while finishing your turn for the person, so usually stop after it: pass "resume": false in context_edit unless the task should go on, then end your turn. The mark has no effect in this turn.'
@@ -468,10 +477,11 @@ export function optimizeText(block: ClosedBlock, compacted: boolean): string {
 }
 
 // [SP_CTX_02_29] The advice with the person's prompt when no optimization turn ran.
-export function personAdvice(block: ClosedBlock): string {
+export function personAdvice(block: ClosedBlock, notes = 0): string {
   return (
     `context-editor: you asked to optimize ${blockName(block)} after your previous answer; the optimization turn did not run, so the advice comes with this prompt.` +
     LIST_HINT +
+    notesHint(notes) +
     '\n' +
     STAGE_ADVICE +
     "\nCompress the block when it suits the person's request; edits apply when your turn ends."
@@ -497,7 +507,7 @@ export function withIntroduced(read: Read<TagRegistry>): TagRegistry | undefined
 // [SP_CTX_02_29] The advice for the person's prompt, from the registry as it
 // is now; none without a readable registry or a block (ADVICE_NO_BLOCK).
 export function adviceFor(read: Read<TagRegistry>): string | undefined {
-  return read.state !== 'unreadable' && read.value.lastClosed ? personAdvice(read.value.lastClosed) : undefined
+  return read.state !== 'unreadable' && read.value.lastClosed ? personAdvice(read.value.lastClosed, read.value.notes.length) : undefined
 }
 
 // ---- [SP_CTX_02_30] DetectOptimize

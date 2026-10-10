@@ -25,6 +25,9 @@ export type ApplyReport = {
   // index and fingerprint in the FINAL list (after DropOwnCalls in a
   // compaction, after normalizing in a seed); a row gone from it has none
   produced: Produced[]
+  // [SP_CTX_02_14] the notes whose rows this application removed without a
+  // replacement; filled once RebindTags has written the registry
+  notesDropped: string[]
   mediaFiles: string[]
 }
 
@@ -309,7 +312,11 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
 // [SP_CTX_02_01] The legend of the listing's header.
 export const LIST_LEGEND =
   `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media. Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
-  `Tags: [pin] no edit may touch it, [disposable: note] replaced by its note when you close a stage or end a turn with the optimization mark, [review] worth a look.`
+  `Tags: [pin] no edit may touch it, [disposable: note] replaced by its note when you close a stage or end a turn with the optimization mark, [review] worth a look. ` +
+  `[nN] your note (full text under the page).`
+
+// [SP_CTX_02_01] One line of the `Notes:` block under a page, by the row it belongs to.
+export type PageNote = { row: number; line: string }
 
 // [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows;
 // `count` 0 gives the header alone (its telemetry, no rows). `tags`: the
@@ -324,6 +331,8 @@ export function listRows(
   tags: ReadonlyMap<number, readonly string[]> = new Map(),
   aliases: ReadonlyMap<string, string> = new Map(),
   telemetry = '',
+  // [SP_CTX_02_01] the full text of the notes; those whose row is on the page show under it
+  notes: readonly PageNote[] = [],
 ): string {
   if (rows.length === 0) return ['0 rows.', telemetry].filter(Boolean).join('\n')
   const start = Math.min(Math.max(0, Math.trunc(from)), rows.length - 1)
@@ -363,9 +372,15 @@ export function listRows(
     telemetry,
     `${LIST_LEGEND}${stop < rows.length ? ` Next page: from=${stop}.` : ''}`,
     ...lines,
+    ...pageNotes(notes, start, stop),
   ]
     .filter(Boolean)
     .join('\n')
+}
+
+function pageNotes(notes: readonly PageNote[], start: number, stop: number): string[] {
+  const on = notes.filter(n => n.row >= start && n.row < stop)
+  return on.length ? ['Notes:', ...on.map(n => n.line)] : []
 }
 
 // [SP_CTX_02_05] Removes this plugin's own calls and their results. An own
@@ -766,6 +781,7 @@ export function applyEdits(
     charsAfter: 0,
     originals: [],
     produced: [],
+    notesDropped: [],
     mediaFiles: [],
   }
   const made: Made[] = []
@@ -1067,6 +1083,14 @@ export function mergeCallRows(rows: readonly SessionMessage[]): SessionMessage[]
 export type ReportKind = 'compaction' | 'seed'
 
 export function formatReport(r: ApplyReport, archive: string, kind: ReportKind): string {
+  const base = baseReport(r, archive, kind)
+  // [SP_CTX_01_05] after any form: the notes whose rows went
+  if (!r.notesDropped.length) return base
+  const dropped = `Notes dropped (their rows were removed): ${r.notesDropped.join(', ')}.`
+  return base ? `${base} ${dropped}` : `context-editor: ${dropped}`
+}
+
+function baseReport(r: ApplyReport, archive: string, kind: ReportKind): string {
   const notApplied = r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : ''
   if (!r.applied.length) {
     if (kind === 'compaction') return ['context-editor: no edit was applied; the conversation was not changed.', notApplied].filter(Boolean).join(' ')

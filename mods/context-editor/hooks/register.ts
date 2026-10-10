@@ -74,6 +74,7 @@ import {
   type DetectIO,
   type UsageInfo,
 } from './stages'
+import { contextNote, MAX_NOTE, MAX_NOTES, MAX_REMIND, noteLabels, noteLines, noteReminders, remindable, type NoteArgs } from './notes'
 import { newTurns, turnCompleted, turnStarted } from './turns'
 import {
   appendFacts,
@@ -96,9 +97,10 @@ const LIST = 'context_list'
 const EDIT = 'context_edit'
 const TAG = 'context_tag'
 const HANDOFF = 'context_handoff'
+const NOTE = 'context_note'
 
 // [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
-export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block) and tags ([pin], [disposable: note], [review]). Indexes are positions in this listing: call it right before ${EDIT} or ${TAG} by index.
+export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [disposable: note], [review]) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page. Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
 
 The header shows context telemetry: the conversation's size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, and the cleanup candidates. "count":0 gives that header alone, without rows; it does not renew the indexes. Only the latest 4096 rows are visible.`
 
@@ -164,6 +166,41 @@ const TAG_TARGET = {
   tool_use_id: { type: 'string', description: 'Target: a tool call and its result.' },
   ref: { type: 'string', description: 'Target: a tool call by its alias "cN" (from a "[context-editor] id cN" line) or "last", the most recently marked call.' },
   index: { type: 'integer', description: `Target: a row index from ${LIST}.` },
+}
+
+// [SP_CTX_02_32] At most MAX_DESCRIPTION chars.
+export const NOTE_DESCRIPTION = `Add and remove your own service notes on rows, row ranges and tool calls of this conversation, at no token cost: notes live outside the conversation and change or protect nothing; a target may have several. Call it with {"notes":[...]}; the requests apply in order.
+
+Add: {"op":"add","text":"..."} with a target as in ${TAG} (exactly one of "tool_use_id", "ref" or "index"; a range: "index" and "to"), and optionally "remind_in_turns": N for one reminder after N completed turns, delivered with the result of your next tool call. Remove: {"op":"remove","id":"n3"}.
+
+Notes show in ${LIST} ([n3] on their rows, the full text below the page) and in the result of a stage close. A note moves to the row that replaced its row and goes with a removed row. Use them to mark what to drop or compress later and how, to remind yourself to come back to an output, or to link rows.`
+
+const NOTE_SCHEMA = {
+  type: 'object',
+  properties: {
+    notes: {
+      type: 'array',
+      minItems: 1,
+      maxItems: MAX_NOTES,
+      items: {
+        oneOf: [
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'add' },
+              text: { type: 'string', maxLength: MAX_NOTE, description: 'The note.' },
+              ...TAG_TARGET,
+              to: { type: 'integer', description: 'With "index": the last row of a range, included.' },
+              remind_in_turns: { type: 'integer', minimum: 1, maximum: MAX_REMIND, description: 'One reminder after this many completed turns.' },
+            },
+            required: ['op', 'text'],
+          },
+          { type: 'object', properties: { op: { const: 'remove' }, id: { type: 'string', description: 'The id of the note, e.g. "n3".' } }, required: ['op', 'id'] },
+        ],
+      },
+    },
+  },
+  required: ['notes'],
 }
 
 // [SP_CTX_02_19]
@@ -701,12 +738,14 @@ async function pins($: EngineInterface, rows: readonly SessionMessage[]) {
 // storage and registry allow; the registry read for the telemetry.
 async function labels($: EngineInterface, rows: readonly SessionMessage[]) {
   const none = new Map<number, string[]>()
-  if (!(await ensureStorage($))) return { labels: none, note: '', reg: undefined }
+  if (!(await ensureStorage($))) return { labels: none, note: '', reg: undefined, notes: [] }
   const read = await readTags($)
-  if (read.state === 'unreadable') return { labels: none, note: `\n(tags and stages not shown: the tag registry cannot be read: ${read.reason})`, reg: undefined }
+  if (read.state === 'unreadable') return { labels: none, note: `\n(tags, stages and notes not shown: the tag registry cannot be read: ${read.reason})`, reg: undefined, notes: [] }
   const merged = markLabels(rows, read.value)
   for (const [i, list] of tagLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
-  return { labels: merged, note: '', reg: read.value }
+  // [SP_CTX_02_01] the notes after the tags; their full text under the page
+  for (const [i, list] of noteLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
+  return { labels: merged, note: '', reg: read.value, notes: noteLines(rows, read.value) }
 }
 
 // [SP_CTX_02_01] Aliases for the listing, if the storage and registry allow.
@@ -740,6 +779,7 @@ export const register: Register = on => {
     await $.tool.register({ name: EDIT, description: EDIT_DESCRIPTION, inputSchema: EDIT_SCHEMA, isDeferred: false })
     await $.tool.register({ name: TAG, description: TAG_DESCRIPTION, inputSchema: TAG_SCHEMA, isDeferred: false })
     await $.tool.register({ name: HANDOFF, description: HANDOFF_DESCRIPTION, inputSchema: HANDOFF_SCHEMA, isDeferred: false })
+    await $.tool.register({ name: NOTE, description: NOTE_DESCRIPTION, inputSchema: NOTE_SCHEMA, isDeferred: false })
     await $.command.register({ name: 'handoff', description: 'Move this conversation into a new session: cleaned transcript, or a handoff document', argumentHint: '[document|cancel]' })
     await prepareStorage($)
     return next(e)
@@ -758,7 +798,7 @@ export const register: Register = on => {
     const tele = await telemetry(rows, tagged.reg, () => usageInfo($))
       .then(telemetryText)
       .catch((err: unknown) => `Context: size unavailable (${err instanceof Error ? err.message : String(err)})`)
-    const text = listRows(rows, typeof args.from === 'number' ? args.from : 0, count, found, tagged.labels, named.aliases, tele)
+    const text = listRows(rows, typeof args.from === 'number' ? args.from : 0, count, found, tagged.labels, named.aliases, tele, tagged.notes)
     // [SP_CTX_02_18] only a listing with rows the agent receives renews its indexes
     if (count >= 1) listed.key = key
     return { result: text + tagged.note + named.note }
@@ -798,6 +838,22 @@ export const register: Register = on => {
     )
     return 'deny' in out ? deny(out.deny) : { result: out.result }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`tagging failed: ${next.error.kind}`)))
+
+  // [SP_CTX_02_32] The registry's read-modify-write on its chain. A regex, as
+  // for context_handoff: the host's generated types list a new tool only once
+  // a session has loaded it.
+  on('tool.call', { tool: /^mcp__context-editor__context_note$/ }, async ($, e) => {
+    const args = e as unknown as NoteArgs
+    const ready = e.agentId ? true : !!(await ensureStorage($))
+    const out = await contextNote(
+      { ...tagIO($), onRegistry: work => serial('tags', work) },
+      { agentId: e.agentId, notes: args.notes },
+      ready ? undefined : storage.reason,
+      e.agentId ? NO_REFS : await resolver($),
+      !e.agentId && ready && (await staleIndexes($)),
+    )
+    return 'deny' in out ? deny(out.deny) : { result: out.result }
+  }).catch(($, e, next) => (next.called ? next(e) : deny(`noting failed: ${next.error.kind}`)))
 
   // [SP_CTX_02] The turn counter: every turn of the main conversation counts;
   // the mod's own commands raise no turn events.
@@ -918,15 +974,22 @@ export const register: Register = on => {
   })
 
   // [SP_CTX_02_16] After any other tool call of the main loop: the alias line
-  // of a call worth editing, and nothing else ([SP_CTX_02_09]: no reminder by
-  // size). It never changes the result itself; a failure only drops the line.
+  // of a call worth editing, then the due reminders of the agent's own notes
+  // ([SP_CTX_02_33]); nothing else ([SP_CTX_02_09]: no reminder by size). It
+  // never changes the result itself; a failure only drops its line. The alias
+  // chain, then the registry's chain, one after the other.
   on('tool.call', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId || done.deny !== undefined || String(e.tool).startsWith(OWN_TOOLS)) return done
     const facts = callFacts(e, done)
-    if (!wantsMark(facts)) return done
-    const alias = await serial('aliases', () => markCall(aliasIO($), facts)).catch(() => undefined)
-    return withContext(done, alias ? [alias] : [])
+    if (!remindable(facts)) return done
+    const lines: string[] = []
+    if (wantsMark(facts)) {
+      const alias = await serial('aliases', () => markCall(aliasIO($), facts)).catch(() => undefined)
+      if (alias) lines.push(alias)
+    }
+    if (await ensureStorage($).catch(() => undefined)) lines.push(...(await serial('tags', () => noteReminders(tagIO($))).catch((): string[] => [])))
+    return withContext(done, lines)
   }).catch(($, e, next) => next(e))
 
   // [SP_CTX_02_08] [SP_CTX_02_27] The next prompt of the person (or another

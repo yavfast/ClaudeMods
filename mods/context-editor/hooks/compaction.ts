@@ -19,6 +19,7 @@ import {
   type QueuedEdit,
 } from './edits'
 import { DEFAULT_RESUME, EMPTY_QUEUE, type Queue, type Read } from './queue'
+import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
 import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
 
@@ -161,8 +162,16 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const done = edits.filter(e => names.has(describeEdit(e)))
   const after = done.length ? rows : messages
   const produced = applied.report.produced
+  // [SP_CTX_02_14] RelocateNote: notes on removed rows go and the report
+  // names them, only once the registry is written
+  let dropped: string[] = []
   await io
-    .updateTags(reg => relocateStageMarks(rebindTags(reg, messages, after, done, q.edits), messages, after, done, produced))
+    .updateTags(reg => {
+      const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits), messages, after, done, produced), messages, after, done, produced)
+      dropped = out.dropped
+      return out.registry
+    })
+    .then(() => void (applied.report.notesDropped = dropped))
     .catch(() => undefined)
   // An alias of a changed or vanished pair has done its job: it no longer resolves.
   await io.updateAliases(reg => pruneAliases(reg, messages, after, done)).catch(() => undefined)

@@ -496,7 +496,7 @@ test('the report names what applied, what failed and where the originals are', a
 
 // [SP_CTX_01_05]
 test('FormatReport — форми: compaction without an applied edit / seed with nothing / an applied edit', async () => {
-  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], produced: [], mediaFiles: [] }
+  const empty = { applied: [], failed: [], charsBefore: 100, charsAfter: 100, originals: [], produced: [], notesDropped: [], mediaFiles: [] }
   const none = formatReport({ ...empty, failed: ['x'] }, '/a.json', 'compaction')
   expect(none).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: x.')
   expect(none).not.toContain('Conversation ~')

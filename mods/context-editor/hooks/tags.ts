@@ -31,6 +31,7 @@ import {
   type RowMark,
   type Stage,
 } from './stages'
+import { badNoteFields, type Note } from './notes'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
@@ -54,9 +55,12 @@ export type TagRegistry = {
   stage?: Stage
   lastClosed?: ClosedBlock
   introduced: boolean
+  // [SP_CTX_01_21] the agent's service notes, and the number of the next one
+  notes: Note[]
+  nextNote: number
 }
 
-export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false }
+export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false, notes: [], nextNote: 1 }
 
 const KINDS: readonly string[] = ['pin', 'disposable', 'review']
 // [SP_CTX_01_11] Who counts as the person for rule R1.
@@ -107,8 +111,8 @@ function isClosed(v: unknown): v is ClosedBlock {
   return (b.name === undefined || isStageName(b.name)) && 'after' in b && isMark(b.after) && 'end' in b && isMark(b.end) && isCount(b.turn, 0)
 }
 
-// [SP_CTX_01_10] Read states as the queue's: a wrong field, tag, stage or
-// closed block makes the whole file unreadable, never silently an empty registry.
+// [SP_CTX_01_10] Read states as the queue's: a wrong field, tag, stage,
+// closed block or note makes the whole file unreadable, never silently an empty registry.
 export function parseRegistry(text: string): Read<TagRegistry> {
   let raw: unknown
   try {
@@ -125,6 +129,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     reg.stage !== undefined && !isStage(reg.stage) && 'stage',
     reg.lastClosed !== undefined && !isClosed(reg.lastClosed) && 'lastClosed',
     typeof reg.introduced !== 'boolean' && 'introduced',
+    badNoteFields(reg.notes, reg.nextNote),
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badTag = reg.tags.findIndex(t => !isTag(t))

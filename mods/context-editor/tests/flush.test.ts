@@ -383,3 +383,11 @@ test('Flush: an optimization request alone plans a Flush; with a handoff it does
   const handoff = harness(ok({ optimize: true, handoff: HANDOFF }), {}, undefined, withBlock())
   expect(await flushAfterTurn(handoff.io, handoff.state, false)).toBe(false)
 })
+
+test('Flush — the optimization prompt carries the note count of the registry (NotesHint)', async () => {
+  const notes = [{ id: 'n1', target: { tool_use_id: 'a' }, text: 't', createdTurn: 0 }, { id: 'n2', target: { tool_use_id: 'b' }, text: 'u', createdTurn: 0 }]
+  const h = harness(ok({ optimize: true }), {}, undefined, { state: 'ok', value: { ...EMPTY_REGISTRY, tags: [], lastClosed: BLOCK_A, notes, nextNote: 3 } })
+  await flush(h.io, h.state, 0)
+  expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false, 2)])
+  expect(h.log.submits[0]).toContain('You have 2 note(s)')
+})

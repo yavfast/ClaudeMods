@@ -445,7 +445,7 @@ function pendingSeed(over: Partial<HandoffSeed> = {}): HandoffSeed {
     rows: [text('user', 'task'), use('x'), result('x'), text('assistant', 'done')],
     file: '/s/old/1/seed.json',
     archive: '',
-    report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], mediaFiles: [] },
+    report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], notesDropped: [], mediaFiles: [] },
     visible: [],
     edits: [],
     fromSummary: false,
@@ -532,7 +532,7 @@ test('CurrentRows — межа засіяної сесії: /clear rows, the see
 test('PinSummary — реєстр нової сесії: none — made with one pin; full — no pin, a note; unreadable — the same', async () => {
   const row = text('user', SUMMARY)
   const made = pinSummary({ state: 'missing', value: { ...EMPTY_REGISTRY } }, row)
-  expect('registry' in made && made.registry).toEqual({ tags: [{ kind: 'pin', target: { anchor: fingerprint(row), hint: 0 }, created_turn: 0 }], turn: 0, firstPromptPinned: true, introduced: false })
+  expect('registry' in made && made.registry).toEqual({ tags: [{ kind: 'pin', target: { anchor: fingerprint(row), hint: 0 }, created_turn: 0 }], turn: 0, firstPromptPinned: true, introduced: false, notes: [], nextNote: 1 })
   const full: TagRegistry = { ...EMPTY_REGISTRY, tags: Array.from({ length: MAX_TAGS }, (_, i) => ({ kind: 'review' as const, target: { tool_use_id: `t${i}` }, created_turn: 0 })) }
   expect(pinSummary({ state: 'ok', value: full }, row)).toEqual({ note: ' The summary row was not pinned: the tag registry is full.' })
   expect(pinSummary({ state: 'unreadable', reason: 'x' }, row)).toEqual({ note: ' The summary row was not pinned: the tag registry is unreadable.' })
@@ -1664,4 +1664,30 @@ test('BuildSeed — паралельні виклики в окремих ряд
   expect(seed.rows[1]!.toolUses.map(u => u.tool_use_id)).toEqual(['a', 'c'])
   expect(seed.rows[2]!.toolResults!.map(t => t.tool_use_id)).toEqual(['a', 'c'])
   expect(checkSeed(seed.rows)).toBeUndefined()
+})
+
+// [SP_CTX_02_21] [SP_CTX_02_14] notes in the handoff
+test('RunHandoff — нотатки в новій сесії: a note on an untouched pair stays; one on the summarized pair moves to its result row; one on the dropped pair goes and the new session\'s report names it', async () => {
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }, { op: 'drop', tool_use_id: 'c' }] })
+  s.tags.set('/s/old', {
+    ...EMPTY_REGISTRY,
+    tags: [],
+    notes: [
+      { id: 'n1', target: { tool_use_id: 'b' }, text: 'the screenshot', createdTurn: 0, remindAt: 3 },
+      { id: 'n2', target: { tool_use_id: 'a' }, text: 'big file', createdTurn: 0 },
+      { id: 'n3', target: { tool_use_id: 'c' }, text: 'grep output', createdTurn: 0 },
+    ],
+    nextNote: 4,
+  })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  const reg = s.tags.get('/s/new')!
+  const read = s.sessions.get('new')!
+  const seeded = read.slice(read.findIndex(r => r.text === 'task: find KEY_0042'))
+  expect(reg.notes.map(n => n.id)).toEqual(['n1', 'n2'])
+  expect(reg.notes[0]!.target).toEqual({ tool_use_id: 'b' })
+  expect(reg.notes[0]!.remindAt).toBe(3)
+  const k = seeded.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id.startsWith('a_ce')))
+  expect(reg.notes[1]!.target).toEqual({ anchor: fingerprint(seeded[k]!), hint: k })
+  expect(reg.nextNote).toBe(4)
+  expect(s.submitted[0]).toContain('Notes dropped (their rows were removed): n3.')
 })

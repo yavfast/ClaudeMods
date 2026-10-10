@@ -53,6 +53,7 @@
 - [x] [Phase 13 — Покрокове вибіркове чищення (C_CTX_DEC_04, D)](#PL_CTX_P13)
 - [x] [Phase 14 — Етапи і свідомий тригер оптимізації: ядро](#PL_CTX_P14)
 - [ ] [Phase 15 — Етапи: авторозмітка, діапазон, слот стану, журнал](#PL_CTX_P15)
+- [x] [Phase 16 — Службові нотатки агента](#PL_CTX_P16)
 - [ ] [Phase 4 — Дослідження: медіа в промптах і межі вікон](#PL_CTX_P4)
 - [ ] [Phase 5 — Операція describe](#PL_CTX_P5)
 
@@ -240,6 +241,22 @@ Pseudocode sketch:
 | Перегляд і телеметрія: `~`, причини, слот стану, підсумок журналу | `mods/context-editor/hooks/edits.ts`, `hooks/stages.ts` |
 | Навичка мода — повна (відтворюване/невідтворюване, слот стану, діапазон) | `mods/context-editor/skills/context-stages/SKILL.md` |
 
+### Phase 16 — Службові нотатки агента [DONE]  {#PL_CTX_P16}
+
+**Depends on:** Phase 14 (реєстр тегів з етапами, `produced`, Survivors, BlockReport, OptimizeText, телеметрія); [C_CTX_DEC_20](./context_editor.concept.md#C_CTX_DEC_20). Від фази 15 не залежить: інструмент окремий, опис `context_tag` не змінюється
+**Implements:** [SP_CTX_01_21](./context_editor.sp.md#SP_CTX_01_21), [01_10](./context_editor.sp.md#SP_CTX_01_10) (`notes`, `nextNote`), [01_05](./context_editor.sp.md#SP_CTX_01_05) (`notesDropped`), [01_12](./context_editor.sp.md#SP_CTX_01_12) (MAX_NOTES, MAX_NOTE, NOTE_PREFIX, MAX_REMIND), [01_20](./context_editor.sp.md#SP_CTX_01_20)/[02_28](./context_editor.sp.md#SP_CTX_02_28) (рядок `Notes`), [02_01](./context_editor.sp.md#SP_CTX_02_01) (`[nN]`, блок `Notes:`), [02_14](./context_editor.sp.md#SP_CTX_02_14) (RelocateNote), [02_16](./context_editor.sp.md#SP_CTX_02_16)/[02_33](./context_editor.sp.md#SP_CTX_02_33) (нагадування), [02_29](./context_editor.sp.md#SP_CTX_02_29) (нотатки в BlockReport, NotesHint), [02_06](./context_editor.sp.md#SP_CTX_02_06)/[02_08](./context_editor.sp.md#SP_CTX_02_08) (кількість нотаток у промпті), [02_21](./context_editor.sp.md#SP_CTX_02_21) (нотатки в передачі), [02_27](./context_editor.sp.md#SP_CTX_02_27) (розділ навички), [02_32](./context_editor.sp.md#SP_CTX_02_32), [04_07](./context_editor.sp.md#SP_CTX_04_07)
+**Verify:** [SP_CTX_05_01](./context_editor.sp.md#SP_CTX_05_01) рядки context_note, NoteReminders, RebindTags (нотатки), context_list, BlockReport, OptimizeText/PersonAdvice, Telemetry (нотатки), опис п'яти інструментів ≤ MAX_DESCRIPTION; [05_04](./context_editor.sp.md#SP_CTX_05_04) рядки нотаток; `claude plugin test`, `claude plugin validate`, tsc; живий сценарій [SP_CTX_05_03](./context_editor.sp.md#SP_CTX_05_03) «Нотатки і нагадування» в обох хостах
+
+| Що | Де |
+|----|----|
+| Note, розбір і межі в реєстрі; `context_note` (чиста функція за портом TagIO); RelocateNote і `notesDropped` у rebindTags; NoteReminders | `mods/context-editor/hooks/notes.ts` (новий), `hooks/tags.ts`; `tests/notes.test.ts` (новий), `tests/tags.test.ts` |
+| Перегляд: `[nN]` і блок `Notes:`; рядок звіту `Notes dropped` у FormatReport | `mods/context-editor/hooks/edits.ts`; `tests/edits.test.ts` |
+| Телеметрія, BlockReport, NotesHint в OptimizeText і PersonAdvice | `mods/context-editor/hooks/stages.ts`; `tests/stages.test.ts` |
+| Передача: нотатки в копії реєстру | `mods/context-editor/hooks/handoff.ts`; `tests/handoff.test.ts` |
+| Реєстрація: інструмент `context_note` (опис ≈ 700 символів, схема), нагадування в загальному хуку `tool.call` після рядка псевдоніма | `mods/context-editor/hooks/register.ts` |
+| Навичка: розділ «Notes» з прикладами | `mods/context-editor/skills/context-stages/SKILL.md` |
+| Живий сценарій «Нотатки і нагадування»: драйвери в терміналі і stream-json | `.dev_flow/cache/live-test/` (локально) |
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [TODO]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -390,3 +407,5 @@ Time-box: одна сесія. Результат — рішення в SP_CTX_D
 | 2026-10-10 | Backlog M злито з етапами завдання (окрема задача task_20261010_083402_stage-cleanup); фазу-кандидат 14 скасовано |
 | 2026-10-10 | Фази 14 (ядро етапів) і 15 (авторозмітка, діапазон, слот стану, журнал) за SP_CTX 2026-10-10; PL_CTX_DEC_05 — ядро спершу, практика перед фазою 15; фаза 13 закрита без живого Verify (нагадування прибирає фаза 14) |
 | 2026-10-10 | Фаза 14 виконана: етапи, мітка оптимізації, телеметрія, вступ і навичка, без нагадувань; 304 тести; живі сценарії pass в обох хостах; D1 MergeCallRows; рев'ю 36 |
+| 2026-10-10 | Фаза 16 — службові нотатки агента (C_CTX_DEC_20; SP_CTX 01_21, 02_32, 02_33): окремий інструмент `context_note`, нагадування з результатом виклику інструменту, перенесення на рядок заміни |
+| 2026-10-10 | Фаза 16 виконана: службові нотатки агента (`context_note`), нагадування, перенесення на рядок заміни; 331 тест; живий сценарій «Нотатки і нагадування» pass в обох хостах; рев'ю 37 (WARNINGS → виправлено), 38 (confirm) |

@@ -360,3 +360,24 @@ test('HandleCompaction — produced and the stage marks: the made row in the ret
   expect(written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(out.messages[2]!), hint: 2 })
   expect(written.tags!.stage!.after).toEqual({ anchor: fingerprint(rows[0]!), hint: 0 })
 })
+
+// [SP_CTX_02_14] [SP_CTX_01_05] notesDropped
+test('HandleCompaction — notes: a note on a summarized pair moves; the report names the notes whose rows went; nothing named when the registry write fails', async () => {
+  const tags: Read<TagRegistry> = {
+    state: 'ok',
+    value: { ...EMPTY_REGISTRY, tags: [], notes: [{ id: 'n1', target: { tool_use_id: 'a' }, text: 'shot', createdTurn: 0 }, { id: 'n2', target: { tool_use_id: 'z' }, text: 'listing', createdTurn: 0 }], nextNote: 3 },
+  }
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, tags)
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.tags!.notes.map(n => n.id)).toEqual(['n1'])
+  expect(written.tags!.notes[0]!.target).toEqual({ anchor: fingerprint(out.messages[2]!), hint: 2 })
+  expect(written.queue!.report).toContain('Notes dropped (their rows were removed): n2.')
+  const failing = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
+    updateTags: async () => {
+      throw new Error('disk full')
+    },
+  }, tags)
+  await handleCompaction(failing.io, conversation())
+  expect(failing.written.queue!.report).not.toContain('Notes dropped')
+})

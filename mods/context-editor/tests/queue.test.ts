@@ -248,3 +248,11 @@ test('Queue: optimize and optimizePrompted parse as booleans and are kept by eve
   const prompted: Queue = { ...EMPTY_QUEUE, optimizePrompted: true }
   expect(settledQueue(prompted, { delivered: undefined, optimizeDone: false, tookOver: false })).toBe(prompted)
 })
+
+test('DeliverReport — the advice with the person\'s prompt carries the note count (NotesHint)', async () => {
+  const notes = [{ id: 'n1', target: { tool_use_id: 'a' }, text: 't', createdTurn: 0 }]
+  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, { state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A, notes, nextNote: 2 } })
+  await deliverReport(h.io)
+  expect(h.log.seen[0]![0]).toBe(personAdvice(BLOCK_A, 1))
+  expect(h.log.seen[0]![0]).toContain('You have 1 note(s)')
+})

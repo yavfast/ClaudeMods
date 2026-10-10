@@ -27,6 +27,7 @@ import {
   type QueuedEdit,
 } from './edits'
 import { DEFAULT_RESUME, MAX_DOCUMENT, type HandoffRequest, type Queue, type Read } from './queue'
+import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
 import { EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
@@ -716,11 +717,18 @@ export async function carryRegistries(
   const done = s.edits.filter(e => labels.has(describeEdit(e)))
   let error: Error | undefined
   const carries = [
-    () =>
-      io.carryTags(oldDir, newDir, reg => ({
-        ...relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits), s.visible, s.rows, done, s.report.produced, s.carried),
-        introduced: false,
-      })),
+    async () => {
+      // [SP_CTX_02_21] the notes move like at an application; the seed's report names the dropped ones
+      let dropped: string[] = []
+      const carried = await io.carryTags(oldDir, newDir, reg => {
+        const marks = relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits), s.visible, s.rows, done, s.report.produced, s.carried)
+        const out = rebindNotes(marks, s.visible, s.rows, done, s.report.produced)
+        dropped = out.dropped
+        return { ...out.registry, introduced: false }
+      })
+      if (carried === 'carried') s.report.notesDropped = dropped
+      return carried
+    },
     () => io.carryAliases(oldDir, newDir, reg => pruneAliases(reg, s.visible, s.rows, done)),
   ]
   for (const carry of carries) {

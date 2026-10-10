@@ -209,7 +209,7 @@ async function optimize(
   let advice: string
   try {
     report = q.report && q.reportId !== state.lastSubmittedReportId ? q.report : undefined
-    advice = optimizeText(reg.value.lastClosed, compacted)
+    advice = optimizeText(reg.value.lastClosed, compacted, reg.value.notes.length)
   } catch (err) {
     // OPTIMIZE_BUILD_FAILED
     if (compacted && q.reportResume) {

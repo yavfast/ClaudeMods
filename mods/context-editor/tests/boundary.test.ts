@@ -23,7 +23,7 @@ import {
   type ViewIO,
 } from '../hooks/edits'
 import { applyTagRequests, EMPTY_REGISTRY } from '../hooks/tags'
-import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/register'
+import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/register'
 
 function row(role: 'user' | 'assistant', text: string): SessionMessage {
   return { role, text, toolUses: [] }
@@ -89,8 +89,8 @@ test('parseBoundary takes only a well-formed boundary', async () => {
   expect(parseBoundary(JSON.stringify({ head: ['a'], count: 1.5 }))).toBe(undefined)
 })
 
-test('every tool description reaches the model whole', async () => {
-  for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
+test('every tool description reaches the model whole (the five tools)', async () => {
+  for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION, NOTE_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
 })
 
 test('stale indexes: collapse and rewrite are refused, edits by id still queue', async () => {

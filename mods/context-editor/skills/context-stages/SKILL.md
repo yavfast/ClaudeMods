@@ -77,6 +77,16 @@ Decide by the logical state of the work (a stage done, a branch abandoned), not 
 
 The close report lists the candidates inside the block by row index.
 
+## Notes
+
+`context_note` keeps your own notes on a row, a range or a tool call, at no token cost; a target may hold several, and they change nothing.
+
+- Mark at once what to drop or compress later, and how: `{"notes":[{"op":"add","ref":"last","text":"drop after the fix is verified"}]}`.
+- Remind yourself: `{"op":"add","index":12,"text":"re-check this conclusion","remind_in_turns":2}` comes back once with the result of your first tool call two turns later.
+- Link rows: `{"op":"add","index":4,"to":9,"text":"dead end, see #15"}`.
+
+`context_list` shows `[n3]` on the rows and the full text below the page; a stage close lists the notes in its block. A note moves to the row that replaced its row and goes with a removed row (the apply report names it). Remove one with `{"op":"remove","id":"n3"}`.
+
 ## Restoring an original
 
 Every replacement says where its original is: `(original: <path>, open with Read)`, and media files as `(media: <path>)`. If you need something you compressed, `Read` that file. The original then comes back at the end of the conversation, not in its old place, so read only what you need.
