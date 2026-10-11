@@ -5,15 +5,16 @@ import {
   breakEven,
   CACHE_LOOKBACK,
   cacheCost,
+  cacheShape,
   costRatios,
   DEFAULT_RATIOS,
   lookbackStart,
   requestsSoFar,
-  responseStartRows,
-  suffixPositions,
   summaryTokens,
   verdictOf,
 } from '../hooks/cache'
+import { applyEdits, prepare, responses, responseStart } from '../hooks/edits'
+import { emptyRowBetweenCalls } from './row-fixtures'
 import { MESSAGES_ROW, telemetry, telemetryText, type UsageInfo } from '../hooks/stages'
 import { EMPTY_REGISTRY } from '../hooks/tags'
 
@@ -31,12 +32,21 @@ function sequential(n: number, size = 3): SessionMessage[] {
   return rows
 }
 
+// the API form of rows: one message per row, as the host sends rows it has not merged
+function apiOf(rows: readonly SessionMessage[]): unknown[] {
+  return rows.map(r =>
+    r.role === 'assistant'
+      ? { role: 'assistant', content: [...(r.text ? [{ type: 'text', text: r.text }] : []), ...r.toolUses.map(u => ({ type: 'tool_use', id: u.tool_use_id, name: u.tool, input: {} }))] }
+      : { role: 'user', content: r.toolResults?.length ? r.toolResults.map(t => ({ type: 'tool_result', tool_use_id: t.tool_use_id, content: t.text })) : r.text },
+  )
+}
+
 // ---- [SP_CTX_02_38] Positions
 
 test('Positions — серії: adjacent tool_use blocks are one position, adjacent tool_result blocks too, across rows; thinking, text and a prompt one each', async () => {
   // prompt | thinking | text | use a | result a | use b, use c (two rows) | result b, result c | text
   const rows = [prompt('task'), think('1'), say('look'), use('a'), result('a'), use('b'), use('c'), result('b'), result('c'), say('done')]
-  const pos = suffixPositions(rows)
+  const pos = cacheShape(rows).pos
   expect(pos[rows.length]).toBe(0)
   expect(pos[9]).toBe(1)
   // every row of a response counts from its start: the run of calls b, c is one position, so is the run of their results
@@ -46,52 +56,58 @@ test('Positions — серії: adjacent tool_use blocks are one position, adjac
   expect(pos[8]).toBe(3)
   expect(pos[0]).toBe(8)
   // one row with two calls is one position
-  expect(suffixPositions([use('x', 'y'), result('x'), result('y')])[0]).toBe(2)
+  expect(cacheShape([use('x', 'y'), result('x'), result('y')]).pos[0]).toBe(2)
 })
 
-test('ResponseStartRows — відповідь: a result row belongs to its call; consecutive assistant rows are one response; a prompt row is its own', async () => {
+test('Responses — відповідь: a result row belongs to its call; consecutive assistant rows are one response; a prompt row is its own', async () => {
   const rows = [prompt('task'), think('1'), say('look'), use('a'), result('a'), say('done')]
-  expect(responseStartRows(rows, 3)).toBe(1)
-  expect(responseStartRows(rows, 4)).toBe(1)
-  expect(responseStartRows(rows, 5)).toBe(5)
-  expect(responseStartRows(rows, 0)).toBe(0)
+  expect(responses(rows).start).toEqual([0, 1, 1, 1, 1, 5])
+  // ResponseStart: the API form confirms the response of "done"; without it, the start of the stretch
+  expect(responseStart(rows, 5, apiOf(rows))).toBe(5)
+  expect(responseStart(rows, 5, [])).toBe(1)
+  expect(responseStart(rows, 4, apiOf(rows))).toBe(1)
 })
 
 test('LookbackStart — межа: the earliest row whose response starts within CACHE_LOOKBACK positions of the end', async () => {
   // from call k: 2·(15 − k + 1) + 1 positions; within 20 from k = 7 (index 13)
   const rows = sequential(15)
-  expect(lookbackStart(rows)).toBe(13)
-  expect(suffixPositions(rows)[13]).toBe(19)
-  expect(suffixPositions(rows)[11]).toBe(21)
+  expect(lookbackStart(cacheShape(rows, apiOf(rows)))).toBe(13)
+  expect(cacheShape(rows).pos[13]).toBe(19)
+  expect(cacheShape(rows).pos[11]).toBe(21)
+  // without the API form ResponseStart of every call is the stretch start (#1, 31 positions): no row qualifies
+  expect(lookbackStart(cacheShape(rows))).toBe(rows.length)
   // a short conversation lies within as a whole
-  expect(lookbackStart(sequential(3))).toBe(0)
-  expect(lookbackStart([])).toBe(0)
+  expect(lookbackStart(cacheShape(sequential(3)))).toBe(0)
+  expect(lookbackStart(cacheShape([]))).toBe(0)
 })
 
 // ---- [SP_CTX_02_38] CacheCost
 
 test('CacheCost — вікно: an edit within the lookback rewrites the rows from its response on; a deeper one the whole conversation; both less the freed', async () => {
   const rows = sequential(15, 4000)
+  const shape = cacheShape(rows, apiOf(rows))
   // call 14 (index 27): 5 positions; the rows from it: 2 results of 4000 chars, 2 calls with input "{}" and the final text
-  const near = cacheCost(rows, 27, 500, 100_000, 4)
+  const near = cacheCost(shape, 27, 500, 100_000, 4)
   expect(near.within).toBe(true)
   expect(near.positions).toBe(5)
   expect(near.start).toBe(27)
   expect(near.rewrite).toBe(Math.round(8008 / 4) - 500)
   // call 2 (index 3): far beyond the lookback
-  const deep = cacheCost(rows, 3, 500, 100_000, 4)
+  const deep = cacheCost(shape, 3, 500, 100_000, 4)
   expect(deep.within).toBe(false)
   expect(deep.positions).toBe(2 * 14 + 1)
   expect(deep.rewrite).toBe(100_000 - 500)
   // the result row of a call counts from the call
-  expect(cacheCost(rows, 28, 0, 100_000, 4).start).toBe(27)
+  expect(cacheCost(shape, 28, 0, 100_000, 4).start).toBe(27)
+  // without the API form the response of call 14 is not confirmed: the start of the stretch, as the apply would freeze
+  expect(cacheCost(cacheShape(rows), 27, 0, 100_000, 4).start).toBe(1)
   expect(CACHE_LOOKBACK).toBe(20)
 })
 
 test('Requests — відповіді: runs of assistant rows count as one request each; at least 1', async () => {
-  expect(requestsSoFar(sequential(3))).toBe(4)
-  expect(requestsSoFar([prompt('task'), think('1'), say('a'), use('x'), result('x'), say('b')])).toBe(2)
-  expect(requestsSoFar([prompt('task')])).toBe(1)
+  expect(requestsSoFar(cacheShape(sequential(3)))).toBe(4)
+  expect(requestsSoFar(cacheShape([prompt('task'), think('1'), say('a'), use('x'), result('x'), say('b')]))).toBe(2)
+  expect(requestsSoFar(cacheShape([prompt('task')]))).toBe(1)
 })
 
 // ---- [SP_CTX_02_38] BreakEven, Verdict, the summary
@@ -127,12 +143,18 @@ const USAGE: UsageInfo = {
 
 test('Telemetry — рядок Cache: the first row within the lookback and what an edit from there rewrites; the whole conversation and a too long last response have their own words', async () => {
   const rows = sequential(15, 4000)
-  const text = telemetryText(await telemetry(rows, { ...EMPTY_REGISTRY }, async () => USAGE))
+  const api = async () => apiOf(rows)
+  const text = telemetryText(await telemetry(rows, { ...EMPTY_REGISTRY }, async () => USAGE, undefined, undefined, api))
   // by default an apply rewrites the whole conversation; keep_cache keeps the cache before an edit from #13 on
   expect(text).toContain('Cache: an apply rewrites the whole conversation once; with "keep_cache": true, an earliest edit from #13 on (within the API\'s ~20-position cache lookback) rewrites only the rows from it (at most ~')
   expect(text).toContain('if your turn ends soon: edits apply at its end, and each call until then pushes them deeper')
   // the line follows the size line
   expect(text.split('\n')[1]!.startsWith('Cache: ')).toBe(true)
+  // without the API form (none, or a failed read) the start is the stretch, as the apply would freeze: beyond the lookback
+  const failed = async (): Promise<unknown[]> => {
+    throw new Error('no api')
+  }
+  for (const form of [undefined, failed]) expect(telemetryText(await telemetry(rows, { ...EMPTY_REGISTRY }, async () => USAGE, undefined, undefined, form))).toContain('even the last response is beyond')
   const short = telemetryText(await telemetry(sequential(3), { ...EMPTY_REGISTRY }, async () => USAGE))
   expect(short).toContain('Cache: an apply rewrites the whole conversation once; with "keep_cache": true only the rows from its earliest edit (the whole conversation is within the API\'s ~20-position cache lookback)')
   // eleven parallel calls in one row and their eleven result rows: three positions in all
@@ -159,11 +181,12 @@ test('CostRatios — ціни: by the model family from the published prices; an
 
 test('CacheCost — запас кінця ходу: positions now plus the margin decide; Infinity is deep in any case', async () => {
   const rows = sequential(15, 4000)
+  const shape = cacheShape(rows, apiOf(rows))
   // call 11 (index 21): 11 positions now; with APPLY_MARGIN 21 > 20
-  expect(cacheCost(rows, 21, 0, 100_000, 4).within).toBe(true)
-  expect(cacheCost(rows, 21, 0, 100_000, 4, APPLY_MARGIN).within).toBe(false)
-  expect(cacheCost(rows, 31, 0, 100_000, 4, Infinity).within).toBe(false)
-  expect(cacheCost(rows, 31, 0, 100_000, 4, Infinity).rewrite).toBe(100_000)
+  expect(cacheCost(shape, 21, 0, 100_000, 4).within).toBe(true)
+  expect(cacheCost(shape, 21, 0, 100_000, 4, APPLY_MARGIN).within).toBe(false)
+  expect(cacheCost(shape, 31, 0, 100_000, 4, Infinity).within).toBe(false)
+  expect(cacheCost(shape, 31, 0, 100_000, 4, Infinity).rewrite).toBe(100_000)
 })
 
 test('Responses — паралельні виклики «виклик, результат, виклик»: with the API message both calls are one response: its start, two positions, one request', async () => {
@@ -174,17 +197,38 @@ test('Responses — паралельні виклики «виклик, резу
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'out' }, { type: 'tool_result', tool_use_id: 'b', content: 'out' }] },
     { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
   ]
-  // by the rows alone: two responses, the second starting at call b
-  expect(responseStartRows(rows, 4)).toBe(4)
-  expect(requestsSoFar(rows)).toBe(3)
-  expect(suffixPositions(rows)[1]).toBe(6)
+  // by the rows alone: two responses, the second starting at call b (not confirmed: ResponseStart gives the stretch)
+  expect(responses(rows).start[4]).toBe(4)
+  expect(responseStart(rows, 4, [])).toBe(1)
+  expect(requestsSoFar(cacheShape(rows))).toBe(3)
+  expect(cacheShape(rows).pos[1]).toBe(6)
   // by the API form: one response from the thinking row; thinking, the calls, the results: 3 positions, then the text
-  expect(responseStartRows(rows, 4, api)).toBe(1)
-  expect(responseStartRows(rows, 5, api)).toBe(1)
-  expect(requestsSoFar(rows, api)).toBe(2)
-  expect(suffixPositions(rows, api)[1]).toBe(4)
-  expect(suffixPositions(rows, api)[4]).toBe(4)
+  expect(responseStart(rows, 4, api)).toBe(1)
+  expect(responseStart(rows, 5, api)).toBe(1)
+  expect(requestsSoFar(cacheShape(rows, api))).toBe(2)
+  expect(cacheShape(rows, api).pos[1]).toBe(4)
+  expect(cacheShape(rows, api).pos[4]).toBe(4)
   // a prompt between: never one response
   const two = [prompt('task'), use('a'), result('a'), prompt('next'), use('b'), result('b')]
-  expect(responseStartRows(two, 4, [{ role: 'assistant', content: [{ type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] }])).toBe(4)
+  expect(responseStart(two, 4, [{ role: 'assistant', content: [{ type: 'tool_use', id: 'a' }, { type: 'tool_use', id: 'b' }] }])).toBe(4)
+})
+
+// ---- [PL_AUD_CTX_P8] CF-16: one ResponseStart for FrozenPrefix and CacheCost
+
+test('CacheCost і FrozenPrefix — один початок: an empty user row without handle between parallel calls is no prompt for either; both start at the first call', async () => {
+  const { rows, api, callA, callB } = emptyRowBetweenCalls()
+  const queued = prepare(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'b ok' }]).queued
+  const applied = applyEdits(rows, queued, '', new Map(), new Set(), { freeze: { api } })
+  expect(applied.report.applied.length).toBe(1)
+  const cost = cacheCost(cacheShape(rows, api), callB, 0, 100_000, 4)
+  expect(applied.prefix).toBe(callA)
+  expect(cost.start).toBe(applied.prefix)
+  // the empty row is no response of its own any more: it lies inside the response of the calls
+  expect(responses(rows, api).start).toEqual([0, 1, 1, 1, 1, 1, 6])
+  expect(requestsSoFar(cacheShape(rows, api))).toBe(2)
+  // the empty row adds no position between the results: the calls (1), the results (1), the final text (1)
+  expect(cacheShape(rows, api).pos[callA]).toBe(3)
+  expect(cacheShape(rows, api).pos[3]).toBe(3)
+  // LookbackStart takes only rows that are their own ResponseStart: the whole short conversation
+  expect(lookbackStart(cacheShape(rows, api))).toBe(0)
 })

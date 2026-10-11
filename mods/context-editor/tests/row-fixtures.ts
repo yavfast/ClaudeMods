@@ -42,3 +42,27 @@ export function missingRead<T>(value: T): Read<T> {
 export function unreadableRead<T>(reason = 'bad json'): Read<T> {
   return { state: 'unreadable', reason }
 }
+
+// [PL_AUD_CTX_P8] CF-16: parallel calls a and b of one response, written
+// "call, result, call" (one API message holds both), with an empty user row
+// without handle between them, as a drop leaves a result row. The prompt
+// predicate cache.ts had took that row for a prompt and started a response at
+// call b; the one of edits.ts (the apply's) does not, so both start at call a.
+export function emptyRowBetweenCalls(): { rows: SessionMessage[]; api: unknown[]; callA: number; callB: number } {
+  const rows: SessionMessage[] = [
+    prompt('task', 'p'),
+    use('a', 'Bash', 'ua'),
+    result('a', 'out a', 'ra'),
+    { role: 'user', text: '', toolUses: [] },
+    use('b', 'Bash', 'ub'),
+    result('b', 'x'.repeat(40_000), 'rb'),
+    reply('done', 'f'),
+  ]
+  const api = [
+    { role: 'user', content: 'task' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Bash', input: {} }, { type: 'tool_use', id: 'b', name: 'Bash', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'out a' }, { type: 'tool_result', tool_use_id: 'b', content: 'out b' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
+  ]
+  return { rows, api, callA: 1, callB: 4 }
+}

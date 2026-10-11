@@ -11,7 +11,7 @@
 // line ([SP_CTX_02_16]) or into the prompt's hidden context ([SP_CTX_02_08]).
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, aliasLine, type AliasRegistry } from './aliases'
-import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
+import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, cacheShape, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
 import { MARK, REPRODUCIBLE_TOOLS, rowChars, totalChars, touchedBy, type QueuedEdit } from './edits'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -180,13 +180,15 @@ export function propose(rows: readonly SessionMessage[], found: readonly Candida
   const first = found.length ? Math.min(...found.map(c => c.row)) : rows.length
   const ratios = ctx.ratios ?? costRatios(undefined)
   const request = ctx.request ?? ctx.conversation
-  const rHat = requestsSoFar(rows, ctx.api)
-  const cost = cacheCost(rows, first, freed, ctx.conversation, ctx.ratio, Infinity, ctx.api)
+  // the responses and positions of the rows, once for every estimate below
+  const shape = cacheShape(rows, ctx.api)
+  const rHat = requestsSoFar(shape)
+  const cost = cacheCost(shape, first, freed, ctx.conversation, ctx.ratio, Infinity)
   const rStar = breakEven({ rewrite: cost.rewrite, freed, summary, request }, ratios)
   const verdict = verdictOf(rStar, rHat)
   let keep: Proposal['keep']
   if (ctx.channel === 'size') {
-    const k = cacheCost(rows, first, freed, ctx.conversation, ctx.ratio, APPLY_MARGIN, ctx.api)
+    const k = cacheCost(shape, first, freed, ctx.conversation, ctx.ratio, APPLY_MARGIN)
     const kStar = breakEven({ rewrite: k.rewrite, freed, summary, request }, ratios)
     const kVerdict = verdictOf(kStar, rHat)
     if (k.within && RANK[kVerdict] > RANK[verdict]) keep = { cost: k, rStar: kStar, verdict: kVerdict }

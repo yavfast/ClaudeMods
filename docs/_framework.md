@@ -48,7 +48,7 @@
 |------------|------|--------|----|
 | Тека сховища на операцію (`dir` з `ensureStorage`, одна підготовка в польоті) | зроблено (Ф1): `hooks/store.ts` — `StorageState`, PrepareStorage/EnsureStorage, SESSION_ID | жодного читання глобальної теки після `await` | CF-1 |
 | `hooks/store.ts` (доповнити): `Read<T>`, `jsonFile`, `Store<T>.update`, типізовані ранжовані ланцюги `serial` | зроблено (Ф7): `Read<T>`, `jsonFile` → `Store<T>` (read/write/quarantine/update на ланцюжку файлу), контракти портів Update/Change (`updateOf`/`changeOf`), `carry`, `jsonObject`/`bytes`/`isCount`/`trimOldest`, `serialChains` з рангами й перевіркою вкладення; `register.ts` прив'язує `FileIO` до `$.fs` один раз (`files`, `stores`) | один контракт RMW замість ~17 копій; `serial` з тестами | CF-15 |
-| Одне джерело `responses()` / ResponseStart | заплановано (Ф8) | FrozenPrefix і ціна кешу бачать ту саму відповідь | CF-16 |
+| Одне джерело `responses()` / ResponseStart | зроблено (Ф8): `edits.ts` — `isPromptRow` (один предикат промпту), `responses(rows, api)` → `{start, known, floor}`, `responseStart` похідний від нього; `cache.ts` — `cacheShape` (відповіді й позиції раз на пропозицію), `cacheCost` бере початок з `responseStart` | FrozenPrefix і ціна кешу бачать ту саму відповідь | CF-16 |
 | `hooks/rows.ts`: предикати рядків, пошук пари, `charsOf`, `sameText`, `worthEditing`; `PREFIX`/`modText()` | заплановано (Ф9) | одне визначення на поняття | CF-17, CF-18 |
 | `contextList` / `afterTurn` / `observeCompaction` у портах; `hooks/tools.ts` | заплановано (Ф10) | `register.ts` — лише зв'язування | CF-19, CF-20 |
 | Знімок CurrentRows на подію, кеш реєстру з поколінням, індекс цілей | заплановано (Ф11) | без повних перечитувань на кожному хуку | CF-21…CF-23 |

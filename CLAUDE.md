@@ -41,7 +41,7 @@ Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a di
 
 Faking the whole host `$` is expensive, so the logic sits in pure modules behind small IO interfaces, and `register.ts` binds those interfaces to `$`:
 
-- `hooks/edits.ts`: edit, listing and media logic (pure, incl. the frozen prefix and ResponseStart), and the compaction boundary: CurrentRows (`ViewIO`), the host process identity and which boundary to trust.
+- `hooks/edits.ts`: edit, listing and media logic (pure, incl. the frozen prefix and the one response-start algorithm: `isPromptRow`, Responses, ResponseStart), and the compaction boundary: CurrentRows (`ViewIO`), the host process identity and which boundary to trust.
 - `hooks/media.ts`: PromptMatch, which ties media in a person's prompt in the API form to its row (pure; used by CollectMedia in `edits.ts`).
 - `hooks/queue.ts` (`QueueIO`): the queue, `context_edit`, and delivering the report.
 - `hooks/compaction.ts` (`CompactionIO`): the markers, which branch a compaction takes, applying queued edits inside `session.compact`, and the boundary observer.
@@ -52,7 +52,7 @@ Faking the whole host `$` is expensive, so the logic sits in pure modules behind
 - `hooks/tags.ts` (`TagIO`), `hooks/aliases.ts` (`AliasIO`): tags, auto-tagging rules, `context_tag` (incl. stage open/close), and the `cN` call aliases.
 - `hooks/stages.ts`: stages and their row marks, the close report, the optimization mark and turn texts, telemetry and calibrated size estimates.
 - `hooks/hints.ts` (`HintIO`): the soft hint: its two channels (a marked output, the person's next prompt), its candidates, proposal and text, and its state (`hint` in `tags.json`).
-- `hooks/cache.ts`: what an apply costs the prompt cache (API positions, the lookback start, the rewrite), the break-even and the verdict (pure).
+- `hooks/cache.ts`: what an apply costs the prompt cache (CacheShape: API positions over Responses of `edits.ts`, computed once per estimate; the lookback start; the rewrite from ResponseStart, the start FrozenPrefix uses), the break-even and the verdict (pure).
 - `hooks/notes.ts`: the agent's service notes (`context_note`), their relocation after edits, and note reminders.
 - `hooks/journal.ts` (`JournalIO`): the journal of effect: what each application compressed, own writes of compressed paths, rereads of compressed content and archives.
 - `hooks/deliveries.ts` (`DeliveryIO`): the host's mid-turn deliveries (`queued_command`: the person's messages typed during a turn, subagent reports, task notifications): RecordDelivery from `session.append`, InsertDeliveries after a rebuilt anchor row in the compaction and the seed, and the frames PersonText reads.

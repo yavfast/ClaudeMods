@@ -222,26 +222,30 @@ Processing logic (pseudocode):
         RETURN rows, report, renamed, prefix
 
     FUNCTION KeepResponsesWhole(rows, frozen):    # відповідь моделі не розривається перезібраним рядком
-        stretches = rows split before every prompt row (a user row without toolResults that is not a result row a drop left empty: it has a handle or content)   # порожній рядок ще не відфільтровано
+        stretches = rows split before every PromptRow   # порожній рядок ще не відфільтровано
         FOR stretch IN stretches:
             IF stretch holds no assistant row without handle (rebuilt or inserted): CONTINUE
             rebuild every assistant row with handle in stretch that is not in frozen   # і до, і після перезібраного; thinking-блоки цих рядків губляться; префікс ResponseStart не ділить відповіді з перезібраним рядком
         RETURN rows                                                                   # рядки результатів — за правилом вище (SP_CTX_DEC_02)
 
-    FUNCTION ResponseStart(rows, at, api):        # перший рядок відповіді моделі, що містить rows[at] (фаза 23)
-        floor = the index after the last prompt row at or before at (0 without one)   # відповідь не перетинає промпту
-        i = at
-        IF rows[i] is a user row with toolResults:                                   # рядок результатів — відповідь його викликів
-            i = the earliest row in floor..at−1 that holds a call of its results; none → RETURN floor
-        IF rows[i] is not an assistant row: RETURN i                                 # промпт чи доставка — рядок сам по собі
-        LOOP:
-            i = back over consecutive assistant rows, not below floor                # рядки асистента поспіль — одна відповідь
-            run = the consecutive assistant rows from i on
-            m = the latest assistant message of api that holds a tool_use id of run, or a non-empty text of run (whitespace removed)
-            IF m absent: RETURN floor                                                # поза вікном API чи прогін без викликів і тексту: як KeepResponsesWhole
-            e = the earliest index k in floor..i−1 whose row is an assistant row holding a tool_use id or a text of m
-            IF e absent: RETURN i
-            i = e                                                                    # паралельні виклики «виклик, результат, виклик»: хост злив їх в одне повідомлення
+    PromptRow(r) = r is a user row without toolResults AND (r has a handle OR r is not empty)   # рядок результату, який drop лишив порожнім, — не промпт; один предикат для KeepResponsesWhole, Responses, FrozenPrefix і CacheCost (SP_CTX_02_38)
+
+    FUNCTION Responses(rows, api) → (start, known, floor):   # відповіді рядків одним проходом (PL_AUD_CTX фаза 8: одне джерело для ResponseStart і CacheCost)
+        message(r) = for an assistant row: the assistant message of api that holds a tool_use id of r, or else the non-empty text of r (whitespace removed); none otherwise
+        FOR i IN 0..len(rows)−1:
+            floor[i] = the index after the last PromptRow before i (0 without one)       # відповідь не перетинає промпту
+            assistant row: start[i] = start[i−1] if rows[i−1] is an assistant row else i   # рядки асистента поспіль — одна відповідь
+                           IF message(rows[i]) = m was met before, after the last prompt: start[i] = min(start[i], the start where m was first met)   # паралельні виклики «виклик, результат, виклик», текст після результатів: хост злив їх в одне повідомлення
+                           known[i] = some row of the run of assistant rows around i has a message
+            PromptRow: start[i] = i; known[i] = true                                       # промпт чи доставка — рядок сам по собі
+            other user row: k = the earliest row after the last prompt that holds a call of its results
+                           k exists → start[i] = start[k], known[i] = known[k]             # рядок результатів — відповідь його викликів
+                           none → start[i] = i; known[i] = false                           # результат без виклику, порожній рядок без handle — невідомо
+        a response that took a later row in pulls the rows between into it; every start then names the first row of its response
+        an empty user row pulled into a response: known[i] = known[start[i]]                 # непритягнутий лишається невідомим: ResponseStart дає початок відрізка, FrozenPrefix не ділить на ньому відповідь
+    FUNCTION ResponseStart(rows, at, api):        # перший рядок відповіді моделі, що містить rows[at] (фаза 23; з PL_AUD_CTX фази 8 — за Responses)
+        at ≤ 0 → 0; at ≥ len(rows) → len(rows)
+        RETURN known[at] ? start[at] : floor[at]                                         # поза вікном API, прогін без викликів і тексту, результат без виклику, непритягнутий порожній рядок: початок відрізка, як KeepResponsesWhole
 
     run summarize: id' = FreshId(id); use row rebuilt, call gets id' and loses text; result row rebuilt, result gets id' and text MARK+" you read the full output here, then replaced it with your summary"+note+mediaNote(id)+": "+summary   # автор і час — SP_CTX_DEC_17 (A′), фаза 19
     run drop: call removed from its row, result from its row; both rows rebuilt; media paths of id go to the report only
@@ -585,3 +589,5 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: відмови 02_03 — лише для рядка асистента лише з thinking (промпт людини з самих медіа — як раніше); 02_04 — обмеження LocateSpan (кількість рядків діапазону) і чому RebindTags спершу шукає за тотожністю |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): Flush надсилає текст продовження агента за рамкою автора RESUME_FRAME (`context-editor: the resume prompt you set before your edits applied: …`), текст за замовчуванням — з префіксом мода (ResumeText, 02_06; SP_CTX_DEC_17) |
 | 2026-10-11 | PL_AUD_CTX фаза 6 (CF-14): необов'язковий вхід ApplyEdits `newId` — фабрика FreshId для тестів; без неї поведінка та сама (02_04) |
+| 2026-10-11 | PL_AUD_CTX фаза 8 (аудит коду, CF-16): 02_04 — PromptRow (один предикат промпту) і Responses (відповіді рядків одним проходом зі `start`, `known`, `floor`); ResponseStart — похідна від Responses, з тією самою запасною межею відрізка; його бере і CacheCost ([SP_CTX_02_38](./context_editor.stages.sp.md#SP_CTX_02_38)). Зміна поведінки: текст, який API показує в повідомленні раніших викликів, приєднує свою відповідь і тоді, коли наступна відповідь іде одразу за ним (раніше межу давало лише найпізніше повідомлення прогону, і відповідь викликів ділилась між префіксом і перезібраним рядком) |
+| 2026-10-11 | PL_AUD_CTX фаза 8, рев'ю: 02_04 Responses — порожній рядок `user` без `handle`, який не притягнула жодна відповідь, невідомий (ResponseStart — початок відрізка, і без API-подання, і коли повідомлення відповіді поза вікном); притягнутий — відомий, як відповідь, що його притягнула |

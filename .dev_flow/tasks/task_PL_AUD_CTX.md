@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_PL_AUD_CTX`
 > **Created:** 2026-10-11 19:10
-> **Last updated:** 2026-10-11 21:13
+> **Last updated:** 2026-10-11 21:41
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-d5614704`
 > **Autonomy:** `full` — "Продовжуй автономно на свій вибір. Це технічні моменти, у яких я не розбираюсь, тож приймай рішення самостійно."
@@ -12,8 +12,8 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `plan` — [.dev_flow/audit/context-editor_20261011_182951.plan.md](../audit/context-editor_20261011_182951.plan.md) |
-| **Pipeline phase** | `implement` — Ф8 (CF-16) |
-| **Traceable ID** | `PL_AUD_CTX_P8` |
+| **Pipeline phase** | `implement` — Ф9 (CF-17, CF-18) |
+| **Traceable ID** | `PL_AUD_CTX_P9` |
 
 ## Intent
 
@@ -40,7 +40,8 @@
   - [x] Ф6 (CF-10…CF-14) — страхувальні тести, `tests/row-fixtures.ts`, `ApplyOptions.newId`; 565 → 606 тестів; знайдено дефект DocumentWay після /clear → CF-41
   - [x] Ф6a (CF-41) — DocumentWay після /clear: HandDocument (кроки HandedOff/Deliver з тостом), копія документа `<old>/<id>/document.txt` і при відмові хоста в промпті, і при ході в новій сесії; 606 → 610 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p6a-results.md); у backlog CF-42 (повтор передачі після збою HandedOff), CF-43 (fork-промпт потрапляє в документ як слова людини)
   - [x] Ф7 (CF-15) — `store.ts`: Read<T>, jsonFile/Store.update, контракти Update/Change, ранговані ланцюги serialChains з перевіркою вкладення в журнал налагодження; карантин без перезапису, якщо переміщення не вдалось; `register.ts` 1345 → 1248 рядків; 610 → 627 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p7-results.md); у backlog CF-44 (решта ручних RMW-місць)
-  - [ ] Ф8–Ф11 (CF-16…CF-23)
+  - [x] Ф8 (CF-16) — один ResponseStart: `isPromptRow` і `responses(rows, api)` у `edits.ts`, `cacheShape` один раз на пропозицію, LookbackStart і телеметрія йдуть за ResponseStart (читають форму API); 627 → 631 тест; живий прогін PASS (.dev_flow/cache/live-test/audit-p8-results.md); backlog CF-45, CF-46
+  - [ ] Ф9–Ф11 (CF-17…CF-23)
   - [ ] Ф12 (CF-24…CF-27)
 
 ## Coordination Notes
@@ -53,6 +54,7 @@
 
 ## Shared Activity Log
 
+- 2026-10-11 21:41 [claude-session-d5614704] Ф8 закомічено; рев'ю PASS (4 prefer: 3 виправлено — порожній рядок без зв'язку не «відомий», LookbackStart за ResponseStart, kinds() для порожнього рядка; 1 → CF-45); живий прогін PASS, випадок «текст після викликів в одному повідомленні» наживо не відтворюється (haiku пише текст окремим повідомленням) — покрито тестами; спостереження: дублі після --resume і без keep_cache → CF-46, вигадані цитати виводу мода → P23 задачі етапів.
 - 2026-10-11 21:13 [claude-session-d5614704] Ф7 закомічено; рев'ю WARNINGS (2 should, 4 prefer) виправлено: карантин із невдалим переміщенням нічого не пише (і в recordDelivery), формулювання CLAUDE.md/§02 приведено до коду, усі ланцюги через chainOf з перевіркою порядку, tags → deliveries у context_tag перевіряється; решта ручних RMW → CF-44.
 - 2026-10-11 20:48 [claude-session-d5614704] Ф6a закомічено; рев'ю WARNINGS (2 should, 2 prefer): відмова хоста в промпті й хід у новій сесії теж зберігають копію документа, тест «поруч із seed» посилено; повтор передачі після збою HandedOff → CF-42; живий прогін знайшов, що fork /handoff записує інструкцію мода як слова людини → CF-43.
 - 2026-10-11 20:40 [claude-session-d5614704] Ф6 закомічено; рев'ю WARNINGS (2 should, 6 prefer) виправлено; тести знайшли дефект DocumentWay (`handoff.ts:990–991`) — винесено у фазу Ф6a (CF-41), наступна; живий прогін не потрібен (лише тести).

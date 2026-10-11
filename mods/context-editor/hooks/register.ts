@@ -734,6 +734,7 @@ function blockIO($: EngineInterface, dir: string): BlockIO {
     media: async () => collectMedia(await apiMessages($), await conversation($)).found,
     usage: () => usageInfo($),
     journal: async () => (await journalNow($, dir)) ?? { applications: 0, rereads: 0, archiveRereads: 0 },
+    api: () => apiMessages($),
     setListed: key => {
       listed.key = key
     },
@@ -941,7 +942,7 @@ export const register: Register = on => {
       // [SP_CTX_02_33] counted as if this call's due reminders were delivered;
       // they are delivered only once the listing is built (a failure keeps them)
       const update = dir ? updateOf(stores($, dir).tags) : undefined
-      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), update, await journalNow($, dir))
+      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), update, await journalNow($, dir), () => apiMessages($))
       tele = telemetryText(t)
       size = headerSize(t, totalChars(rows))
     } catch (err) {

@@ -10,8 +10,7 @@
 // turn, so the depth an estimate sees now grows with every call until then.
 // The break-even of an edit weighs that rewrite against the reads it saves. Pure.
 import type { SessionMessage } from 'claude-code'
-import { rowChars } from './edits'
-import { apiBlocks } from './media'
+import { isPromptRow, responses, responseStart, rowChars, type Responses } from './edits'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -49,8 +48,11 @@ export function costRatios(model: string | undefined): CostRatios {
 type Kind = 'thinking' | 'text' | 'use' | 'result'
 
 // The kinds of a row's blocks in the API form, in order. A thinking block
-// shows only as an assistant row without text and calls (plugin-hooks 36).
+// shows only as an assistant row without text and calls (plugin-hooks 36). An
+// empty user row that is no prompt (a result row a drop left empty) adds
+// nothing: inside a response it would split the run of its results.
 function kinds(row: SessionMessage): Kind[] {
+  if (row.role === 'user' && !(row.toolResults ?? []).length && !isPromptRow(row)) return []
   if (row.role === 'assistant') {
     const k: Kind[] = row.text ? ['text'] : []
     for (let n = 0; n < row.toolUses.length; n++) k.push('use')
@@ -62,62 +64,26 @@ function kinds(row: SessionMessage): Kind[] {
 }
 
 const runs = (k: Kind | undefined): boolean => k === 'use' || k === 'result'
-const squash = (s: string): string => s.replace(/\s+/g, '')
-const isPrompt = (r: SessionMessage): boolean => r.role === 'user' && !(r.toolResults ?? []).length
 
-// [SP_CTX_02_38] Responses(rows, api): the first row of the response each row
-// belongs to. Consecutive assistant rows are one response; a result row
-// belongs to the response of its calls; with the API form, assistant rows the
-// host merged into one message (parallel calls written "call, result, call")
-// are one response too, never across a prompt row; a prompt row is its own.
-export function responses(rows: readonly SessionMessage[], api: readonly unknown[] = []): number[] {
-  const byId = new Map<string, number>()
-  const byText = new Map<string, number>()
-  let n = 0
-  for (const msg of api) {
-    if ((msg as { role?: unknown } | null)?.role !== 'assistant') continue
-    for (const b of apiBlocks(msg)) {
-      if (b.type === 'tool_use' && typeof b.id === 'string') byId.set(b.id, n)
-      if (b.type === 'text' && typeof b.text === 'string' && squash(b.text)) byText.set(squash(b.text), n)
-    }
-    n++
-  }
-  const start = new Array<number>(rows.length)
-  const callAt = new Map<string, number>()
-  const firstOf = new Map<number, number>()
-  let prompt = -1
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i]!
-    if (r.role === 'assistant') {
-      let g = i > 0 && rows[i - 1]!.role === 'assistant' ? start[i - 1]! : i
-      const m = r.toolUses.map(u => byId.get(u.tool_use_id)).find(x => x !== undefined) ?? (squash(r.text) ? byText.get(squash(r.text)) : undefined)
-      if (m !== undefined) {
-        const first = firstOf.get(m)
-        if (first !== undefined && first > prompt) g = Math.min(g, first)
-        else firstOf.set(m, g)
-      }
-      start[i] = g
-      for (const u of r.toolUses) callAt.set(u.tool_use_id, g)
-    } else if (!isPrompt(r)) {
-      const g = (r.toolResults ?? []).map(t => callAt.get(t.tool_use_id)).find(x => x !== undefined)
-      start[i] = g !== undefined && g > prompt ? g : i
-    } else {
-      start[i] = i
-      prompt = i
-    }
-  }
-  // a response that took a later row in pulls the rows between into it
-  for (let i = rows.length - 1; i > 0; i--) if (start[i]! < i && start[i - 1]! > start[i]!) start[i - 1] = start[i]!
-  return start
+// [SP_CTX_02_38] CacheShape(rows, api): the responses of the rows by
+// Responses of [SP_CTX_02_04] (the one prompt predicate and grouping that
+// FrozenPrefix uses) and their positions, computed once for every estimate
+// over the same rows and API form. Without the API form, parallel calls
+// written "call, result, call" are separate responses.
+export type CacheShape = { rows: readonly SessionMessage[]; api: readonly unknown[]; responses: Responses; pos: readonly number[] }
+
+export function cacheShape(rows: readonly SessionMessage[], api: readonly unknown[] = []): CacheShape {
+  const shape = responses(rows, api)
+  return { rows, api, responses: shape, pos: positions(rows, shape.start) }
 }
 
-// [SP_CTX_02_38] Positions(rows, api): `pos[i]` is the number of API positions
-// from the start of rows[i]'s response to the end (pos[rows.length] = 0). In a
+// [SP_CTX_02_38] Positions(rows, start): `pos[i]` is the number of API positions
+// from the start of rows[i]'s response (`start`, the Responses grouping) to
+// the end (pos[rows.length] = 0). In a
 // response the host sends the calls of its assistant rows as one message and
 // their results after it, so each response counts its kinds in that order;
 // adjacent tool_use blocks are one position, so are adjacent tool_result blocks.
-export function suffixPositions(rows: readonly SessionMessage[], api: readonly unknown[] = []): number[] {
-  const start = responses(rows, api)
+function positions(rows: readonly SessionMessage[], start: readonly number[]): number[] {
   const pos = new Array<number>(rows.length + 1).fill(0)
   let first: Kind | undefined
   let end = rows.length
@@ -133,51 +99,43 @@ export function suffixPositions(rows: readonly SessionMessage[], api: readonly u
     }
     if (prev === first && runs(first)) n--
     for (let k = i; k < end; k++) pos[k] = pos[end]! + n
-    first = ks[0]
+    if (ks.length) first = ks[0]
     end = i
   }
   return pos
 }
 
-// [SP_CTX_02_38] The first row of the response that holds rows[at] (Responses).
-export function responseStartRows(rows: readonly SessionMessage[], at: number, api: readonly unknown[] = []): number {
-  if (!rows.length) return 0
-  return responses(rows, api)[Math.max(0, Math.min(at, rows.length - 1))]!
-}
-
 // [SP_CTX_02_38] LookbackStart(rows, api): the first row an edit may start at
-// with the cache kept up to it, were the apply now: the earliest response
-// start within CACHE_LOOKBACK positions of the end; rows.length when not even
-// the last response is.
-export function lookbackStart(rows: readonly SessionMessage[], api: readonly unknown[] = []): number {
-  const pos = suffixPositions(rows, api)
+// with the cache kept up to it, were the apply now: the least k such that the
+// ResponseStart of every row from k on (the start FrozenPrefix would keep the
+// cache up to, [SP_CTX_02_04]) lies within CACHE_LOOKBACK positions of the
+// end; such a k is a response start itself; rows.length when not even the
+// last row passes. Without the API form only stretch starts qualify.
+export function lookbackStart(shape: CacheShape): number {
+  const { rows, pos } = shape
   let k = rows.length
+  let least = rows.length
   for (let i = rows.length - 1; i >= 0; i--) {
-    if (pos[i]! > CACHE_LOOKBACK) break
+    least = Math.min(least, responseStart(rows, i, shape.api, shape.responses))
+    if (pos[least]! > CACHE_LOOKBACK) break
     k = i
   }
   return k
 }
 
 // [SP_CTX_02_38] What an apply whose earliest edit is rows[first] costs the
-// cache: `positions` from the start of its response to the end, now;
-// `within` the lookback once `margin` more positions come before the apply
-// (Infinity: deep in any case); `rewrite`, the tokens the next request after
-// the apply writes: the rows from that start (within) or the whole
-// conversation (deeper), less what the edits free.
+// cache: `start`, the first row of its response by ResponseStart of
+// [SP_CTX_02_04], the row FrozenPrefix keeps the cache up to; `positions`
+// from that start to the end, now; `within` the lookback once `margin` more
+// positions come before the apply (Infinity: deep in any case); `rewrite`,
+// the tokens the next request after the apply writes: the rows from that
+// start (within) or the whole conversation (deeper), less what the edits free.
 export type CacheCost = { start: number; positions: number; within: boolean; rewrite: number }
 
-export function cacheCost(
-  rows: readonly SessionMessage[],
-  first: number,
-  freed: number,
-  conversation: number,
-  ratio: number,
-  margin = 0,
-  api: readonly unknown[] = [],
-): CacheCost {
-  const start = responseStartRows(rows, first, api)
-  const positions = suffixPositions(rows, api)[start] ?? 0
+export function cacheCost(shape: CacheShape, first: number, freed: number, conversation: number, ratio: number, margin = 0): CacheCost {
+  const { rows } = shape
+  const start = responseStart(rows, first, shape.api, shape.responses)
+  const positions = shape.pos[start] ?? 0
   const within = positions + margin <= CACHE_LOOKBACK
   let chars = 0
   for (let i = start; i < rows.length; i++) chars += rowChars(rows[i]!)
@@ -187,9 +145,9 @@ export function cacheCost(
 
 // [SP_CTX_02_38] Requests(rows, api): the model requests of this conversation
 // so far, as its responses; at least 1.
-export function requestsSoFar(rows: readonly SessionMessage[], api: readonly unknown[] = []): number {
-  const start = responses(rows, api)
-  return Math.max(1, rows.filter((r, i) => r.role === 'assistant' && start[i] === i).length)
+export function requestsSoFar(shape: CacheShape): number {
+  const { start } = shape.responses
+  return Math.max(1, shape.rows.filter((r, i) => r.role === 'assistant' && start[i] === i).length)
 }
 
 // [SP_CTX_02_38] The tokens a summary of an output of `tokens` takes.

@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { aliasLine, markAlias, type AliasIO, type AliasRegistry } from '../hooks/aliases'
-import { totalChars } from '../hooks/edits'
+import { applyEdits, prepare, totalChars } from '../hooks/edits'
 import {
   bounded,
   callLines,
@@ -28,7 +28,7 @@ import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { MESSAGES_ROW, type UsageInfo } from '../hooks/stages'
 import { EMPTY_REGISTRY, parseRegistry, type HintState, type Tag, type TagRegistry } from '../hooks/tags'
-import { missingRead, okRead, unreadableRead } from './row-fixtures'
+import { emptyRowBetweenCalls, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const OUT = 40_000 // chars of one big output: 10k tokens at 4 chars per token
 
@@ -312,6 +312,16 @@ test('Propose — пакет: each candidate frees its size less its summary (a 
   // the turn channel never counts on keep_cache
   expect(propose(rows, [{ alias: 'c1', row: 1, chars: 40_000, reproducible: true }], { ratio: 4, conversation: 21_000, channel: 'turn' }).keep).toBeUndefined()
   expect(p.named).toEqual(['c1', 'c2'])
+})
+
+test('Propose — початок як у застосування (PL_AUD_CTX_P8): the cost of a batch starts where FrozenPrefix of the same batch with keep_cache would', async () => {
+  const { rows, api, callA, callB } = emptyRowBetweenCalls()
+  const p = propose(rows, [{ alias: 'c2', row: callB, chars: 40_000, reproducible: false }], { ratio: 4, conversation: 21_000, channel: 'size', api })
+  const applied = applyEdits(rows, prepare(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'b ok' }]).queued, '', new Map(), new Set(), { freeze: { api } })
+  expect(p.cost.start).toBe(callA)
+  expect(p.cost.start).toBe(applied.prefix)
+  // one response of the calls, one of the final text
+  expect(p.rHat).toBe(2)
 })
 
 // ---- [SP_CTX_02_37] SuggestionText

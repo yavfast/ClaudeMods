@@ -68,7 +68,7 @@ Purpose: обчислити телеметрію контексту ([SP_CTX_01_
 Input: `rows` — поточна розмова; `reg` — TagRegistry; `journal` — Journal зі станом читання; порт `usage(breakdown)` — `$.session.usage({ breakdown: 'summary' })`.
 
 Processing logic (pseudocode):
-    FUNCTION Telemetry(rows, reg, journal):
+    FUNCTION Telemetry(rows, reg, journal, api):   # api — читач API-подання; немає чи збій — без нього (PL_AUD_CTX фаза 8, рев'ю)
         TRY u = usage(summary)                          # 23–87 мс, без запитів до API (навичка plugin-hooks, пункт 37)
         CATCH err: u = none; t.measure = unavailable; t.error = err text   # частини розміру нижче пропускаються, решта рахується
         IF u present:
@@ -79,7 +79,7 @@ Processing logic (pseudocode):
             ELSE: t.measure = request; t.request = u.context.tokens      # незмінна частина всередині
             t.window = b ? b.rawMaxTokens : u.context.window
             IF b: IF b.autoCompactThreshold present: t.autoCompactLeft = b.autoCompactThreshold − b.totalTokens ELSE t.autoCompactOff = true
-        IF rows not empty: k = LookbackStart(rows); t.cache = { start: k, chars: Σ size(rows[k..]) }   # SP_CTX_02_38, фаза 23; і без реєстру
+        IF rows not empty: k = LookbackStart(rows, api); t.cache = { start: k, chars: Σ size(rows[k..]) }   # SP_CTX_02_38, фаза 23; і без реєстру
         IF reg.stage: first = StartOf(rows, reg.stage.after); t.stage = { name, first, chars = Σ size(rows[first ..]), turnsAgo = reg.turn − openedTurn, lost = MarkIndex is lost }
         IF reg.lastClosed: s0 = StartOf(rows, after); e = MarkIndex(rows, end)
             t.lastClosed = { name, start = s0, end = (e is an index ? e : absent), chars = (e is an index AND s0 ≤ e ? Σ size(rows[s0..e]) : absent), lost = e is lost, startLost = MarkIndex(rows, after) is lost }
@@ -125,7 +125,7 @@ Processing logic (pseudocode):
     FUNCTION BlockReport(block, replaced?):                            # лише закриття інструментом: між закриттям і звітом компактизації немає
         key = Key()                                                     # SP_CTX_02_18, до читання рядків
         rows = CurrentRows(); reg = TagRegistry; api = read main conversation in Messages API form
-        t = Telemetry(rows, reg, Journal)                               # спершу: Calibrate дає відношення, тож розмір блоку і телеметрія звіту — одним відношенням (рев'ю 39)
+        t = Telemetry(rows, reg, Journal, api)                               # спершу: Calibrate дає відношення, тож розмір блоку і телеметрія звіту — одним відношенням (рев'ю 39)
         a = StartOf(rows, block.after); e = MarkIndex(rows, block.end)
         head = (block.name ? "Stage \"<name>\" closed: " : "Block (no stage): ")
              + (e is lost ? "its end row is gone; call context_list."
@@ -463,7 +463,7 @@ Processing logic (pseudocode):
         checked = none; RETURN line
 
     Claim(next): IF deadline expired: late; on the registry chain: IF deadline expired: late; IF reg.hint still = state: claimed; hint = next; write ELSE taken   # паралельний виклик уже дав рядок — другого немає
-    Measure(rows, reg): t = Telemetry(rows, reg without lastApply); ratio = t.ratio or reg.charsPerToken or 4   # SP_CTX_02_28: рядок MESSAGES_ROW і калібрування; lastApply лишається для телеметрії агента
+    Measure(rows, reg): t = Telemetry(rows, reg without lastApply, api none); ratio = t.ratio or reg.charsPerToken or 4   # SP_CTX_02_28: рядок MESSAGES_ROW і калібрування; lastApply лишається для телеметрії агента
                         conversation = t.measure = messages ? t.conversation : Σ size(rows) / ratio
 
     Candidates(rows, reg, queued, aliases): for each tag of reg with kind = review AND IsActive(tag, reg.turn) whose target resolves on rows:
@@ -521,24 +521,23 @@ Purpose: оцінити, скільки кешу промпту коштує з�
 
 Processing logic (pseudocode):
     Kinds(row): assistant → "text" if text, then "use" per call; neither → "thinking"   # thinking видно лише як рядок без тексту й викликів (навичка plugin-hooks, пункт 36)
-                user → "result" per result, then "text" if text or no result
-    Responses(rows, api): the first row of each row's response: consecutive assistant rows are one; a result row joins the response of its calls;
-        with api, assistant rows whose call id or text one assistant message of api holds join the response of its earliest row (parallel calls written "call, result, call"), never across a prompt row; a prompt row is its own   # рев'ю 54
+                user → "result" per result, then "text" if text or no result; a user row that is no PromptRow and has no results → nothing   # порожній рядок усередині відповіді не ділить серію результатів (PL_AUD_CTX фаза 8, рев'ю)
+    Responses(rows, api), ResponseStart(rows, at, api), PromptRow: of SP_CTX_02_04, the one source with FrozenPrefix   # рев'ю 54; PL_AUD_CTX фаза 8 — раніше тут був свій прохід зі своїм предикатом промпту
+    CacheShape(rows, api) = (Responses(rows, api), Positions(rows, ·, api)), once for every estimate over the same rows and api   # Propose рахує його раз на пропозицію
     Positions(rows, i, api) = from the start of rows[i]'s response to the end, each response counted in the order the host sends it — the kinds of its assistant rows, then of its other rows —
         so that a "use" right after a "use" and a "result" right after a "result" (also across responses) add nothing   # серії — одна позиція (довідка API; спайк кешу, Entry 4)
-    ResponseStartRows(rows, at, api) = Responses(rows, api)[at]        # застосування бере межу з ResponseStart (SP_CTX_02_04); тут — та сама ідея одним проходом
-    LookbackStart(rows, api) = the least k such that Positions(rows, j, api) ≤ CACHE_LOOKBACK for every j in k..len(rows)−1; len(rows) when not even the last row passes
+    LookbackStart(rows, api) = the least k such that Positions(rows, ResponseStart(rows, j, api), api) ≤ CACHE_LOOKBACK for every j in k..len(rows)−1; len(rows) when not even the last row passes   # такий k — сам свій ResponseStart; без API-подання годяться лише початки відрізків (PL_AUD_CTX фаза 8, рев'ю)
     CacheCost(rows, first, freed, conversation, ratio, margin = 0, api):
-        start = ResponseStartRows(rows, first, api); positions = Positions(rows, start, api); within = positions + margin ≤ CACHE_LOOKBACK
+        start = ResponseStart(rows, first, api); positions = Positions(rows, start, api); within = positions + margin ≤ CACHE_LOOKBACK   # той самий початок, що FrozenPrefix застосування з тим самим api
         tail = min(round(Σ size(rows[start..]) / ratio), conversation)
         RETURN { start, positions, within, rewrite: max(0, (within ? tail : conversation) − freed) }
-    Requests(rows, api) = max(1, number of responses that start with an assistant row)   # R̂: запити розмови досі; копернікова оцінка — попереду стільки ж
+    Requests(rows, api) = max(1, number of assistant rows i with Responses(rows, api).start[i] = i)   # R̂: запити розмови досі; копернікова оцінка — попереду стільки ж
     Summary(t, reproducible) = min(t, max(min, share · t)), SUMMARY_REPRO for a reproducible output, SUMMARY_OTHER otherwise
     CostRatios(model) = the first family of the CostRatios table (01_12) whose name the model id holds; none → DEFAULT_RATIOS
     BreakEven(rewrite, freed, summary, request, r) = ((r.write − 1) · rewrite + r.out · summary + request) / freed   # freed ≤ 0 → ∞
     Verdict(rStar, rHat) = rStar ≤ rHat ? worth : rStar > VERDICT_MARGIN · rHat ? not-yet : borderline
 
-BreakEven — точка беззбитковості спайку ефективності (Entry 4): чистий виграш після R запитів `G(R) = r_r·Δ·R − (r_w − r_r)·(x − Δ) − r_out·S − n_x·r_r·C` дорівнює нулю при `R* = (ρ_w − 1)·(x − Δ)/Δ + ρ_o·S/Δ + n_x·C/Δ`; тут `ρ_w`, `ρ_o` — CostRatios моделі (у спайку — 40 і 100 з калібрування за `costUSD`; з рев'ю 54 — опубліковані ціни за родиною моделі), `n_x = 1` (запит, що ставить правку, читає весь контекст C), `x − Δ = rewrite`, `Δ = freed`, `S = summary`. Від спайку відрізняється `x`: хвіст від відповіді найранішої правки в межах вікна і вся розмова поза ним (спайк кешу, рекомендація «режим вікно»), а не завжди вся розмова. Приклад P22 (контекст 84k, перебудова 44k, звільнено 12k) — R* = 150 на Opus 5.5 і ~77 на Sonnet 5.5. Без API-подання (телеметрія, збій читання) паралельні виклики, записані «виклик, результат, виклик», рахуються окремими відповідями: позицій більше, R̂ теж більше (рев'ю 54) — тому SoftHint читає API-подання після дешевих порогів. Оцінка R̂ — копернікова (попереду стільки ж запитів, скільки позаду), груба, тож вердикт має три значення із запасом VERDICT_MARGIN. Позиції — за рядками: блоки вкладень промпту, доставки й кілька блоків thinking одного рядка не видно, тож оцінка оптимістична на 1–3 позиції; глибина міряється зараз, а застосування буде в кінці ходу, коли хвіст ще виросте, — звідси `margin` (APPLY_MARGIN для каналу розміру, ∞ для каналу ходу). Межу й вердикт калібрує живий сценарій 05_03 «Кеш після застосування».
+BreakEven — точка беззбитковості спайку ефективності (Entry 4): чистий виграш після R запитів `G(R) = r_r·Δ·R − (r_w − r_r)·(x − Δ) − r_out·S − n_x·r_r·C` дорівнює нулю при `R* = (ρ_w − 1)·(x − Δ)/Δ + ρ_o·S/Δ + n_x·C/Δ`; тут `ρ_w`, `ρ_o` — CostRatios моделі (у спайку — 40 і 100 з калібрування за `costUSD`; з рев'ю 54 — опубліковані ціни за родиною моделі), `n_x = 1` (запит, що ставить правку, читає весь контекст C), `x − Δ = rewrite`, `Δ = freed`, `S = summary`. Від спайку відрізняється `x`: хвіст від відповіді найранішої правки в межах вікна і вся розмова поза ним (спайк кешу, рекомендація «режим вікно»), а не завжди вся розмова. Приклад P22 (контекст 84k, перебудова 44k, звільнено 12k) — R* = 150 на Opus 5.5 і ~77 на Sonnet 5.5. Без API-подання (телеметрія, збій читання) паралельні виклики, записані «виклик, результат, виклик», рахуються окремими відповідями: позицій більше, R̂ теж більше (рев'ю 54) — тому SoftHint читає API-подання після дешевих порогів. Початок CacheCost без нього — початок відрізка (запасна межа ResponseStart), як і FrozenPrefix застосування з тим самим поданням: вердикт тоді консервативний, а не «вигідно» за межею, якої застосування не дасть (PL_AUD_CTX фаза 8). З тієї ж причини рядок `Cache` телеметрії ([SP_CTX_02_28](#SP_CTX_02_28)) читає API-подання для LookbackStart (`context_list`, звіт закриття етапу; збій читання — без нього, тоді годяться лише початки відрізків), а канал розміру SoftHint, якому рядок `Cache` не потрібен, його для телеметрії не читає. Оцінка R̂ — копернікова (попереду стільки ж запитів, скільки позаду), груба, тож вердикт має три значення із запасом VERDICT_MARGIN. Позиції — за рядками: блоки вкладень промпту, доставки й кілька блоків thinking одного рядка не видно, тож оцінка оптимістична на 1–3 позиції; глибина міряється зараз, а застосування буде в кінці ходу, коли хвіст ще виросте, — звідси `margin` (APPLY_MARGIN для каналу розміру, ∞ для каналу ходу). Межу й вердикт калібрує живий сценарій 05_03 «Кеш після застосування».
 
 Errors: відмов немає (чисті функції).
 
@@ -551,3 +550,5 @@ Errors: відмов немає (чисті функції).
 | 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: 02_32 — правило стосується лише рядка асистента з одним thinking; підказка людини лише з медіа лишається ціллю тегів, `context_note` її, як і раніше, не приймає |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8, CF-9): рядок нагадування називає автора — `reminder from your note <id>`, промптом нагадування не стає (02_33); CutDelivery обрізає доставку в рамці всередині тіла і повертає закривальні теги, які забрало обрізання, у межах MAX_DELIVERY_TEXT (02_35) |
 | 2026-10-11 | PL_AUD_CTX фаза 7, рев'ю: RecordDelivery (02_35) — файл доставок, який не вдалося перенести вбік, не перезаписується; запис втрачено |
+| 2026-10-11 | PL_AUD_CTX фаза 8 (аудит коду, CF-16): 02_38 — Responses, ResponseStart і предикат промпту беруться з [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04) (одне джерело з FrozenPrefix); ResponseStartRows прибрано, CacheCost бере `start` з ResponseStart (без API-подання — початок відрізка, як застосування); CacheShape — відповіді й позиції один раз на пропозицію |
+| 2026-10-11 | PL_AUD_CTX фаза 8, рев'ю: 02_38 — Kinds не рахує порожнього рядка `user`, що не промпт; LookbackStart бере ResponseStart кожного рядка (лише рядки, що самі свій початок), рядок `Cache` телеметрії читає API-подання (`context_list`, звіт закриття етапу) |

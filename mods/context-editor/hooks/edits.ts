@@ -1248,67 +1248,119 @@ export function applyEdits(
   return { rows: out, report, made, renamed, prefix }
 }
 
-// [SP_CTX_02_04] The stretch a row lies in starts after the last prompt row
-// before it (a user row without results that is not a result row a drop left
-// empty): no response crosses a prompt.
-function isPrompt(r: SessionMessage): boolean {
+// [SP_CTX_02_04] PromptRow: a user row without results that is not a result
+// row a drop left empty (it has a handle or content). No response crosses
+// one: it ends the stretch of KeepResponsesWhole and bounds Responses. The
+// one prompt predicate of ResponseStart, FrozenPrefix and CacheCost
+// ([SP_CTX_02_38]).
+export function isPromptRow(r: SessionMessage): boolean {
   return r.role === 'user' && !(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))
-}
-
-function stretchStart(rows: readonly SessionMessage[], at: number): number {
-  for (let i = Math.min(at, rows.length - 1); i >= 0; i--) if (isPrompt(rows[i]!)) return i + 1
-  return 0
 }
 
 const squashText = (s: string): string => s.replace(/\s+/g, '')
 
+// [SP_CTX_02_04] Responses(rows, api): the model responses of the rows, in
+// one pass. `start[i]` is the first row of the response that holds rows[i]:
+// consecutive assistant rows are one response; the host merges the rows of
+// one response (one `message.id`, which the mod cannot see) into one
+// assistant message of the API form, also across result rows of its own
+// parallel calls (plugin-hooks 30, 40), so an assistant row whose call id or
+// text (whitespace removed) an API message holds joins the response of that
+// message's earliest row, never across a prompt row, and the rows between
+// join too; a result row belongs to the response of its earliest call after
+// the last prompt; a prompt or delivery row is one of its own, so is a result
+// row without its call or an empty user row unless a response around it pulls
+// it in. `known[i]`: the API form confirms that response (the run of
+// assistant rows around rows[i], or around the call of its results, has a
+// matching API message; a prompt row is always known; a result row without
+// its call never; an empty user row only once a response pulled it in, as
+// that response is). `floor[i]`: the start of the stretch, the row after the
+// last prompt row before rows[i] (rows[i] itself excluded for a prompt). Pure.
+export type Responses = { start: readonly number[]; known: readonly boolean[]; floor: readonly number[] }
+
+export function responses(rows: readonly SessionMessage[], api: readonly unknown[] = []): Responses {
+  const byId = new Map<string, number>()
+  const byText = new Map<string, number>()
+  let n = 0
+  for (const msg of api) {
+    if ((msg as { role?: unknown } | null)?.role !== 'assistant') continue
+    for (const b of apiBlocks(msg)) {
+      if (b.type === 'tool_use' && typeof b.id === 'string') byId.set(b.id, n)
+      if (b.type === 'text' && typeof b.text === 'string') {
+        const t = squashText(b.text)
+        if (t) byText.set(t, n)
+      }
+    }
+    n++
+  }
+  // the API message of each assistant row, and whether its run has one
+  const message = rows.map(r => {
+    if (r.role !== 'assistant') return undefined
+    const m = r.toolUses.map(u => byId.get(u.tool_use_id)).find(x => x !== undefined)
+    if (m !== undefined) return m
+    const t = squashText(r.text)
+    return t ? byText.get(t) : undefined
+  })
+  const runKnown = new Array<boolean>(rows.length).fill(false)
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i]!.role !== 'assistant' || (i > 0 && rows[i - 1]!.role === 'assistant')) continue
+    let end = i
+    while (end < rows.length && rows[end]!.role === 'assistant') end++
+    const found = message.slice(i, end).some(m => m !== undefined)
+    for (let k = i; k < end; k++) runKnown[k] = found
+  }
+  const start = new Array<number>(rows.length)
+  const known = new Array<boolean>(rows.length)
+  const floor = new Array<number>(rows.length)
+  const callAt = new Map<string, number>()
+  const firstOf = new Map<number, number>()
+  // empty user rows (no prompt, no results): known only by a response that pulls them in
+  const loose: number[] = []
+  let prompt = -1
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i]!
+    floor[i] = prompt + 1
+    if (r.role === 'assistant') {
+      let g = i > 0 && rows[i - 1]!.role === 'assistant' ? start[i - 1]! : i
+      const m = message[i]
+      if (m !== undefined) {
+        const first = firstOf.get(m)
+        if (first !== undefined && first > prompt) g = Math.min(g, first)
+        else firstOf.set(m, g)
+      }
+      start[i] = g
+      known[i] = runKnown[i]!
+      for (const u of r.toolUses) callAt.set(u.tool_use_id, i)
+    } else if (isPromptRow(r)) {
+      start[i] = i
+      known[i] = true
+      prompt = i
+    } else {
+      const calls = (r.toolResults ?? []).map(t => callAt.get(t.tool_use_id)).filter((k): k is number => k !== undefined && k > prompt)
+      const k = calls.length ? Math.min(...calls) : undefined
+      start[i] = k !== undefined ? start[k]! : i
+      known[i] = k !== undefined ? known[k]! : false
+      if (!(r.toolResults ?? []).length) loose.push(i)
+    }
+  }
+  // a response that took a later row in pulls the rows between into it
+  for (let i = rows.length - 1; i > 0; i--) if (start[i]! < i && start[i - 1]! > start[i]!) start[i - 1] = start[i]!
+  for (let i = 0; i < rows.length; i++) start[i] = start[start[i]!]!
+  for (const i of loose) if (start[i]! < i) known[i] = known[start[i]!]!
+  return { start, known, floor }
+}
+
 // [SP_CTX_02_04] ResponseStart(rows, at, api): the first row of the model
-// response that holds rows[at]. The host merges the rows of one response (one
-// `message.id`, which the mod cannot see) into one assistant message of the
-// API form, also across result rows of its own parallel calls (plugin-hooks
-// 30, 40), so the API message that holds a call id or a text of the run of
-// assistant rows around `at` names its other rows. A result row belongs to the
-// response of the calls it answers; a prompt or delivery row is one of its
-// own. Without a matching API message (outside the window, a run with neither
-// calls nor text) the start of the stretch, as KeepResponsesWhole has it. Pure.
-export function responseStart(rows: readonly SessionMessage[], at: number, api: readonly unknown[]): number {
+// response that holds rows[at], by Responses; a response the API form does
+// not confirm (outside the window, a run with neither calls nor text, a
+// result row without its call) gives the start of the stretch, as
+// KeepResponsesWhole has it. FrozenPrefix and CacheCost ([SP_CTX_02_38]) both
+// take the start from here. `shape`: Responses of the same rows and API form,
+// when the caller has them already. Pure.
+export function responseStart(rows: readonly SessionMessage[], at: number, api: readonly unknown[], shape: Responses = responses(rows, api)): number {
   if (at <= 0) return 0
   if (at >= rows.length) return rows.length
-  const floor = stretchStart(rows, at)
-  let i = at
-  const head = rows[i]!
-  if (head.role === 'user' && (head.toolResults ?? []).length) {
-    const calls = head.toolResults!.map(t => findToolUse(rows, t.tool_use_id)).filter(k => k >= floor && k < i)
-    if (!calls.length) return floor
-    i = Math.min(...calls)
-  }
-  if (rows[i]!.role !== 'assistant') return i
-  const responses = api.flatMap(msg => {
-    if ((msg as { role?: unknown } | null)?.role !== 'assistant') return []
-    const blocks = apiBlocks(msg)
-    const ids = new Set(blocks.flatMap(b => (b.type === 'tool_use' && typeof b.id === 'string' ? [b.id] : [])))
-    const texts = new Set(blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' && squashText(b.text) ? [squashText(b.text)] : [])))
-    return [{ ids, texts }]
-  })
-  const holds = (r: SessionMessage, m: { ids: ReadonlySet<string>; texts: ReadonlySet<string> }) =>
-    r.role === 'assistant' && (r.toolUses.some(u => m.ids.has(u.tool_use_id)) || (squashText(r.text) !== '' && m.texts.has(squashText(r.text))))
-  for (;;) {
-    // consecutive assistant rows are one response
-    while (i > floor && rows[i - 1]!.role === 'assistant') i--
-    let end = i
-    while (end + 1 < rows.length && rows[end + 1]!.role === 'assistant') end++
-    const run = rows.slice(i, end + 1)
-    // the latest API message that holds a row of the run
-    const msg = [...responses].reverse().find(m => run.some(r => holds(r, m)))
-    if (!msg) return floor
-    let earliest = i
-    for (let k = floor; k < i; k++) if (holds(rows[k]!, msg)) {
-      earliest = k
-      break
-    }
-    if (earliest === i) return i
-    i = earliest
-  }
+  return shape.known[at] ? shape.start[at]! : shape.floor[at]!
 }
 
 // [SP_CTX_02_04] Produced(final, steps): where the rows the applied replacing
@@ -1362,7 +1414,7 @@ export function rebuildSplitResponses(rows: readonly SessionMessage[], frozen: R
   out.forEach((r, i) => {
     // a prompt row ends the stretch; a result row a drop emptied is none
     // (it goes later, with the other rebuilt rows left empty)
-    if (isPrompt(r)) {
+    if (isPromptRow(r)) {
       close(i)
       start = i
     }

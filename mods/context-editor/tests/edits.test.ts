@@ -23,11 +23,12 @@ import {
   producedRows,
   replacedOwners,
   resolveEditRefs,
+  responses,
   responseStart,
   ROW_WINDOW,
   SUMMARIZED,
 } from '../hooks/edits'
-import { result } from './row-fixtures'
+import { emptyRowBetweenCalls, result } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
 
@@ -852,6 +853,34 @@ test('ResponseStart — паралельні виклики «виклик, ре
   const late: SessionMessage[] = [{ role: 'user', text: 'task', toolUses: [], handle: 'p' }, use('a', 'Read', 'ua'), result('a', 'A', 'ra'), say('and so', 's')]
   expect(responseStart(late, 3, [reply(['a'], ['and so'])])).toBe(1)
   expect(responseStart(late, 3, [reply(['a']), reply([], ['and so'])])).toBe(3)
+})
+
+test('ResponseStart — текст після викликів (PL_AUD_CTX_P8): a text the API shows in the message of earlier calls joins their response, also when the next response follows it directly', async () => {
+  // call a, its result, the text of the same response, then the next response (thinking, text) with no row between
+  const rows: SessionMessage[] = [{ role: 'user', text: 'task', toolUses: [], handle: 'p' }, use('a', 'Read', 'ua'), result('a', 'A', 'ra'), say('and so', 's'), think('t'), say('next', 'n')]
+  const api = [{ role: 'user', content: 'task' }, reply(['a'], ['and so']), { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'A' }] }, reply([], ['next'])]
+  // the latest message of the run alone ("next") would start at "and so" and split the response of call a
+  expect(responseStart(rows, 5, api)).toBe(1)
+  expect(responseStart(rows, 3, api)).toBe(1)
+  expect(responses(rows, api)).toEqual({ start: [0, 1, 1, 1, 1, 1], known: [true, true, true, true, true, true], floor: [0, 1, 1, 1, 1, 1] })
+})
+
+test('ResponseStart — порожній рядок без handle (PL_AUD_CTX_P8): no prompt, so the API message joins the calls on both sides of it; the stretch goes on', async () => {
+  const { rows, api, callA, callB } = emptyRowBetweenCalls()
+  expect(responseStart(rows, callB, api)).toBe(callA)
+  expect(responseStart(rows, 3, api)).toBe(callA)
+  // without the API form: the start of the stretch, after the prompt
+  expect(responseStart(rows, callB, [])).toBe(1)
+  expect(responses(rows).known.slice(callB, callB + 2)).toEqual([false, false])
+  // the empty row no response pulled in is not known: the stretch, so FrozenPrefix never splits the calls' response at it
+  expect(responses(rows).known[3]).toBe(false)
+  expect(responseStart(rows, 3, [])).toBe(1)
+  // the API form cut so that the calls' message is missing: the same
+  const cut = api.slice(2)
+  expect(responseStart(rows, 3, cut)).toBe(1)
+  expect(responseStart(rows, callB, cut)).toBe(1)
+  // pulled in by the calls' response, it is known as that response is
+  expect(responses(rows, api).known[3]).toBe(true)
 })
 
 test('FrozenPrefix — неглибока правка: rows before the response of the first change come back as they came, thinking, own calls and result rows with their handle', async () => {

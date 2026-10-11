@@ -8,7 +8,7 @@
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
 import { describeEdit, distinctive, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
-import { CACHE_LOOKBACK, lookbackStart } from './cache'
+import { CACHE_LOOKBACK, cacheShape, lookbackStart } from './cache'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -300,6 +300,9 @@ export async function telemetry(
   update?: RegistryUpdate,
   // [SP_CTX_02_31] the journal's summary, read by the caller
   journal?: JournalSummary,
+  // [SP_CTX_02_38] the API form for the Cache line (ResponseStart); absent or
+  // failed: without it, only stretch starts count
+  api?: () => Promise<readonly unknown[]>,
 ): Promise<Telemetry> {
   let tokensNow: number | undefined
   const t: Telemetry = {
@@ -345,7 +348,8 @@ export async function telemetry(
     t.error = errorText(err)
   }
   if (rows.length) {
-    const start = lookbackStart(rows)
+    const form = api ? await api().catch((): readonly unknown[] => []) : []
+    const start = lookbackStart(cacheShape(rows, form))
     t.cache = { start, chars: charsOf(rows, start, rows.length - 1), rows: rows.length }
   }
   if (!reg) return t
@@ -500,6 +504,8 @@ export type BlockIO = {
   updateTags?: RegistryUpdate
   // [SP_CTX_02_31] the journal's summary for the telemetry; absent: no line
   journal?: () => Promise<JournalSummary>
+  // [SP_CTX_02_38] the API form for the Cache line of the telemetry
+  api?: () => Promise<readonly unknown[]>
   // [SP_CTX_02_18] listedKey = key: the report lists the block's row indexes
   setListed: (key: string) => void
 }
@@ -545,7 +551,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   // first: the calibration gives the ratio, so the block's size and the
   // telemetry below use one ratio (review round 39)
   const journal = io.journal ? await io.journal().catch((err): JournalSummary => ({ unreadable: errorText(err) })) : undefined
-  const t = await telemetry(rows, reg, io.usage, io.updateTags, journal)
+  const t = await telemetry(rows, reg, io.usage, io.updateTags, journal, io.api)
   const a = startOf(rows, block.after)
   const e = markIndex(rows, block.end)
   const hasRows = e !== 'lost' && block.end !== null && a <= e
