@@ -114,7 +114,7 @@ Processing logic (pseudocode):
         IF t is a command row (holds <command-name>):
             the mod's own /compact with MARKER or HANDOFF_MARKER → empty
             ELSE → the trimmed content of <command-args>, empty when absent   # аргументи slash-команди — слова людини (`/dev-flow research …`)
-        IF t starts with MARK, "context-editor:" or SUMMARY_OPENER → empty
+        IF t starts with MARK, PREFIX or SUMMARY_OPENER → empty           # PREFIX = `context-editor:`; кожен текст мода від власного імені будується з PREFIX (ModText) чи MARK — тест виробників (PL_AUD_CTX фаза 9, CF-18)
         IF t matches /^The .+ plugin sent a message:/ → empty           # промпт розширення: хост зберігає його в такій рамці (типи хоста; рядки транскрипту, рев'ю 39)
         IF t starts with <local-command-stdout>, <local-command-caveat>, <task-notification> or (without <command-name>) <command-message> → empty   # рядки хоста
         ELSE → t
@@ -229,6 +229,7 @@ Processing logic (pseudocode):
         RETURN rows                                                                   # рядки результатів — за правилом вище (SP_CTX_DEC_02)
 
     PromptRow(r) = r is a user row without toolResults AND (r has a handle OR r is not empty)   # рядок результату, який drop лишив порожнім, — не промпт; один предикат для KeepResponsesWhole, Responses, FrozenPrefix і CacheCost (SP_CTX_02_38)
+    # PromptRow, EmptyRow («порожній»: без тексту, викликів і результатів) і пошук пари за id мають один дім — L0-модуль `hooks/rows.ts` (PL_AUD_CTX фаза 9, CF-17); ResolveLast (SP_CTX_02_17) бере варіант PromptRowStrict — текст лише з пробілів без handle там не промпт
 
     FUNCTION Responses(rows, api) → (start, known, floor):   # відповіді рядків одним проходом (PL_AUD_CTX фаза 8: одне джерело для ResponseStart і CacheCost)
         message(r) = for an assistant row: the assistant message of api that holds a tool_use id of r, or else the non-empty text of r (whitespace removed); none otherwise
@@ -591,3 +592,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 6 (CF-14): необов'язковий вхід ApplyEdits `newId` — фабрика FreshId для тестів; без неї поведінка та сама (02_04) |
 | 2026-10-11 | PL_AUD_CTX фаза 8 (аудит коду, CF-16): 02_04 — PromptRow (один предикат промпту) і Responses (відповіді рядків одним проходом зі `start`, `known`, `floor`); ResponseStart — похідна від Responses, з тією самою запасною межею відрізка; його бере і CacheCost ([SP_CTX_02_38](./context_editor.stages.sp.md#SP_CTX_02_38)). Зміна поведінки: текст, який API показує в повідомленні раніших викликів, приєднує свою відповідь і тоді, коли наступна відповідь іде одразу за ним (раніше межу давало лише найпізніше повідомлення прогону, і відповідь викликів ділилась між префіксом і перезібраним рядком) |
 | 2026-10-11 | PL_AUD_CTX фаза 8, рев'ю: 02_04 Responses — порожній рядок `user` без `handle`, який не притягнула жодна відповідь, невідомий (ResponseStart — початок відрізка, і без API-подання, і коли повідомлення відповіді поза вікном); притягнутий — відомий, як відповідь, що його притягнула |
+| 2026-10-11 | PL_AUD_CTX фаза 9 (аудит коду, CF-17, CF-18): 02_02 — PersonText відкидає текст, що починається з PREFIX (`context-editor:`; той самий літерал, тепер константа з тестом виробників); 02_04 — PromptRow, EmptyRow і пошук пари мають один дім `hooks/rows.ts`, варіант PromptRowStrict для ResolveLast названо. Без зміни поведінки |

@@ -8,14 +8,13 @@ import {
   currentRows,
   fingerprint,
   formatReport,
-  MARK,
   prepare,
   recordBoundary,
   resolveEditRefs,
-  totalChars,
   type Boundary,
   type BoundaryMemory,
 } from '../hooks/edits'
+import { MARK, totalChars } from '../hooks/rows'
 import {
   awaitSeeded,
   buildSeed,

@@ -1,11 +1,9 @@
 import type { SessionMessage } from 'claude-code'
 import {
-  BIG_ROW,
   describeEdit,
   fingerprint,
   locate,
   locateSpan,
-  MARK,
   MAX_QUEUE_EDITS,
   MAX_TEXT,
   mergedCallRow,
@@ -13,7 +11,6 @@ import {
   oneLine,
   OWN_TOOLS,
   prepare,
-  rowChars,
   STALE_INDEXES,
   touchedBy,
   thinkingOnly,
@@ -46,10 +43,10 @@ import {
 } from './stages'
 import { badNoteFields, type Note } from './notes'
 import { bytes, isCount, jsonObject, storageRefusal, type Read } from './store'
+import { findToolResult, findToolUse, isBig, isPlainUserRow, isSearchTool, MARK, resultsOf, rowChars, squash } from './rows'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
-export const SEARCH_TOOLS: readonly string[] = ['Glob', 'Grep', 'WebSearch', 'ToolSearch']
 export const SEARCH_TTL = 3
 // [SP_CTX_01_12] [SP_CTX_DEC_13] Rule R4: a change of a file makes the earlier reads of it stale.
 export const WRITE_TOOLS: readonly string[] = ['Edit', 'Write', 'NotebookEdit']
@@ -620,12 +617,11 @@ export function wantsPromptRow(reg: TagRegistry, f: AppendFacts): boolean {
 // The row of a prompt just stored: the latest prompt row whose text matches,
 // whitespace aside (the host joins text blocks its own way). -1 when none.
 export function promptRow(rows: readonly SessionMessage[], text: string): number {
-  const norm = (s: string) => s.replace(/\s+/g, '')
-  const want = norm(text)
+  const want = squash(text)
   for (let i = rows.length - 1; i >= 0; i--) {
     const r = rows[i]!
-    if (r.role !== 'user' || (r.toolResults ?? []).length) continue
-    const have = norm(r.text)
+    if (!isPlainUserRow(r)) continue
+    const have = squash(r.text)
     if (have === want || (want && have.includes(want))) return i
   }
   return -1
@@ -666,8 +662,8 @@ export function applyRules(reg: TagRegistry, f: AppendFacts, prompt?: { anchor: 
   }
   if (f.door === 'tool-result' && f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS)) {
     for (const id of f.ids) {
-      if (f.size >= BIG_ROW) add.put({ kind: 'review', reason: 'big', target: { tool_use_id: id }, created_turn: reg.turn })
-      if (SEARCH_TOOLS.includes(f.tool)) add.put({ kind: 'review', reason: 'search', target: { tool_use_id: id }, ttl_turns: SEARCH_TTL, created_turn: reg.turn })
+      if (isBig(f.size)) add.put({ kind: 'review', reason: 'big', target: { tool_use_id: id }, created_turn: reg.turn })
+      if (isSearchTool(f.tool)) add.put({ kind: 'review', reason: 'search', target: { tool_use_id: id }, ttl_turns: SEARCH_TTL, created_turn: reg.turn })
     }
   }
   if (!add.changed() && firstPromptPinned === reg.firstPromptPinned) return reg
@@ -698,21 +694,21 @@ const READ_FIELDS = ['file_path', 'offset', 'limit', 'pages']
 // An earlier result already compressed (its text starts with MARK) is no
 // duplicate. The tool is the one of each result's own call. Pure.
 export function markDuplicates(reg: TagRegistry, rows: readonly SessionMessage[], results: readonly { id: string; text: string }[]): TagRegistry {
-  const big = results.filter(r => r.text.length >= BIG_ROW)
+  const big = results.filter(r => isBig(r.text.length))
   if (!big.length) return reg
   const add = tagAdder(reg)
   const calls = callsOf(rows)
   for (const r of big) {
     const call = calls.get(r.id)
     if (!call || call.tool.startsWith(OWN_TOOLS)) continue
-    const at = rows.findIndex(x => (x.toolResults ?? []).some(t => t.tool_use_id === r.id))
+    const at = findToolResult(rows, r.id)
     const stop = at < 0 ? rows.length : at
     const sameRead = (id: string) => {
       const earlier = calls.get(id)
       return call.tool === 'Read' && earlier?.tool === 'Read' && READ_FIELDS.every(k => JSON.stringify(earlier.input[k]) === JSON.stringify(call.input[k]))
     }
     for (let i = 0; i < stop; i++)
-      for (const t of rows[i]!.toolResults ?? []) {
+      for (const t of resultsOf(rows[i]!)) {
         if (t.tool_use_id === r.id || t.text.startsWith(MARK)) continue
         if (t.text !== r.text && !sameRead(t.tool_use_id)) continue
         if (!calls.has(t.tool_use_id)) continue
@@ -727,7 +723,7 @@ export function markDuplicates(reg: TagRegistry, rows: readonly SessionMessage[]
 // `stale`, without a term, replacing a review of any reason; other tags stay. Pure.
 export function markStale(reg: TagRegistry, rows: readonly SessionMessage[], path: string, writeId: string): TagRegistry {
   const add = tagAdder(reg)
-  const w = rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === writeId))
+  const w = findToolUse(rows, writeId)
   const stop = w < 0 ? rows.length : w
   for (let i = 0; i < stop; i++)
     for (const u of rows[i]!.toolUses) {
@@ -776,7 +772,7 @@ export function isCompactionCopy(f: AppendFacts, copied: ReadonlySet<string>): b
 
 // [SP_CTX_02_12] The result ids of the rows a compaction returned.
 export function resultIds(rows: readonly SessionMessage[]): string[] {
-  return rows.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id))
+  return rows.flatMap(r => resultsOf(r).map(t => t.tool_use_id))
 }
 
 // [SP_CTX_02_12] After the row is stored; the caller runs it on the
@@ -795,7 +791,7 @@ export async function autoTag(io: TagIO, f: AppendFacts, copy = false): Promise<
   }
   let next = applyRules(read.value, f, prompt)
   // [SP_CTX_01_11] R5 (a): the conversation is read only for a large result
-  if (f.door === 'tool-result' && f.results.some(r => r.text.length >= BIG_ROW)) next = markDuplicates(next, rows ?? (await io.rows()), f.results)
+  if (f.door === 'tool-result' && f.results.some(r => isBig(r.text.length))) next = markDuplicates(next, rows ?? (await io.rows()), f.results)
   if (next !== read.value) await io.writeTags(next)
 }
 
@@ -830,7 +826,7 @@ function replacedSize(rows: readonly SessionMessage[], edit: QueuedEdit): number
   if (!t) return 0
   if (edit.op === 'summarize') {
     const res = rows[t.rows[1]!]!
-    return (res.toolResults ?? []).find(r => r.tool_use_id === edit.tool_use_id)?.text.length ?? 0
+    return resultsOf(res).find(r => r.tool_use_id === edit.tool_use_id)?.text.length ?? 0
   }
   if (edit.op === 'collapse') return t.rows.reduce((n, i) => n + rowChars(rows[i]!), 0)
   return rows[t.rows[0]!]!.text.length

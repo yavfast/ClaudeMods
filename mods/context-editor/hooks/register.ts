@@ -19,7 +19,6 @@ import {
   fullRow,
   listMode,
   listRows,
-  totalChars,
   LIST_COUNT,
   MAX_QUEUE_EDITS,
   MAX_TEXT,
@@ -81,6 +80,7 @@ import {
   type UsageInfo,
 } from './stages'
 import { contextNote, MAX_NOTE, MAX_NOTES, MAX_REMIND, noteLabels, noteLines, noteReminders, remindable, afterReminders, remindsAfter, rowNotes, withReminderLines, type NoteArgs } from './notes'
+import { errorText, MARK, totalChars } from './rows'
 import { newTurns, turnCompleted, turnStarted } from './turns'
 import {
   carry,
@@ -159,14 +159,14 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
 - {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
 
-Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" your latest call, without ${LIST}. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
+Calls worth editing carry a line "${MARK} id cN" after their result: "ref":"cN" targets that call and "ref":"last" your latest call, without ${LIST}. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
 Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
 Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
-const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for your latest call (context_* calls do not count).' }
+const REF = { type: 'string', description: `Instead of tool_use_id: a call alias "cN" from a "${MARK} id cN" line, or "last" for your latest call (context_* calls do not count).` }
 
 const EDIT_SCHEMA = {
   type: 'object',
@@ -215,7 +215,7 @@ A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PL
 
 const TAG_TARGET = {
   tool_use_id: { type: 'string', description: 'Target: a tool call and its result.' },
-  ref: { type: 'string', description: 'Target: a tool call by its alias "cN" (from a "[context-editor] id cN" line) or "last", your latest call (context_* calls do not count).' },
+  ref: { type: 'string', description: `Target: a tool call by its alias "cN" (from a "${MARK} id cN" line) or "last", your latest call (context_* calls do not count).` },
   index: { type: 'integer', description: `Target: a row index from ${LIST}.` },
 }
 
@@ -946,7 +946,7 @@ export const register: Register = on => {
       tele = telemetryText(t)
       size = headerSize(t, totalChars(rows))
     } catch (err) {
-      tele = `Context: size unavailable (${err instanceof Error ? err.message : String(err)})`
+      tele = `Context: size unavailable (${errorText(err)})`
     }
     const text = listRows(rows, from, count, found, tagged.labels, named.aliases, tele, tagged.notes, size)
     // [SP_CTX_02_18] only a listing with rows the agent receives renews its indexes

@@ -22,6 +22,7 @@ import {
   type QueuedEdit,
   type RefResolver,
 } from './edits'
+import { MARK } from './rows'
 import { distinctive, survivors } from './stages'
 import { MAX_REGISTRY_BYTES, type TagDeny, type TagIO, type TagRegistry } from './tags'
 import { bytes, isCount, storageRefusal } from './store'
@@ -393,7 +394,7 @@ export function dueReminders(reg: TagRegistry): { registry: TagRegistry; lines: 
     return rest
   })
   // [SP_CTX_DEC_17] the line names the note's author: the agent itself
-  const lines = due.map(n => `[context-editor] reminder from your note ${n.id} (set ${reg.turn - n.createdTurn} turn(s) ago): ${n.text}`)
+  const lines = due.map(n => `${MARK} reminder from your note ${n.id} (set ${reg.turn - n.createdTurn} turn(s) ago): ${n.text}`)
   return { registry: { ...reg, notes }, lines }
 }
 
@@ -401,7 +402,7 @@ export function dueReminders(reg: TagRegistry): { registry: TagRegistry; lines: 
 // context_edit and context_handoff, whose calls DropOwnCalls removes at the
 // very apply or seed they trigger (review round 39); `remindAt` stays.
 export function remindsAfter(tool: string): boolean {
-  const name = tool.replace(/^mcp__context-editor__/, '')
+  const name = tool.startsWith(OWN_TOOLS) ? tool.slice(OWN_TOOLS.length) : tool
   return name !== 'context_edit' && name !== 'context_handoff'
 }
 

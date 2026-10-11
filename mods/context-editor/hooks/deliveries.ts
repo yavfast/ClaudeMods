@@ -10,7 +10,7 @@
 // (InsertDeliveries, [SP_CTX_02_36]). Pure logic behind a small port;
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
-import { rowChars } from './edits'
+import { isPlainUserRow, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import { isCount, jsonObject, trimOldest, type Read } from './store'
 
@@ -273,7 +273,7 @@ export type Inserted = {
   added: number
 }
 
-const holds = (row: SessionMessage, ids: ReadonlySet<string>) => (row.toolResults ?? []).some(t => ids.has(t.tool_use_id))
+const holds = (row: SessionMessage, ids: ReadonlySet<string>) => resultsOf(row).some(t => ids.has(t.tool_use_id))
 
 // [SP_CTX_02_36] "Already a row": a user row with the delivery's text stands
 // right after the row that holds one of its anchor ids, past other result-less
@@ -284,7 +284,7 @@ function alreadyRow(before: readonly SessionMessage[], anchor: ReadonlySet<strin
     if (!holds(r, anchor)) return false
     for (let j = i + 1; j < before.length; j++) {
       const n = before[j]!
-      if (n.role !== 'user' || (n.toolResults ?? []).length) return false
+      if (!isPlainUserRow(n)) return false
       if (n.text === text) return true
     }
     return false
@@ -342,7 +342,7 @@ export function insertDeliveries(
 // whole row goes (a collapse).
 export function personDelivered(rows: readonly SessionMessage[], i: number, items: readonly QueuedDelivery[], gone?: ReadonlySet<string>): boolean {
   const r = rows[i]
-  if (!r || !(r.toolResults ?? []).length) return false
-  const ids = new Set((r.toolResults ?? []).map(t => t.tool_use_id))
+  if (!r || !resultsOf(r).length) return false
+  const ids = new Set(resultsOf(r).map(t => t.tool_use_id))
   return items.some(x => x.kind === 'person' && x.anchor.some(id => ids.has(id)) && (!gone || x.anchor.every(id => gone.has(id))))
 }

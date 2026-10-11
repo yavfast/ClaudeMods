@@ -5,6 +5,7 @@
 // register.ts binds FlushIO to `$`.
 import { MARKER } from './compaction'
 import { DEFAULT_RESUME, resumeText, type Queue } from './queue'
+import { errorText, modText } from './rows'
 import type { Read, Update } from './store'
 import { optimizeText } from './stages'
 import type { TagRegistry } from './tags'
@@ -65,10 +66,6 @@ export async function enteredOrThrow(entered: Promise<{ drop?: unknown }>): Prom
 
 function hasWork(read: Read<Queue>): boolean {
   return read.state !== 'unreadable' && (read.value.edits.length > 0 || read.value.optimize) && !read.value.handoff
-}
-
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
 }
 
 // [SP_CTX_04_06] requested → prompted: one compare-and-set write, only while
@@ -140,7 +137,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
         await io.compact(MARKER)
       } catch (err) {
         // the optimization request stays: its advice goes with the person's prompt
-        io.status(`context-editor: compaction refused: ${errorText(err)}; queued edits wait for the next turn`)
+        io.status(modText(`compaction refused: ${errorText(err)}; queued edits wait for the next turn`))
         return { outcome: 'host-refused', resume: 'none' }
       }
       outcome = 'compacted'
@@ -178,7 +175,7 @@ async function resume(io: FlushIO, state: FlushState, q: Queue, turns0: number):
     await io.submit(`${text}\n\n${resumeText(q.reportPrompt || DEFAULT_RESUME)}`)
   } catch {
     // RESUME_FAILED: the report stays queued for the person's next prompt
-    io.status('context-editor: could not resume the session; send any prompt to continue')
+    io.status(modText('could not resume the session; send any prompt to continue'))
     return 'resume-failed'
   }
   state.lastSubmittedReportId = q.reportId
@@ -209,7 +206,7 @@ async function optimize(
   if (reg.state === 'unreadable' || !reg.value.lastClosed) {
     // OPTIMIZE_NO_BLOCK: the request ends; the batch resumes as without the mark
     await io.updateQueue(dropOptimize).catch(() => undefined)
-    io.status(`context-editor: optimization turn skipped: ${reg.state === 'unreadable' ? 'the tag registry is unreadable' : 'no closed block'}`)
+    io.status(modText(`optimization turn skipped: ${reg.state === 'unreadable' ? 'the tag registry is unreadable' : 'no closed block'}`))
     return { optimize: 'no-block', resume: await resume(io, state, q, turns0) }
   }
   let report: string | undefined
@@ -221,10 +218,10 @@ async function optimize(
     // OPTIMIZE_BUILD_FAILED
     if (compacted && q.reportResume) {
       await io.updateQueue(dropOptimize).catch(() => undefined)
-      io.status(`context-editor: optimization turn not started: ${errorText(err)}`)
+      io.status(modText(`optimization turn not started: ${errorText(err)}`))
       return { optimize: 'build-failed', resume: await resume(io, state, q, turns0) }
     }
-    io.status(`context-editor: optimization turn not started: ${errorText(err)}; the advice goes with your next prompt`)
+    io.status(modText(`optimization turn not started: ${errorText(err)}; the advice goes with your next prompt`))
     return { optimize: 'build-failed', resume: 'none' }
   }
   // the check again right before the swap: the person may have begun a turn during the command
@@ -238,7 +235,7 @@ async function optimize(
   } catch {
     // OPTIMIZE_FAILED: the swap undone in one write; the report stays
     await io.updateQueue(unswapOptimize).catch(() => undefined)
-    io.status('context-editor: could not start the optimization turn; the advice goes with your next prompt')
+    io.status(modText('could not start the optimization turn; the advice goes with your next prompt'))
     return { optimize: 'failed', resume: 'none' }
   }
   if (report && q.reportId !== undefined) {

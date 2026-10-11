@@ -1,6 +1,7 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, DESCRIBE_DROPS, describeEdit, MARK, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, DESCRIBE_DROPS, describeEdit, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { deliveryWords, personDelivered, type QueuedDelivery } from './deliveries'
+import { isPlainUserRow, MARK, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
 
 // [SP_CTX_01_12]
@@ -9,8 +10,8 @@ export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
 // (resume_prompt of context_edit / context_handoff): the mod submits it as a
 // `user` prompt, and the call that set it leaves with DropOwnCalls, so without
 // the frame it would read as the person's words (audit PL_AUD_CTX, CF-8).
-export const RESUME_FRAME = 'context-editor: the resume prompt you set before your edits applied: '
-export const HANDOFF_RESUME_FRAME = 'context-editor: the resume prompt you set before the handoff: '
+export const RESUME_FRAME = modText('the resume prompt you set before your edits applied: ')
+export const HANDOFF_RESUME_FRAME = modText('the resume prompt you set before the handoff: ')
 export const MAX_QUEUE_BYTES = 3 * 1024 * 1024
 export const MAX_DOCUMENT = 60_000
 // [SP_CTX_01_12] tools whose result is the person's message (an answer to the agent's question)
@@ -95,7 +96,7 @@ export function keepOtherSteps(q: Queue | undefined): Queue {
 // submits it: the agent's own text under `frame`, which names its author; the
 // default is the mod's own text and says so with the mod's prefix.
 export function resumeText(prompt: string, frame: string = RESUME_FRAME): string {
-  return prompt === DEFAULT_RESUME ? `context-editor: ${DEFAULT_RESUME}` : `${frame}${prompt}`
+  return prompt === DEFAULT_RESUME ? modText(DEFAULT_RESUME) : `${frame}${prompt}`
 }
 
 // [SP_CTX_01_04] A report added after any report not yet delivered; `id`
@@ -170,8 +171,8 @@ const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-no
 const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)(?:\s[^>]*)?>[\s\S]*?<\/\1>/
 // [SP_CTX_01_12] The mod's compaction marks (compaction.ts re-exports them):
 // queue.ts must not import compaction.ts, which imports it.
-export const MARKER = 'context-editor: apply queued edits'
-export const HANDOFF_MARKER = 'context-editor: seed the handed-off conversation'
+export const MARKER = modText('apply queued edits')
+export const HANDOFF_MARKER = modText('seed the handed-off conversation')
 // [SP_CTX_01_12] The start of a built-in compaction's summary (spike
 // context_editor_handoff_long, Entry 2).
 export const SUMMARY_OPENER = 'This session is being continued from a previous conversation'
@@ -193,7 +194,7 @@ export function personText(raw: string): string {
     if (name === '/compact' && (args === MARKER || args === HANDOFF_MARKER)) return ''
     return args
   }
-  if (t.startsWith(MARK) || t.startsWith('context-editor:') || t.startsWith(SUMMARY_OPENER)) return ''
+  if (t.startsWith(MARK) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
   if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''
   return t
 }
@@ -201,7 +202,7 @@ export function personText(raw: string): string {
 // [SP_CTX_02_02] PersonRow: a user row without results whose PersonText is not empty.
 export function personRow(rows: readonly SessionMessage[], i: number): boolean {
   const r = rows[i]
-  return !!r && r.role === 'user' && !(r.toolResults ?? []).length && personText(r.text) !== ''
+  return !!r && isPlainUserRow(r) && personText(r.text) !== ''
 }
 
 // [SP_CTX_02_02] PersonPair: the call with this id is a tool in PERSON_TOOLS.
@@ -222,7 +223,7 @@ function personHits(rows: readonly SessionMessage[], e: QueuedEdit, delivered: r
   if (e.op === 'collapse') {
     for (const i of touchedBy(rows, e)?.rows ?? []) {
       if (personRow(rows, i)) hits.push(`#${i} (prompt)`)
-      for (const t of rows[i]!.toolResults ?? []) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
+      for (const t of resultsOf(rows[i]!)) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
       if (personDelivered(rows, i, delivered)) hits.push(`#${i} (${DELIVERED})`)
     }
   } else if (e.op === 'summarize' || e.op === 'drop') {

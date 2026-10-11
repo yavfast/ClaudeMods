@@ -7,8 +7,9 @@
 // tag functions from tags.ts: the cycle holds functions only, no top-level
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
-import { describeEdit, distinctive, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import { describeEdit, distinctive, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart } from './cache'
+import { charsOf, errorText, findToolResult, findToolUse, modText, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -31,8 +32,9 @@ export const CALIB_MAX = 8.0
 export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
-export const INTRO_TEXT =
-  'context-editor: you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.'
+export const INTRO_TEXT = modText(
+  'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
+)
 
 // [SP_CTX_02_29] [C_CTX_DEC_04] D: the advice of a closed stage and of the
 // optimization turn; it names the reproducible pairs by the listing's `~`
@@ -160,7 +162,7 @@ export function relocateStageMarks<R extends StageFields>(
   for (const e of applied) for (const i of touchedBy(before, e)?.rows ?? []) changed.add(i)
   const ids = new Set(carried)
   before.forEach((r, i) => {
-    if ((r.toolResults ?? []).some(t => ids.has(t.tool_use_id))) changed.add(i)
+    if (resultsOf(r).some(t => ids.has(t.tool_use_id))) changed.add(i)
   })
   const move = (m: RowMark | null) => relocateMark(m, before, after, applied, produced, changed)
   let next = reg
@@ -249,16 +251,6 @@ export type Telemetry = {
   cache?: { start: number; chars: number; rows: number }
 }
 
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
-function charsOf(rows: readonly SessionMessage[], from: number, to: number): number {
-  let n = 0
-  for (let i = Math.max(0, from); i <= to && i < rows.length; i++) n += rowChars(rows[i]!)
-  return n
-}
-
 // [SP_CTX_02_34] Calibrate: chars of the current conversation per token of
 // its rows from the telemetry, when the conversation is large enough to
 // trust; the stored ratio otherwise. `save` is asked only when the ratio moved
@@ -269,7 +261,7 @@ export async function calibrate(
   reg: Pick<TagRegistry, 'charsPerToken'>,
   save?: (ratio: number) => Promise<void>,
 ): Promise<number | undefined> {
-  const c = rows.reduce((n, r) => n + rowChars(r), 0)
+  const c = totalChars(rows)
   if (t.measure !== 'messages' || (t.conversation ?? 0) < CALIB_TOKENS || c <= 0) return reg.charsPerToken
   const r = Math.min(CALIB_MAX, Math.max(CALIB_MIN, c / t.conversation!))
   const old = reg.charsPerToken
@@ -534,7 +526,7 @@ function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number
   for (let i = a; i <= e; i++)
     for (const u of rows[i]!.toolUses) {
       if (!REPRODUCIBLE_TOOLS.includes(u.tool)) continue
-      const res = rows.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === u.tool_use_id))
+      const res = findToolResult(rows, u.tool_use_id)
       if (res >= a && res <= e) n++
     }
   return n
@@ -563,7 +555,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     let count = 0
     let bytes = 0
     for (let i = a; i <= e; i++) {
-      const keys = [...(rows[i]!.toolResults ?? []).map(r => ownerKey({ tool_use_id: r.tool_use_id })), ownerKey({ row: i })]
+      const keys = [...resultsOf(rows[i]!).map(r => ownerKey({ tool_use_id: r.tool_use_id })), ownerKey({ row: i })]
       for (const k of keys)
         for (const m of media.get(k) ?? []) {
           count++
@@ -628,7 +620,7 @@ export const LIST_HINT =
 // sizes or candidates; the listing shows the block's bounds.
 export function optimizeText(block: ClosedBlock, compacted: boolean, notes = 0): string {
   return (
-    `context-editor: optimization turn for ${blockName(block)} (you ended your last answer with ${OPTIMIZE_MARK}).` +
+    modText(`optimization turn for ${blockName(block)} (you ended your last answer with ${OPTIMIZE_MARK}).`) +
     (compacted
       ? ' The batch queued in that turn, with the replacements from your disposable tags, was processed (see the report above); if it changed the conversation, indexes from earlier listings no longer hold.'
       : '') +
@@ -644,7 +636,7 @@ export function optimizeText(block: ClosedBlock, compacted: boolean, notes = 0):
 // [SP_CTX_02_29] The advice with the person's prompt when no optimization turn ran.
 export function personAdvice(block: ClosedBlock, notes = 0): string {
   return (
-    `context-editor: you asked to optimize ${blockName(block)} after your previous answer; the optimization turn did not run, so the advice comes with this prompt.` +
+    modText(`you asked to optimize ${blockName(block)} after your previous answer; the optimization turn did not run, so the advice comes with this prompt.`) +
     LIST_HINT +
     notesHint(notes) +
     '\n' +
@@ -745,7 +737,7 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   if (e.aborted || !hasOptimizeMark(e.answer)) return 'none'
   // MARK_IN_OPTIMIZATION: silently ignored; the mod never loops
   if (prompted) return 'in-optimization'
-  const ignored = (why: string) => io.status(`context-editor: optimization mark ignored: ${why}`)
+  const ignored = (why: string) => io.status(modText(`optimization mark ignored: ${why}`))
   if (!ready) return ignored('storage unavailable'), 'no-storage'
   const q = await io.readQueue()
   if (q.state === 'unreadable') return ignored('the queue is unreadable'), 'queue-unreadable'
@@ -778,7 +770,7 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
     why = errorText(err)
   }
   // MARK_NOT_QUEUED: the block stays closed
-  if (why) return io.status(`context-editor: optimization mark: the block is closed, but no optimization turn: ${why}`), 'not-queued'
+  if (why) return io.status(modText(`optimization mark: the block is closed, but no optimization turn: ${why}`)), 'not-queued'
   return 'requested'
 }
 
@@ -788,6 +780,6 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
 // written yet (the boundary then is the last row, the same one).
 export function carrierRow(rows: readonly SessionMessage[], callId: string | undefined): number {
   if (!callId) return rows.length
-  const at = rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === callId))
+  const at = findToolUse(rows, callId)
   return at < 0 ? rows.length : at
 }

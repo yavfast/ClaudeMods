@@ -41,7 +41,8 @@ Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a di
 
 Faking the whole host `$` is expensive, so the logic sits in pure modules behind small IO interfaces, and `register.ts` binds those interfaces to `$`:
 
-- `hooks/edits.ts`: edit, listing and media logic (pure, incl. the frozen prefix and the one response-start algorithm: `isPromptRow`, Responses, ResponseStart), and the compaction boundary: CurrentRows (`ViewIO`), the host process identity and which boundary to trust.
+- `hooks/rows.ts`: the rows kernel (pure, L0, imports no other hook module): row predicates (`isPromptRow`, the one prompt predicate; `isPromptRowStrict`, ResolveLast's variant; `isEmptyRow`, `isPlainUserRow`), `resultsOf`, the pair lookup `findToolUse`/`findToolResult`, sizes (`rowChars`, `totalChars`, `charsOf`), `squash`/`sameText`, `apiBlocks`, `errorText`, the worth-editing policy (`isBig`, `isSearchTool`, `worthEditing`), and the mod's text prefixes: `MARK`, `PREFIX` with `modText()` (every mod text PersonText must skip is built from them). A shared row predicate or literal goes here, not into a copy (rule STRUCT-01).
+- `hooks/edits.ts`: edit, listing and media logic (pure, incl. the frozen prefix and the one response-start algorithm: Responses, ResponseStart over `isPromptRow` of `rows.ts`), and the compaction boundary: CurrentRows (`ViewIO`), the host process identity and which boundary to trust.
 - `hooks/media.ts`: PromptMatch, which ties media in a person's prompt in the API form to its row (pure; used by CollectMedia in `edits.ts`).
 - `hooks/queue.ts` (`QueueIO`): the queue, `context_edit`, and delivering the report.
 - `hooks/compaction.ts` (`CompactionIO`): the markers, which branch a compaction takes, applying queued edits inside `session.compact`, and the boundary observer.

@@ -1,5 +1,6 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
-import { apiBlocks, isMediaBlock, matchPrompts } from './media'
+import { isMediaBlock, matchPrompts } from './media'
+import { apiBlocks, BIG_ROW, errorText, findToolResult, findToolUse, isBig, isEmptyRow, isPlainUserRow, isPromptRow, MARK, modText, PLAIN_RATIO, resultsOf, rowChars, squash, totalChars } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -48,9 +49,7 @@ export type Produced = { edit: string; index: number; fingerprint: string }
 // describe). Rebuilding keeps both.
 export type Made = { edit: string; resultId?: string; text?: string }
 
-// [SP_CTX_01_12]
-export const MARK = '[context-editor]'
-// [SP_CTX_02_04] [SP_CTX_DEC_17] (A') The words after MARK in a replacement:
+// [SP_CTX_02_04] [SP_CTX_DEC_17] (A') The words after MARK (rows.ts) in a replacement:
 // the agent read the original in this place and replaced it itself. A
 // replacement stands where the result was, right after the call, and the
 // agent's own context_edit call is gone, so without them it took its summary
@@ -63,7 +62,6 @@ export function collapsedWords(n: number): string {
   return `you read these ${n} rows, then collapsed them into your note`
 }
 export const OWN_TOOLS = 'mcp__context-editor__'
-export const BIG_ROW = 4000
 export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
 export const MAX_TEXT = 8000
@@ -90,21 +88,10 @@ export function ownerKey(owner: MediaOwner): string {
   return 'tool_use_id' in owner ? `u:${owner.tool_use_id}` : `r:${owner.row}`
 }
 
-export function rowChars(row: SessionMessage): number {
-  let n = row.text.length
-  for (const u of row.toolUses) n += JSON.stringify(u.input ?? {}).length
-  for (const r of row.toolResults ?? []) n += r.text.length
-  return n
-}
-
-export function totalChars(rows: readonly SessionMessage[]): number {
-  return rows.reduce((n, r) => n + rowChars(r), 0)
-}
-
 export function fingerprint(row: SessionMessage): string {
   const ids = [
     ...row.toolUses.map(u => 'u:' + u.tool_use_id),
-    ...(row.toolResults ?? []).map(r => 'r:' + r.tool_use_id),
+    ...resultsOf(row).map(r => 'r:' + r.tool_use_id),
   ].join(',')
   return `${row.role}|${ids}|${row.text.slice(0, 160)}`
 }
@@ -113,7 +100,7 @@ export function fingerprint(row: SessionMessage): string {
 // or a prompt of media alone) has the fingerprint "<role>||", which tells no
 // rows apart: Locate finds it only at its old index.
 export function distinctive(row: SessionMessage): boolean {
-  return row.toolUses.length > 0 || (row.toolResults ?? []).length > 0 || row.text.length > 0
+  return !isEmptyRow(row)
 }
 
 // [SP_CTX_02_03] [SP_CTX_02_11] An assistant row with no text and no calls: a
@@ -337,7 +324,7 @@ export async function afterPrepare(io: AfterPrepareIO): Promise<boolean> {
     }
     return true
   } catch (err) {
-    io.toast(`context-editor: the boundary of the resumed session could not be untrusted: ${err instanceof Error ? err.message : String(err)}`)
+    io.toast(modText(`the boundary of the resumed session could not be untrusted: ${errorText(err)}`))
     return false
   }
 }
@@ -374,7 +361,7 @@ export function oneLine(s: string, max: number): string {
 }
 
 function isEdited(row: SessionMessage): boolean {
-  return [row.text, ...(row.toolResults ?? []).map(r => r.text)].some(t => t.startsWith(MARK))
+  return [row.text, ...resultsOf(row).map(r => r.text)].some(t => t.startsWith(MARK))
 }
 
 // Media sizes per owner key, for the listing.
@@ -382,7 +369,7 @@ export type MediaSizes = ReadonlyMap<string, readonly { mediaType: string; bytes
 
 function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
   return [
-    ...(row.toolResults ?? []).flatMap(r => media.get(ownerKey({ tool_use_id: r.tool_use_id })) ?? []),
+    ...resultsOf(row).flatMap(r => media.get(ownerKey({ tool_use_id: r.tool_use_id })) ?? []),
     ...(media.get(ownerKey({ row: index })) ?? []),
   ]
 }
@@ -405,7 +392,7 @@ export const MAX_FULL_ROW = 20_000
 // [SP_CTX_02_34] Estimate(chars, ratio): tokens by the calibrated chars per
 // token, else chars/4 marked approx.
 export function estimate(chars: number, ratio?: number): string {
-  return ratio ? `~${Math.round(chars / ratio)} tokens` : `~${Math.round(chars / 4)} tokens (approx.)`
+  return ratio ? `~${Math.round(chars / ratio)} tokens` : `~${Math.round(chars / PLAIN_RATIO)} tokens (approx.)`
 }
 
 // [SP_CTX_02_01] One line per row, oldest first, a page of `count` rows;
@@ -450,12 +437,12 @@ export function listRows(
     if (row.text) parts.push(`text "${oneLine(row.text, 90)}"`)
     for (const u of row.toolUses)
       parts.push(`tool_use ${callLabel(u, aliases.get(u.tool_use_id), repro(u.tool))}`)
-    for (const r of row.toolResults ?? [])
+    for (const r of resultsOf(row))
       parts.push(`tool_result${repro(toolOf.get(r.tool_use_id))} id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
     const own = rowMedia(row, i, media)
     for (const m of own) parts.push(`media ${m.mediaType} ~${Math.ceil(m.bytes / 1024)}KB`)
     const chars = rowChars(row)
-    const flags = (isEdited(row) ? '*' : '') + (chars >= BIG_ROW ? '!' : '') + (own.length ? '@' : '')
+    const flags = (isEdited(row) ? '*' : '') + (isBig(chars) ? '!' : '') + (own.length ? '@' : '')
     const labels = tags.get(i) ?? []
     // [SP_CTX_02_01] a thinking-only row: no target for a note or a tag by index
     const body = parts.join(' | ') || (row.role === 'assistant' ? '(thinking)' : '(empty)')
@@ -511,7 +498,7 @@ export function fullRow(
   const parts: string[] = [`Row #${index} ${row.role} ${rowChars(row)}c`]
   if (row.text) parts.push(`text:\n${row.text}`)
   for (const u of row.toolUses) parts.push(`tool_use ${u.tool} id=${u.tool_use_id} input:\n${JSON.stringify(u.input ?? {})}`)
-  for (const r of row.toolResults ?? []) parts.push(`tool_result id=${r.tool_use_id}${r.isError ? ' ERROR' : ''}:\n${r.text}`)
+  for (const r of resultsOf(row)) parts.push(`tool_result id=${r.tool_use_id}${r.isError ? ' ERROR' : ''}:\n${r.text}`)
   const own = rowMedia(row, index, media)
   if (own.length) parts.push(`media: ${own.map(m => `${m.mediaType} ~${Math.ceil(m.bytes / 1024)}KB`).join(', ')}`)
   if (labels.length) parts.push(`tags: ${labels.join(' ')}`)
@@ -567,10 +554,10 @@ export function dropOwnCallsCounted(
   for (const r of input) {
     if (!frozen.has(r)) continue
     for (const u of r.toolUses) if (own.has(u.tool_use_id)) kept.add(u.tool_use_id)
-    for (const t of r.toolResults ?? []) if (own.has(t.tool_use_id)) kept.add(t.tool_use_id)
+    for (const t of resultsOf(r)) if (own.has(t.tool_use_id)) kept.add(t.tool_use_id)
   }
   for (const r of input) {
-    const results = r.toolResults ?? []
+    const results = resultsOf(r)
     if (!results.some(t => own.has(t.tool_use_id))) continue
     const risky = results.some(
       t => !own.has(t.tool_use_id) && (mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id })) || (knownResults !== undefined && !knownResults.has(t.tool_use_id))),
@@ -581,7 +568,7 @@ export function dropOwnCallsCounted(
   if (ids.size === 0) return { rows: [...input], removed: 0 }
   const dropped = input.map(r => {
     const hasUse = r.toolUses.some(u => ids.has(u.tool_use_id))
-    const hasResult = (r.toolResults ?? []).some(t => ids.has(t.tool_use_id))
+    const hasResult = resultsOf(r).some(t => ids.has(t.tool_use_id))
     if (!hasUse && !hasResult) return r
     return plain(r, {
       toolUses: r.toolUses.filter(u => !ids.has(u.tool_use_id)).map(stripUse),
@@ -589,16 +576,8 @@ export function dropOwnCallsCounted(
     })
   })
   // [SP_CTX_02_04] a rebuilt assistant row splits its response (pitfall 30)
-  const kept2 = rebuildSplitResponses(dropped, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmpty(r))
+  const kept2 = rebuildSplitResponses(dropped, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmptyRow(r))
   return { rows: mergeCallRows(kept2, frozen), removed: ids.size }
-}
-
-function findToolUse(rows: readonly SessionMessage[], id: string): number {
-  return rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === id))
-}
-
-function findToolResult(rows: readonly SessionMessage[], id: string): number {
-  return rows.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === id))
 }
 
 // Every tool_use in rows[from..to] must have its result there too, and back.
@@ -607,7 +586,7 @@ function pairingError(rows: readonly SessionMessage[], from: number, to: number)
   const results = new Set<string>()
   for (let i = from; i <= to; i++) {
     for (const u of rows[i]!.toolUses) uses.add(u.tool_use_id)
-    for (const r of rows[i]!.toolResults ?? []) results.add(r.tool_use_id)
+    for (const r of resultsOf(rows[i]!)) results.add(r.tool_use_id)
   }
   const orphans = [...[...uses].filter(id => !results.has(id)), ...[...results].filter(id => !uses.has(id))]
   return orphans.length
@@ -652,7 +631,7 @@ export const NO_REFS: RefResolver = ref => ({ error: unknownRef(ref) })
 export const STALE_INDEXES =
   'the conversation was compacted since your last context_list; call context_list with a page of rows (count > 0) for current indexes — count 0 and "full" do not renew them'
 
-export const REF_HINT = 'marked calls carry a "[context-editor] id cN" line after their result'
+export const REF_HINT = `marked calls carry a "${MARK} id cN" line after their result`
 
 export function unknownRef(ref: string): string {
   return `unknown ref ${ref} (${REF_HINT})`
@@ -738,7 +717,7 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit): { 
       const { from, to } = spanOf(rows, edit)
       if (from < 0 || to < from || to >= rows.length) return undefined
       const span = Array.from({ length: to - from + 1 }, (_, k) => from + k)
-      const ids = span.flatMap(i => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...(rows[i]!.toolResults ?? []).map(r => r.tool_use_id)])
+      const ids = span.flatMap(i => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...resultsOf(rows[i]!).map(r => r.tool_use_id)])
       return { rows: span, ids: [...new Set(ids)] }
     }
     case 'rewrite':
@@ -833,7 +812,7 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
     case 'describe': {
       const row = rows[edit.index]
       if (!row) return 'index out of range'
-      if (row.role !== 'user' || (row.toolResults ?? []).length > 0)
+      if (!isPlainUserRow(row))
         return 'describe applies to a user prompt row; use summarize for tool results'
       if (!hasMedia({ row: edit.index })) return 'no media found in that row'
       return { ...edit, anchors: [fingerprint(row)] }
@@ -894,10 +873,6 @@ export function freshId(id: string): string {
   return `${base}_ce${Date.now().toString(36)}${rand}`.replace(/[^A-Za-z0-9_-]/g, '')
 }
 
-function isEmpty(row: SessionMessage): boolean {
-  return !row.text && row.toolUses.length === 0 && !(row.toolResults ?? []).length
-}
-
 // The media owners an edit replaces, by key: the pair for summarize/drop,
 // every pair and row of a collapse span, the row for describe.
 function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: readonly number[]): string[] {
@@ -907,7 +882,7 @@ function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: re
       return [ownerKey({ tool_use_id: edit.tool_use_id })]
     case 'collapse':
       return touched.flatMap(i => [
-        ...(rows[i]!.toolResults ?? []).map(r => ownerKey({ tool_use_id: r.tool_use_id })),
+        ...resultsOf(rows[i]!).map(r => ownerKey({ tool_use_id: r.tool_use_id })),
         ownerKey({ row: i }),
       ])
     case 'describe':
@@ -1064,12 +1039,12 @@ export function applyEdits(
         pair = ownerKey({ tool_use_id: edit.tool_use_id })
         // [SP_CTX_02_04] Outside the API window the media of a row is unknown.
         const known = options.knownResults
-        if (known && (rows[resAt]!.toolResults ?? []).some(r => !known.has(r.tool_use_id))) {
+        if (known && resultsOf(rows[resAt]!).some(r => !known.has(r.tool_use_id))) {
           report.failed.push(`${name}: outside the API window; media unknown`)
           continue
         }
         // [SP_CTX_02_04] Rebuilding the result row drops every medium in it.
-        const others = (rows[resAt]!.toolResults ?? [])
+        const others = resultsOf(rows[resAt]!)
           .map(r => ownerKey({ tool_use_id: r.tool_use_id }))
           .filter(k => k !== pair && mediaOwners.has(k) && !(batchPairs.has(k) && archived(k)))
         if (others.length) {
@@ -1087,7 +1062,7 @@ export function applyEdits(
                   toolUses: use.toolUses.map(u => (u.tool_use_id === edit.tool_use_id ? editedUse(u, id) : stripUse(u))),
                 })
                 rows[resAt] = plain(res, {
-                  toolResults: (res.toolResults ?? []).map(r =>
+                  toolResults: resultsOf(res).map(r =>
                     r.tool_use_id === edit.tool_use_id
                       ? { tool_use_id: id, isError: r.isError, text: `${MARK} ${SUMMARIZED}${note}${mediaNote([pair!])}: ${edit.summary}` }
                       : stripResult(r),
@@ -1099,7 +1074,7 @@ export function applyEdits(
             : () => {
                 report.originals.push({ edit: name, rows: [rows[useAt]!, rows[resAt]!] })
                 const res = rows[resAt]!
-                rows[resAt] = plain(res, { toolResults: (res.toolResults ?? []).filter(r => r.tool_use_id !== edit.tool_use_id).map(stripResult) })
+                rows[resAt] = plain(res, { toolResults: resultsOf(res).filter(r => r.tool_use_id !== edit.tool_use_id).map(stripResult) })
                 const use = rows[useAt]!
                 rows[useAt] = plain(use, { toolUses: use.toolUses.filter(u => u.tool_use_id !== edit.tool_use_id).map(stripUse) })
               }
@@ -1119,13 +1094,13 @@ export function applyEdits(
         touched = Array.from({ length: to - from + 1 }, (_, k) => from + k)
         const known = options.knownResults
         if (known) {
-          const firstKnown = rows.findIndex(r => (r.toolResults ?? []).some(t => known.has(t.tool_use_id)))
-          const unknownResult = touched.some(i => (rows[i]!.toolResults ?? []).some(t => !known.has(t.tool_use_id)))
+          const firstKnown = rows.findIndex(r => resultsOf(r).some(t => known.has(t.tool_use_id)))
+          const unknownResult = touched.some(i => resultsOf(rows[i]!).some(t => !known.has(t.tool_use_id)))
           // [SP_CTX_02_04] a prompt before the first known result may lie
           // outside the API form only when that form is cut by its window
           const earlyPrompt =
             !!options.apiTruncated &&
-            touched.some(i => (firstKnown < 0 || i < firstKnown) && rows[i]!.role === 'user' && !(rows[i]!.toolResults ?? []).length)
+            touched.some(i => (firstKnown < 0 || i < firstKnown) && isPlainUserRow(rows[i]!))
           if (unknownResult || earlyPrompt) {
             report.failed.push(`${name}: outside the API window; media unknown`)
             continue
@@ -1133,7 +1108,7 @@ export function applyEdits(
         }
         // [SP_CTX_DEC_06] Prompt media cannot be matched to rows yet, so a
         // span with a person's prompt row may hold media that cannot be archived.
-        if ((options.unmatchedPromptMedia ?? 0) > 0 && touched.some(i => rows[i]!.role === 'user' && !(rows[i]!.toolResults ?? []).length)) {
+        if ((options.unmatchedPromptMedia ?? 0) > 0 && touched.some(i => isPlainUserRow(rows[i]!))) {
           report.failed.push(`${name}: span may hold prompt media that cannot be archived; collapse a span without prompt rows`)
           continue
         }
@@ -1233,31 +1208,20 @@ export function applyEdits(
   // or stands in the frozen prefix ([SP_CTX_DEC_22]).
   const known = options.knownResults
   const relinked = rows.map(r => {
-    const results = r.toolResults ?? []
+    const results = resultsOf(r)
     if (frozen.has(r) || r.handle === undefined || results.length === 0) return r
     if (results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id })))) return r
     if (known && !results.every(t => known.has(t.tool_use_id))) return r
     return plain(r, {})
   })
   const out = mergeCallRows(
-    rebuildSplitResponses(relinked, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmpty(r)),
+    rebuildSplitResponses(relinked, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmptyRow(r)),
     frozen,
   )
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
   return { rows: out, report, made, renamed, prefix }
 }
-
-// [SP_CTX_02_04] PromptRow: a user row without results that is not a result
-// row a drop left empty (it has a handle or content). No response crosses
-// one: it ends the stretch of KeepResponsesWhole and bounds Responses. The
-// one prompt predicate of ResponseStart, FrozenPrefix and CacheCost
-// ([SP_CTX_02_38]).
-export function isPromptRow(r: SessionMessage): boolean {
-  return r.role === 'user' && !(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))
-}
-
-const squashText = (s: string): string => s.replace(/\s+/g, '')
 
 // [SP_CTX_02_04] Responses(rows, api): the model responses of the rows, in
 // one pass. `start[i]` is the first row of the response that holds rows[i]:
@@ -1287,7 +1251,7 @@ export function responses(rows: readonly SessionMessage[], api: readonly unknown
     for (const b of apiBlocks(msg)) {
       if (b.type === 'tool_use' && typeof b.id === 'string') byId.set(b.id, n)
       if (b.type === 'text' && typeof b.text === 'string') {
-        const t = squashText(b.text)
+        const t = squash(b.text)
         if (t) byText.set(t, n)
       }
     }
@@ -1298,7 +1262,7 @@ export function responses(rows: readonly SessionMessage[], api: readonly unknown
     if (r.role !== 'assistant') return undefined
     const m = r.toolUses.map(u => byId.get(u.tool_use_id)).find(x => x !== undefined)
     if (m !== undefined) return m
-    const t = squashText(r.text)
+    const t = squash(r.text)
     return t ? byText.get(t) : undefined
   })
   const runKnown = new Array<boolean>(rows.length).fill(false)
@@ -1336,11 +1300,11 @@ export function responses(rows: readonly SessionMessage[], api: readonly unknown
       known[i] = true
       prompt = i
     } else {
-      const calls = (r.toolResults ?? []).map(t => callAt.get(t.tool_use_id)).filter((k): k is number => k !== undefined && k > prompt)
+      const calls = resultsOf(r).map(t => callAt.get(t.tool_use_id)).filter((k): k is number => k !== undefined && k > prompt)
       const k = calls.length ? Math.min(...calls) : undefined
       start[i] = k !== undefined ? start[k]! : i
       known[i] = k !== undefined ? known[k]! : false
-      if (!(r.toolResults ?? []).length) loose.push(i)
+      if (!resultsOf(r).length) loose.push(i)
     }
   }
   // a response that took a later row in pulls the rows between into it
@@ -1374,7 +1338,7 @@ export function producedRows(final: readonly SessionMessage[], made: readonly Ma
     // a made text row may have joined a rebuilt row with calls (MergeCallRows)
     const k =
       m.resultId !== undefined
-        ? final.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === m.resultId))
+        ? findToolResult(final, m.resultId)
         : final.findIndex((r, i) => !taken.has(i) && (r.text === m.text || r.text.split(JOIN).includes(m.text!)))
     if (k < 0) continue
     if (m.resultId === undefined) taken.add(k)
@@ -1492,7 +1456,7 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation
   if (r.deliveries && (kind === 'seed' || r.applied.length)) parts.push(deliveriesText(r.deliveries))
   const text = parts.filter(Boolean).join(' ')
-  return !text || parts[0] ? text : `context-editor: ${text}`
+  return !text || parts[0] ? text : modText(text)
 }
 
 // [SP_CTX_01_05] The report's sentence on the host's deliveries; "" when
@@ -1516,12 +1480,12 @@ export function nowIndexes(r: Pick<ApplyReport, 'applied' | 'produced'>): string
 function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: number): string {
   const notApplied = r.failed.length ? `Not applied: ${r.failed.join('; ')}.` : ''
   if (!r.applied.length) {
-    if (kind === 'compaction') return ['context-editor: no edit was applied; the conversation was not changed.', notApplied].filter(Boolean).join(' ')
-    return notApplied ? `context-editor: no queued edit was applied. ${notApplied}` : ''
+    if (kind === 'compaction') return [modText('no edit was applied; the conversation was not changed.'), notApplied].filter(Boolean).join(' ')
+    return notApplied ? modText(`no queued edit was applied. ${notApplied}`) : ''
   }
   const saved = r.charsBefore - r.charsAfter
   return [
-    `context-editor: applied ${r.applied.length} edit(s): ${nowIndexes(r).join('; ')}.`,
+    modText(`applied ${r.applied.length} edit(s): ${nowIndexes(r).join('; ')}.`),
     notApplied,
     // [SP_CTX_02_34] "freed" by the registry's calibrated ratio; no telemetry here
     // the measured change comes with the telemetry after the next response ([SP_CTX_02_28])

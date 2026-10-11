@@ -4,6 +4,7 @@
 // session id and its folder are published together once it ends, so a reader
 // never sees the folder of one session under the id of another, nor none
 // while a new one is made.
+import { modText } from './rows'
 
 // [SP_CTX_01_07] The one readiness form every port takes: the folder, or why
 // there is none.
@@ -126,7 +127,7 @@ async function prepareOnce(mem: StorageMemory, io: PrepareIO, id: string, hurrie
     state = madeStorage(plan, ran)
     if ('dir' in state) await io.after(prev, id, state.dir, hurried).catch(() => undefined)
   }
-  if ('reason' in state) io.status('context-editor: storage unavailable')
+  if ('reason' in state) io.status(modText('storage unavailable'))
   if ((await io.sessionId()) === id) {
     mem.sessionId = id
     mem.state = state
@@ -220,7 +221,7 @@ export function lockOrder(key: ChainKey, within: Held): string | undefined {
   let top: ChainKey | undefined
   for (const k of within.keys) if (top === undefined || CHAIN_RANK[k] >= CHAIN_RANK[top]) top = k
   if (top === undefined || CHAIN_RANK[key] > CHAIN_RANK[top]) return undefined
-  return `context-editor: chain order: "${key}" (rank ${CHAIN_RANK[key]}) entered inside "${top}" (rank ${CHAIN_RANK[top]}); the order is queue → tags → aliases → deliveries | journal`
+  return modText(`chain order: "${key}" (rank ${CHAIN_RANK[key]}) entered inside "${top}" (rank ${CHAIN_RANK[top]}); the order is queue → tags → aliases → deliveries | journal`)
 }
 
 // Runs `work` once every earlier work on the chain `key` settled; it gets

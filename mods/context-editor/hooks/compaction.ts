@@ -13,7 +13,6 @@ import {
   producedRows,
   replacedOwners,
   STATE_SLOT,
-  totalChars,
   touchesPin,
   touchesState,
   type ApplyReport,
@@ -24,6 +23,7 @@ import {
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { applyEntry, type JournalEntry } from './journal'
 import { appendReport, HANDOFF_MARKER, keepOtherSteps, MARKER, type Queue } from './queue'
+import { modText, resultsOf, totalChars } from './rows'
 import type { Read } from './store'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
@@ -78,9 +78,9 @@ export function compactionFailure(e: CompactionEvent): { pass: true } | { skip: 
     case 'pass':
       return { pass: true }
     case 'seed':
-      return { skip: 'context-editor: seeding failed', recordFailure: false }
+      return { skip: modText('seeding failed'), recordFailure: false }
     case 'apply':
-      return { skip: 'context-editor: applying the edits failed', recordFailure: true }
+      return { skip: modText('applying the edits failed'), recordFailure: true }
   }
 }
 
@@ -130,17 +130,17 @@ export type CompactionIO = {
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
 
 // [SP_CTX_02_07] SKIP_ABANDONED: the host went on without the handler.
-const ABANDONED: CompactionOutcome = { skip: 'context-editor: compaction abandoned; the batch stays queued' }
+const ABANDONED: CompactionOutcome = { skip: modText('compaction abandoned; the batch stays queued') }
 
 // [SP_CTX_02_07] Applies the queued batch to the compaction's rows. The
 // caller runs it on the queue's serial chain.
 export async function handleCompaction(io: CompactionIO, messages: readonly SessionMessage[]): Promise<CompactionOutcome> {
   const read = await io.readQueue()
-  if (read.state === 'unreadable') return { skip: 'context-editor: queue unreadable' }
+  if (read.state === 'unreadable') return { skip: modText('queue unreadable') }
   const q = read.value
-  if (!q.edits.length) return { skip: 'context-editor: no queued edits' }
+  if (!q.edits.length) return { skip: modText('no queued edits') }
 
-  if (q.handoff) return { skip: 'context-editor: handoff pending' }
+  if (q.handoff) return { skip: modText('handoff pending') }
 
   const tokensBefore = await (io.requestTokens?.() ?? Promise.resolve(undefined)).catch(() => undefined)
   const tagsRead = await io.readTags()
@@ -180,7 +180,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
     await io.writeQueue(reported(q, text, id))
     io.reported?.(id)
     io.toast(text.slice(0, 200))
-    return { skip: 'context-editor: originals could not be archived' }
+    return { skip: modText('originals could not be archived') }
   }
   const archived = archive
   // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
@@ -191,7 +191,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // removed by DropOwnCalls below: the host would not carry its attachments
   const own = new Set(messages.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
   // (a frozen row stays, own calls and all: it carries its attachments itself)
-  const goes = (r: SessionMessage) => !frozen.has(r) && (r.toolResults ?? []).length > 0 && (r.toolResults ?? []).every(t => own.has(t.tool_use_id))
+  const goes = (r: SessionMessage) => !frozen.has(r) && resultsOf(r).length > 0 && resultsOf(r).every(t => own.has(t.tool_use_id))
   const put = insertDeliveries(messages, applied.rows, delivered.items, applied.renamed, false, goes)
   applied.report.deliveries = { ...put.counts, ...(delivered.unreadable !== undefined ? { unreadable: delivered.unreadable } : {}) }
   const { rows, removed } = dropOwnCallsCounted(put.rows, mediaOwners, knownResults, frozen)
@@ -269,7 +269,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // After the commit point nothing throws and nothing is awaited: the
   // handler answers right away.
   io.toast(text.slice(0, 200))
-  if (applied.report.applied.length === 0) return { skip: 'context-editor: no edit could be applied' }
+  if (applied.report.applied.length === 0) return { skip: modText('no edit could be applied') }
   // [SP_CTX_02_18] RecordBoundary in the background: with `host` only when hostId is already read
   if (boundary) {
     try {
@@ -418,5 +418,5 @@ export function failureRecord(read: Read<Queue>, lastReported: number | undefine
 // of the failure waits for the next prompt.
 export function failedQueue(q: Queue | undefined, reason: string, now: number): Queue {
   // [SP_CTX_01_04] the fields of other steps stay as read
-  return appendReport(keepOtherSteps(q), `context-editor: applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`, now)
+  return appendReport(keepOtherSteps(q), modText(`applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`), now)
 }

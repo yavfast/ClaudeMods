@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
-import { BIG_ROW, callLabel, MARK, OWN_TOOLS, touchedBy, unknownRef, type QueuedEdit, type RefResolver, type Resolved } from './edits'
+import { callLabel, OWN_TOOLS, touchedBy, unknownRef, type QueuedEdit, type RefResolver, type Resolved } from './edits'
+import { findToolResult, findToolUse, isPromptRowStrict, MARK, resultsOf, worthEditing } from './rows'
 import { jsonObject, type Read } from './store'
-import { SEARCH_TOOLS } from './tags'
 
 // [SP_CTX_01_12]
 export const ALIAS_PREFIX = 'c'
@@ -77,13 +77,8 @@ export function lastLine(label: string): string {
 // item 52); without it every row counts. Parallel calls are rows in the order
 // they were written (item 40): the one written last wins. A call left without
 // a result by an earlier turn is refused by its own text. Pure.
-// A row that starts a turn: a user row without results, not empty.
-function isPromptRow(row: SessionMessage): boolean {
-  return row.role === 'user' && !(row.toolResults ?? []).length && (row.text.trim() !== '' || row.handle !== undefined)
-}
-
 export function resolveLast(rows: readonly SessionMessage[], callId?: string, aliases: ReadonlyMap<string, string> = new Map()): Resolved {
-  const found = callId ? rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === callId)) : -1
+  const found = callId ? findToolUse(rows, callId) : -1
   const carrier = found < 0 ? rows.length : found
   for (let i = Math.min(carrier, rows.length - 1); i >= 0; i--) {
     const uses = rows[i]!.toolUses
@@ -93,11 +88,11 @@ export function resolveLast(rows: readonly SessionMessage[], callId?: string, al
       if (use.tool.startsWith(OWN_TOOLS)) continue
       const label = callLabel(use, aliases.get(use.tool_use_id))
       const later = rows.slice(i + 1, Math.max(carrier, i + 1))
-      if (rows.slice(i + 1).some(r => (r.toolResults ?? []).some(t => t.tool_use_id === use.tool_use_id))) return { id: use.tool_use_id, line: lastLine(label) }
+      if (findToolResult(rows.slice(i + 1), use.tool_use_id) >= 0) return { id: use.tool_use_id, line: lastLine(label) }
       // a prompt row between the call and this one: the call's turn ended
       // without a result (a process killed mid-tool, then --resume; the host
       // repairs the pair only in the API view, plugin-hooks item 40)
-      return { error: later.some(isPromptRow) ? lastOrphan(label) : lastPending(label) }
+      return { error: later.some(isPromptRowStrict) ? lastOrphan(label) : lastPending(label) }
     }
   }
   return { error: LAST_NONE }
@@ -134,7 +129,7 @@ export function pruneAliases(
   const edited = new Set<string>()
   for (const edit of applied) for (const id of touchedBy(before, edit)?.ids ?? []) edited.add(id)
   const uses = new Set(after.flatMap(r => r.toolUses.map(u => u.tool_use_id)))
-  const pairs = new Set(after.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id)).filter(id => uses.has(id)))
+  const pairs = new Set(after.flatMap(r => resultsOf(r).map(t => t.tool_use_id)).filter(id => uses.has(id)))
   const map: Record<string, string> = {}
   let removed = 0
   for (const [alias, id] of Object.entries(reg.map)) {
@@ -166,7 +161,7 @@ export function callFacts(e: { agentId?: unknown; tool: unknown; tool_use_id?: u
 // [SP_CTX_02_16] Only calls worth editing of the main loop get an alias.
 export function wantsMark(f: CallFacts): boolean {
   if (f.agentId || f.denied || f.tool.startsWith(OWN_TOOLS) || !f.tool_use_id) return false
-  return f.size >= BIG_ROW || SEARCH_TOOLS.includes(f.tool)
+  return worthEditing(f.tool, f.size)
 }
 
 export function aliasLine(alias: string): string {

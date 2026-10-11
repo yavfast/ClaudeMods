@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { apiBlocks, isPlainUserRow, resultsOf, sameText, squash, type Block } from './rows'
 
 // [SP_CTX_02_10] PromptMatch: which conversation row a person's prompt media
 // in the Messages API form belongs to ([SP_CTX_DEC_06], B with A as the
@@ -20,22 +21,12 @@ export const PROMPT_DECORATIONS: readonly string[] = [REMINDER_PREFIX, '<local-c
 // [SP_CTX_02_10] Rows of a slash command and of its output: never a media owner.
 const COMMAND_ROWS: readonly string[] = ['<command-name>', '<local-command-stdout>']
 
-type Block = Record<string, unknown>
 type Msg = { role: unknown; blocks: Block[] }
-
-// The blocks of one API message; a string content is one text block.
-export function apiBlocks(msg: unknown): Block[] {
-  const c = (msg as { content?: unknown } | null)?.content
-  if (Array.isArray(c)) return c as Block[]
-  if (typeof c === 'string') return [{ type: 'text', text: c }]
-  return []
-}
 
 export function isMediaBlock(b: Block): boolean {
   return b.type === 'image' || b.type === 'document'
 }
 
-const squash = (s: string): string => s.replace(/\s+/g, '')
 const textOf = (b: Block): string => (b.type === 'text' && typeof b.text === 'string' ? b.text : '')
 const decoration = (t: string): boolean => {
   const s = t.trimStart()
@@ -54,7 +45,7 @@ type Unit = { members: number[]; lead: number[]; answered: boolean }
 function rowUnits(rows: readonly SessionMessage[]): Unit[] {
   const out: Unit[] = []
   rows.forEach((r, i) => {
-    const starts = r.role === 'user' && !(r.toolResults ?? []).length && !decoration(r.text)
+    const starts = isPlainUserRow(r) && !decoration(r.text)
     const cur = out[out.length - 1]
     if (starts && (!cur || cur.answered)) return void out.push({ members: [i], lead: [i], answered: false })
     if (!cur) return
@@ -94,10 +85,10 @@ function agrees(rows: readonly SessionMessage[], ru: Unit, msgs: readonly Msg[],
   const userText = squash(rUser.filter(r => !decoration(r.text)).map(r => r.text).join(''))
   const apiUserText = squash(mUser.flatMap(m => m.blocks.map(textOf).filter(t => !decoration(t))).join(''))
   if (userText !== apiUserText) return false
-  const results = rUser.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id))
+  const results = rUser.flatMap(r => resultsOf(r).map(t => t.tool_use_id))
   const apiResults = mUser.flatMap(m => m.blocks.filter(b => b.type === 'tool_result').map(b => String(b.tool_use_id)))
   if (sorted(results) !== sorted(apiResults)) return false
-  if (squash(rAsst.map(r => r.text).join('')) !== squash(mAsst.flatMap(m => m.blocks.map(textOf)).join(''))) return false
+  if (!sameText(rAsst.map(r => r.text).join(''), mAsst.flatMap(m => m.blocks.map(textOf)).join(''))) return false
   const calls = rAsst.flatMap(r => r.toolUses.map(u => u.tool_use_id))
   const apiCalls = mAsst.flatMap(m => m.blocks.filter(b => b.type === 'tool_use').map(b => String(b.id)))
   return sorted(calls) === sorted(apiCalls)
@@ -131,7 +122,7 @@ export function matchPrompts(api: readonly unknown[], rows: readonly SessionMess
     if (!head.blocks.some(isMediaBlock) || head.blocks.some(b => b.type === 'tool_result')) continue
     const owners = r.lead.filter(i => {
       const row = rows[i]!
-      return row.role === 'user' && !(row.toolResults ?? []).length && !commandRow(row.text) && !decoration(row.text)
+      return isPlainUserRow(row) && !commandRow(row.text) && !decoration(row.text)
     })
     if (owners.length === 1) out.set(a.members[0]!, owners[0]!)
   }

@@ -23,18 +23,18 @@
 
 | Шар | Модулі | Імпортують |
 |-----|--------|-----------|
-| L0 | `media`, `turns` | — |
-| L1 | `edits` | media |
-| L2 | `cache` | edits, media |
-| L3 | `queue`, `deliveries` | edits; queue ⇄ deliveries лише типами |
-| L4 | `journal` | edits, queue |
-| L5 | `tags` ⇄ `stages` ⇄ `notes` (цикл значень) | edits, cache, queue; t: deliveries, journal |
-| L6 | `aliases` | edits, tags (лише SEARCH_TOOLS); t: queue |
-| L7 | `hints`, `compaction` | hints: aliases, cache, edits, stages, tags; compaction: aliases, deliveries, edits, journal, notes, queue, stages, tags |
-| L8 | `flush`, `handoff` (оркестратори) | compaction, queue, stages, turns, …; handoff також aliases, deliveries, edits, notes, tags |
-| L9 | `register` | усі 15 |
+| L0 | `rows` (ядро рядків: предикати, пошук пари, розміри, префікси тексту мода), `turns` | — |
+| L1 | `media`, `store` | rows |
+| L2 | `edits`, `deliveries` | edits: media, rows; deliveries: media, rows, store |
+| L3 | `cache`, `queue` | cache: edits, rows; queue: deliveries, edits, rows, store |
+| L4 | `journal` | edits, queue, store |
+| L5 | `tags` ⇄ `stages` ⇄ `notes` (цикл значень) | edits, rows, store; stages також cache; tags також queue; t: deliveries, journal, queue |
+| L6 | `aliases` | edits, rows, store (SEARCH_TOOLS — у `rows`, Ф9) |
+| L7 | `hints`, `compaction` | hints: aliases, cache, edits, rows, stages, tags; t: queue, store; compaction: aliases, deliveries, edits, journal, notes, queue, rows, stages, tags; t: store |
+| L8 | `flush`, `handoff` (оркестратори) | flush: compaction, queue, rows, stages, turns; t: store, tags; handoff: aliases, compaction, deliveries, edits, media, notes, queue, rows, stages, store, tags, turns |
+| L9 | `register` | 15 з 17: усі, крім cache і media |
 
-Хаби за fan-in: `edits` (12), `queue` (10, переважно тип `Read`), `tags` (8). Відомі відхилення від шарів — цикл L5 через агрегат реєстру в `tags.ts`, `queue.ts` як «спільне ядро» (тип `Read<T>`, маркери, детекція людини), реекспорти (`stages` → `estimate`, `compaction` → `MARKER`).
+Хаби за fan-in (значення й типи): `rows` (15), `store` (12), `edits` (11), `queue` (8), `tags` і `stages` (по 7). Відомі відхилення від шарів — цикл L5 через агрегат реєстру в `tags.ts`, `queue.ts` як «спільне ядро» (тип `Read<T>`, маркери, детекція людини), реекспорти (`stages` → `distinctive`, `estimate`; `compaction` → `MARKER`, `HANDOFF_MARKER`; `handoff` → `ROW_WINDOW`, `SUMMARY_OPENER`).
 
 ## Де живе стан
 
@@ -49,7 +49,7 @@
 | Тека сховища на операцію (`dir` з `ensureStorage`, одна підготовка в польоті) | зроблено (Ф1): `hooks/store.ts` — `StorageState`, PrepareStorage/EnsureStorage, SESSION_ID | жодного читання глобальної теки після `await` | CF-1 |
 | `hooks/store.ts` (доповнити): `Read<T>`, `jsonFile`, `Store<T>.update`, типізовані ранжовані ланцюги `serial` | зроблено (Ф7): `Read<T>`, `jsonFile` → `Store<T>` (read/write/quarantine/update на ланцюжку файлу), контракти портів Update/Change (`updateOf`/`changeOf`), `carry`, `jsonObject`/`bytes`/`isCount`/`trimOldest`, `serialChains` з рангами й перевіркою вкладення; `register.ts` прив'язує `FileIO` до `$.fs` один раз (`files`, `stores`) | один контракт RMW замість ~17 копій; `serial` з тестами | CF-15 |
 | Одне джерело `responses()` / ResponseStart | зроблено (Ф8): `edits.ts` — `isPromptRow` (один предикат промпту), `responses(rows, api)` → `{start, known, floor}`, `responseStart` похідний від нього; `cache.ts` — `cacheShape` (відповіді й позиції раз на пропозицію), `cacheCost` бере початок з `responseStart` | FrozenPrefix і ціна кешу бачать ту саму відповідь | CF-16 |
-| `hooks/rows.ts`: предикати рядків, пошук пари, `charsOf`, `sameText`, `worthEditing`; `PREFIX`/`modText()` | заплановано (Ф9) | одне визначення на поняття | CF-17, CF-18 |
+| `hooks/rows.ts`: предикати рядків, пошук пари, `charsOf`, `sameText`, `worthEditing`; `PREFIX`/`modText()` | зроблено (Ф9): L0-модуль `hooks/rows.ts` — `isPromptRow` (PromptRow), `isPromptRowStrict` (ResolveLast), `isEmptyRow`, `isPlainUserRow`, `resultsOf`, `findToolUse`/`findToolResult`, `rowChars`/`totalChars`/`charsOf`, `squash`/`sameText`, `apiBlocks`, `errorText`, `isBig`/`isSearchTool`/`worthEditing`; константи MARK, PREFIX (`modText()`), BIG_ROW, SEARCH_TOOLS, PLAIN_RATIO; тест виробників тексту мода проти PersonText | одне визначення на поняття | CF-17, CF-18 |
 | `contextList` / `afterTurn` / `observeCompaction` у портах; `hooks/tools.ts` | заплановано (Ф10) | `register.ts` — лише зв'язування | CF-19, CF-20 |
 | Знімок CurrentRows на подію, кеш реєстру з поколінням, індекс цілей | заплановано (Ф11) | без повних перечитувань на кожному хуку | CF-21…CF-23 |
 | `hooks/registry.ts` + спільне ядро apply/rebind | backlog | розрив циклу L5; один конвеєр застосування для compaction і seed | CF-28 |

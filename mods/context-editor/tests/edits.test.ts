@@ -12,7 +12,6 @@ import {
   LIST_COUNT,
   listMode,
   listRows,
-  MARK,
   MAX_FULL_ROW,
   MAX_LIST_COUNT,
   MAX_TEXT,
@@ -28,6 +27,7 @@ import {
   ROW_WINDOW,
   SUMMARIZED,
 } from '../hooks/edits'
+import { MARK } from '../hooks/rows'
 import { emptyRowBetweenCalls, result } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)

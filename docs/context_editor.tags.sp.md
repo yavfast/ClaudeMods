@@ -249,10 +249,10 @@ Purpose: загальний хук завершених викликів інс�
 Processing logic (pseudocode):
     ON tool call finished (main loop, not denied, tool not OWN_TOOLS, tool_use_id present):
         alias = none
-        IF (len(result text) ≥ BIG_ROW OR tool IN SEARCH_TOOLS) AND storage ready AND AliasRegistry readable:
+        IF WorthEditing(tool, len(result text)) AND storage ready AND AliasRegistry readable:   # WorthEditing = size ≥ BIG_ROW OR tool IN SEARCH_TOOLS — та сама політика, що R2/R3 (SP_CTX_01_11); дім — `hooks/rows.ts`
             alias = ALIAS_PREFIX + next; next += 1; map[alias] = tool_use_id; trim to MAX_ALIASES   # поля last з фази 21 немає: last розв'язується за рядками (SP_CTX_02_17)
             write AliasRegistry; IF written: alias = the new alias          # MarkAlias; псевдонім без запису не розв'язався б
-        marked = len(result text) ≥ BIG_ROW OR tool IN SEARCH_TOOLS
+        marked = WorthEditing(tool, len(result text))
         line = alias ? "[context-editor] id <alias>: use it as \"ref\" in context_tag / context_edit" : none   # рядок псевдоніма — як до фази 22 (P19)
         hint = marked AND storage ready ? Bounded(SoftHint(), HINT_WAIT) : none   # SP_CTX_02_37, канал розміру; фаза 23: окремий рядок SUGGESTION, і без псевдоніма
         IF result is not an error AND storage ready:                     # у фоні: результат не чекає ні R4, ні журналу
@@ -288,7 +288,7 @@ Logic: `c<число>` → `map[ref]` AliasRegistry; `last` → ResolveLast(rows
         u = the latest ToolUse in rows[0 .. carrier] (rows before carrier, then the carrier row's own calls written before callId) whose tool does not start with OWN_TOOLS
         IF none: RETURN LAST_NONE
         IF no row after u's row holds a ToolResult with u.tool_use_id:
-            IF a prompt row (a user row without toolResults, not empty) stands between u's row and carrier: RETURN LAST_ORPHAN(CallLabel(u))   # хід виклику скінчився без результату (рев'ю 50)
+            IF a prompt row (PromptRowStrict: a user row without toolResults, with a handle or text other than whitespace) stands between u's row and carrier: RETURN LAST_ORPHAN(CallLabel(u))   # хід виклику скінчився без результату (рев'ю 50)
             RETURN LAST_PENDING(CallLabel(u))                           # виклик тієї самої відповіді, ще без результату
         RETURN (u.tool_use_id, "\"last\" = " + CallLabel(u))
 
@@ -359,3 +359,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 1, рев'ю: обробник компактизації, що приєднався до підготовки, підганяє її крок межі — без очікування `hostId` (02_15) |
 | 2026-10-11 | PL_AUD_CTX фаза 3 (CF-3, CF-4): `context_tag` — `add` за індексом без `to` на рядку лише з thinking — TARGET_NOT_FOUND, кінець діапазону лише з thinking — BAD_RANGE (рядки таблиці 02_11); RebindTags — тег рядка виклику, злитого MergeCallRows, переходить на злитий рядок, `pin` перемагає (02_14); діапазон тегу — LocateSpan |
 | 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: 02_11 — відмови лише для рядка асистента лише з thinking; 02_14 — діапазон тегу після застосування за тотожністю рядків, LocateSpan — запасний шлях, зниклий перший рядок — перший рядок, що лишився; `pin` на злитому рядку стереже й сусідні виклики |
+| 2026-10-11 | PL_AUD_CTX фаза 9 (аудит коду, CF-17): 02_17 — рядок промпту ResolveLast названо PromptRowStrict (`hooks/rows.ts`): на відміну від PromptRow (edits 02_04), текст лише з пробілів без handle — не промпт; 01_11 R2/R3 і позначка псевдоніма (02_16) — одна політика «вихід вартий правки» (BIG_ROW або SEARCH_TOOLS). Без зміни поведінки |

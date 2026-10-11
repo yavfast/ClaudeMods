@@ -12,7 +12,8 @@
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, aliasLine, type AliasRegistry } from './aliases'
 import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, cacheShape, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
-import { MARK, REPRODUCIBLE_TOOLS, rowChars, totalChars, touchedBy, type QueuedEdit } from './edits'
+import { REPRODUCIBLE_TOOLS, touchedBy, type QueuedEdit } from './edits'
+import { MARK, PLAIN_RATIO, resultsOf, rowChars, totalChars } from './rows'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
 import { telemetry, tokensText, type RegistryUpdate, type UsageInfo } from './stages'
@@ -41,8 +42,6 @@ export const HINT_NAMES = 6
 export const HINT_RECHECK = 5_000
 // how long a tool result or a prompt waits for the line
 export const HINT_WAIT_MS = 500
-// chars per token without a calibration ([SP_CTX_02_34])
-const PLAIN_RATIO = 4
 
 // [SP_CTX_02_37] The size channel's thresholds for a window (absent: the constants).
 export function sizeThreshold(window?: number): number {
@@ -113,7 +112,7 @@ export function candidates(rows: readonly SessionMessage[], reg: TagRegistry, qu
     if ('tool_use_id' in tag.target) {
       const id = tag.target.tool_use_id
       if (busyIds.has(id)) continue
-      const text = rows.flatMap(r => r.toolResults ?? []).find(t => t.tool_use_id === id)?.text ?? ''
+      const text = rows.flatMap(resultsOf).find(t => t.tool_use_id === id)?.text ?? ''
       // a result already replaced by the mod is no candidate
       if (text.startsWith(MARK)) continue
       const alias = aliases.get(id)

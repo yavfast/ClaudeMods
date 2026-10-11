@@ -22,11 +22,11 @@ import {
   prepare,
   recordBoundary,
   startHostId,
-  totalChars,
   type Boundary,
   type BoundaryMemory,
   type QueuedEdit,
 } from '../hooks/edits'
+import { totalChars } from '../hooks/rows'
 import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'

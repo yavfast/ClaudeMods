@@ -10,7 +10,8 @@
 // turn, so the depth an estimate sees now grows with every call until then.
 // The break-even of an edit weighs that rewrite against the reads it saves. Pure.
 import type { SessionMessage } from 'claude-code'
-import { isPromptRow, responses, responseStart, rowChars, type Responses } from './edits'
+import { responses, responseStart, type Responses } from './edits'
+import { charsOf, isPlainUserRow, isPromptRow, resultsOf } from './rows'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -52,13 +53,13 @@ type Kind = 'thinking' | 'text' | 'use' | 'result'
 // empty user row that is no prompt (a result row a drop left empty) adds
 // nothing: inside a response it would split the run of its results.
 function kinds(row: SessionMessage): Kind[] {
-  if (row.role === 'user' && !(row.toolResults ?? []).length && !isPromptRow(row)) return []
+  if (isPlainUserRow(row) && !isPromptRow(row)) return []
   if (row.role === 'assistant') {
     const k: Kind[] = row.text ? ['text'] : []
     for (let n = 0; n < row.toolUses.length; n++) k.push('use')
     return k.length ? k : ['thinking']
   }
-  const k: Kind[] = (row.toolResults ?? []).map((): Kind => 'result')
+  const k: Kind[] = resultsOf(row).map((): Kind => 'result')
   if (row.text || !k.length) k.push('text')
   return k
 }
@@ -137,8 +138,7 @@ export function cacheCost(shape: CacheShape, first: number, freed: number, conve
   const start = responseStart(rows, first, shape.api, shape.responses)
   const positions = shape.pos[start] ?? 0
   const within = positions + margin <= CACHE_LOOKBACK
-  let chars = 0
-  for (let i = start; i < rows.length; i++) chars += rowChars(rows[i]!)
+  const chars = charsOf(rows, start, rows.length - 1)
   const tail = Math.min(Math.round(chars / ratio), conversation)
   return { start, positions, within, rewrite: Math.max(0, (within ? tail : conversation) - freed) }
 }

@@ -11,7 +11,6 @@ import {
   fingerprint,
   formatReport,
   HEAD_ROWS,
-  MARK,
   mergeCallRows,
   MAX_TEXT,
   ownerKey,
@@ -19,7 +18,6 @@ import {
   rebuild,
   replacedOwners,
   ROW_WINDOW,
-  totalChars,
   touchedBy,
   type ApplyReport,
   type Boundary,
@@ -33,6 +31,7 @@ import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
+import { apiBlocks, errorText, findToolUse, isPlainUserRow, MARK, modText, resultsOf, squash, totalChars } from './rows'
 import { storageRefusal, type ChangeFn, type Read, type StorageState } from './store'
 
 export { ROW_WINDOW }
@@ -45,17 +44,13 @@ export const HANDOFF_PROMPT =
 // [SP_CTX_01_12] [SP_CTX_DEC_17] The first line of the document prompt: the
 // document is the model's own text (the agent's `document` or a fork of the
 // model), submitted as a `user` prompt (audit PL_AUD_CTX, CF-8).
-export const DOCUMENT_FRAME = "context-editor: your handoff document from the previous session follows; it is your own text, not the person's."
+export const DOCUMENT_FRAME = modText("your handoff document from the previous session follows; it is your own text, not the person's.")
 export const SEED_ROOM = 16
 export const SEED_PROBE = 80
 export const SEED_WAIT_MS = 2_000
 export const SEED_POLL_MS = 100
 export { SUMMARY_OPENER }
 export const TRANSCRIPT_LINE = 'read the full transcript at:'
-
-function errorText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
 
 // [SP_CTX_01_04] A handoff's report never resumes the session by itself.
 function withReport(q: Queue, text: string, now: number): Queue {
@@ -157,7 +152,7 @@ export function queueHandoff(
 // running one this instance does not run; one in flight here stays.
 export function cancelHandoff(q: Queue, why: string, now: number, inFlight = false): Queue {
   if (!q.handoff || (q.handoff.state === 'running' && inFlight)) return q
-  return { ...withReport(q, `context-editor: handoff cancelled (${why}).`, now), handoff: undefined }
+  return { ...withReport(q, modText(`handoff cancelled (${why}).`), now), handoff: undefined }
 }
 
 // ---- [SP_CTX_02_22] BuildSeed
@@ -193,23 +188,15 @@ export type SeedInput = {
 
 const WINDOW_FULL = `the conversation fills the host's ${ROW_WINDOW}-row window; its start may be cut`
 
-function stripped(s: string): string {
-  return s.replace(/\s+/g, '')
-}
-
-function results(r: SessionMessage) {
-  return r.toolResults ?? []
-}
-
 // [SP_CTX_02_22] The first message of the API form: its role, whether it holds
 // a tool_result, and its text blocks other than reminders (any
 // `<system-reminder …>`, REMINDER_PREFIX), joined. Content
 // given as a string is one text block.
 function firstApiMessage(msg: unknown): { role: unknown; hasResult: boolean; text: string } {
-  const m = (msg ?? {}) as { role?: unknown; content?: unknown }
-  const blocks = (typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : []) as { type?: unknown; text?: unknown }[]
+  const role = (msg as { role?: unknown } | null | undefined)?.role
+  const blocks = apiBlocks(msg)
   const texts = blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' && !b.text.trim().startsWith(REMINDER_PREFIX) ? [b.text] : []))
-  return { role: m.role, hasResult: blocks.some(b => b.type === 'tool_result'), text: texts.join('\n\n') }
+  return { role, hasResult: blocks.some(b => b.type === 'tool_result'), text: texts.join('\n\n') }
 }
 
 // [SP_CTX_02_22] CarryNote: the media of an untouched pair, as files.
@@ -218,8 +205,10 @@ export function carryNote(refs: readonly MediaRef[], paths: readonly (string | u
   return `${MARK} media carried as files (open them with Read): ${items.join(', ')}`
 }
 
+// Blank: EmptyRow (rows.ts), except that text of whitespace alone counts as
+// none too: the seed drops such rows and CheckSeed refuses them.
 function isBlank(r: SessionMessage): boolean {
-  return !r.text.trim() && r.toolUses.length === 0 && results(r).length === 0
+  return !r.text.trim() && r.toolUses.length === 0 && resultsOf(r).length === 0
 }
 
 // [SP_CTX_02_22] Until nothing changes: no leading assistant rows, no result
@@ -234,9 +223,9 @@ function normalize(seed: SessionMessage[]): SessionMessage[] {
     }
     const calls = new Set<string>()
     rows = rows.map(r => {
-      const kept = results(r).filter(t => calls.has(t.tool_use_id))
+      const kept = resultsOf(r).filter(t => calls.has(t.tool_use_id))
       for (const u of r.toolUses) calls.add(u.tool_use_id)
-      if (kept.length === results(r).length) return r
+      if (kept.length === resultsOf(r).length) return r
       changed = true
       return { ...r, toolResults: kept }
     })
@@ -244,7 +233,7 @@ function normalize(seed: SessionMessage[]): SessionMessage[] {
     for (let i = rows.length - 1; i >= 0; i--) {
       const r = rows[i]!
       const kept = r.toolUses.filter(u => answered.has(u.tool_use_id))
-      for (const t of results(r)) answered.add(t.tool_use_id)
+      for (const t of resultsOf(r)) answered.add(t.tool_use_id)
       if (kept.length !== r.toolUses.length) {
         rows[i] = { ...r, toolUses: kept }
         changed = true
@@ -264,7 +253,7 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   // the window alone: prompt media is matched below, on the visible rows
   const { knownResults, apiTruncated } = collectMedia(api, [])
   const hidden =
-    rows.some(r => results(r).some(t => !knownResults.has(t.tool_use_id))) ||
+    rows.some(r => resultsOf(r).some(t => !knownResults.has(t.tool_use_id))) ||
     rows.some((r, i) => i > 0 && r.role === 'user' && r.text.trim().startsWith(SUMMARY_OPENER))
   const early: string[] = []
   let edits = [...input.edits]
@@ -282,15 +271,15 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
     if (first.role !== 'user' || first.hasResult || !first.text.trim().startsWith(SUMMARY_OPENER))
       return { refuse: 'NO_SUMMARY', reason: 'the model does not see every row, and what it sees does not start with a compaction summary' }
     // [SP_CTX_DEC_08] the last prompt row whose text, whitespace aside, starts as the summary does
-    const want = stripped(first.text).slice(0, 160)
+    const want = squash(first.text).slice(0, 160)
     let s = -1
     for (let i = rows.length - 1; i >= 0 && s < 0; i--) {
       const r = rows[i]!
-      if (r.role === 'user' && !results(r).length && stripped(r.text).startsWith(want)) s = i
+      if (isPlainUserRow(r) && squash(r.text).startsWith(want)) s = i
     }
     if (s < 0) return { refuse: 'SUMMARY_NOT_FOUND', reason: 'the summary the model sees was not found among the rows' }
     visible = rows.slice(s + 1)
-    if (visible.some(r => results(r).some(t => !knownResults.has(t.tool_use_id))))
+    if (visible.some(r => resultsOf(r).some(t => !knownResults.has(t.tool_use_id))))
       return { refuse: 'HIDDEN_AFTER_SUMMARY', reason: 'rows the model does not see follow the summary' }
     head = { role: 'user', text: first.text, toolUses: [] }
     edits = edits.filter(e => {
@@ -351,11 +340,11 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   report.charsAfter = totalChars(kept) - put.added
   const carried: string[] = []
   let seed = kept.map(r => {
-    const carries = results(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
+    const carries = resultsOf(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
     if (!carries) return rebuild(r)
     return {
       ...rebuild(r),
-      toolResults: results(r).map(t => {
+      toolResults: resultsOf(r).map(t => {
         const key = ownerKey({ tool_use_id: t.tool_use_id })
         const refs = found.get(key)
         if (!refs || replaced.has(key)) return { tool_use_id: t.tool_use_id, text: t.text, isError: t.isError }
@@ -380,7 +369,7 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   // [SP_CTX_01_17] a summary head from the API form, or CurrentRows that already
   // start with the summary row (a resumed session after /compact)
   const fromSummary = head !== undefined || seed[0]!.text.trim().startsWith(SUMMARY_OPENER)
-  const seededIds = new Set(seed.flatMap(r => results(r).map(t => t.tool_use_id)))
+  const seededIds = new Set(seed.flatMap(r => resultsOf(r).map(t => t.tool_use_id)))
   return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media, carried: carried.filter(id => seededIds.has(id)) }
 }
 
@@ -397,12 +386,12 @@ export function checkSeed(rows: readonly SessionMessage[]): string | undefined {
     if (r.handle !== undefined) return `row ${i}: holds a handle`
     if (isBlank(r)) return `row ${i}: empty`
     if (r.role === 'user' && r.toolUses.length) return `row ${i}: tool_use in a user row`
-    if (r.role === 'assistant' && results(r).length) return `row ${i}: tool_result in an assistant row`
+    if (r.role === 'assistant' && resultsOf(r).length) return `row ${i}: tool_result in an assistant row`
     for (const u of r.toolUses) {
       if (calls.has(u.tool_use_id)) return `row ${i}: repeated call id ${u.tool_use_id}`
       calls.add(u.tool_use_id)
     }
-    for (const t of results(r)) {
+    for (const t of resultsOf(r)) {
       if (answers.has(t.tool_use_id)) return `row ${i}: repeated result id ${t.tool_use_id}`
       answers.add(t.tool_use_id)
     }
@@ -410,16 +399,16 @@ export function checkSeed(rows: readonly SessionMessage[]): string | undefined {
     for (const u of r.toolUses) {
       let ok = false
       for (const later of rows.slice(i + 1)) {
-        if (results(later).some(t => t.tool_use_id === u.tool_use_id)) {
+        if (resultsOf(later).some(t => t.tool_use_id === u.tool_use_id)) {
           ok = true
           break
         }
-        if (later.role === 'user' && !results(later).length) break
+        if (isPlainUserRow(later)) break
       }
       if (!ok) return `row ${i}: call ${u.tool_use_id} has no result before the next prompt`
     }
-    for (const t of results(r)) {
-      if (!rows.slice(0, i).some(e => e.toolUses.some(u => u.tool_use_id === t.tool_use_id))) return `row ${i}: result ${t.tool_use_id} answers no call`
+    for (const t of resultsOf(r)) {
+      if (findToolUse(rows.slice(0, i), t.tool_use_id) < 0) return `row ${i}: result ${t.tool_use_id} answers no call`
     }
   }
   return undefined
@@ -473,10 +462,10 @@ export type SeedIO = {
 // in place of the cleared session's. Reads and writes no queue.
 export async function handleSeed(io: SeedIO, mem: HandoffMemory, messages: readonly SessionMessage[]): Promise<CompactionOutcome> {
   const s = mem.pending
-  if (!s) return { skip: 'context-editor: no handoff seed waiting' }
+  if (!s) return { skip: modText('no handoff seed waiting') }
   // the mod writes into no session it did not create, the old one included
-  if ((await io.sessionId()) !== s.new) return { skip: 'context-editor: this is not the session the handoff created' }
-  if (messages.some(r => r.role === 'assistant')) return { skip: 'context-editor: the new session already has a turn' }
+  if ((await io.sessionId()) !== s.new) return { skip: modText('this is not the session the handoff created') }
+  if (messages.some(r => r.role === 'assistant')) return { skip: modText('the new session already has a turn') }
   s.taken = true
   // the seed runs in this process: the boundary carries its host when known
   const b = boundaryOf(s.rows, io.hostId())
@@ -613,20 +602,20 @@ async function once(run: Run, name: string, write: () => Promise<void>): Promise
 // --resume does not inherit keep_cache or a continuation.
 function handedOff(run: Run, to: string, mode: HandoffRequest['mode']): Promise<void> {
   return once(run, 'HandedOff', () =>
-    updateOld(run, q => ({ ...withReport(keepOtherSteps(q), `context-editor: this session was handed off to ${to} (${mode}).`, run.io.now()), handoff: undefined })),
+    updateOld(run, q => ({ ...withReport(keepOtherSteps(q), modText(`this session was handed off to ${to} (${mode}).`), run.io.now()), handoff: undefined })),
   )
 }
 
 // [SP_CTX_02_21] Fail: before /clear; the old session as it was, its edits kept.
 async function fail(run: Run, reasons: string[]): Promise<void> {
-  const text = `context-editor: handoff failed: ${reasons.join('; ')}; the session was not changed.`
+  const text = modText(`handoff failed: ${reasons.join('; ')}; the session was not changed.`)
   await once(run, 'Fail', () => updateOld(run, q => ({ ...withReport(q, text, run.io.now()), handoff: undefined })))
   run.io.toast(text.slice(0, 200))
 }
 
 // [SP_CTX_02_21] FailAfterClear: after /clear; the old session unchanged.
 async function failAfterClear(run: Run, s: HandoffSeed | undefined, reasons: string[]): Promise<void> {
-  const text = `context-editor: handoff failed after the session was cleared: ${reasons.join('; ')}; this session was not changed${s ? `; the assembled conversation is in ${s.file}` : ''}.`
+  const text = modText(`handoff failed after the session was cleared: ${reasons.join('; ')}; this session was not changed${s ? `; the assembled conversation is in ${s.file}` : ''}.`)
   await once(run, 'FailAfterClear', () => updateOld(run, q => ({ ...withReport(q, text, run.io.now()), handoff: undefined })))
   run.io.toast(text.slice(0, 200))
 }
@@ -642,7 +631,7 @@ function defer(run: Run): Promise<void> {
 
 // `kept`: KeepDocument's sentence when the agent's document was copied instead of delivered
 function notice(run: Run, s: HandoffSeed | undefined, reasons: string[], kept = ''): string {
-  return `context-editor: the handoff from ${run.old} failed after the session was cleared (${reasons.join('; ')}). The previous session ${run.old} is unchanged.${s ? ` The assembled conversation is in ${s.file}.` : ''}${kept}`
+  return modText(`the handoff from ${run.old} failed after the session was cleared (${reasons.join('; ')}). The previous session ${run.old} is unchanged.${s ? ` The assembled conversation is in ${s.file}.` : ''}${kept}`)
 }
 
 // [SP_CTX_02_21] The document prompt: the author's frame, the document, then
@@ -678,7 +667,7 @@ async function deliver(
     await io.submit(resumePrompt ? `${text}\n\n${resumeText(resumePrompt, HANDOFF_RESUME_FRAME)}` : text)
   } catch (err) {
     const more = refused ? `.${await refused()}` : ''
-    io.toast(`context-editor: the handoff prompt was refused: ${errorText(err)}${more}`)
+    io.toast(modText(`the handoff prompt was refused: ${errorText(err)}${more}`))
   }
 }
 
@@ -864,7 +853,7 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
       await work()
     } catch (err) {
       io.toast(
-        `context-editor: seeded the new session, but step ${name} failed: ${errorText(err)}.` +
+        modText(`seeded the new session, but step ${name} failed: ${errorText(err)}.`) +
           (name === 'HandedOff' ? ` The old session ${run.old} still holds a running handoff request; run /handoff cancel there.` : ''),
       )
     }
@@ -894,7 +883,7 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
       notes += note
     })
   const report =
-    `context-editor: this session continues ${run.old} (transcript).` +
+    modText(`this session continues ${run.old} (transcript).`) +
     (s.fromSummary ? ` It starts from the summary of an earlier compaction; the rows before it stay in ${run.old}.` : '') +
     (s.unmatchedPromptMedia > 0 ? ` Media in ${s.unmatchedPromptMedia} of the person's prompt(s) was not carried over.` : '') +
     notes +
@@ -916,7 +905,7 @@ async function afterClear(run: Run, s: HandoffSeed, reason: string, turnsClear: 
     try {
       await work()
     } catch (err) {
-      io.toast(`context-editor: handoff after /clear: step ${name} failed: ${errorText(err)}`)
+      io.toast(modText(`handoff after /clear: step ${name} failed: ${errorText(err)}`))
     }
   }
   try {
@@ -952,14 +941,14 @@ async function afterClear(run: Run, s: HandoffSeed, reason: string, turnsClear: 
     await step('deliver', () => deliver(run, notice(run, s, reasons), h.resumePrompt, turnsClear, !h.resume))
     return 'failed'
   } catch (err) {
-    io.toast(`context-editor: handoff after /clear failed: ${errorText(err)}`)
+    io.toast(modText(`handoff after /clear failed: ${errorText(err)}`))
     return 'failed'
   }
 }
 
 // the tail of the agent's document after a failed transcript way
 function afterClearTail(run: Run, reasons: string[]): string {
-  return `context-editor: this session continues ${run.old} (document). The transcript way failed (${reasons.join('; ')}).${dropped(run)}`
+  return modText(`this session continues ${run.old} (document). The transcript way failed (${reasons.join('; ')}).${dropped(run)}`)
 }
 
 // [SP_CTX_02_21] DocumentWay: the document as the first prompt of a cleared session.
@@ -997,7 +986,7 @@ async function documentWay(run: Run): Promise<HandoffOutcome> {
   let why = run.reasons.length ? ` The transcript way failed (${run.reasons.join('; ')}).` : ''
   // /clear waited for the end of a turn: that turn stays in the old session
   if (io.turns.turns !== run.turns0) why += ` A turn ran before /clear; it stays in ${run.old} and is not in this document.`
-  return handDocument(run, created, documentText(doc, `context-editor: this session continues ${run.old} (document).${why}${dropped(run)}`), run.turnsClear)
+  return handDocument(run, created, documentText(doc, modText(`this session continues ${run.old} (document).${why}${dropped(run)}`)), run.turnsClear)
 }
 
 // [SP_CTX_02_21] HandDocument: after /clear, the document into the session
@@ -1013,7 +1002,7 @@ async function handDocument(run: Run, to: string, text: string, turnsClear: numb
     try {
       await work()
     } catch (err) {
-      io.toast(`context-editor: handoff after /clear: step ${name} failed: ${errorText(err)}.${await more()}`)
+      io.toast(modText(`handoff after /clear: step ${name} failed: ${errorText(err)}.${await more()}`))
     }
   }
   await step(
@@ -1046,7 +1035,7 @@ async function onException(run: Run, err: unknown): Promise<HandoffOutcome> {
       try {
         await fail(run, [...run.reasons, why])
       } catch {
-        io.toast(`context-editor: handoff failed: ${errorText(err)}; the old queue could not be written`)
+        io.toast(modText(`handoff failed: ${errorText(err)}; the old queue could not be written`))
       }
     return 'failed'
   }
@@ -1055,7 +1044,7 @@ async function onException(run: Run, err: unknown): Promise<HandoffOutcome> {
     try {
       await failAfterClear(run, run.seed, [...run.reasons, why])
     } catch {
-      io.toast(`context-editor: handoff failed after /clear: ${errorText(err)}; the old queue could not be written`)
+      io.toast(modText(`handoff failed after /clear: ${errorText(err)}; the old queue could not be written`))
     }
   return 'failed'
 }
@@ -1085,7 +1074,7 @@ export async function runHandoff(io: HandoffIO, mem: HandoffMemory, turns0: numb
           return {
             ...withReport(
               q,
-              `context-editor: a previous handoff stopped after building ${oldDir}/${built[0]}/seed.json; it is not re-run; ask again with /handoff or context_handoff.`,
+              modText(`a previous handoff stopped after building ${oldDir}/${built[0]}/seed.json; it is not re-run; ask again with /handoff or context_handoff.`),
               io.now(),
             ),
             handoff: undefined,
@@ -1171,7 +1160,7 @@ export async function startHandoff(io: HandoffIO, mem: HandoffMemory, turns0: nu
   try {
     outcome = await runHandoff(io, mem, turns0)
   } catch (err) {
-    io.toast(`context-editor: handoff failed: ${errorText(err)}`)
+    io.toast(modText(`handoff failed: ${errorText(err)}`))
     outcome = 'failed'
   }
   if (outcome === 'deferred' && !io.turns.inTurn) scheduleHandoff(io, mem)

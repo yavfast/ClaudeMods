@@ -1,7 +1,8 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { aliasLine, markAlias, type AliasIO, type AliasRegistry } from '../hooks/aliases'
-import { applyEdits, prepare, totalChars } from '../hooks/edits'
+import { applyEdits, prepare } from '../hooks/edits'
+import { totalChars } from '../hooks/rows'
 import {
   bounded,
   callLines,
