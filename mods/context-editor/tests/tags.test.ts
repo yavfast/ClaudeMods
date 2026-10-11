@@ -25,6 +25,7 @@ import {
   resolveTarget,
   resultIds,
   SEARCH_TTL,
+  staleReads,
   stateRow,
   tagLabels,
   type AppendFacts,
@@ -32,15 +33,9 @@ import {
   type TagIO,
   type TagRegistry,
 } from '../hooks/tags'
+import { prompt, reply, result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
-
-function use(id: string, tool: string): SessionMessage {
-  return { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: {} }] }
-}
-function result(id: string, text: string): SessionMessage {
-  return { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] }
-}
 
 function rows(): SessionMessage[] {
   return [
@@ -60,16 +55,16 @@ function reg(tags: Tag[], extra: Partial<TagRegistry> = {}): TagRegistry {
 
 const anchorOf = (i: number) => ({ anchor: fingerprint(rows()[i]!), hint: i })
 
-function harness(tags: Read<TagRegistry>, queue: Read<Queue> = { state: 'missing', value: { ...EMPTY_QUEUE } }, over: Partial<TagIO> = {}) {
+function harness(tags: Read<TagRegistry>, queue: Read<Queue> = missingRead({ ...EMPTY_QUEUE }), over: Partial<TagIO> = {}) {
   const log: { tags?: TagRegistry; queue?: Queue; tagWrites: number } = { tagWrites: 0 }
   const io: TagIO = {
     rows: async () => rows(),
-    readTags: async () => (log.tags ? { state: 'ok', value: log.tags } : tags),
+    readTags: async () => (log.tags ? okRead(log.tags) : tags),
     writeTags: async r => {
       log.tags = r
       log.tagWrites++
     },
-    readQueue: async () => (log.queue ? { state: 'ok', value: log.queue } : queue),
+    readQueue: async () => (log.queue ? okRead(log.queue) : queue),
     writeQueue: async q => {
       log.queue = q
     },
@@ -78,7 +73,7 @@ function harness(tags: Read<TagRegistry>, queue: Read<Queue> = { state: 'missing
   return { io, log }
 }
 
-const empty = (): Read<TagRegistry> => ({ state: 'missing', value: { ...EMPTY_REGISTRY } })
+const empty = (): Read<TagRegistry> => missingRead({ ...EMPTY_REGISTRY })
 
 // ---- [SP_CTX_01_10] registry read states
 
@@ -112,7 +107,7 @@ test('parseRegistry reads a good file and makes any bad field or tag unreadable'
 // ---- [SP_CTX_02_11] context_tag
 
 test('context_tag adds, replaces and removes tags, stamped with the current turn', async () => {
-  const { io, log } = harness({ state: 'ok', value: reg([], { turn: 4 }) })
+  const { io, log } = harness(okRead(reg([], { turn: 4 })))
   const out = await contextTag(io, {
     tags: [
       { op: 'add', kind: 'review', tool_use_id: 'a' },
@@ -154,7 +149,7 @@ test('context_tag rejects each bad request with its code and keeps the rest of t
     [{ op: 'add', kind: 'disposable', index: 0, note: 'n' }, 'BAD_TARGET'],
     [{ op: 'add', kind: 'review', tool_use_id: 'a', ttl_turns: 0 }, 'BAD_TTL'],
     [{ op: 'add', kind: 'pin', tool_use_id: 'a', ttl_turns: 2 }, 'BAD_TTL'],
-    [{ op: 'add', kind: 'pin', index: 0 }, 'TAGS_FULL', { state: 'ok', value: full }],
+    [{ op: 'add', kind: 'pin', index: 0 }, 'TAGS_FULL', okRead(full)],
     [{ op: 'remove', tool_use_id: 'a' }, 'NO_TAG'],
   ]
   for (const [request, code, start] of cases) {
@@ -167,7 +162,7 @@ test('context_tag rejects each bad request with its code and keeps the rest of t
     expect(log.tags?.tags.some(t => 'tool_use_id' in t.target && t.target.tool_use_id === 'b') ?? false).toBe(code !== 'TAGS_FULL')
   }
   // a full registry still takes a tag that replaces one on the same target
-  const { io } = harness({ state: 'ok', value: full })
+  const { io } = harness(okRead(full))
   const replaced = await contextTag(io, { tags: [{ op: 'add', kind: 'pin', tool_use_id: 'a' }] })
   expect('result' in replaced && replaced.result).toContain('Tagged 1')
 })
@@ -183,7 +178,7 @@ test('context_tag refuses the whole call for a subagent, no list, no storage, an
   const down = await contextTag(ok.io, { tags: [{ op: 'add', kind: 'pin', index: 0 }] }, 'HOME is not set')
   expect('code' in down && down.code).toBe('DENIED_STORAGE')
   expect('deny' in down && down.deny).toContain('HOME is not set')
-  const broken = harness({ state: 'unreadable', reason: 'bad tag 2' })
+  const broken = harness(unreadableRead('bad tag 2'))
   const unread = await contextTag(broken.io, { tags: [{ op: 'add', kind: 'pin', index: 0 }] })
   expect('code' in unread && unread.code).toBe('DENIED_REGISTRY_READ')
   expect(broken.log.tagWrites).toBe(0)
@@ -330,7 +325,7 @@ test('AutoTag — копія великого результату (plugin origi
     message: { content: [{ type: 'tool_result', tool_use_id: 'a', content: [{ type: 'text', text: BIG }] }] },
   })
   const tagged = reg([{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }])
-  const { io, log } = harness({ state: 'ok', value: tagged })
+  const { io, log } = harness(okRead(tagged))
   await autoTag(io, copy)
   expect(log.tagWrites).toBe(0)
   // even a copy that named its tool is skipped
@@ -361,7 +356,7 @@ test('rules never overwrite a tag the agent set, and stop at MAX_TAGS', async ()
 })
 
 test('AutoTag leaves an unreadable registry alone; the turn counter counts completed turns', async () => {
-  const broken = harness({ state: 'unreadable', reason: 'x' })
+  const broken = harness(unreadableRead('x'))
   await autoTag(broken.io, fact({ text: 'the task: find KEY_0042' }))
   await countTurn(broken.io)
   expect(broken.log.tagWrites).toBe(0)
@@ -380,7 +375,7 @@ const disposables = reg([
 ])
 
 test('two disposable tags on an empty queue become two edits of a tags-only batch; context_edit clears tagsOnly', async () => {
-  const { io, log } = harness({ state: 'ok', value: disposables })
+  const { io, log } = harness(okRead(disposables))
   const { queued, freed } = await queueTagReplacements(io)
   expect(queued).toBe(2)
   const q = log.queue!
@@ -393,7 +388,7 @@ test('two disposable tags on an empty queue become two edits of a tags-only batc
 })
 
 test('QueueTagReplacements — заміна з тегу називає автора: an applied disposable note reads as the agent\'s own replacement (phase 19)', async () => {
-  const { io, log } = harness({ state: 'ok', value: disposables })
+  const { io, log } = harness(okRead(disposables))
   await queueTagReplacements(io)
   const out = applyEdits(rows(), log.queue!.edits, '/s/1.json')
   expect(out.report.applied.length).toBe(2)
@@ -403,7 +398,7 @@ test('QueueTagReplacements — заміна з тегу називає авто�
 
 test('replacements join a non-empty queue without making it tags-only', async () => {
   const pending: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'b' }] }
-  const { io, log } = harness({ state: 'ok', value: disposables }, { state: 'ok', value: pending })
+  const { io, log } = harness(okRead(disposables), okRead(pending))
   expect((await queueTagReplacements(io)).queued > 0).toBe(true)
   expect(log.queue!.edits.length).toBe(3)
   expect(log.queue!.tagsOnly).toBe(false)
@@ -411,16 +406,16 @@ test('replacements join a non-empty queue without making it tags-only', async ()
 
 test('replacements are not queued past MAX_QUEUE_EDITS or MAX_QUEUE_BYTES, nor from an unreadable file', async () => {
   const many: Queue = { ...EMPTY_QUEUE, edits: Array.from({ length: MAX_QUEUE_EDITS - 1 }, (): QueuedEdit => ({ op: 'drop', tool_use_id: 'b' })) }
-  const a = harness({ state: 'ok', value: disposables }, { state: 'ok', value: many })
+  const a = harness(okRead(disposables), okRead(many))
   expect((await queueTagReplacements(a.io)).queued).toBe(0)
   expect(a.log.queue).toBeUndefined()
   const huge: Queue = { ...EMPTY_QUEUE, report: 'r'.repeat(MAX_QUEUE_BYTES) }
-  const b = harness({ state: 'ok', value: disposables }, { state: 'ok', value: huge })
+  const b = harness(okRead(disposables), okRead(huge))
   expect((await queueTagReplacements(b.io)).queued).toBe(0)
   expect(b.log.queue).toBeUndefined()
-  const c = harness({ state: 'unreadable', reason: 'x' })
+  const c = harness(unreadableRead('x'))
   expect((await queueTagReplacements(c.io)).queued).toBe(0)
-  const d = harness({ state: 'ok', value: disposables }, { state: 'unreadable', reason: 'x' })
+  const d = harness(okRead(disposables), unreadableRead('x'))
   expect((await queueTagReplacements(d.io)).queued).toBe(0)
   const none = harness(empty())
   expect((await queueTagReplacements(none.io)).queued).toBe(0)
@@ -473,7 +468,7 @@ test('a tag on a pair the agent changed is removed and no replacement is queued 
   )
   const out = rebindTags(r, before, after, edits, edits)
   expect(out.tags).toEqual([])
-  const { io, log } = harness({ state: 'ok', value: r }, undefined, { rows: async () => after })
+  const { io, log } = harness(okRead(r), undefined, { rows: async () => after })
   expect((await queueTagReplacements(io)).queued).toBe(0)
   expect(log.queue).toBeUndefined()
 })
@@ -481,7 +476,7 @@ test('a tag on a pair the agent changed is removed and no replacement is queued 
 // [SP_CTX_02_13]
 test('QueueTagReplacements — без повтору: a replacement already queued (a close by the tool, then the mark in the same turn) is not queued again', async () => {
   const one = reg([{ kind: 'disposable', target: { tool_use_id: 'a' }, note: 'file A: KEY_0042 = ff', created_turn: 0 }])
-  const { io, log } = harness({ state: 'ok', value: one })
+  const { io, log } = harness(okRead(one))
   expect((await queueTagReplacements(io)).queued).toBe(1)
   expect(log.queue!.edits.length).toBe(1)
   expect(await queueTagReplacements(io)).toEqual({ queued: 0, freed: '' })
@@ -489,7 +484,7 @@ test('QueueTagReplacements — без повтору: a replacement already queu
 })
 
 test('QueueTagReplacements keeps the optimization request of the queue it writes (05_02)', async () => {
-  const { io, log } = harness({ state: 'ok', value: disposables }, { state: 'ok', value: { ...EMPTY_QUEUE, optimize: true } })
+  const { io, log } = harness(okRead(disposables), okRead({ ...EMPTY_QUEUE, optimize: true }))
   await queueTagReplacements(io)
   expect(log.queue!.optimize).toBe(true)
 })
@@ -518,7 +513,7 @@ function rows15(): SessionMessage[] {
 const at15 = (i: number) => ({ anchor: fingerprint(rows15()[i]!), hint: i })
 
 function harness15(start: TagRegistry = reg([])) {
-  return harness({ state: 'ok', value: start }, undefined, { rows: async () => rows15() })
+  return harness(okRead(start), undefined, { rows: async () => rows15() })
 }
 
 async function tag15(start: TagRegistry, tags: unknown[]) {
@@ -533,6 +528,14 @@ test('context_tag — слот стану: add state on #1, then on #10: one sta
   const second = await tag15(reg(first.tags), [{ op: 'add', kind: 'state', index: 10 }])
   expect(second.tags).toEqual([{ kind: 'state', target: at15(10), created_turn: 0 }])
   expect(second.text).toContain('The state slot moved from #1 to #10.')
+})
+
+test('context_tag — слот стану з загубленого рядка: the old state row is no longer in the conversation: one state tag on #10; the result names only the new row', async () => {
+  const lost = reg([{ kind: 'state', target: { anchor: 'assistant||gone', hint: 1 }, created_turn: 0 }])
+  const out = await tag15(lost, [{ op: 'add', kind: 'state', index: 10 }])
+  expect(out.tags).toEqual([{ kind: 'state', target: at15(10), created_turn: 0 }])
+  expect(out.text).toContain('The state slot moved to #10.')
+  expect(out.text).not.toContain('moved from')
 })
 
 test('context_tag — слот стану не там: a row with a call, a pair by tool_use_id, a thinking-only row, a person\'s row: BAD_TARGET', async () => {
@@ -554,20 +557,25 @@ test('context_tag — діапазон: index 2 to 3 is a range; a split pair, a
   const pinned = reg([{ kind: 'pin', target: at15(4), created_turn: 0 }])
   const pinnedPair = reg([{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }])
   const state = reg([{ kind: 'state', target: at15(4), created_turn: 0 }])
-  const cases: [TagRegistry, unknown][] = [
-    [reg([]), { op: 'add', kind: 'disposable', index: 1, to: 2, note: 'n' }],
-    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 2, note: 'n' }],
-    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 99, note: 'n' }],
-    [pinned, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }],
-    [pinnedPair, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }],
-    [state, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }],
-    [reg([]), { op: 'add', kind: 'pin', index: 1, to: 4 }],
-    [reg([]), { op: 'add', kind: 'disposable', tool_use_id: 'a', to: 4, note: 'n' }],
-    [reg([]), { op: 'remove', index: 1, to: 4 }],
+  // TSTX-12: six reasons share the code; each row names its own
+  const ONLY = '"to" goes only with {"op":"add","kind":"disposable","index":<first row>}'
+  const LAST = '"to" is the last row of the range: an integer in 3..11'
+  const GUARDED = 'the range holds a row or a call tagged pin or state'
+  const cases: [TagRegistry, unknown, string][] = [
+    [reg([]), { op: 'add', kind: 'disposable', index: 1, to: 2, note: 'n' }, 'range #1..#2 splits a tool call from its result (a); widen or narrow it'],
+    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 2, note: 'n' }, LAST],
+    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 99, note: 'n' }, LAST],
+    [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 3.5, note: 'n' }, LAST],
+    [pinned, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, GUARDED],
+    [pinnedPair, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, GUARDED],
+    [state, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, GUARDED],
+    [reg([]), { op: 'add', kind: 'pin', index: 1, to: 4 }, ONLY],
+    [reg([]), { op: 'add', kind: 'disposable', tool_use_id: 'a', to: 4, note: 'n' }, ONLY],
+    [reg([]), { op: 'remove', index: 1, to: 4 }, ONLY],
   ]
-  for (const [start, req] of cases) {
+  for (const [start, req, why] of cases) {
     const out = await tag15(start, [req])
-    expect(out.text).toContain('(BAD_RANGE)')
+    expect(out.text).toContain(`Rejected: tag 1: ${why} (BAD_RANGE).`)
     expect(out.tags).toEqual(start.tags)
   }
 })
@@ -595,6 +603,18 @@ test('context_tag — попередження про людину: a range over
   expect(pair.text).toContain("Warning: disposable q covers the person's messages: #6 (AskUserQuestion answer).")
   const plain = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 2, to: 4, note: 'n' }])
   expect(plain.text).not.toContain('Warning')
+})
+
+test('context_tag — доставки не прочитано: io.deliveries rejects: the tag stands and the warning still names the person\'s rows', async () => {
+  const h = harness(okRead(reg([])), undefined, {
+    rows: async () => rows15(),
+    deliveries: async () => {
+      throw new Error('unreadable')
+    },
+  })
+  const out = await contextTag(h.io, { tags: [{ op: 'add', kind: 'disposable', index: 4, to: 9, note: 'n' }] })
+  expect('result' in out && out.result).toContain("Warning: disposable #4..#9 covers the person's messages: #6 (AskUserQuestion answer), #7 (prompt).")
+  expect(h.log.tags!.tags.length).toBe(1)
 })
 
 test('context_list — позначки: [state], [review: stale] on both rows of a pair, a range on its first row only; `review` без причини — [review], an agent\'s — [review: agent]', async () => {
@@ -686,9 +706,7 @@ test('AutoTag — копія великого результату: a result row
 
 // ---- [SP_CTX_01_11] R5 (a)
 
-function readUse(id: string, input: Record<string, unknown>): SessionMessage {
-  return { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input }] }
-}
+const readUse = (id: string, input: Record<string, unknown>): SessionMessage => use(id, 'Read', undefined, input)
 
 test('AutoTag — R5 однаковий результат: two Reads with the same 5000-char text: duplicate on the first pair; the second gets R2 big', async () => {
   const r: SessionMessage[] = [{ role: 'user', text: 'task', toolUses: [] }, readUse('a', { file_path: '/x' }), result('a', BIG), readUse('b', { file_path: '/y' }), result('b', BIG)]
@@ -739,7 +757,7 @@ test('AutoTag — R5 перезапис: an earlier review big becomes duplicate
 test('AutoTag — R5 рядок без результатів: R5 (b) is not built (the probe: a skill insertion is no conversation row); a large user row of another door changes nothing', async () => {
   const text = 'z'.repeat(6000)
   const r: SessionMessage[] = [{ role: 'user', text, toolUses: [] }, { role: 'assistant', text: 'ok', toolUses: [] }, { role: 'user', text, toolUses: [] }]
-  const { io, log } = harness({ state: 'ok', value: reg([], { firstPromptPinned: true }) }, undefined, { rows: async () => r })
+  const { io, log } = harness(okRead(reg([], { firstPromptPinned: true })), undefined, { rows: async () => r })
   await autoTag(io, fact({ door: 'attachment', origin: 'engine', size: 6000, text }))
   expect(log.tagWrites).toBe(0)
 })
@@ -827,7 +845,7 @@ test('RebindTags — заміна діапазону в пакеті: the collap
 test('QueueTagReplacements — діапазон: a disposable range #8..#10 becomes collapse 8..10 with the note and anchors of both ends; freed counts the rows', async () => {
   const r = rows15()
   const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(r[10]!), toHint: 10 }, note: 'N', created_turn: 0 }
-  const { io, log } = harness({ state: 'ok', value: reg([range]) }, undefined, { rows: async () => r })
+  const { io, log } = harness(okRead(reg([range])), undefined, { rows: async () => r })
   const out = await queueTagReplacements(io)
   expect(out.queued).toBe(1)
   expect(log.queue!.edits).toEqual([{ op: 'collapse', from_index: 8, to_index: 10, summary: 'N', anchors: [fingerprint(r[8]!), fingerprint(r[10]!)] }])
@@ -840,7 +858,7 @@ test('QueueTagReplacements — діапазон: a disposable range #8..#10 beco
 test('QueueTagReplacements — слот стану в діапазоні: a state row inside the range refuses the collapse; the queue stays, the tag stays', async () => {
   const r = rows15()
   const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(r[10]!), toHint: 10 }, note: 'N', created_turn: 0 }
-  const { io, log } = harness({ state: 'ok', value: reg([range, { kind: 'state', target: at15(10), created_turn: 0 }]) }, undefined, { rows: async () => r })
+  const { io, log } = harness(okRead(reg([range, { kind: 'state', target: at15(10), created_turn: 0 }])), undefined, { rows: async () => r })
   expect((await queueTagReplacements(io)).queued).toBe(0)
   expect(log.queue).toBeUndefined()
 })
@@ -872,14 +890,36 @@ test('MarkCall — R4 повторний запис: a pair already stale stays 
   expect(markStale(start, r, '/f', 'w2')).toBe(start)
 })
 
+test('staleReads — запис реєстру: an unreadable registry is skipped; the same registry is not written; a changed one is written once', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', BIG)]
+  const run = async (tags: Read<TagRegistry>, path: string) => {
+    const h = harness(tags, undefined, { rows: async () => r })
+    await staleReads(h.io, path, 'w')
+    return h.log
+  }
+  // unreadable: neither the rows nor a write
+  let rowsRead = 0
+  const bad = harness(unreadableRead('bad json'), undefined, { rows: async () => (rowsRead++, r) })
+  await staleReads(bad.io, '/f', 'w')
+  expect(bad.log.tagWrites).toBe(0)
+  expect(rowsRead).toBe(0)
+  // markStale returns the same registry: no write
+  expect((await run(okRead(reg([])), '/other')).tagWrites).toBe(0)
+  expect((await run(okRead(reg([{ kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 0 }])), '/f')).tagWrites).toBe(0)
+  // changed: one write with the stale review; a missing registry counts as empty
+  for (const start of [okRead(reg([], { turn: 2 })), missingRead(reg([], { turn: 2 }))] as Read<TagRegistry>[]) {
+    const log = await run(start, '/f')
+    expect(log.tagWrites).toBe(1)
+    expect(log.tags!.tags).toEqual([{ kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 2 }])
+  }
+})
+
 // ---- [SP_CTX_02_11] [SP_CTX_02_04] thinking-only rows (audit PL_AUD_CTX_P3, CF-3, CF-4)
 
 const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
-const say = (text: string): SessionMessage => ({ role: 'assistant', text, toolUses: [] })
-const ask = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
 
 function thinkingRows(): SessionMessage[] {
-  return [ask('go'), think(), use('a', 'Read'), result('a', 'x'), say('done'), think(), use('b', 'Grep'), result('b', 'y'), say('end')]
+  return [prompt('go'), think(), use('a', 'Read'), result('a', 'x'), reply('done'), think(), use('b', 'Grep'), result('b', 'y'), reply('end')]
 }
 
 test('context_tag — рядок лише з thinking: a pin, a disposable or a review on it alone is TARGET_NOT_FOUND; a remove finds no tag; a range may start there but not end there (BAD_RANGE)', async () => {
@@ -905,17 +945,17 @@ test('context_tag — рядок лише з thinking: a pin, a disposable or a 
 test('LocateSpan — діапазон з thinking-початком: rows shifted by 3 with another thinking row at the old index: the range is found from its last row, not at the old index', async () => {
   const list = thinkingRows()
   const tag = applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }]).registry.tags[0]!
-  const shifted = [ask('earlier'), think(), say('before'), ...list]
+  const shifted = [prompt('earlier'), think(), reply('before'), ...list]
   // Locate alone would take #1 of `shifted`, another thinking row
   expect(resolveTarget(shifted, tag.target)).toEqual([4, 5, 6, 7])
   expect(rebindTags(reg([tag]), list, shifted, [], []).tags[0]!.target).toEqual({ anchor: fingerprint(think()), hint: 4, toAnchor: fingerprint(list[4]!), toHint: 7 })
   // the row the length points at is no thinking row: the range is not found
-  expect(resolveTarget([ask('earlier'), ...list.slice(2)], tag.target)).toBeUndefined()
+  expect(resolveTarget([prompt('earlier'), ...list.slice(2)], tag.target)).toBeUndefined()
 })
 
 // [SP_CTX_02_14] review round 37, W1, for tags (CF-4)
 test('RebindTags — pin на паралельному виклику: a pin by index on the call row of b survives the summarize of a, whose response MergeCallRows joins into one row', async () => {
-  const before = [ask('p'), say('reading'), use('a', 'Read'), use('b', 'Read'), result('a', 'x'), result('b', 'y'), say('done')].map((r, i) => ({ ...r, handle: `h${i}` }))
+  const before = [prompt('p'), reply('reading'), use('a', 'Read'), use('b', 'Read'), result('a', 'x'), result('b', 'y'), reply('done')].map((r, i) => ({ ...r, handle: `h${i}` }))
   const pinned = applyTagRequests(reg([]), before, [{ op: 'add', kind: 'pin', index: 3 }, { op: 'add', kind: 'review', index: 6 }]).registry
   const edits = prepare(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }], undefined, pinnedTargets(before, pinned)).queued
   expect(edits.length).toBe(1)
@@ -990,7 +1030,7 @@ test('RebindTags — два теги на одному злитому рядку
 test('touchedBy і RebindTags — згортання з thinking-початком на зсунутих рядках: the collapse touches the shifted span only; a tag on the row before it stays, the tag of a pair inside goes', async () => {
   const list = thinkingRows()
   const edit = prepare(list, [{ op: 'collapse', from_index: 1, to_index: 4, summary: 'S' }]).queued
-  const shifted = [ask('earlier'), think(), say('before'), ...list].map((r, i) => ({ ...r, handle: `s${i}` }))
+  const shifted = [prompt('earlier'), think(), reply('before'), ...list].map((r, i) => ({ ...r, handle: `s${i}` }))
   expect(touchedBy(shifted, edit[0]!)?.rows).toEqual([4, 5, 6, 7])
   const tagged = applyTagRequests(reg([]), shifted, [{ op: 'add', kind: 'review', index: 2 }, { op: 'add', kind: 'review', tool_use_id: 'a' }]).registry
   const out = applyEdits(shifted, edit, '/s/1.json')
@@ -1002,7 +1042,7 @@ test('touchedBy і RebindTags — згортання з thinking-початко�
 // [SP_CTX_02_11] (review of phase 3, item 2)
 test('context_tag — промпт людини з самих медіа: a pin by index on it and a range that ends on it are taken as before; only an assistant thinking-only row is refused', async () => {
   const media: SessionMessage = { role: 'user', text: '', toolUses: [] }
-  const list = [say('hi'), media, say('seen')]
+  const list = [reply('hi'), media, reply('seen')]
   expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'pin', index: 1 }]).added).toBe(1)
   expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 0, to: 1, note: 'n' }]).added).toBe(1)
   expect(prepare(list, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).errors).toEqual([])

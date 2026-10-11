@@ -14,6 +14,7 @@ import {
   personDelivered,
   pruneDeliveries,
   recordDelivery,
+  trimDeliveries,
   type Deliveries,
   type DeliveryEvent,
   type DeliveryIO,
@@ -22,6 +23,7 @@ import {
 import { MAX_QUEUE_BYTES, type Read } from '../hooks/queue'
 
 import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
+import { result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 function event(door: string, extra: Partial<DeliveryEvent> = {}, content: DeliveryEvent['message']['content'] = []): DeliveryEvent {
   return { door, uuid: `u-${door}`, origin: { kind: 'tool' }, message: { type: 'user', content }, ...extra }
@@ -42,12 +44,12 @@ function fakeIO(start: Read<Deliveries>) {
   const io: DeliveryIO = {
     read: async () => log.file,
     write: async d => {
-      log.file = { state: 'ok', value: d }
+      log.file = okRead(d)
       log.writes++
     },
     quarantine: async () => {
       log.quarantined++
-      log.file = { state: 'missing', value: { items: [] } }
+      log.file = missingRead({ items: [] })
     },
   }
   return { io, log }
@@ -109,7 +111,7 @@ test('RecordDelivery — субагент: events of a subagent change neither t
 })
 
 test('RecordDelivery — копія stream-json: the same text behind a copy of the same anchor is no new item', async () => {
-  const { io, log } = fakeIO({ state: 'ok', value: { items: [item('d1', ['a'])] } })
+  const { io, log } = fakeIO(okRead({ items: [item('d1', ['a'])] }))
   await recordDelivery(io, item('d1-copy', ['a']), MAX_QUEUE_BYTES)
   expect(log.writes).toBe(0)
   await recordDelivery(io, item('d2', ['b']), MAX_QUEUE_BYTES)
@@ -127,18 +129,18 @@ test('RecordDelivery — межі: a long text is cut, the oldest item goes past
   expect(parseDeliveries(JSON.stringify({ items: [long] })).state).toBe('ok')
 
   const full = Array.from({ length: MAX_DELIVERIES }, (_, k) => item(`d${k}`, [`a${k}`], `text ${k}`))
-  const a = fakeIO({ state: 'ok', value: { items: full } })
+  const a = fakeIO(okRead({ items: full }))
   await recordDelivery(a.io, item('new', ['z'], 'new text'), MAX_QUEUE_BYTES)
   const items = a.log.file.state === 'ok' ? a.log.file.value.items : []
   expect(items.length).toBe(MAX_DELIVERIES)
   expect(items[0]!.uuid).toBe('d1')
   expect(items.at(-1)!.uuid).toBe('new')
   // the byte cap drops the oldest too
-  const b = fakeIO({ state: 'ok', value: { items: [item('old', ['o'], 'o'.repeat(500))] } })
+  const b = fakeIO(okRead({ items: [item('old', ['o'], 'o'.repeat(500))] }))
   await recordDelivery(b.io, item('new', ['n'], 'n'.repeat(500)), 800)
   expect(b.log.file.state === 'ok' && b.log.file.value.items.map(x => x.uuid)).toEqual(['new'])
 
-  const c = fakeIO({ state: 'unreadable', reason: 'not JSON' })
+  const c = fakeIO(unreadableRead('not JSON'))
   await recordDelivery(c.io, item('d', ['a']), MAX_QUEUE_BYTES)
   expect(c.log.quarantined).toBe(1)
   expect(c.log.file.state === 'ok' && c.log.file.value.items.length).toBe(1)
@@ -147,26 +149,20 @@ test('RecordDelivery — межі: a long text is cut, the oldest item goes past
 })
 
 test('PruneDeliveries — only the done items go; items recorded meanwhile stay; an unreadable file is left alone', async () => {
-  const { io, log } = fakeIO({ state: 'ok', value: { items: [item('d1', ['a']), item('d2', ['b']), item('d3', ['c'])] } })
+  const { io, log } = fakeIO(okRead({ items: [item('d1', ['a']), item('d2', ['b']), item('d3', ['c'])] }))
   await pruneDeliveries(io, new Set(['d1']))
   expect(log.file.state === 'ok' && log.file.value.items.map(x => x.uuid)).toEqual(['d2', 'd3'])
-  const bad = fakeIO({ state: 'unreadable', reason: 'x' })
+  const bad = fakeIO(unreadableRead('x'))
   await pruneDeliveries(bad.io, new Set(['d1']))
   expect(bad.log.writes).toBe(0)
 })
 
 // ---- [SP_CTX_02_36] InsertDeliveries
 
-function use(id: string, h?: string): SessionMessage {
-  return { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Bash', input: {} }], ...(h ? { handle: h } : {}) }
-}
-function result(id: string, h?: string): SessionMessage {
-  return { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: `out ${id}`, isError: false }], ...(h ? { handle: h } : {}) }
-}
 const prompt: SessionMessage = { role: 'user', text: 'task', toolUses: [], handle: 'h0' }
 
 test('InsertDeliveries — незмінений якір перезібрано: a user row with the text right after the rebuilt anchor row', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2'), use('b', 'h3'), result('b', 'h4')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2'), use('b', 'Read', 'h3'), result('b', undefined, 'h4')]
   const rows = [prompt, use('a'), result('a'), use('b'), result('b')]
   const out = insertDeliveries(before, rows, [item('d1', ['a'])], new Map(), false)
   expect(out.rows.length).toBe(6)
@@ -177,7 +173,7 @@ test('InsertDeliveries — незмінений якір перезібрано:
 })
 
 test('InsertDeliveries — якір з handle: the host carries the attachment; no insert, the item stays', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2')]
   const out = insertDeliveries(before, before, [item('d1', ['a'])], new Map(), false)
   expect(out.rows.length).toBe(3)
   expect(out.counts).toEqual({ inserted: 0, removed: 0 })
@@ -185,7 +181,7 @@ test('InsertDeliveries — якір з handle: the host carries the attachment; 
 })
 
 test('InsertDeliveries — summarize якоря: the delivery follows the result row under its fresh id', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2')]
   const rows = [prompt, use('a_ce1'), result('a_ce1')]
   const out = insertDeliveries(before, rows, [item('d1', ['a'])], new Map([['a', 'a_ce1']]), false)
   expect(out.rows[3]!.text).toBe(PERSON_TEXT)
@@ -193,7 +189,7 @@ test('InsertDeliveries — summarize якоря: the delivery follows the result
 })
 
 test('InsertDeliveries — drop і collapse якоря: the delivery goes with its anchor; removed counts it', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2'), use('b', 'h3'), result('b', 'h4')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2'), use('b', 'Read', 'h3'), result('b', undefined, 'h4')]
   const dropped = [prompt, use('b'), result('b')]
   const out = insertDeliveries(before, dropped, [item('d1', ['a'])], new Map(), false)
   expect(out.rows).toEqual(dropped)
@@ -203,7 +199,7 @@ test('InsertDeliveries — drop і collapse якоря: the delivery goes with i
 
 test('InsertDeliveries — уже рядок / якір зник: no insert, nothing removed, the item is done', async () => {
   const already: SessionMessage = { role: 'user', text: PERSON_TEXT, toolUses: [], handle: 'h3' }
-  const before = [prompt, use('a', 'h1'), result('a', 'h2'), already]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2'), already]
   const rows = [prompt, use('a'), result('a'), already]
   const out = insertDeliveries(before, rows, [item('d1', ['a']), item('d2', ['gone'], 'other text')], new Map(), false)
   expect(out.rows).toEqual(rows)
@@ -212,21 +208,21 @@ test('InsertDeliveries — уже рядок / якір зник: no insert, not
 })
 
 test('InsertDeliveries — дві доставки за одним якорем: both right after the anchor, in file order', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2'), use('b', 'h3'), result('b', 'h4')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2'), use('b', 'Read', 'h3'), result('b', undefined, 'h4')]
   const rows = [prompt, use('a'), result('a'), use('b'), result('b')]
   const out = insertDeliveries(before, rows, [item('d1', ['a'], AGENT_TEXT, 'agent'), item('d2', ['a'], TASK_TEXT, 'task')], new Map(), false)
   expect(out.rows.map(r => r.text)).toEqual(['task', '', '', AGENT_TEXT, TASK_TEXT, '', ''])
 })
 
 test('InsertDeliveries — засів: allRebuilt inserts behind an anchor that had a handle', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2')]
   const out = insertDeliveries(before, before, [item('d1', ['a'])], new Map(), true)
   expect(out.rows[3]!.text).toBe(PERSON_TEXT)
   expect(out.counts.inserted).toBe(1)
 })
 
 test('InsertDeliveries — однаковий текст за різними якорями: the same words after two results are two deliveries; a later apply inserts the one not yet a row', async () => {
-  const before = [prompt, use('a', 'h1'), result('a', 'h2'), use('b', 'h3'), result('b', 'h4')]
+  const before = [prompt, use('a', 'Read', 'h1'), result('a', undefined, 'h2'), use('b', 'Read', 'h3'), result('b', undefined, 'h4')]
   const out = insertDeliveries(before, before, [item('d1', ['a']), item('d2', ['b'])], new Map(), true)
   expect(out.counts).toEqual({ inserted: 2, removed: 0 })
   expect(out.rows.map(r => r.text)).toEqual(['task', '', '', PERSON_TEXT, '', '', PERSON_TEXT])
@@ -240,7 +236,7 @@ test('InsertDeliveries — однаковий текст за різними я�
 })
 
 test('InsertDeliveries — рядок з handle, що піде: a row kept with its handle that DropOwnCalls removes later gets the delivery', async () => {
-  const before = [prompt, use('z', 'h1'), result('z', 'h2')]
+  const before = [prompt, use('z', 'Read', 'h1'), result('z', undefined, 'h2')]
   const kept = insertDeliveries(before, before, [item('d1', ['z'])], new Map(), false)
   expect(kept.counts.inserted).toBe(0)
   const goes = insertDeliveries(before, before, [item('d1', ['z'])], new Map(), false, r => (r.toolResults ?? []).some(t => t.tool_use_id === 'z'))
@@ -316,4 +312,94 @@ test('PersonDelivered — паралельні результати: a drop of o
   expect(personDelivered(rows, 1, items, new Set(['a']))).toBe(false)
   expect(personDelivered(rows, 1, items, new Set(['a', 'b']))).toBe(true)
   expect(personDelivered(rows, 1, [item('d2', ['a'], AGENT_TEXT, 'agent')])).toBe(false)
+})
+
+// ---- [SP_CTX_01_22] the deliveries file: per-field checks and the caps (audit PL_AUD_CTX_P6, TST-22)
+
+test('parseDeliveries — перевірка полів: every field of an item is checked; one bad item makes the file unreadable and names it', async () => {
+  const good = item('d1', ['a'])
+  const reasonOf = (...items: unknown[]) => {
+    const r = parseDeliveries(JSON.stringify({ items }))
+    return r.state === 'unreadable' ? r.reason : 'ok'
+  }
+  expect(reasonOf(good)).toBe('ok')
+  // every kind of DeliveryKind passes, another does not
+  for (const kind of ['person', 'agent', 'task', 'other']) expect(reasonOf({ ...good, kind })).toBe('ok')
+  expect(reasonOf({ ...good, kind: 'system' })).toBe('bad item 1')
+  expect(reasonOf({ ...good, kind: 1 })).toBe('bad item 1')
+  // the text: not blank, at most MAX_DELIVERY_TEXT + 100 (room for the cut mark and the closing tags)
+  expect(reasonOf({ ...good, text: '' })).toBe('bad item 1')
+  expect(reasonOf({ ...good, text: ' \n\t ' })).toBe('bad item 1')
+  expect(reasonOf({ ...good, text: 'x'.repeat(MAX_DELIVERY_TEXT + 100) })).toBe('ok')
+  expect(reasonOf({ ...good, text: 'x'.repeat(MAX_DELIVERY_TEXT + 101) })).toBe('bad item 1')
+  // the anchor: a non-empty list of strings
+  expect(reasonOf({ ...good, anchor: [] })).toBe('bad item 1')
+  expect(reasonOf({ ...good, anchor: 'a' })).toBe('bad item 1')
+  expect(reasonOf({ ...good, anchor: ['a', 2] })).toBe('bad item 1')
+  // cut, media and at: whole numbers, not negative
+  for (const field of ['cut', 'media', 'at']) {
+    expect(reasonOf({ ...good, [field]: 0 })).toBe('ok')
+    expect(reasonOf({ ...good, [field]: -1 })).toBe('bad item 1')
+    expect(reasonOf({ ...good, [field]: 1.5 })).toBe('bad item 1')
+    expect(reasonOf({ ...good, [field]: '1' })).toBe('bad item 1')
+  }
+  // a missing field fails the same way
+  for (const field of ['uuid', 'anchor', 'kind', 'origin', 'text', 'cut', 'media', 'at']) {
+    const { [field]: _gone, ...rest } = good as Record<string, unknown>
+    expect(reasonOf(rest)).toBe('bad item 1')
+  }
+  expect(reasonOf({ ...good, uuid: 7 })).toBe('bad item 1')
+  expect(reasonOf({ ...good, origin: null })).toBe('bad item 1')
+  // an item that is no object
+  expect(reasonOf(null)).toBe('bad item 1')
+  expect(reasonOf([good])).toBe('bad item 1')
+  expect(reasonOf('d1')).toBe('bad item 1')
+  // the first bad item is named by its place, 1-based
+  expect(reasonOf(good, item('d2', ['b']), { ...good, uuid: 'd3', kind: 'nope' }, { ...good, uuid: 'd4', anchor: [] })).toBe('bad item 3')
+})
+
+test('parseDeliveries — файл: not JSON, not an object, no items list, more than MAX_DELIVERIES items: unreadable; exactly MAX_DELIVERIES: ok', async () => {
+  const notJson = parseDeliveries('{')
+  expect(notJson.state === 'unreadable' && notJson.reason).toStartWith('not JSON: ')
+  expect(parseDeliveries('null')).toEqual({ state: 'unreadable', reason: 'not an object' })
+  expect(parseDeliveries('[]')).toEqual({ state: 'unreadable', reason: 'not an object' })
+  expect(parseDeliveries('{}')).toEqual({ state: 'unreadable', reason: 'bad field(s): items' })
+  expect(parseDeliveries('{"items":{}}')).toEqual({ state: 'unreadable', reason: 'bad field(s): items' })
+  expect(parseDeliveries('{"items":[]}')).toEqual({ state: 'ok', value: { items: [] } })
+  const many = (n: number) => Array.from({ length: n }, (_, k) => item(`d${k}`, [`a${k}`], `text ${k}`))
+  const full = parseDeliveries(JSON.stringify({ items: many(MAX_DELIVERIES) }))
+  expect(full.state === 'ok' && full.value.items.length).toBe(MAX_DELIVERIES)
+  expect(parseDeliveries(JSON.stringify({ items: many(MAX_DELIVERIES + 1) }))).toEqual({ state: 'unreadable', reason: 'bad field(s): items' })
+})
+
+test('trimDeliveries — межі: the oldest go first past maxBytes; past MAX_DELIVERIES the newest MAX_DELIVERIES stay; within both the same list comes back', async () => {
+  const bytes = (d: Deliveries) => new TextEncoder().encode(JSON.stringify(d)).length
+  const three: Deliveries = { items: [item('d1', ['a'], 'one'), item('d2', ['b'], 'two'), item('d3', ['c'], 'three')] }
+  // within the bound: the very same object
+  expect(trimDeliveries(three, bytes(three))).toBe(three)
+  // one byte short: only the oldest goes
+  const trimmed = trimDeliveries(three, bytes(three) - 1)
+  expect(trimmed.items.map(x => x.uuid)).toEqual(['d2', 'd3'])
+  // room for the newest only
+  const last: Deliveries = { items: [three.items[2]!] }
+  expect(trimDeliveries(three, bytes(last)).items.map(x => x.uuid)).toEqual(['d3'])
+  // the count cap keeps the newest MAX_DELIVERIES
+  const many: Deliveries = { items: Array.from({ length: MAX_DELIVERIES + 5 }, (_, k) => item(`d${k}`, [`a${k}`], `text ${k}`)) }
+  const capped = trimDeliveries(many, MAX_QUEUE_BYTES)
+  expect(capped.items.length).toBe(MAX_DELIVERIES)
+  expect(capped.items[0]!.uuid).toBe('d5')
+  expect(capped.items.at(-1)!.uuid).toBe(`d${MAX_DELIVERIES + 4}`)
+})
+
+test('trimDeliveries — один елемент більший за maxBytes: the whole list goes, the item too; RecordDelivery then writes an empty list', async () => {
+  const huge = item('big', ['a'], 'x'.repeat(2000))
+  expect(trimDeliveries({ items: [item('d1', ['b'], 'small'), huge] }, 1000)).toEqual({ items: [] })
+  expect(trimDeliveries({ items: [huge] }, 1000)).toEqual({ items: [] })
+  // even the empty list over the bound stays empty, no loop
+  expect(trimDeliveries({ items: [huge] }, 1)).toEqual({ items: [] })
+  // RecordDelivery of an item that alone exceeds the bound: the earlier items are lost with it
+  const { io, log } = fakeIO(okRead({ items: [item('d1', ['b'], 'small')] }))
+  await recordDelivery(io, huge, 1000)
+  expect(log.writes).toBe(1)
+  expect(log.file).toEqual({ state: 'ok', value: { items: [] } })
 })

@@ -32,6 +32,7 @@ import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { harness } from './compaction-fixtures'
 import type { AliasRegistry } from '../hooks/aliases'
 import type { Deliveries, QueuedDelivery } from '../hooks/deliveries'
+import { missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
 const PNG = 'iVBORw0KGgo='
@@ -47,7 +48,7 @@ function conversation(): SessionMessage[] {
 }
 
 function queued(edits: unknown[], extra: Partial<Queue> = {}): Read<Queue> {
-  return { state: 'ok', value: { ...EMPTY_QUEUE, ...extra, edits: prepare(conversation(), edits).queued } }
+  return okRead({ ...EMPTY_QUEUE, ...extra, edits: prepare(conversation(), edits).queued })
 }
 
 test('applies the batch: media archived, own calls dropped, charsAfter after the drop, report queued', async () => {
@@ -105,24 +106,38 @@ test('a failed archive write refuses the whole batch and changes nothing', async
 test('media that cannot be written blocks the edit and keeps the media row', async () => {
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { writeMedia: async () => false })
   const out = await handleCompaction(io, conversation())
-  expect('skip' in out).toBe(true)
-  expect(written.queue!.report).toContain('media could not be archived')
+  expect('skip' in out && out.skip).toBe('context-editor: no edit could be applied')
+  expect(written.queue!.report).toContain('summarize a: media could not be archived')
+  expect(written.boundary).toBeUndefined()
+  // [PL_AUD_CTX_P6] TST-18: beside an edit that applies, the media row stays as it came and only that edit applies
+  const rows: SessionMessage[] = [...conversation(), { role: 'assistant', text: 'a long conclusion', toolUses: [], handle: 'h5' }]
+  const edits = prepare(rows, [{ op: 'summarize', tool_use_id: 'a', summary: 's' }, { op: 'rewrite', index: 5, text: 'short' }]).queued
+  const mixed = harness(okRead({ ...EMPTY_QUEUE, edits }), { writeMedia: async () => false })
+  const kept = await handleCompaction(mixed.io, rows)
+  if (!('messages' in kept)) throw new Error(kept.skip)
+  const media = kept.messages.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'a'))!
+  expect(media).toBe(rows[4])
+  expect(kept.messages.filter(r => r.text.includes('[context-editor]') || (r.toolResults ?? []).some(t => t.text.includes('[context-editor]'))).map(r => r.text)).toEqual([
+    '[context-editor] you rewrote this row (original: /s/1000.json, open with Read): short',
+  ])
+  expect(mixed.written.queue!.report).toContain('applied 1 edit(s): rewrite #5')
+  expect(mixed.written.queue!.report).toContain('summarize a: media could not be archived')
 })
 
 // ---- [SP_CTX_02_07] the commit: nothing written after an abandon, the queue last
 
 function taggedRegistry(): Read<TagRegistry> {
-  return { state: 'ok', value: { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }] } }
+  return okRead({ ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }] })
 }
 
-const ALIASES: Read<AliasRegistry> = { state: 'ok', value: { next: 3, map: { c1: 'a', c2: 'z' } } }
+const ALIASES: Read<AliasRegistry> = okRead({ next: 3, map: { c1: 'a', c2: 'z' } })
 
 const DELIVERY: QueuedDelivery = { uuid: 'd1', anchor: ['a'], kind: 'person', origin: 'unclassified', text: 'mid-turn', cut: 0, media: 0, at: 1 }
 
 test('HandleCompaction — commit: the registries, the queue, then the boundary, the deliveries and the journal', async () => {
   const { io, written } = harness(
     queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]),
-    { readDeliveries: async () => ({ state: 'ok', value: { items: [DELIVERY] } }) },
+    { readDeliveries: async () => okRead({ items: [DELIVERY] }) },
     taggedRegistry(),
     ALIASES,
   )
@@ -143,7 +158,7 @@ test('HandleCompaction — покинуто під час очікування �
         aborted = true
         return work()
       },
-      readDeliveries: async () => ({ state: 'ok', value: { items: [DELIVERY] } }),
+      readDeliveries: async () => okRead({ items: [DELIVERY] }),
     },
     taggedRegistry(),
     ALIASES,
@@ -209,19 +224,19 @@ test('HandleCompaction — запис черги кидає: the registries are 
 test('failureRecord — без пари «applied» + «failed»: once the apply wrote its report, the failure branch writes nothing; an earlier report keeps the failure recorded', async () => {
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]))
   await handleCompaction(io, conversation())
-  const after: Read<Queue> = { state: 'ok', value: written.queue! }
+  const after: Read<Queue> = okRead(written.queue!)
   expect(written.queue!.report).toContain('applied')
   expect(failureRecord(after, written.reported, 'throw', 5)).toBeUndefined()
   // an apply that failed before its commit: the batch is still there beside an older report
   const batch = queued([{ op: 'drop', tool_use_id: 'a' }])
-  const older: Read<Queue> = { state: 'ok', value: { ...written.queue!, edits: batch.state === 'ok' ? batch.value.edits : [] } }
+  const older: Read<Queue> = okRead({ ...written.queue!, edits: batch.state === 'ok' ? batch.value.edits : [] })
   const failed = failureRecord(older, written.reported, 'throw', 5)!
   expect(failed.edits).toEqual([])
   expect(failed.report!.split('\n').length).toBe(2)
   expect(failed.report).toContain('applying the edits failed (throw)')
   // nothing applied by this instance yet, or an unreadable queue: the failure is recorded
   expect(failureRecord(after, undefined, 'throw', 5)).toBeDefined()
-  expect(failureRecord({ state: 'unreadable', reason: 'x' }, 1000, 'throw', 5)!.report).toContain('applying the edits failed')
+  expect(failureRecord(unreadableRead('x'), 1000, 'throw', 5)!.report).toContain('applying the edits failed')
 })
 
 test('HandleCompaction — покинуто під час запису черги: the batch goes back as read, the registries are put back; no boundary, deliveries or journal; the report does not count', async () => {
@@ -238,7 +253,7 @@ test('HandleCompaction — покинуто під час запису черг�
         written.order.push('queue')
         aborted = true
       },
-      readDeliveries: async () => ({ state: 'ok', value: { items: [DELIVERY] } }),
+      readDeliveries: async () => okRead({ items: [DELIVERY] }),
     },
     tags,
     ALIASES,
@@ -275,11 +290,14 @@ test('an abandoned dispatch keeps the batch queued and writes nothing to the que
 })
 
 test('an unreadable or empty queue is skipped untouched', async () => {
-  const a = harness({ state: 'unreadable', reason: 'x' })
-  expect('skip' in (await handleCompaction(a.io, conversation()))).toBe(true)
+  const a = harness(unreadableRead('x'))
+  expect(await handleCompaction(a.io, conversation())).toEqual({ skip: 'context-editor: queue unreadable' })
   expect(a.written.queue).toBeUndefined()
-  const b = harness({ state: 'missing', value: { ...EMPTY_QUEUE } })
-  expect('skip' in (await handleCompaction(b.io, conversation()))).toBe(true)
+  expect(a.written.order).toEqual([])
+  const b = harness(missingRead({ ...EMPTY_QUEUE }))
+  expect(await handleCompaction(b.io, conversation())).toEqual({ skip: 'context-editor: no queued edits' })
+  expect(b.written.queue).toBeUndefined()
+  expect(b.written.order).toEqual([])
 })
 
 test('an undelivered report is kept beside the new one', async () => {
@@ -304,7 +322,7 @@ test('a pin set after the edit was queued fails that edit at application; the re
     { op: 'collapse', from_index: 0, to_index: 2, summary: 'start' },
     { op: 'drop', tool_use_id: 'a' },
   ])
-  const { io, written } = harness(batch, {}, { state: 'ok', value: pinned })
+  const { io, written } = harness(batch, {}, okRead(pinned))
   const out = await handleCompaction(io, conv)
   if (!('messages' in out)) throw new Error(out.skip)
   expect(written.queue!.report).toContain('collapse #0..#2: target is pinned; remove the pin with context_tag first')
@@ -313,7 +331,7 @@ test('a pin set after the edit was queued fails that edit at application; the re
 })
 
 test('an unreadable tag registry fails every edit and changes nothing', async () => {
-  const { io, written } = harness(queued([{ op: 'drop', tool_use_id: 'a' }]), {}, { state: 'unreadable', reason: 'bad tag 1' })
+  const { io, written } = harness(queued([{ op: 'drop', tool_use_id: 'a' }]), {}, unreadableRead('bad tag 1'))
   const out = await handleCompaction(io, conversation())
   expect('skip' in out && out.skip).toContain('no edit could be applied')
   expect(written.queue!.report).toContain('drop a: tag registry unreadable')
@@ -329,7 +347,7 @@ test('after an apply the tags of edited targets go and the others stay', async (
       { kind: 'pin', target: { anchor: fingerprint(conv[0]!), hint: 0 }, created_turn: 0 },
     ],
   }
-  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {}, { state: 'ok', value: reg })
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {}, okRead(reg))
   const out = await handleCompaction(io, conv)
   expect('messages' in out).toBe(true)
   expect(written.tags!.tags.length).toBe(1)
@@ -393,7 +411,7 @@ test('the markers explain themselves to the model', async () => {
 
 test('HandleCompaction — жодної правки: every edit of the batch failed (its target is gone): skip, a "not changed" report without the size line, no boundary', async () => {
   const gone: QueuedEdit = { op: 'drop', tool_use_id: 'gone' }
-  const { io, written } = harness({ state: 'ok', value: { ...EMPTY_QUEUE, edits: [gone] } })
+  const { io, written } = harness(okRead({ ...EMPTY_QUEUE, edits: [gone] }))
   const out = await handleCompaction(io, conversation())
   expect('skip' in out && out.skip).toBe('context-editor: no edit could be applied')
   expect(written.queue!.report).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: drop gone: call or result not found.')
@@ -495,7 +513,7 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
     { role: 'assistant', text: 'a long conclusion', toolUses: [], handle: 'h7' },
   ]
   const edits = prepare(rows, [{ op: 'rewrite', index: 7, text: 'short' }, { op: 'summarize', tool_use_id: 'a', summary: 's' }]).queued
-  const { io, written } = harness({ state: 'ok', value: { ...EMPTY_QUEUE, edits } })
+  const { io, written } = harness(okRead({ ...EMPTY_QUEUE, edits }))
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   // two own pairs went: the rewritten row is #3, the summarized result #2
@@ -504,6 +522,17 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
   expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #3); summarize a (now #2).')
   // the stage marks still follow the edits matched by their plain descriptions
   expect(written.tags).toBeDefined()
+  // [PL_AUD_CTX_P6] TST-18: marks on the two replaced rows go to their made rows
+  const at = (i: number) => ({ anchor: fingerprint(rows[i]!), hint: i })
+  const tags: Read<TagRegistry> = {
+    state: 'ok',
+    value: { ...EMPTY_REGISTRY, tags: [], stage: { name: 'B', after: at(4), openedTurn: 0 }, lastClosed: { name: 'A', after: null, end: at(7), turn: 0 } },
+  }
+  const marked = harness(okRead({ ...EMPTY_QUEUE, edits }), {}, tags)
+  const again = await handleCompaction(marked.io, rows)
+  if (!('messages' in again)) throw new Error(again.skip)
+  expect(marked.written.tags!.stage!.after).toEqual({ anchor: fingerprint(again.messages[2]!), hint: 2 })
+  expect(marked.written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(again.messages[3]!), hint: 3 })
 })
 
 // [SP_CTX_02_14] [SP_CTX_01_05] notesDropped
@@ -530,7 +559,7 @@ test('HandleCompaction — notes: a note on a summarized pair moves; the report 
 // [SP_CTX_01_05] [SP_CTX_02_34] phase 17
 test('HandleCompaction — правки застосовано з відношенням: charsPerToken 2.0 / absent; the handler asks for no telemetry', async () => {
   const run = async (charsPerToken?: number) => {
-    const tags: Read<TagRegistry> = { state: 'ok', value: { ...EMPTY_REGISTRY, tags: [], ...(charsPerToken ? { charsPerToken } : {}) } }
+    const tags: Read<TagRegistry> = okRead({ ...EMPTY_REGISTRY, tags: [], ...(charsPerToken ? { charsPerToken } : {}) })
     const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, tags)
     const out = await handleCompaction(io, conversation())
     if (!('messages' in out)) throw new Error(out.skip)
@@ -573,11 +602,11 @@ test('ScreenPinned — `pin` і `state`: a summarize of a pinned pair and a coll
       { kind: 'state', target: { anchor: fingerprint(rows[1]!), hint: 1 }, created_turn: 0 },
     ],
   }
-  const out = screenPinned(rows, edits, { state: 'ok', value: reg })
+  const out = screenPinned(rows, edits, okRead(reg))
   expect(out.edits.map(e => e.op)).toEqual(['rewrite'])
   expect(out.refused[0]).toContain('target is pinned')
   expect(out.refused[1]).toContain('target holds the state slot')
-  const none = screenPinned(rows, edits, { state: 'unreadable', reason: 'x' })
+  const none = screenPinned(rows, edits, unreadableRead('x'))
   expect(none.edits).toEqual([])
   expect(none.refused.every(r => r.endsWith('tag registry unreadable'))).toBe(true)
 })
@@ -591,7 +620,7 @@ test('HandleCompaction — P13 and the journal: the own call removed is counted 
   expect(entries).toEqual([{ kind: 'apply', at: 1000, edits: 1, archive: '/s/1000.json', compressed: [] }])
   // a batch whose edits all fail: no journal entry, no sentence
   const failed: unknown[] = []
-  const none = harness({ state: 'ok', value: { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'gone' }] } }, { journal: e => void failed.push(e) })
+  const none = harness(okRead({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'gone' }] }), { journal: e => void failed.push(e) })
   await handleCompaction(none.io, conversation())
   expect(failed).toEqual([])
   expect(none.written.queue!.report).not.toContain('Your own')
@@ -625,9 +654,9 @@ function api(ids: string[], media: string[] = []) {
 
 function deliveryHarness(rows: SessionMessage[], edits: unknown[], items: QueuedDelivery[] | Read<Deliveries>, media: string[] = []) {
   const pruned: string[][] = []
-  const read: Read<Deliveries> = Array.isArray(items) ? { state: 'ok', value: { items } } : items
+  const read: Read<Deliveries> = Array.isArray(items) ? okRead({ items }) : items
   const h = harness(
-    { state: 'ok', value: { ...EMPTY_QUEUE, edits: prepare(rows, edits).queued } },
+    okRead({ ...EMPTY_QUEUE, edits: prepare(rows, edits).queued }),
     {
       readApi: async () => api(['z', 'a', 'b', 'c'], media),
       readDeliveries: async () => read,
@@ -700,7 +729,7 @@ test('HandleCompaction — доставка за службовим виклик
 
 test('HandleCompaction — нечитабельний файл доставок: the edits apply without inserts; the report says why', async () => {
   const rows = withPairs('b')
-  const { io, written, pruned } = deliveryHarness(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 's' }], { state: 'unreadable', reason: 'not JSON' })
+  const { io, written, pruned } = deliveryHarness(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 's' }], unreadableRead('not JSON'))
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   expect(written.queue!.report).toContain('Messages delivered during your tool calls could not be restored (not JSON).')
@@ -742,10 +771,10 @@ function frozenHarness(withResponses: boolean, keepCache = true) {
   const rows = turnRows()
   const pruned: string[][] = []
   const h = harness(
-    { state: 'ok', value: { ...EMPTY_QUEUE, keepCache, edits: prepare(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'b is fine' }]).queued } },
+    okRead({ ...EMPTY_QUEUE, keepCache, edits: prepare(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'b is fine' }]).queued }),
     {
       readApi: async () => turnApi(withResponses),
-      readDeliveries: async () => ({ state: 'ok', value: { items: [delivery('d1', 'a', REPORTED), delivery('d2', 'b')] } }),
+      readDeliveries: async () => okRead({ items: [delivery('d1', 'a', REPORTED), delivery('d2', 'b')] }),
       pruneDeliveries: done => void pruned.push([...done].sort()),
     },
   )

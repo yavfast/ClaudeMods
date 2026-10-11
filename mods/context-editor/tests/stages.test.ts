@@ -25,6 +25,7 @@ import {
   OPTIMIZE_MARK,
   optimizeText,
   personAdvice,
+  relocateMark,
   relocateStageMarks,
   SKILL,
   STAGE_ADVICE,
@@ -37,13 +38,12 @@ import {
   type RowMark,
   type UsageInfo,
 } from '../hooks/stages'
-import { contextTag, EMPTY_REGISTRY, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
+import { contextTag, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
+import { prompt, reg, reply, result, use as callRow, missingRead, okRead, unreadableRead } from './row-fixtures'
 
-const prompt = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
-const say = (text: string): SessionMessage => ({ role: 'assistant', text, toolUses: [] })
 const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
-const use = (id: string, tool = 'Read'): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: { file_path: `/f/${id}` } }] })
-const result = (id: string, text = `out ${id}`): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] })
+// every call here reads its own file: the block reports count reproducible pairs by path
+const use = (id: string, tool = 'Read'): SessionMessage => callRow(id, tool, undefined, { file_path: `/f/${id}` })
 const TAG_TOOL = 'mcp__context-editor__context_tag'
 
 // #0..#12: a prompt, four pairs with text between, the call of context_tag at #12 (callId "tc")
@@ -52,13 +52,13 @@ function rows(): SessionMessage[] {
     prompt('task'),
     use('a'),
     result('a', 'x'.repeat(5000)),
-    say('plan'),
+    reply('plan'),
     use('b', 'Grep'),
     result('b'),
-    say('step'),
+    reply('step'),
     use('c'),
     result('c'),
-    say('found'),
+    reply('found'),
     use('d'),
     result('d'),
     use('tc', TAG_TOOL),
@@ -91,19 +91,19 @@ function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Part
   const block: BlockIO = {
     key: async () => 'K',
     rows: async () => list,
-    readTags: async () => ({ state: 'ok', value: log.tags }),
+    readTags: async () => okRead(log.tags),
     media: async () => new Map(),
     usage: async () => USAGE,
     setListed: key => void (log.listed = key),
   }
   const io: TagIO = {
     rows: async () => list,
-    readTags: async () => ({ state: 'ok', value: log.tags }),
+    readTags: async () => okRead(log.tags),
     writeTags: async r => {
       log.tags = r
       log.writes++
     },
-    readQueue: async () => ({ state: 'ok', value: log.queue }),
+    readQueue: async () => okRead(log.queue),
     writeQueue: async q => void (log.queue = q),
     replace: async () => (log.replaces++, { queued: 0, freed: '' }),
     report: (b, replaced) => blockReport(block, b, replaced),
@@ -112,7 +112,6 @@ function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Part
   return { io, log, block }
 }
 
-const reg = (extra: Partial<TagRegistry> = {}): TagRegistry => ({ ...EMPTY_REGISTRY, tags: [], ...extra })
 
 async function tagCall(io: TagIO, tags: unknown[], stale = false, callId = 'tc') {
   const out = await contextTag(io, { tags }, undefined, undefined, stale, callId)
@@ -156,7 +155,7 @@ test('parseRegistry reads stage, lastClosed and introduced and refuses a bad one
 // ---- [SP_CTX_02_11] context_tag open / close
 
 test('context_tag — відкриття без index: the call at #8, a result at #7: stage.after = #7; "its block starts at #8"', async () => {
-  const list = [prompt('p'), use('a'), result('a'), say('s'), use('b'), result('b'), use('c'), result('c'), use('op', TAG_TOOL), say('x')]
+  const list = [prompt('p'), use('a'), result('a'), reply('s'), use('b'), result('b'), use('c'), result('c'), use('op', TAG_TOOL), reply('x')]
   const { io, log } = harness(reg({ turn: 3 }), list)
   const text = await tagCall(io, [{ op: 'open', stage: 'A' }], false, 'op')
   expect(log.tags.stage).toEqual({ name: 'A', after: mark(list, 7), openedTurn: 3 })
@@ -164,7 +163,7 @@ test('context_tag — відкриття без index: the call at #8, a result 
 })
 
 test('context_tag — рядок виклику ще не записано / межа не на thinking', async () => {
-  const list = [prompt('p'), use('a'), result('a'), say('s'), use('b'), result('b'), result('b2'), think(), use('c'), say('end')]
+  const list = [prompt('p'), use('a'), result('a'), reply('s'), use('b'), result('b'), result('b2'), think(), use('c'), reply('end')]
   const missing = harness(reg(), list)
   await tagCall(missing.io, [{ op: 'open', stage: 'A' }], false, 'not-yet')
   expect(missing.log.tags.stage!.after).toEqual(mark(list, 9))
@@ -244,6 +243,38 @@ test('context_tag — REPORT_FAILED: the stage is closed and written; the result
   expect(text).toContain('Stage "A" closed; its report failed: api down; call context_list')
 })
 
+test('context_tag — закриття без звіту: io.report absent: the stage closes and the result says only "Stage \"A\" closed."', async () => {
+  const r = rows()
+  const { io, log } = harness(reg({ stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } }), r, { report: undefined })
+  const text = await tagCall(io, [{ op: 'close' }])
+  expect(log.tags.lastClosed!.name).toBe('A')
+  expect(log.replaces).toBe(1)
+  expect(text.split('\n')).toEqual(['Tagged 0, removed 0; 0 tag(s) in the registry.', 'Stage "A" closed.'])
+})
+
+test('context_tag — заміни не поставлено: io.replace rejects: the stage closes, the report comes without replacements', async () => {
+  const r = rows()
+  const got: unknown[] = []
+  const { io, log } = harness(reg({ stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } }), r, {
+    replace: async () => {
+      throw new Error('queue unreadable')
+    },
+    report: async (b, replaced) => (got.push(replaced), `Stage "${b.name}" closed: report`),
+  })
+  const text = await tagCall(io, [{ op: 'close' }])
+  expect(log.tags.lastClosed!.name).toBe('A')
+  expect(got).toEqual([undefined])
+  expect(text).toContain('Stage "A" closed: report')
+  // two closes in one call: only the last report gets the replacements
+  const two = harness(reg({ stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } }), r, {
+    report: async (_b, replaced) => (got.push(replaced), 'r'),
+  })
+  got.length = 0
+  await tagCall(two.io, [{ op: 'open', stage: 'B' }, { op: 'close' }])
+  expect(two.log.replaces).toBe(1)
+  expect(got).toEqual([undefined, { queued: 0, freed: '' }])
+})
+
 test('context_tag — stage errors: STAGE_FIELDS, STAGE_NAME_REQUIRED, TARGET_NOT_FOUND, INDEXES_STALE, BAD_OP', async () => {
   const cases: [unknown, string, boolean?][] = [
     [{ op: 'open', stage: 'A', kind: 'pin' }, 'STAGE_FIELDS'],
@@ -297,7 +328,7 @@ function blockIO(list: SessionMessage[], tags: TagRegistry, listed: { key?: stri
   return {
     key: async () => 'K',
     rows: async () => list,
-    readTags: async () => ({ state: 'ok', value: tags }),
+    readTags: async () => okRead(tags),
     media: async () => new Map([['u:c', [{ mediaType: 'image/png', bytes: 2048 }]]]),
     usage: async () => USAGE,
     setListed: key => void (listed.key = key),
@@ -459,7 +490,7 @@ function longRows(): SessionMessage[] {
   return [prompt('p'), ...Array.from({ length: 10 }, (_, i) => [use(`p${i}`), result(`p${i}`)]).flat()]
 }
 
-function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = { state: 'ok', value: { ...EMPTY_QUEUE } }, over: Partial<DetectIO> = {}) {
+function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = okRead({ ...EMPTY_QUEUE }), over: Partial<DetectIO> = {}) {
   const log = { tags, queue, statuses: [] as string[], replaces: 0, order: [] as string[] }
   const list = longRows()
   const io: DetectIO = {
@@ -468,14 +499,14 @@ function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = { state: 'o
     updateQueue: async change => {
       const next = change(log.queue)
       if (next) {
-        log.queue = { state: 'ok', value: next }
+        log.queue = okRead(next)
         log.order.push(next.optimize ? 'optimize' : 'queue')
       }
     },
     updateTags: async change => {
       const next = change(log.tags)
       if (next) {
-        log.tags = { state: 'ok', value: next }
+        log.tags = okRead(next)
         log.order.push('tags')
       }
     },
@@ -495,7 +526,7 @@ const regOf = (h: { log: { tags: Read<TagRegistry> } }) => (h.log.tags.state ===
 const queueOf = (h: { log: { queue: Read<Queue> } }) => (h.log.queue.state === 'unreadable' ? undefined : h.log.queue.value)
 
 test('DetectOptimize — мітка з відкритим етапом: the stage closes at the end of the turn (#20); optimize written; replacements queued before it', async () => {
-  const h = detectHarness({ state: 'ok', value: reg({ turn: 6, stage: { name: 'S', after: null, openedTurn: 2 } }) })
+  const h = detectHarness(okRead(reg({ turn: 6, stage: { name: 'S', after: null, openedTurn: 2 } })))
   expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('requested')
   expect(regOf(h)!.lastClosed).toEqual({ name: 'S', after: null, end: mark(h.list, 20), turn: 6 })
   expect(regOf(h)!.stage).toBeUndefined()
@@ -505,10 +536,10 @@ test('DetectOptimize — мітка з відкритим етапом: the stag
 
 test('DetectOptimize — без етапу / перший блок: an unnamed block from the previous end (#8) or from the head', async () => {
   const list = longRows()
-  const after8 = detectHarness({ state: 'ok', value: reg({ turn: 3, lastClosed: { name: 'A', after: null, end: mark(list, 8), turn: 1 } }) })
+  const after8 = detectHarness(okRead(reg({ turn: 3, lastClosed: { name: 'A', after: null, end: mark(list, 8), turn: 1 } })))
   await detectOptimize(after8.io, { aborted: false, answer })
   expect(regOf(after8)!.lastClosed).toEqual({ after: mark(list, 8), end: mark(list, 20), turn: 3 })
-  const first = detectHarness({ state: 'missing', value: reg() })
+  const first = detectHarness(missingRead(reg()))
   await detectOptimize(first.io, { aborted: false, answer })
   expect(regOf(first)!.lastClosed).toEqual({ after: null, end: mark(list, 20), turn: 0 })
 })
@@ -516,7 +547,7 @@ test('DetectOptimize — без етапу / перший блок: an unnamed b
 test('DetectOptimize — закрито інструментом у цьому ході: lastClosed and the new stage stay; optimize written', async () => {
   const list = longRows()
   const start = reg({ turn: 4, lastClosed: { name: 'A', after: null, end: mark(list, 8), turn: 4 }, stage: { name: 'B', after: mark(list, 8), openedTurn: 4 } })
-  const h = detectHarness({ state: 'ok', value: start })
+  const h = detectHarness(okRead(start))
   await detectOptimize(h.io, { aborted: false, answer })
   expect(regOf(h)!.lastClosed).toEqual(start.lastClosed)
   expect(regOf(h)!.stage).toEqual(start.stage)
@@ -533,33 +564,33 @@ test('DetectOptimize — the mark only as the last line, verbatim', async () => 
     '',
   ])
     expect(hasOptimizeMark(no)).toBe(false)
-  const h = detectHarness({ state: 'ok', value: reg() })
+  const h = detectHarness(okRead(reg()))
   expect(await detectOptimize(h.io, { aborted: false, answer: 'put [context-editor: optimize] on the last line\nok' })).toBe('none')
   expect(h.log.order).toEqual([])
 })
 
 test('DetectOptimize — ігнорується: handoff / unreadable queue / aborted / no storage; status lines', async () => {
-  const handoff = detectHarness({ state: 'ok', value: reg() }, { state: 'ok', value: { ...EMPTY_QUEUE, handoff: HANDOFF } })
+  const handoff = detectHarness(okRead(reg()), okRead({ ...EMPTY_QUEUE, handoff: HANDOFF }))
   expect(await detectOptimize(handoff.io, { aborted: false, answer })).toBe('handoff')
   expect(handoff.log.statuses).toEqual(['context-editor: optimization mark ignored: a handoff is pending'])
   expect(handoff.log.order).toEqual([])
-  const unread = detectHarness({ state: 'ok', value: reg() }, { state: 'unreadable', reason: 'x' })
+  const unread = detectHarness(okRead(reg()), unreadableRead('x'))
   expect(await detectOptimize(unread.io, { aborted: false, answer })).toBe('queue-unreadable')
   expect(unread.log.statuses).toEqual(['context-editor: optimization mark ignored: the queue is unreadable'])
-  const aborted = detectHarness({ state: 'ok', value: reg() })
+  const aborted = detectHarness(okRead(reg()))
   expect(await detectOptimize(aborted.io, { aborted: true, answer })).toBe('none')
   expect(aborted.log.order).toEqual([])
-  const down = detectHarness({ state: 'ok', value: reg() }, undefined, { ready: async () => false })
+  const down = detectHarness(okRead(reg()), undefined, { ready: async () => false })
   expect(await detectOptimize(down.io, { aborted: false, answer })).toBe('no-storage')
   expect(down.log.statuses).toEqual(['context-editor: optimization mark ignored: storage unavailable'])
 })
 
 test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable registry: no block, no optimize', async () => {
-  const unread = detectHarness({ state: 'unreadable', reason: 'x' })
+  const unread = detectHarness(unreadableRead('x'))
   expect(await detectOptimize(unread.io, { aborted: false, answer })).toBe('registry-unreadable')
   expect(queueOf(unread)!.optimize).toBe(false)
   expect(unread.log.statuses[0]).toContain('the tag registry is unreadable')
-  const unwritten = detectHarness({ state: 'ok', value: reg() }, undefined, {
+  const unwritten = detectHarness(okRead(reg()), undefined, {
     updateTags: async () => {
       throw new Error('disk full')
     },
@@ -570,7 +601,7 @@ test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable regi
 })
 
 test('DetectOptimize — MARK_NOT_QUEUED / MARK_NO_REPLACEMENTS', async () => {
-  const failing = detectHarness({ state: 'ok', value: reg({ stage: { name: 'S', after: null, openedTurn: 0 } }) })
+  const failing = detectHarness(okRead(reg({ stage: { name: 'S', after: null, openedTurn: 0 } })))
   failing.io.updateQueue = async change => {
     if (change(failing.log.queue)?.optimize) throw new Error('disk full')
   }
@@ -579,11 +610,11 @@ test('DetectOptimize — MARK_NOT_QUEUED / MARK_NO_REPLACEMENTS', async () => {
   expect(queueOf(failing)!.optimize).toBe(false)
   expect(failing.log.statuses).toEqual(['context-editor: optimization mark: the block is closed, but no optimization turn: disk full'])
   // a handoff found on the re-read
-  const late = detectHarness({ state: 'ok', value: reg() })
-  late.io.replace = async () => void (late.log.queue = { state: 'ok', value: { ...EMPTY_QUEUE, handoff: HANDOFF } })
+  const late = detectHarness(okRead(reg()))
+  late.io.replace = async () => void (late.log.queue = okRead({ ...EMPTY_QUEUE, handoff: HANDOFF }))
   expect(await detectOptimize(late.io, { aborted: false, answer })).toBe('not-queued')
   expect(late.log.statuses[0]).toContain('a handoff is pending')
-  const throwing = detectHarness({ state: 'ok', value: reg() }, undefined, {
+  const throwing = detectHarness(okRead(reg()), undefined, {
     replace: async () => {
       throw new Error('boom')
     },
@@ -594,14 +625,16 @@ test('DetectOptimize — MARK_NOT_QUEUED / MARK_NO_REPLACEMENTS', async () => {
 })
 
 test('DetectOptimize — запобіжник петлі: after the optimization prompt the mark is ignored; the flag goes down in all three cases', async () => {
-  for (const [ans, aborted] of [
-    [answer, false],
-    ['no mark', false],
-    [answer, true],
-  ] as [string, boolean][]) {
-    const h = detectHarness({ state: 'ok', value: reg({ stage: { name: 'S', after: null, openedTurn: 0 } }) }, { state: 'ok', value: { ...EMPTY_QUEUE, optimizePrompted: true } })
+  // the mark itself: in-optimization; no mark, or an aborted turn: none
+  for (const [ans, aborted, expected] of [
+    [answer, false, 'in-optimization'],
+    ['no mark', false, 'none'],
+    [answer, true, 'none'],
+  ] as [string, boolean, string][]) {
+    const h = detectHarness(okRead(reg({ stage: { name: 'S', after: null, openedTurn: 0 } })), okRead({ ...EMPTY_QUEUE, optimizePrompted: true }))
     const out = await detectOptimize(h.io, { aborted, answer: ans })
-    expect(out === 'in-optimization' || out === 'none').toBe(true)
+    expect(out).toBe(expected)
+    expect(h.log.statuses).toEqual([])
     expect(queueOf(h)!.optimizePrompted).toBe(false)
     expect(queueOf(h)!.optimize).toBe(false)
     expect(regOf(h)!.stage!.name).toBe('S')
@@ -633,8 +666,18 @@ function apply(before: SessionMessage[], raw: unknown[]) {
 const relocate = (before: SessionMessage[], r: TagRegistry, x: ReturnType<typeof apply>, carried: string[] = []) =>
   relocateStageMarks(rebindTags(r, before, x.after, x.done, x.edits), before, x.after, x.done, x.produced, carried)
 
+test('RelocateMark — межу вже загублено: a mark not found in the rows before the apply, or the head (null), stays null after it', async () => {
+  const before = [prompt('p'), use('a'), result('a', 'x'.repeat(100)), reply('s'), reply('t')]
+  const x = apply(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }])
+  expect(relocateMark({ anchor: 'assistant||gone', hint: 3 }, before, x.after, x.done, x.produced, new Set([1, 2]))).toBe(null)
+  expect(relocateMark(null, before, x.after, x.done, x.produced, new Set([1, 2]))).toBe(null)
+  // the same lost mark through relocateStageMarks: stage.after becomes the head
+  const out = relocate(before, reg({ stage: { name: 'S', after: { anchor: 'assistant||gone', hint: 3 }, openedTurn: 0 } }), x)
+  expect(out.stage!.after).toBe(null)
+})
+
 test('RebindTags — межа після перегляду: after the context_list result (#7); DropOwnCalls drops #6, #7: the mark goes to #5 with its new index', async () => {
-  const before = [prompt('p'), use('a'), result('a', 'x'.repeat(100)), say('s'), say('t'), say('text'), use('l', 'mcp__context-editor__context_list'), result('l'), say('next')]
+  const before = [prompt('p'), use('a'), result('a', 'x'.repeat(100)), reply('s'), reply('t'), reply('text'), use('l', 'mcp__context-editor__context_list'), result('l'), reply('next')]
   const x = apply(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }])
   const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 7), openedTurn: 0 } }), x)
   expect(out.stage!.after).toEqual({ anchor: fingerprint(before[5]!), hint: 5 })
@@ -665,7 +708,7 @@ test('RebindTags — закриття, стискання і новий етап
 
 test('RebindTags — найпізніший створений рядок / спільний рядок результатів: the mark on the made row with the largest index', async () => {
   const par: SessionMessage = { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }, { tool_use_id: 'b', tool: 'Read', input: {} }] }
-  const before = [prompt('p'), par, result('a'), say('mid'), result('b'), say('end')]
+  const before = [prompt('p'), par, result('a'), reply('mid'), result('b'), reply('end')]
   const x = apply(before, [
     { op: 'summarize', tool_use_id: 'a', summary: 'A' },
     { op: 'summarize', tool_use_id: 'b', summary: 'B' },
@@ -674,7 +717,7 @@ test('RebindTags — найпізніший створений рядок / сп
   const out = relocate(before, reg({ lastClosed: { after: null, end: mark(before, 1), turn: 0 } }), x)
   expect(out.lastClosed!.end).toEqual(mark(x.after, 4))
   const shared: SessionMessage = { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A0', isError: false }, { tool_use_id: 'b', text: 'B0', isError: false }] }
-  const before2 = [prompt('p'), par, shared, say('end')]
+  const before2 = [prompt('p'), par, shared, reply('end')]
   const y = apply(before2, [
     { op: 'summarize', tool_use_id: 'a', summary: 'A' },
     { op: 'summarize', tool_use_id: 'b', summary: 'B' },
@@ -689,11 +732,11 @@ test('RebindTags — межа на прибраній парі / без попе
   const x = apply(before, [{ op: 'drop', tool_use_id: 'c' }])
   const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 8), openedTurn: 0 } }), x)
   expect(out.stage!.after).toEqual(mark(x.after, 6))
-  const first = [use('x'), result('x'), say('a'), say('b')]
+  const first = [use('x'), result('x'), reply('a'), reply('b')]
   const y = apply(first, [{ op: 'drop', tool_use_id: 'x' }])
   expect(relocate(first, reg({ stage: { name: 'S', after: mark(first, 1), openedTurn: 0 } }), y).stage!.after).toBe(null)
   // a row rebuilt with the same content keeps the mark, with its new index
-  const withHandle = [prompt('p'), { ...say('kept'), handle: 'h' }, use('a'), result('a', 'x'.repeat(100))]
+  const withHandle = [prompt('p'), { ...reply('kept'), handle: 'h' }, use('a'), result('a', 'x'.repeat(100))]
   const z = apply(withHandle, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }])
   expect(z.after[1]!.handle).toBeUndefined()
   expect(relocate(withHandle, reg({ stage: { name: 'S', after: mark(withHandle, 1), openedTurn: 0 } }), z).stage!.after).toEqual(mark(z.after, 1))
@@ -708,7 +751,7 @@ test('RebindTags — засів з CarryNote: a mark on a result row the seed ex
 })
 
 test('Межі етапів — розрізняльні рядки (05_02): every mark after an apply is null or names a distinctive row', async () => {
-  const before = [prompt('p'), use('a'), result('a'), think(), use('b'), result('b'), say('x')]
+  const before = [prompt('p'), use('a'), result('a'), think(), use('b'), result('b'), reply('x')]
   const x = apply(before, [{ op: 'summarize', tool_use_id: 'b', summary: 'B' }])
   const out = relocate(before, reg({ stage: { name: 'S', after: mark(before, 5), openedTurn: 0 }, lastClosed: { after: mark(before, 2), end: mark(before, 5), turn: 0 } }), x)
   for (const m of [out.stage!.after, out.lastClosed!.after, out.lastClosed!.end]) {
@@ -749,7 +792,7 @@ test('STAGE_ADVICE names the reproducible pairs by the `~` flag', async () => {
 
 // ---- [SP_CTX_02_34] Calibrate and Estimate (phase 17)
 
-const big = (chars: number): SessionMessage[] => [prompt('p'), say('x'.repeat(chars - 1))]
+const big = (chars: number): SessionMessage[] => [prompt('p'), reply('x'.repeat(chars - 1))]
 const messagesUsage = (conversation: number): UsageInfo => ({
   context: { tokens: conversation + 40_000, window: 1_000_000, breakdown: { categories: [{ name: MESSAGES_ROW, tokens: conversation, kind: 'used' }], totalTokens: conversation + 40_000, rawMaxTokens: 1_000_000, autoCompactThreshold: 900_000 } },
 })
@@ -838,11 +881,11 @@ test('Telemetry — виміряне звільнення: after the first respo
 })
 
 test('BlockReport — one ratio: the block size uses the calibration the same report\'s telemetry made', async () => {
-  const list = [prompt('p'), say('x'.repeat(90_000)), use('a'), result('a'), use('tc', TAG_TOOL)]
+  const list = [prompt('p'), reply('x'.repeat(90_000)), use('a'), result('a'), use('tc', TAG_TOOL)]
   const io: BlockIO = {
     key: async () => 'K',
     rows: async () => list,
-    readTags: async () => ({ state: 'ok', value: reg() }),
+    readTags: async () => okRead(reg()),
     media: async () => new Map(),
     usage: async () => messagesUsage(30_000),
     setListed: () => undefined,
@@ -853,7 +896,7 @@ test('BlockReport — one ratio: the block size uses the calibration the same re
 })
 
 test('context_list — a thinking-only row shows as (thinking)', async () => {
-  expect(listRows([prompt('p'), think(), say('x')], 0, 5)).toContain('#1 assistant 0c: (thinking)')
+  expect(listRows([prompt('p'), think(), reply('x')], 0, 5)).toContain('#1 assistant 0c: (thinking)')
 })
 
 // [SP_CTX_02_28] review round 40
@@ -863,6 +906,30 @@ test('Telemetry — a negative measured change (more rows added than freed) is n
   expect(t.measuredFreed).toBeUndefined()
   expect(telemetryText(t)).not.toContain('Last apply')
   expect(state.lastApply).toBeUndefined()
+})
+
+test('Telemetry — гонка з новим застосуванням: a newer apply set another lastApply before the update: it stays; the same request size as before: no change measured, lastApply stays', async () => {
+  // the update sees a registry where a newer apply already set lastApply
+  let state = reg({ lastApply: { at: 9, tokensBefore: 300_000 } })
+  const seen = reg({ lastApply: { at: 5, tokensBefore: 200_000 } })
+  const t = await telemetry(rows(), seen, async () => ({ context: { tokens: 150_000, window: 1_000_000 } }), async change => void (state = change(state)))
+  expect(t.measuredFreed).toBe(50_000)
+  expect(state.lastApply).toEqual({ at: 9, tokensBefore: 300_000 })
+  // the same apply: it goes
+  state = reg({ lastApply: { at: 5, tokensBefore: 200_000 } })
+  await telemetry(rows(), seen, async () => ({ context: { tokens: 150_000, window: 1_000_000 } }), async change => void (state = change(state)))
+  expect(state.lastApply).toBeUndefined()
+  // tokensNow === tokensBefore: no response since the apply; no update at all
+  let updates = 0
+  const same = await telemetry(rows(), seen, async () => ({ context: { tokens: 200_000, window: 1_000_000 } }), async change => void (updates++, (state = change(state))))
+  expect(same.measuredFreed).toBeUndefined()
+  expect(telemetryText(same)).not.toContain('Last apply')
+  expect(updates).toBe(0)
+  // a failing update never fails the telemetry
+  const failing = await telemetry(rows(), seen, async () => ({ context: { tokens: 150_000, window: 1_000_000 } }), async () => {
+    throw new Error('disk full')
+  })
+  expect(failing.measuredFreed).toBe(50_000)
 })
 
 // ---- phase 15: telemetry and the close report by reason, journal, state slot

@@ -178,6 +178,7 @@ Input:
 | unmatchedPromptMedia | int | yes | ≥ 0; кількість повідомлень людини з медіа, не зіставлених з рядками |
 | apiTruncated | bool | yes | API-подання обрізане вікном: `len(api) ≥ ROW_WINDOW − 1` ([SP_CTX_02_10](#SP_CTX_02_10)); тоді рядки до першого відомого результату можуть лежати поза поданням |
 | freeze | `{ api: list<json> }`? | no | передає лише HandleCompaction ([SP_CTX_02_07](#SP_CTX_02_07)) і лише для пакета з `keepCache`; засів — ні | заморожений префікс (фаза 23, [SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22)): `api` — API-подання тієї самої розмови, з якого ResponseStart бачить межі відповідей |
+| newId | `(id) → string`? | no | фабрика FreshId для змінених викликів (`summarize`, носій `collapse`); без неї — FreshId; передають лише тести, щоб ідентифікатори були детерміновані (аудит PL_AUD_CTX, CF-14) |
 
 Output: `{ rows: list<Row>, report: ApplyReport, renamed: map<string, string>, prefix: int }`; `charsAfter` дораховує [SP_CTX_02_07](#SP_CTX_02_07); `renamed` — для кожної застосованої `summarize` її `tool_use_id` → FreshId, з яким пара стоїть у `rows` (читає InsertDeliveries, [SP_CTX_02_36](./context_editor.stages.sp.md#SP_CTX_02_36); фаза 20); `prefix` — довжина замороженого префікса: `rows[0..prefix)` — ті самі рядки входу з `handle`; без `freeze` — 0, з `freeze` без застосованої правки — `len(rows)`.
 
@@ -583,3 +584,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 3 (CF-3): рядок лише з thinking — не ціль `rewrite` і не останній рядок `collapse` (рядки таблиці 02_03); LocateSpan знаходить перший рядок діапазону, що не розрізняльний, від останнього (02_04); 02_01 — хто може бути ціллю |
 | 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: відмови 02_03 — лише для рядка асистента лише з thinking (промпт людини з самих медіа — як раніше); 02_04 — обмеження LocateSpan (кількість рядків діапазону) і чому RebindTags спершу шукає за тотожністю |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): Flush надсилає текст продовження агента за рамкою автора RESUME_FRAME (`context-editor: the resume prompt you set before your edits applied: …`), текст за замовчуванням — з префіксом мода (ResumeText, 02_06; SP_CTX_DEC_17) |
+| 2026-10-11 | PL_AUD_CTX фаза 6 (CF-14): необов'язковий вхід ApplyEdits `newId` — фабрика FreshId для тестів; без неї поведінка та сама (02_04) |

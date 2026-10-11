@@ -21,12 +21,9 @@ import {
   type Note,
 } from '../hooks/notes'
 import { blockReport, optimizeText, personAdvice, telemetry, telemetryText, type BlockIO, type UsageInfo } from '../hooks/stages'
-import { applyTagRequests, EMPTY_REGISTRY, MAX_REGISTRY_BYTES, parseRegistry, type TagIO, type TagRegistry } from '../hooks/tags'
+import { applyTagRequests, MAX_REGISTRY_BYTES, parseRegistry, type TagIO, type TagRegistry } from '../hooks/tags'
+import { prompt, reg, reply, result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
-const prompt = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
-const say = (text: string): SessionMessage => ({ role: 'assistant', text, toolUses: [] })
-const use = (id: string, tool = 'Read'): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: {} }] })
-const result = (id: string, text = `out ${id}`): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }] })
 
 // #0 prompt, then pairs a..j on #1/#2, #3/#4, ... with a text row every third row
 function rows(n = 21): SessionMessage[] {
@@ -34,16 +31,15 @@ function rows(n = 21): SessionMessage[] {
   let k = 0
   while (out.length < n) {
     const id = String.fromCharCode(97 + (k % 26)) + (k >= 26 ? k : '')
-    if (out.length % 5 === 0) out.push(say(`step ${out.length}`))
+    if (out.length % 5 === 0) out.push(reply(`step ${out.length}`))
     else if (out.length + 1 < n) {
       out.push(use(id), result(id))
       k++
-    } else out.push(say(`end ${out.length}`))
+    } else out.push(reply(`end ${out.length}`))
   }
   return out
 }
 
-const reg = (extra: Partial<TagRegistry> = {}): TagRegistry => ({ ...EMPTY_REGISTRY, tags: [], notes: [], ...extra })
 const at = (r: readonly SessionMessage[], i: number) => ({ anchor: fingerprint(r[i]!), hint: i })
 const note = (id: string, target: Note['target'], extra: Partial<Note> = {}): Note => ({ id, target, text: `text of ${id}`, createdTurn: 0, ...extra })
 
@@ -51,12 +47,12 @@ function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Part
   const log = { tags: start, writes: 0 }
   const io: TagIO = {
     rows: async () => list,
-    readTags: async () => ({ state: 'ok', value: log.tags }),
+    readTags: async () => okRead(log.tags),
     writeTags: async r => {
       log.tags = r
       log.writes++
     },
-    readQueue: async () => ({ state: 'ok', value: { ...EMPTY_QUEUE } as Queue }),
+    readQueue: async () => okRead({ ...EMPTY_QUEUE } as Queue),
     writeQueue: async () => undefined,
     ...over,
   }
@@ -151,7 +147,7 @@ test('context_note — call-level refusals: a subagent, no list, no storage, an 
   }
   const down = await contextNote(ok.io, { notes: [{ op: 'add', index: 0, text: 't' }] }, 'HOME is not set')
   expect('code' in down && down.code).toBe('DENIED_STORAGE')
-  const unread = harness(reg(), rows(), { readTags: async () => ({ state: 'unreadable', reason: 'x' }) })
+  const unread = harness(reg(), rows(), { readTags: async () => unreadableRead('x') })
   const a = await contextNote(unread.io, { notes: [{ op: 'add', index: 0, text: 't' }] })
   expect('code' in a && a.code).toBe('DENIED_REGISTRY_READ')
   const failing = harness(reg(), rows(), {
@@ -235,9 +231,14 @@ test('NoteReminders — збій запису: no line; remindAt stays; the next
   expect(h.log.tags.notes[0]!.remindAt).toBe(9)
   fail = false
   expect((await noteReminders(h.io)).length).toBe(1)
-  // missing or unreadable registry: nothing
-  const missing = harness(reg(), rows(), { readTags: async () => ({ state: 'missing', value: reg() }) })
+  // missing or unreadable registry: nothing, and nothing written
+  const due = reg({ turn: 9, notes: [note('n1', { tool_use_id: 'a' }, { remindAt: 9 })], nextNote: 2 })
+  const missing = harness(reg(), rows(), { readTags: async () => missingRead(due) })
   expect(await noteReminders(missing.io)).toEqual([])
+  expect(missing.log.writes).toBe(0)
+  const unreadable = harness(reg(), rows(), { readTags: async () => unreadableRead('bad json') })
+  expect(await noteReminders(unreadable.io)).toEqual([])
+  expect(unreadable.log.writes).toBe(0)
 })
 
 test('Кілька нагадувань одночасно (05_04): two notes with the same remindAt: both lines, the oldest first', async () => {
@@ -323,7 +324,7 @@ test('RebindTags — нотатка на прибраному рядку: n1 on 
 
 test('RebindTags — діапазон нотатки: n2 on #4..#8; the pair at #8/#9 dropped: the end moves to #7; collapse 4..8: a row note on the carrier', async () => {
   // #4 use x, #5 result x, #6 text, #7 text, #8 use y, #9 result y
-  const before = [prompt('p'), use('a'), result('a'), say('s'), use('x'), result('x'), say('t'), say('u'), use('y'), result('y'), say('end')]
+  const before = [prompt('p'), use('a'), result('a'), reply('s'), use('x'), result('x'), reply('t'), reply('u'), use('y'), result('y'), reply('end')]
   const range = note('n2', { ...at(before, 4), toAnchor: fingerprint(before[8]!), toHint: 8 })
   const dropped = apply(before, [{ op: 'drop', tool_use_id: 'y' }])
   const a = rebindNotes(reg({ notes: [range], nextNote: 3 }), before, dropped.after, dropped.done, dropped.produced)
@@ -359,7 +360,7 @@ test('BlockReport — нотатки в блоці: block #4..#11, notes on #6 a
   const io: BlockIO = {
     key: async () => 'K',
     rows: async () => r,
-    readTags: async () => ({ state: 'ok', value: g }),
+    readTags: async () => okRead(g),
     media: async () => new Map(),
     usage: async () => USAGE,
     setListed: () => undefined,
@@ -390,7 +391,7 @@ test('Telemetry — нотатки: 3 notes, one with remindAt / none', async ()
 
 // [SP_CTX_02_14] review round 37, W1
 test('RebindTags — нотатки на паралельних викликах: call rows of one response merged (seed, or an apply): the notes move to the merged row, none dropped', async () => {
-  const before = [prompt('p'), say('reading'), use('a'), use('b'), result('a'), result('b'), say('done')]
+  const before = [prompt('p'), reply('reading'), use('a'), use('b'), result('a'), result('b'), reply('done')]
   const after = mergeCallRows(before.map(r => ({ ...r })))
   expect(after.length).toBe(before.length - 1)
   const notes = [note('n1', at(before, 2)), note('n2', at(before, 3)), note('n3', { ...at(before, 1), toAnchor: fingerprint(before[3]!), toHint: 3 })]
@@ -408,7 +409,7 @@ test('RebindTags — нотатки на паралельних викликах
 
 // [SP_CTX_02_32] review round 37, W2
 test('context_note — рядок без тексту: a thinking-only row by index or as "to" is TARGET_NOT_FOUND with the guidance', async () => {
-  const list = [prompt('p'), { role: 'assistant' as const, text: '', toolUses: [] }, use('a'), result('a'), say('x')]
+  const list = [prompt('p'), { role: 'assistant' as const, text: '', toolUses: [] }, use('a'), result('a'), reply('x')]
   const by = applyNoteRequests(reg(), list, [{ op: 'add', index: 1, text: 't' }])
   expect(by.rejected[0]!.code).toBe('TARGET_NOT_FOUND')
   expect(by.rejected[0]!.reason).toContain('note a neighbouring row')

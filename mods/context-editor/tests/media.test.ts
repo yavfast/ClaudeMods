@@ -8,14 +8,13 @@ import { buildSeed, SUMMARY_OPENER } from '../hooks/handoff'
 import { EMPTY_QUEUE, hasMediaFrom, needsApi, queueEdits, type Queue } from '../hooks/queue'
 import { EMPTY_REGISTRY } from '../hooks/tags'
 import { DUMPS } from './media-fixtures'
+import { prompt, reply, missingRead, okRead } from './row-fixtures'
 
 // [SP_CTX_02_10] PromptMatch and the describe it unblocks ([SP_CTX_DEC_06]).
 
 const img = (data: string) => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data } })
 const text = (t: string) => ({ type: 'text', text: t })
 const SR = (t: string) => text(`<system-reminder>\n${t}\n</system-reminder>`)
-const prompt = (t: string, h?: string): SessionMessage => ({ role: 'user', text: t, toolUses: [], ...(h ? { handle: h } : {}) })
-const reply = (t: string, h?: string): SessionMessage => ({ role: 'assistant', text: t, toolUses: [], ...(h ? { handle: h } : {}) })
 const asst = (t: string) => ({ role: 'assistant', content: [{ type: 'thinking', thinking: 'x' }, text(t)] })
 const matched = (api: unknown[], rows: SessionMessage[]) => Object.fromEntries([...matchPrompts(api, rows)].map(([a, r]) => [String(a), r]))
 
@@ -206,7 +205,7 @@ test('HandleCompaction — describe: the prompt media is archived from the API f
   const io: CompactionIO = {
     dir: '/s',
     now: () => 7,
-    readQueue: async () => ({ state: 'ok', value: q }),
+    readQueue: async () => okRead(q),
     writeQueue: async () => undefined,
     readApi: async () => api,
     writeMedia: async path => {
@@ -216,9 +215,9 @@ test('HandleCompaction — describe: the prompt media is archived from the API f
     writeArchive: async () => true,
     isAborted: () => false,
     toast: () => undefined,
-    readTags: async () => ({ state: 'missing', value: { ...EMPTY_REGISTRY } }),
+    readTags: async () => missingRead({ ...EMPTY_REGISTRY }),
     writeTags: async () => undefined,
-    readAliases: async () => ({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }),
+    readAliases: async () => missingRead({ ...EMPTY_ALIASES, map: {} }),
     writeAliases: async () => undefined,
     writeBoundary: async () => undefined,
     hostId: () => undefined,
@@ -241,7 +240,7 @@ test('BuildSeed — медіа в промптах: a described prompt\'s media 
     rows,
     api,
     edits: prepare(rows, [{ op: 'describe', index: 0, description: 'a red square' }], () => true).queued,
-    tags: { state: 'missing', value: { ...EMPTY_REGISTRY } },
+    tags: missingRead({ ...EMPTY_REGISTRY }),
     folder: '/s/old/1',
     archive: '/s/old/1.json',
     writeMedia: async path => (written.push(path), true),
@@ -268,7 +267,7 @@ function compactionIO(api: unknown[], q: Queue, media: string[], saved: Queue[] 
   return {
     dir: '/s',
     now: () => 7,
-    readQueue: async () => ({ state: 'ok', value: q }),
+    readQueue: async () => okRead(q),
     writeQueue: async next => void saved.push(next),
     readApi: async () => api,
     writeMedia: async path => {
@@ -278,9 +277,9 @@ function compactionIO(api: unknown[], q: Queue, media: string[], saved: Queue[] 
     writeArchive: async () => true,
     isAborted: () => false,
     toast: () => undefined,
-    readTags: async () => ({ state: 'missing', value: { ...EMPTY_REGISTRY } }),
+    readTags: async () => missingRead({ ...EMPTY_REGISTRY }),
     writeTags: async () => undefined,
-    readAliases: async () => ({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }),
+    readAliases: async () => missingRead({ ...EMPTY_ALIASES, map: {} }),
     writeAliases: async () => undefined,
     writeBoundary: async () => undefined,
     hostId: () => undefined,
@@ -313,7 +312,7 @@ test('BuildSeed — describe без зіставлення: the edit fails "no m
     rows,
     api,
     edits: prepare(rows, [{ op: 'describe', index: 0, description: 'a red square' }], () => true).queued,
-    tags: { state: 'missing', value: { ...EMPTY_REGISTRY } },
+    tags: missingRead({ ...EMPTY_REGISTRY }),
     folder: '/s/old/1',
     archive: '/s/old/1.json',
     writeMedia: async path => (written.push(path), true),
@@ -355,7 +354,7 @@ test('BuildSeed — після підсумку: prompt media in the rows after 
     rows,
     api,
     edits: prepare(rows, [{ op: 'describe', index: 5, description: 'a red square' }], () => true).queued,
-    tags: { state: 'missing', value: { ...EMPTY_REGISTRY } },
+    tags: missingRead({ ...EMPTY_REGISTRY }),
     folder: '/s/old/1',
     archive: '/s/old/1.json',
     writeMedia: async path => (written.push(path), true),
@@ -388,4 +387,18 @@ test('PromptMatch — вставлена доставка: a subagent report row
     asst('TEAL'),
   ]
   expect(matched(api, rows)).toEqual({ '0': 0 })
+})
+
+// [PL_AUD_CTX_P6] TST-17
+test('PromptMatch — два промпти в одній одиниці: two person rows before one answer (one API message) leave the media unmatched, never tied to either row', async () => {
+  const rows = [prompt('task'), reply('ok'), prompt('part one'), prompt('part two'), reply('Blue')]
+  const api = [{ role: 'user', content: [text('task')] }, asst('ok'), { role: 'user', content: [text('part one'), text('part two'), img('Ymx1ZQ==')] }, asst('Blue')]
+  expect(matched(api, rows)).toEqual({})
+  const { found, unmatchedPromptMedia } = collectMedia(api, rows)
+  expect(unmatchedPromptMedia).toBe(1)
+  expect(found.has(ownerKey({ row: 2 }))).toBe(false)
+  expect(found.has(ownerKey({ row: 3 }))).toBe(false)
+  // the same unit with one person row ties the media to it
+  const one = [prompt('task'), reply('ok'), prompt('part onepart two'), reply('Blue')]
+  expect(matched(api, one)).toEqual({ '2': 2 })
 })

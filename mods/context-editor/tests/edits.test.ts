@@ -9,27 +9,32 @@ import {
   formatReport,
   freshId,
   fullRow,
+  LIST_COUNT,
   listMode,
   listRows,
   MARK,
   MAX_FULL_ROW,
+  MAX_LIST_COUNT,
+  MAX_TEXT,
   mergeCallRows,
+  NO_REFS,
   ownerKey,
   prepare,
   producedRows,
   replacedOwners,
+  resolveEditRefs,
   responseStart,
   ROW_WINDOW,
   SUMMARIZED,
 } from '../hooks/edits'
+import { result } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
 
+// A call with an input and a copy of its result (`text`), which the edited
+// call must not keep; the shared `use` of row-fixtures has neither.
 function use(id: string, tool: string, h: string): SessionMessage {
   return { role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: { q: id }, text: 'ORIGINAL' }], handle: h }
-}
-function result(id: string, text: string, h: string): SessionMessage {
-  return { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }], handle: h }
 }
 
 function rows(): SessionMessage[] {
@@ -290,8 +295,9 @@ test('a row edit overlapping a pair edit is refused; two pair edits on shared ro
     { op: 'summarize', tool_use_id: 'b', summary: 'b' },
     { op: 'collapse', from_index: 2, to_index: 5, summary: 'all' },
   ])
-  expect(overlap.report.applied.length).toBe(1)
-  expect(overlap.report.failed[0]).toContain('overlaps')
+  // both end at #5; the plan keeps batch order for equal ends, so the pair edit runs first
+  expect(overlap.report.applied).toEqual(['summarize b'])
+  expect(overlap.report.failed).toEqual(['collapse #2..#5: overlaps another edit'])
   const input = parallel()
   const { queued } = prepare(input, [
     { op: 'summarize', tool_use_id: 'p', summary: 'P' },
@@ -654,7 +660,7 @@ test('context_list — повний рядок: index 12 with full shows the row
   expect(small).toContain('tool_result id=a:\nthe whole result')
   expect(small).toContain('note n2: a note')
   expect(listMode({ index: 12, full: true }, 13)).toEqual({ full: 12 })
-  expect('bad' in listMode({ full: true }, 13) && listMode({ full: true }, 13)).toBeTruthy()
+  expect(listMode({ full: true }, 13)).toEqual({ bad: '"full": true needs "index", a row of the listing (0..12) (BAD_FULL)' })
   expect(JSON.stringify(listMode({ full: true, index: 13 }, 13))).toContain('BAD_FULL')
   expect(JSON.stringify(listMode({ index: 3 }, 13))).toContain('BAD_FULL')
   expect(listMode({ from: 5, count: 0 }, 13)).toEqual({ page: { from: 5, count: 0 } })
@@ -940,4 +946,182 @@ test('LocateSpan — згортання з thinking-початком на зсу
   expect(out.rows.length).toBe(shifted.length - 2)
   expect(out.rows.slice(0, 4)).toEqual(shifted.slice(0, 4))
   expect(out.report.originals[0]!.rows).toEqual(shifted.slice(4, 8))
+})
+
+// ---- [PL_AUD_CTX_P6] safety tests before the refactoring (CF-10, CF-14)
+
+const hasMark = (list: readonly SessionMessage[]) => list.some(r => r.text.startsWith(MARK) || (r.toolResults ?? []).some(t => t.text.startsWith(MARK)))
+
+// TST-14
+test('ApplyEdits — collapse, якорі зникли: a queued collapse whose first row changed since it was queued fails "the rows it named are no longer there"; nothing is spliced', async () => {
+  const input = rows()
+  const { queued } = prepare(input, [{ op: 'collapse', from_index: 6, to_index: 8, summary: 'S' }])
+  const changed = input.map((r, i) => (i === 6 ? { ...r, text: 'Another conclusion.' } : r))
+  const out = applyEdits(changed, queued, '/archive.json')
+  expect(out.report.applied).toEqual([])
+  expect(out.report.failed).toEqual(['collapse #6..#8: the rows it named are no longer there'])
+  expect(out.rows.length).toBe(9)
+  expect(hasMark(out.rows)).toBe(false)
+  expect(out.made).toEqual([])
+})
+
+// TST-14
+test('ApplyEdits — collapse, зсунутий проміжок розриває пару: a call without its result came inside the span since it was queued; the collapse fails with the pairing error at the new indexes', async () => {
+  const input = rows()
+  const { queued } = prepare(input, [{ op: 'collapse', from_index: 6, to_index: 8, summary: 'S' }])
+  // a parallel call d whose result stands after the span's last row
+  const shifted = [...input.slice(0, 8), use('d', 'Bash', 'hd'), input[8]!, result('d', 'out', 'hr')]
+  const out = applyEdits(shifted, queued, '/archive.json')
+  expect(out.report.applied).toEqual([])
+  expect(out.report.failed).toEqual(['collapse #6..#8: range #6..#9 splits a tool call from its result (d); widen or narrow it'])
+  expect(out.rows.flatMap(r => r.toolUses.map(u => u.tool_use_id))).toEqual(['a', 'b', 'c', 'd'])
+  expect(out.rows.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id))).toEqual(['a', 'b', 'c', 'd'])
+  expect(hasMark(out.rows)).toBe(false)
+})
+
+// TST-14
+test('ApplyEdits — collapse, медіа не заархівовано: a span holding a media owner (a pair or a prompt row) without an archived file fails "media could not be archived"; with the file it applies', async () => {
+  const input = rows()
+  const { queued } = prepare(input, [{ op: 'collapse', from_index: 6, to_index: 8, summary: 'S' }])
+  const pair = applyEdits(input, queued, '/archive.json', new Map(), new Set([ownerKey({ tool_use_id: 'c' })]))
+  expect(pair.report.applied).toEqual([])
+  expect(pair.report.failed).toEqual(['collapse #6..#8: media could not be archived'])
+  expect(pair.rows[8]!.handle).toBe('h8')
+  expect(pair.report.mediaFiles).toEqual([])
+  const head = prepare(input, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 'S' }]).queued
+  const prompt = applyEdits(input, head, '/archive.json', new Map(), new Set([ownerKey({ row: 0 })]))
+  expect(prompt.report.failed).toEqual(['collapse #0..#1: media could not be archived'])
+  expect(prompt.rows[0]!.handle).toBe('h0')
+  const archived = applyEdits(input, queued, '/archive.json', new Map([[ownerKey({ tool_use_id: 'c' }), ['/m/c.png']]]), new Set([ownerKey({ tool_use_id: 'c' })]))
+  expect(archived.report.applied).toEqual(['collapse #6..#8'])
+  expect(archived.report.mediaFiles).toEqual(['/m/c.png'])
+})
+
+// TST-15
+test('PrepareEdits — форма правки: a non-object, a missing tool_use_id, from_index or index, an empty description and a text over MAX_TEXT are refused; a summary of exactly MAX_TEXT chars is queued', async () => {
+  const { queued, errors } = prepare(rows(), [
+    null,
+    7,
+    { op: 'summarize', summary: 's' },
+    { op: 'drop' },
+    { op: 'collapse', to_index: 3, summary: 's' },
+    { op: 'collapse', from_index: 1.5, to_index: 3, summary: 's' },
+    { op: 'rewrite', text: 't' },
+    { op: 'describe', description: 'd' },
+    { op: 'summarize', tool_use_id: 'a', summary: 'x'.repeat(MAX_TEXT + 1) },
+    { op: 'describe', index: 0, description: '' },
+    { op: 'rewrite', index: 6, text: 'y'.repeat(MAX_TEXT + 1) },
+    { op: 'collapse', from_index: 6, to_index: 8, summary: 'z'.repeat(MAX_TEXT + 1) },
+    { op: 'summarize', tool_use_id: 'a', summary: 'z'.repeat(MAX_TEXT) },
+  ])
+  expect(MAX_TEXT).toBe(8000)
+  expect(errors).toEqual([
+    'edit 1: edit must be an object',
+    'edit 2: edit must be an object',
+    'edit 3: tool_use_id is required',
+    'edit 4: tool_use_id is required',
+    'edit 5: from_index is required',
+    'edit 6: from_index is required',
+    'edit 7: index is required',
+    'edit 8: index is required',
+    'edit 9: summary is too long (max 8000 chars)',
+    'edit 10: description is required',
+    'edit 11: text is too long (max 8000 chars)',
+    'edit 12: summary is too long (max 8000 chars)',
+  ])
+  expect(queued.map(e => e.op)).toEqual(['summarize'])
+})
+
+// TST-16
+test('PrepareEdits — ціль правки: an index out of range for rewrite and describe, describe of a result or an assistant row, and a ref that is not a string are refused', async () => {
+  const raws = [
+    { op: 'rewrite', index: 99, text: 't' },
+    { op: 'rewrite', index: -1, text: 't' },
+    { op: 'describe', index: 99, description: 'd' },
+    { op: 'describe', index: 3, description: 'd' },
+    { op: 'describe', index: 1, description: 'd' },
+    { op: 'summarize', ref: 5, summary: 's' },
+    { op: 'drop', ref: { id: 'a' } },
+    { op: 'drop', ref: 'c9' },
+    { op: 'drop', ref: 'c1', tool_use_id: 'a' },
+  ]
+  // the way context_edit takes: refs resolved first, then PrepareEdits
+  const { edits } = resolveEditRefs(raws, NO_REFS, rows())
+  const { queued, errors } = prepare(rows(), edits)
+  const hint = '(marked calls carry a "[context-editor] id cN" line after their result)'
+  expect(errors).toEqual([
+    'rewrite #99: index out of range',
+    'rewrite #-1: index out of range',
+    'describe #99: index out of range',
+    'describe #3: describe applies to a user prompt row; use summarize for tool results',
+    'describe #1: describe applies to a user prompt row; use summarize for tool results',
+    `edit 6: unknown ref 5 ${hint}`,
+    `edit 7: unknown ref {"id":"a"} ${hint}`,
+    `edit 8: unknown ref c9 ${hint}`,
+    'edit 9: ref and tool_use_id are exclusive',
+  ])
+  expect(queued).toEqual([])
+})
+
+// TST-8
+test('context_list — межі сторінки: a negative from starts at #0, a from past the end shows the last row, a count over MAX_LIST_COUNT is cut to it, a count that is not finite gives LIST_COUNT', async () => {
+  const many: SessionMessage[] = Array.from({ length: 250 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', text: `r${i}`, toolUses: [] }))
+  const shown = (text: string) => text.split('\n').filter(l => /^#\d+/.test(l)).map(l => l.split(' ')[0])
+  const neg = listRows(rows(), -5, 2)
+  expect(neg).toContain('Showing #0..#1 (oldest first)')
+  expect(shown(neg)).toEqual(['#0', '#1'])
+  const past = listRows(rows(), 99, 5)
+  expect(past).toContain('Showing #8..#8 (oldest first)')
+  expect(past).not.toContain('Next page')
+  expect(shown(listRows(rows(), 2.7, 1.9))).toEqual(['#2'])
+  expect(MAX_LIST_COUNT).toBe(200)
+  const cut = listRows(many, 0, 1000)
+  expect(cut).toContain('Showing #0..#199 (oldest first)')
+  expect(cut).toContain('Next page: from=200.')
+  expect(shown(cut).length).toBe(MAX_LIST_COUNT)
+  const nan = listRows(many, 0, Number.NaN)
+  expect(shown(nan).length).toBe(LIST_COUNT)
+  expect(nan).toContain(`Next page: from=${LIST_COUNT}.`)
+  expect(listRows([], 0, 5)).toBe('0 rows.')
+})
+
+// TST-12, ARCH-20: the id factory of ApplyOptions
+test('ApplyEdits — newId: a factory in the options names every edited call (summarize and the collapse carrier); made, renamed and the rows carry those ids', async () => {
+  const input = rows()
+  const { queued } = prepare(input, [
+    { op: 'summarize', tool_use_id: 'a', summary: 'A' },
+    { op: 'collapse', from_index: 6, to_index: 8, summary: 'C' },
+  ])
+  let n = 0
+  const out = applyEdits(input, queued, '', new Map(), new Set(), { newId: id => `${id}_n${++n}` })
+  expect(out.report.applied).toEqual(['collapse #6..#8', 'summarize a'])
+  // the plan runs from the end: the collapse takes the first id
+  expect(out.made.map(m => m.resultId)).toEqual(['c_n1', 'a_n2'])
+  expect([...out.renamed]).toEqual([['a', 'a_n2']])
+  const ids = out.rows.flatMap(r => r.toolUses.map(u => u.tool_use_id))
+  expect(ids).toEqual(['a_n2', 'b', 'c_n1'])
+  expect(out.rows.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id))).toEqual(ids)
+})
+
+// TST-12: uniqueness without the factory
+test('FreshId — унікальність: two ids made for the same base differ; every edited call of one batch gets its own id, paired with its result', async () => {
+  const one = freshId('toolu_01')
+  const two = freshId('toolu_01')
+  expect(one === two).toBe(false)
+  expect(/^toolu_01_ce[0-9a-z]+$/.test(one)).toBe(true)
+  const input = [...rows(), ...parallel()]
+  const { queued } = prepare(input, [
+    { op: 'summarize', tool_use_id: 'a', summary: 'A' },
+    { op: 'summarize', tool_use_id: 'b', summary: 'B' },
+    { op: 'summarize', tool_use_id: 'p', summary: 'P' },
+    { op: 'summarize', tool_use_id: 'q', summary: 'Q' },
+    { op: 'collapse', from_index: 6, to_index: 8, summary: 'C' },
+  ])
+  const out = applyEdits(input, queued, '')
+  expect(out.report.applied.length).toBe(5)
+  const fresh = out.made.map(m => m.resultId!)
+  expect(new Set(fresh).size).toBe(5)
+  const uses = out.rows.flatMap(r => r.toolUses.map(u => u.tool_use_id))
+  expect(new Set(uses).size).toBe(uses.length)
+  expect([...uses].sort()).toEqual([...out.rows.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id))].sort())
 })

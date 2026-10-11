@@ -5,6 +5,7 @@ import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_RESUME_FRAME, queueEdits, RESUME_F
 import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted, type Turns } from '../hooks/turns'
+import { missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const EDITS = [
   { op: 'drop' as const, tool_use_id: 'a' },
@@ -13,7 +14,7 @@ const EDITS = [
 const HANDOFF: HandoffRequest = { mode: 'transcript', resume: true, resumePrompt: 'go', by: 'agent', state: 'queued', at: 0 }
 
 // A host whose /compact runs `onCompact` (the handler) before it returns.
-function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (log: Log) => void, tags: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }) {
+function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (log: Log) => void, tags: Read<TagRegistry> = missingRead({ ...EMPTY_REGISTRY })) {
   const log: Log = { queue, compacts: [], submits: [], statuses: [], timers: [], tags, writes: 0 }
   const turns: Turns = newTurns()
   const io: FlushIO = {
@@ -23,7 +24,7 @@ function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (l
       if (log.queue.state === 'unreadable') return false
       const next = change(log.queue.value)
       if (!next) return false
-      log.queue = { state: 'ok', value: next }
+      log.queue = okRead(next)
       log.writes++
       return true
     },
@@ -36,7 +37,7 @@ function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (l
     submit: async text => void log.submits.push(text),
     // RemoveDelivered on the fake queue, as register.ts binds it
     removeDelivered: async delivered => {
-      if (log.queue.state === 'ok') log.queue = { state: 'ok', value: withoutReport(log.queue.value, delivered) }
+      if (log.queue.state === 'ok') log.queue = okRead(withoutReport(log.queue.value, delivered))
     },
     status: text => void log.statuses.push(text),
     turns,
@@ -46,7 +47,7 @@ function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (l
 }
 type Log = { queue: Read<Queue>; compacts: string[]; submits: string[]; statuses: (string | undefined)[]; timers: { ms: number; fn: () => void }[]; tags: Read<TagRegistry>; writes: number }
 
-const ok = (q: Partial<Queue>): Read<Queue> => ({ state: 'ok', value: { ...EMPTY_QUEUE, ...q } })
+const ok = (q: Partial<Queue>): Read<Queue> => okRead({ ...EMPTY_QUEUE, ...q })
 // what the handler leaves: the batch gone, a report that asks for the resume
 const applied = (log: Log, reportId = 7) => void (log.queue = ok({ report: 'context-editor: applied 2 edit(s)', reportId, reportResume: true, reportPrompt: 'go on' }))
 
@@ -100,7 +101,7 @@ test('Flush: a report appended while the prompt went in stays; only the delivere
 })
 
 test('Flush: an interrupted turn, an empty, unreadable or missing queue plan nothing', async () => {
-  for (const q of [ok({ edits: EDITS }), ok({}), { state: 'unreadable', reason: 'x' } as Read<Queue>, { state: 'missing', value: { ...EMPTY_QUEUE } } as Read<Queue>]) {
+  for (const q of [ok({ edits: EDITS }), ok({}), unreadableRead('x') as Read<Queue>, missingRead({ ...EMPTY_QUEUE }) as Read<Queue>]) {
     const { io, log, state } = harness(q)
     expect(await flushAfterTurn(io, state, q.state === 'ok' && q.value.edits.length > 0)).toBe(false)
     expect(log.timers).toEqual([])
@@ -115,7 +116,7 @@ test('Flush — передача в черзі: edits with a handoff request run
 })
 
 test('Flush — QUEUE_UNREADABLE: no command, nothing written', async () => {
-  const { io, log, state } = harness({ state: 'unreadable', reason: 'bad' })
+  const { io, log, state } = harness(unreadableRead('bad'))
   expect((await flush(io, state, 0)).outcome).toBe('queue-unreadable')
   expect(log.compacts).toEqual([])
   expect(state.scheduled).toBe(false)
@@ -181,6 +182,22 @@ test('Flush — людина почала хід (PERSON_ACTIVE): turns moved wh
   expect(h.log.submits).toEqual([])
   expect(h.state.lastSubmittedReportId).toBe(9)
   expect(h.log.queue.state === 'ok' && h.log.queue.value.report).toContain('applied 2 edit(s)')
+})
+
+// [SP_CTX_02_06] audit PL_AUD_CTX_P6, TST-20
+test('Flush — черга нечитабельна після компактизації: the command ran; compacted with resume none; no prompt, no write, no status line; scheduled down', async () => {
+  for (const optimize of [false, true]) {
+    const h = harness(ok({ edits: EDITS, optimize }), {}, l => void (l.queue = unreadableRead('bad json')), withBlock())
+    const out = await flush(h.io, h.state, 0)
+    // neither the resume nor the optimization turn: no queue to read the report or the request from
+    expect(out).toEqual({ outcome: 'compacted', resume: 'none' })
+    expect(h.log.compacts).toEqual([MARKER])
+    expect(h.log.submits).toEqual([])
+    expect(h.log.writes).toBe(0)
+    expect(h.log.statuses).toEqual([undefined])
+    expect(h.state.scheduled).toBe(false)
+    expect(h.state.lastSubmittedReportId).toBe(0)
+  }
 })
 
 test('Flush — продовження один раз: the same reportId twice sends one resume prompt', async () => {
@@ -249,7 +266,7 @@ test('Flush: scheduled is down after a throw too', async () => {
 // ---- [SP_CTX_02_06] Optimize: the optimization turn
 
 const BLOCK_A: ClosedBlock = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 4 }, turn: 2 }
-const withBlock = (block: ClosedBlock = BLOCK_A): Read<TagRegistry> => ({ state: 'ok', value: { ...EMPTY_REGISTRY, tags: [], lastClosed: block } })
+const withBlock = (block: ClosedBlock = BLOCK_A): Read<TagRegistry> => okRead({ ...EMPTY_REGISTRY, tags: [], lastClosed: block })
 const value = (log: Log) => (log.queue.state === 'ok' ? log.queue.value : undefined)!
 // [SP_CTX_05_02] never both
 const neverBoth = (log: Log) => expect(value(log).optimize && value(log).optimizePrompted).toBe(false)
@@ -338,7 +355,7 @@ test('Flush — промпт ходу оптимізації відхилено:
 })
 
 test('Flush — OPTIMIZE_NO_BLOCK: an unreadable registry or no lastClosed: optimize down, a status line, the resume of the batch as without the mark', async () => {
-  for (const tags of [{ state: 'unreadable', reason: 'x' } as Read<TagRegistry>, { state: 'ok', value: { ...EMPTY_REGISTRY } } as Read<TagRegistry>]) {
+  for (const tags of [unreadableRead('x') as Read<TagRegistry>, okRead({ ...EMPTY_REGISTRY }) as Read<TagRegistry>]) {
     const h = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on', optimize: true })), tags)
     const out = await flush(h.io, h.state, 0)
     expect(out).toEqual({ outcome: 'compacted', resume: 'submitted', optimize: 'no-block' })
@@ -398,7 +415,7 @@ test('Flush: an optimization request alone plans a Flush; with a handoff it does
 
 test('Flush — the optimization prompt carries the note count of the registry (NotesHint)', async () => {
   const notes = [{ id: 'n1', target: { tool_use_id: 'a' }, text: 't', createdTurn: 0 }, { id: 'n2', target: { tool_use_id: 'b' }, text: 'u', createdTurn: 0 }]
-  const h = harness(ok({ optimize: true }), {}, undefined, { state: 'ok', value: { ...EMPTY_REGISTRY, tags: [], lastClosed: BLOCK_A, notes, nextNote: 3 } })
+  const h = harness(ok({ optimize: true }), {}, undefined, okRead({ ...EMPTY_REGISTRY, tags: [], lastClosed: BLOCK_A, notes, nextNote: 3 }))
   await flush(h.io, h.state, 0)
   expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false, 2)])
   expect(h.log.submits[0]).toContain('You have 2 note(s)')

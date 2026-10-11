@@ -27,6 +27,7 @@ import { costRatios } from '../hooks/cache'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
 import { MESSAGES_ROW, type UsageInfo } from '../hooks/stages'
 import { EMPTY_REGISTRY, parseRegistry, type HintState, type Tag, type TagRegistry } from '../hooks/tags'
+import { missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const OUT = 40_000 // chars of one big output: 10k tokens at 4 chars per token
 
@@ -97,9 +98,9 @@ function harness(s: Setup, over: Partial<HintIO> = {}) {
   const conv = s.conversation ?? Math.round(totalChars(s.rows) / 4)
   const window = s.window ?? 1_000_000
   const io: HintIO = {
-    readTags: async () => s.tagsRead ?? { state: 'ok', value: log.reg },
+    readTags: async () => s.tagsRead ?? okRead(log.reg),
     readAliases: async () => s.aliases,
-    readQueue: async () => s.queue ?? { state: 'missing', value: { ...EMPTY_QUEUE } },
+    readQueue: async () => s.queue ?? missingRead({ ...EMPTY_QUEUE }),
     rows: async () => {
       log.rows++
       return s.rows
@@ -124,7 +125,7 @@ function harness(s: Setup, over: Partial<HintIO> = {}) {
       log.reg = change(log.reg)
     },
     updateTags: async change => {
-      const next = change({ state: 'ok', value: log.reg })
+      const next = change(okRead(log.reg))
       if (!next) return false
       log.writes++
       log.reg = next
@@ -140,7 +141,7 @@ function registry(tags: Tag[], extra: Partial<TagRegistry> = {}): TagRegistry {
 }
 
 function aliasRead(map: Record<string, string>, next: number): Read<AliasRegistry> {
-  return { state: 'ok', value: { next, map } }
+  return okRead({ next, map })
 }
 
 function setup(shape: Shape, extra: Partial<Setup> = {}, reg: Partial<TagRegistry> = {}): Setup {
@@ -391,9 +392,9 @@ test('SoftHint — зменшення: a context smaller than at the last sugges
 test('SoftHint — реєстри: a missing or unreadable tag registry, an unreadable alias registry, no review tag: no line, no read of the request', async () => {
   const base = setup(WORTH)
   for (const s of [
-    { ...base, tagsRead: { state: 'unreadable', reason: 'bad' } as Read<TagRegistry> },
-    { ...base, tagsRead: { state: 'missing', value: registry([]) } as Read<TagRegistry> },
-    { ...base, aliases: { state: 'unreadable', reason: 'bad' } as Read<AliasRegistry> },
+    { ...base, tagsRead: unreadableRead('bad') as Read<TagRegistry> },
+    { ...base, tagsRead: missingRead(registry([])) as Read<TagRegistry> },
+    { ...base, aliases: unreadableRead('bad') as Read<AliasRegistry> },
     { ...base, reg: registry([]) },
   ]) {
     const { io, log } = harness(s)
@@ -412,7 +413,7 @@ test('SoftHint — паралельний виклик: a state changed since th
   const { io, log } = harness(setup(WORTH))
   const taken: HintIO = {
     ...io,
-    updateTags: async change => change({ state: 'ok', value: { ...log.reg, hint: { tokens: 240_000, marks: 6 } } }) !== undefined,
+    updateTags: async change => change(okRead({ ...log.reg, hint: { tokens: 240_000, marks: 6 } })) !== undefined,
   }
   expect((await softHint(taken, newHintMemo())).outcome).toBe('not-claimed')
 })
@@ -445,6 +446,64 @@ test('Bounded — строк: a suggestion later than its deadline is dropped an
   const got = await bounded(d => softHint(claimed, newHintMemo(), d).then(o => o.line), () => sleeping)
   expect(got!.startsWith(`${SUGGESTION} summarize`)).toBe(true)
   expect(fast.log.reg.hint).toEqual({ tokens: 240_000, marks: 6, proposed: 37_500 })
+})
+
+test('Bounded — збій роботи: a work that rejects gives no line, before or after its claim, and never rejects itself', async () => {
+  const never = () => new Promise<void>(() => undefined)
+  expect(await bounded(async () => Promise.reject(new Error('boom')), never)).toBeUndefined()
+  // claimed, then failed: the deadline waits for the work and still gets nothing
+  expect(
+    await bounded(async d => {
+      d.claimed = true
+      throw new Error('boom')
+    }, async () => undefined),
+  ).toBeUndefined()
+})
+
+test('SoftHint — строк минув під час claim: the deadline expires while the claim waits on the registry chain: no state, outcome expired; a turn check consumes its run', async () => {
+  const size = harness(setup(WORTH))
+  const d = { expired: false, claimed: false }
+  const memo = newHintMemo()
+  const late: HintIO = {
+    ...size.io,
+    updateTags: async change => {
+      d.expired = true
+      return size.io.updateTags(change)
+    },
+  }
+  expect((await softHint(late, memo, d)).outcome).toBe('expired')
+  expect(d.claimed).toBe(false)
+  expect(size.log.reg.hint).toBeUndefined()
+  expect(memo.checked).toBe(240_000)
+  const turn = harness(setup(WORTH))
+  const t = { expired: false, claimed: false }
+  let calls = 0
+  const lateTurn: HintIO = {
+    ...turn.io,
+    updateTags: async change => {
+      // the claim sees the deadline gone; the settle after it writes the consumed run
+      if (calls++ === 0) t.expired = true
+      return turn.io.updateTags(change)
+    },
+  }
+  expect((await turnSuggestion(lateTurn, newHintMemo(), t)).outcome).toBe('expired')
+  await settle()
+  expect(t.claimed).toBe(false)
+  expect(turn.log.reg.hint).toEqual({ marks: 6 })
+})
+
+test('SoftHint — claim не записано: updateTags rejects: no line, outcome not-claimed on either channel; the size check is not throttled for it', async () => {
+  for (const check of [softHint, turnSuggestion]) {
+    const { io, log } = harness(setup(WORTH))
+    const failing: HintIO = { ...io, updateTags: async () => Promise.reject(new Error('disk full')) }
+    const memo = newHintMemo()
+    const d = { expired: false, claimed: false }
+    const out = await check(failing, memo, d)
+    expect(out).toEqual({ outcome: 'not-claimed' })
+    expect(d.claimed).toBe(false)
+    expect(memo.checked).toBeUndefined()
+    expect(log.reg.hint).toBeUndefined()
+  }
 })
 
 test('SoftHint — запізнення: an output whose check outlived HINT_WAIT sets checked; a turn check consumes its run; no state for the line', async () => {
@@ -483,15 +542,16 @@ test('TagRegistry.hint — розбір: a good state reads; a bad one makes the
   const good = { ...EMPTY_REGISTRY, hint: { tokens: 120_000, marks: 7 } }
   expect(parseRegistry(JSON.stringify(good)).state).toBe('ok')
   expect(parseRegistry(JSON.stringify({ ...EMPTY_REGISTRY, hint: { marks: 1 } })).state).toBe('ok')
-  for (const hint of [{ tokens: 5 }, { marks: 0 }, { marks: 2, tokens: -1 }, { marks: 1.5 }, 'x'])
-    expect(parseRegistry(JSON.stringify({ ...EMPTY_REGISTRY, hint })).state).toBe('unreadable')
+  expect(parseRegistry(JSON.stringify({ ...EMPTY_REGISTRY, hint: { marks: 3, proposed: 0 } })).state).toBe('ok')
+  for (const hint of [{ tokens: 5 }, { marks: 0 }, { marks: 2, tokens: -1 }, { marks: 1.5 }, 'x', { marks: 2, proposed: -1 }, { marks: 2, proposed: 1.5 }, { marks: 2, proposed: '5' }, [{ marks: 2 }], [], null])
+    expect(parseRegistry(JSON.stringify({ ...EMPTY_REGISTRY, hint }))).toEqual({ state: 'unreadable', reason: 'bad field(s): hint' })
 })
 
 test('MarkCall — окремий рядок (фаза 23): the alias line stays as it was; the suggestion has its own prefix and no alias id', async () => {
   let reg: AliasRegistry = { next: 4, map: {} }
   const io: AliasIO = {
     ready: async () => true,
-    readAliases: async () => ({ state: 'ok', value: reg }),
+    readAliases: async () => okRead(reg),
     writeAliases: async r => void (reg = r),
   }
   const alias = await markAlias(io, { denied: false, tool: 'WebFetch', tool_use_id: 'w', size: 9000 })

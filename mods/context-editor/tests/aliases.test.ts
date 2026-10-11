@@ -26,6 +26,7 @@ import { boundaryOf, callLabel, listRows, prepare } from '../hooks/edits'
 import { harness } from './compaction-fixtures'
 import { EMPTY_QUEUE, queueEdits, type Queue, type Read } from '../hooks/queue'
 import { contextTag, EMPTY_REGISTRY, type TagIO, type TagRegistry } from '../hooks/tags'
+import { missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
 
@@ -45,8 +46,7 @@ function aliases(map: Record<string, string>, extra: Partial<AliasRegistry> = {}
   return { next, map, ...extra }
 }
 
-const ok = (reg: AliasRegistry): Read<AliasRegistry> => ({ state: 'ok', value: reg })
-const empty = (): Read<AliasRegistry> => ({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } })
+const empty = (): Read<AliasRegistry> => missingRead({ ...EMPTY_ALIASES, map: {} })
 
 function facts(over: Partial<CallFacts> = {}): CallFacts {
   return { denied: false, tool: 'Read', tool_use_id: 'a', size: 5000, ...over }
@@ -56,7 +56,7 @@ function aliasHarness(read: Read<AliasRegistry>, over: Partial<AliasIO> = {}) {
   const log: { written?: AliasRegistry; writes: number } = { writes: 0 }
   const io: AliasIO = {
     ready: async () => true,
-    readAliases: async () => (log.written ? { state: 'ok', value: log.written } : read),
+    readAliases: async () => (log.written ? okRead(log.written) : read),
     writeAliases: async reg => {
       log.written = reg
       log.writes++
@@ -127,7 +127,7 @@ test('MarkCall leaves small outputs, own tools, subagents, denied calls and call
 
 test('MarkCall from an unreadable registry, without storage or with a failed write adds nothing and keeps the result', async () => {
   const done = { result: { content: BIG }, text: BIG }
-  const unread = aliasHarness({ state: 'unreadable', reason: 'bad alias "x1"' })
+  const unread = aliasHarness(unreadableRead('bad alias "x1"'))
   const none = await markCall(unread.io, facts())
   expect(none).toBeUndefined()
   expect(unread.log.writes).toBe(0)
@@ -173,13 +173,13 @@ test('past MAX_ALIASES marks the oldest alias goes', async () => {
 // ---- [SP_CTX_02_17] ResolveRef
 
 test('ResolveRef: last by the rows, an alias, an unknown alias, an unreadable registry', async () => {
-  const resolve = refResolver(ok(aliases({ c1: 'a', c2: 'b' })))
+  const resolve = refResolver(okRead(aliases({ c1: 'a', c2: 'b' })))
   const conv = rows()
   expect(resolve('last', conv)).toEqual({ id: 'b', line: lastLine('Grep id=b (c2) input="{}"') })
   expect(resolve('c1', conv)).toEqual({ id: 'a' })
   for (const ref of ['c99', 'constructor', 'a']) expect(resolve(ref, conv)).toEqual({ error: `unknown ref ${ref} (marked calls carry a "[context-editor] id cN" line after their result)` })
   // [SP_CTX_01_13] an unreadable registry resolves no alias, but "last" still resolves on the rows
-  const unread = refResolver({ state: 'unreadable', reason: 'x' })
+  const unread = refResolver(unreadableRead('x'))
   expect('error' in unread('c1', conv)).toBe(true)
   expect(unread('last', conv)).toEqual({ id: 'b', line: lastLine('Grep id=b input="{}"') })
   expect(refResolver(empty())('last', [])).toEqual({ error: LAST_NONE })
@@ -203,7 +203,7 @@ test('ResolveLast — малий виклик після позначеного 
     result('small', 'c'.repeat(2500)),
     call('ce', own('context_edit')),
   ]
-  const out = queueEdits(EMPTY_QUEUE, conv, { edits: [{ op: 'summarize', ref: 'last', summary: 'c.log: 60 ok lines' }] }, undefined, refResolver(ok(aliases({ c1: 'big' })), 'ce'))
+  const out = queueEdits(EMPTY_QUEUE, conv, { edits: [{ op: 'summarize', ref: 'last', summary: 'c.log: 60 ok lines' }] }, undefined, refResolver(okRead(aliases({ c1: 'big' })), 'ce'))
   if ('deny' in out) throw new Error(out.deny)
   expect(out.queue.edits).toEqual([{ op: 'summarize', tool_use_id: 'small', summary: 'c.log: 60 ok lines' }])
   expect(out.refLines).toEqual([lastLine('Bash id=small input="{"command":"cat c.log"}"')])
@@ -276,7 +276,7 @@ test('CallLabel: the call as the listing shows it, with the alias and the input 
 })
 
 test('context_edit resolves ref before queueing; unknown and doubled refs are rejected', async () => {
-  const resolve = refResolver(ok(aliases({ c1: 'a', c2: 'b' })))
+  const resolve = refResolver(okRead(aliases({ c1: 'a', c2: 'b' })))
   const out = queueEdits(
     EMPTY_QUEUE,
     rows(),
@@ -301,7 +301,7 @@ test('context_edit resolves ref before queueing; unknown and doubled refs are re
   expect(out.errors[1]).toContain('ref and tool_use_id are exclusive')
   expect(out.refLines).toEqual([lastLine('Grep id=b (c2) input="{}"')])
   // an unreadable registry resolves no alias: the ref is unknown, never a guess
-  const unread = queueEdits(EMPTY_QUEUE, rows(), { edits: [{ op: 'drop', ref: 'c1' }] }, undefined, refResolver({ state: 'unreadable', reason: 'x' }))
+  const unread = queueEdits(EMPTY_QUEUE, rows(), { edits: [{ op: 'drop', ref: 'c1' }] }, undefined, refResolver(unreadableRead('x')))
   if ('deny' in unread) throw new Error(unread.deny)
   expect(unread.queued).toBe(0)
   expect(unread.errors[0]).toContain('unknown ref c1')
@@ -313,11 +313,11 @@ function tagHarness(start: TagRegistry = { ...EMPTY_REGISTRY }) {
   const log: { tags?: TagRegistry } = {}
   const io: TagIO = {
     rows: async () => rows(),
-    readTags: async () => ({ state: 'ok', value: log.tags ?? start }),
+    readTags: async () => okRead(log.tags ?? start),
     writeTags: async r => {
       log.tags = r
     },
-    readQueue: async () => ({ state: 'missing', value: { ...EMPTY_QUEUE } }),
+    readQueue: async () => missingRead({ ...EMPTY_QUEUE }),
     writeQueue: async () => undefined,
   }
   return { io, log }
@@ -326,7 +326,7 @@ function tagHarness(start: TagRegistry = { ...EMPTY_REGISTRY }) {
 test('context_tag with ref "last" tags the pair of the latest call, marked or not, and names it', async () => {
   const { io, log } = tagHarness()
   // only a is marked: "last" is still b, the latest call
-  const resolve = refResolver(ok(aliases({ c1: 'a' })))
+  const resolve = refResolver(okRead(aliases({ c1: 'a' })))
   const out = await contextTag(io, { tags: [{ op: 'add', kind: 'disposable', ref: 'last', note: 'matches: 3' }] }, undefined, resolve)
   if ('deny' in out) throw new Error(out.deny)
   expect(out.result).toContain('Tagged 1')
@@ -341,7 +341,7 @@ test('context_tag with ref "last" tags the pair of the latest call, marked or no
 })
 
 test('context_tag rejects an unknown ref and a ref beside another target', async () => {
-  const resolve = refResolver(ok(aliases({ c1: 'a', c2: 'gone' })))
+  const resolve = refResolver(okRead(aliases({ c1: 'a', c2: 'gone' })))
   const cases: [unknown, string][] = [
     [{ op: 'add', kind: 'pin', ref: 'c99' }, 'UNKNOWN_REF'],
     [{ op: 'add', kind: 'pin', ref: 'c1', tool_use_id: 'a' }, 'TARGET_REQUIRED'],
@@ -390,7 +390,7 @@ const API = [
 ]
 
 function queuedOn(conv: SessionMessage[], edits: unknown[]): Read<Queue> {
-  return { state: 'ok', value: { ...EMPTY_QUEUE, edits: prepare(conv, edits).queued } }
+  return okRead({ ...EMPTY_QUEUE, edits: prepare(conv, edits).queued })
 }
 
 test('after an apply the tag and alias of the changed pair go; those of the untouched pair stay', async () => {
@@ -405,8 +405,8 @@ test('after an apply the tag and alias of the changed pair go; those of the unto
   const { io, written } = harness(
     queuedOn(conv, [{ op: 'summarize', tool_use_id: 'a', summary: 'file A' }]),
     { readApi: async () => API },
-    { state: 'ok', value: tags },
-    ok(aliases({ c1: 'a', c2: 'b' })),
+    okRead(tags),
+    okRead(aliases({ c1: 'a', c2: 'b' })),
   )
   const out = await handleCompaction(io, conv)
   if (!('messages' in out)) throw new Error(out.skip)
@@ -426,7 +426,7 @@ test('a failed alias update does not undo the apply: the batch is cleared, its r
       },
     },
     undefined,
-    ok(aliases({ c1: 'a', c2: 'b' })),
+    okRead(aliases({ c1: 'a', c2: 'b' })),
   )
   const out = await handleCompaction(io, conv)
   if (!('messages' in out)) throw new Error(out.skip)

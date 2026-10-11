@@ -418,3 +418,22 @@ test('EDIT_DESCRIPTION — keep_cache (phase 23): a few words point to the field
   expect(EDIT_DESCRIPTION).toContain('Batch edits in one call (see "keep_cache").')
   expect(EDIT_DESCRIPTION.length).toBe(2029)
 })
+
+// [PL_AUD_CTX_P6] TST-17: before the storage is ready
+test('CurrentRows — сховище не готове: without a storage dir the whole transcript is current, Key is "<session>|", and no boundary is read', async () => {
+  const { returned, transcript } = compactedSession()
+  let reads = 0
+  const io: ViewIO = {
+    ...viewIO(transcript, { raw: JSON.stringify(boundaryOf(returned, ID)) }, known(ID)),
+    storage: async () => ({ sessionId: 'S' }),
+    readBoundary: async () => {
+      reads++
+      return JSON.stringify(boundaryOf(returned, ID))
+    },
+  }
+  const v = await readView(io)
+  expect(v.rows).toBe(transcript)
+  expect(v.transcript).toBe(transcript)
+  expect(v.key).toBe('S|')
+  expect(reads).toBe(0)
+})

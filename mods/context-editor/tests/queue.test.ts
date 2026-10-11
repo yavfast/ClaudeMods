@@ -25,6 +25,7 @@ import { adviceFor, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntrod
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import type { QueuedDelivery } from '../hooks/deliveries'
 import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
+import { missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const rows: SessionMessage[] = [
   { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
@@ -95,14 +96,17 @@ test('KeepOtherSteps і AppendReport: the batch and its choices back to defaults
 })
 
 test('queueEdits refuses empty lists, long resume prompts, a full queue and an oversized file', async () => {
-  expect('deny' in queueEdits(EMPTY_QUEUE, rows, { edits: [] })).toBe(true)
-  expect('deny' in queueEdits(EMPTY_QUEUE, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }], resume_prompt: 'x'.repeat(9000) })).toBe(true)
+  const listOf = `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.`
+  expect(queueEdits(EMPTY_QUEUE, rows, { edits: [] })).toEqual({ deny: listOf })
+  expect(queueEdits(EMPTY_QUEUE, rows, { edits: 'drop a' })).toEqual({ deny: listOf })
+  expect(queueEdits(EMPTY_QUEUE, rows, { edits: Array.from({ length: MAX_QUEUE_EDITS + 1 }, () => ({ op: 'drop', tool_use_id: 'a' })) })).toEqual({ deny: listOf })
+  expect(queueEdits(EMPTY_QUEUE, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }], resume_prompt: 'x'.repeat(9000) })).toEqual({ deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` })
   const full = { ...EMPTY_QUEUE, edits: Array.from({ length: MAX_QUEUE_EDITS }, () => ({ op: 'drop' as const, tool_use_id: 'a' })) }
   const over = queueEdits(full, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
-  expect('deny' in over && over.deny).toContain('exceed')
+  expect('deny' in over && over.deny).toBe(`the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.`)
   const huge = { ...EMPTY_QUEUE, report: 'x'.repeat(MAX_QUEUE_BYTES) }
   const big = queueEdits(huge, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
-  expect('deny' in big && big.deny).toContain('bytes')
+  expect('deny' in big && big.deny).toBe(`the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.`)
 })
 
 test('queueEdits sets the batch fields and keeps rejections beside accepted edits', async () => {
@@ -211,7 +215,7 @@ function io(read: Read<Queue>, over: Partial<QueueIO> = {}) {
 }
 
 test('contextEdit quarantines an unreadable queue and continues with an empty one', async () => {
-  const { port, log } = io({ state: 'unreadable', reason: 'bad field(s): resume' })
+  const { port, log } = io(unreadableRead('bad field(s): resume'))
   const out = await contextEdit(port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
   expect('result' in out && out.result).toContain('moved to /s/pending.json.bad-1')
   expect(log.quarantined).toBe(1)
@@ -219,7 +223,7 @@ test('contextEdit quarantines an unreadable queue and continues with an empty on
 })
 
 test('contextEdit queues an edit given by ref under its tool_use_id', async () => {
-  const { port, log } = io({ state: 'missing', value: { ...EMPTY_QUEUE } })
+  const { port, log } = io(missingRead({ ...EMPTY_QUEUE }))
   const out = await contextEdit(port, rows, { edits: [{ op: 'drop', ref: 'last' }, { op: 'drop', ref: 'c5' }] }, undefined, ref => (ref === 'last' ? { id: 'a', line: '"last" = Read id=a' } : { error: `unknown ref ${ref}` }))
   expect('result' in out && out.result).toContain('Queued 1 edit(s)')
   expect('result' in out && out.result).toContain('unknown ref c5')
@@ -229,27 +233,27 @@ test('contextEdit queues an edit given by ref under its tool_use_id', async () =
 })
 
 test('contextEdit refuses when the queue can neither be read nor moved, or cannot be written', async () => {
-  const stuck = io({ state: 'unreadable', reason: 'x' }, { quarantine: async () => undefined })
+  const stuck = io(unreadableRead('x'), { quarantine: async () => undefined })
   const a = await contextEdit(stuck.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
   expect('deny' in a && a.deny).toContain('/s/pending.json')
-  const failing = io({ state: 'missing', value: { ...EMPTY_QUEUE } }, { writeQueue: async () => { throw new Error('disk full') } })
+  const failing = io(missingRead({ ...EMPTY_QUEUE }), { writeQueue: async () => { throw new Error('disk full') } })
   const b = await contextEdit(failing.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
   expect('deny' in b && b.deny).toContain('disk full')
 })
 
 // A host for DeliverReport: the queue and the registry in memory, bound as
 // register.ts binds them (intro, advice and their writes from stages.ts).
-function deliverHarness(queue: Queue, reg: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }, over: Partial<DeliverIO<{ drop?: unknown }>> = {}) {
+function deliverHarness(queue: Queue, reg: Read<TagRegistry> = missingRead({ ...EMPTY_REGISTRY }), over: Partial<DeliverIO<{ drop?: unknown }>> = {}) {
   const log = { queue, reg, seen: [] as (readonly string[])[], inTurn: false }
   const io: DeliverIO<{ drop?: unknown }> = {
-    readQueue: async () => ({ state: 'ok', value: log.queue }),
+    readQueue: async () => okRead(log.queue),
     intro: async () => introFor(log.reg),
     advice: async () => adviceFor(log.reg),
     inTurn: () => log.inTurn,
     enter: async context => (log.seen.push(context), {}),
     markIntroduced: async () => {
       const next = withIntroduced(log.reg)
-      if (next) log.reg = { state: 'ok', value: next }
+      if (next) log.reg = okRead(next)
     },
     settle: async s => void (log.queue = settledQueue(log.queue, s)),
     ...over,
@@ -257,7 +261,7 @@ function deliverHarness(queue: Queue, reg: Read<TagRegistry> = { state: 'missing
   return { io, log }
 }
 
-const introduced = (): Read<TagRegistry> => ({ state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true } })
+const introduced = (): Read<TagRegistry> => okRead({ ...EMPTY_REGISTRY, introduced: true })
 const BLOCK_A = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 2 }, turn: 1 }
 
 test('deliverReport removes the report only once the prompt entered', async () => {
@@ -290,7 +294,7 @@ test('SessionIntro — перший промпт: the hidden context starts with
   expect(h.log.seen).toEqual([[INTRO_TEXT, 'R'], []])
   expect(h.log.reg.state === 'ok' && h.log.reg.value.introduced).toBe(true)
   // a registry with introduced = false gets it too
-  const fresh = deliverHarness({ ...EMPTY_QUEUE }, { state: 'ok', value: { ...EMPTY_REGISTRY } })
+  const fresh = deliverHarness({ ...EMPTY_QUEUE }, okRead({ ...EMPTY_REGISTRY }))
   await deliverReport(fresh.io)
   expect(fresh.log.seen).toEqual([[INTRO_TEXT]])
 })
@@ -299,7 +303,7 @@ test('SessionIntro — промпт відхилено / реєстр нечит
   const dropped = deliverHarness({ ...EMPTY_QUEUE }, undefined, { enter: async () => ({ drop: 'no' }) })
   await deliverReport(dropped.io)
   expect(dropped.log.reg.state).toBe('missing')
-  const broken = deliverHarness({ ...EMPTY_QUEUE }, { state: 'unreadable', reason: 'x' })
+  const broken = deliverHarness({ ...EMPTY_QUEUE }, unreadableRead('x'))
   await deliverReport(broken.io)
   expect(broken.log.seen).toEqual([[]])
   const unwritten = deliverHarness({ ...EMPTY_QUEUE }, undefined, {
@@ -313,7 +317,7 @@ test('SessionIntro — промпт відхилено / реєстр нечит
 })
 
 test('DeliverReport — порада з промптом людини: PersonAdvice of block "A", no indexes; once entered, optimize is down', async () => {
-  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 4 }, { state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A } })
+  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 4 }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A }))
   await deliverReport(h.io)
   expect(h.log.seen.length).toBe(1)
   const [report, advice] = h.log.seen[0]!
@@ -336,7 +340,7 @@ test('DeliverReport — ADVICE_FAILED / без блоку: the prompt goes witho
   await deliverReport(failing.io)
   expect(failing.log.seen).toEqual([['R']])
   expect(failing.log.queue.optimize).toBe(false)
-  for (const reg of [{ state: 'unreadable', reason: 'x' } as Read<TagRegistry>, introduced()]) {
+  for (const reg of [unreadableRead('x') as Read<TagRegistry>, introduced()]) {
     const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, reg)
     await deliverReport(h.io)
     expect(h.log.seen).toEqual([[]])
@@ -346,6 +350,44 @@ test('DeliverReport — ADVICE_FAILED / без блоку: the prompt goes witho
   const kept = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, introduced(), { enter: async () => ({ drop: 'no' }) })
   await deliverReport(kept.io)
   expect(kept.log.queue.optimize).toBe(true)
+})
+
+// [SP_CTX_02_08] audit PL_AUD_CTX_P6, TST-20: a queue DeliverReport cannot read
+test('DeliverReport — черга не читається: a read that throws or an unreadable queue; the prompt goes with no report, no settle, the queue untouched', async () => {
+  const q: Queue = { ...EMPTY_QUEUE, report: 'R', reportId: 3, optimize: true, optimizePrompted: true }
+  for (const readQueue of [async (): Promise<Read<Queue>> => Promise.reject(new Error('EIO')), async (): Promise<Read<Queue>> => unreadableRead('bad json')]) {
+    let settles = 0
+    let advised = 0
+    const h = deliverHarness(q, introduced(), {
+      readQueue,
+      advice: async () => (advised++, 'advice'),
+      settle: async () => void settles++,
+    })
+    const out = await deliverReport(h.io)
+    expect(out).toEqual({})
+    // neither the report nor the advice of the optimization request: the queue is unknown
+    expect(h.log.seen).toEqual([[]])
+    expect(advised).toBe(0)
+    expect(settles).toBe(0)
+    expect(h.log.queue).toBe(q)
+  }
+})
+
+test('DeliverReport — DELIVERY_FAILED: settle rejects; the prompt still enters, and the report goes again with the next prompt', async () => {
+  let fails = 1
+  const h = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3 }, introduced())
+  const settle = h.io.settle
+  h.io.settle = async s => {
+    if (fails-- > 0) throw new Error('disk full')
+    await settle(s)
+  }
+  const first = await deliverReport(h.io)
+  expect(first).toEqual({})
+  expect(h.log.queue.report).toBe('R')
+  await deliverReport(h.io)
+  await deliverReport(h.io)
+  expect(h.log.seen).toEqual([['R'], ['R'], []])
+  expect(h.log.queue.report).toBeUndefined()
 })
 
 test('DeliverReport — людина взяла хід: optimizePrompted goes down with a prompt between turns, stays with a message mid-turn', async () => {
@@ -372,7 +414,7 @@ test('Queue: optimize and optimizePrompted parse as booleans and are kept by eve
 
 test('DeliverReport — the advice with the person\'s prompt carries the note count (NotesHint)', async () => {
   const notes = [{ id: 'n1', target: { tool_use_id: 'a' }, text: 't', createdTurn: 0 }]
-  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, { state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A, notes, nextNote: 2 } })
+  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A, notes, nextNote: 2 }))
   await deliverReport(h.io)
   expect(h.log.seen[0]![0]).toBe(personAdvice(BLOCK_A, 1))
   expect(h.log.seen[0]![0]).toContain('You have 1 note(s)')
@@ -518,7 +560,7 @@ test('DeliverReport — пропозиція: between turns the suggestion comes
   inTurn.log.inTurn = true
   await deliverReport(inTurn.io)
   expect(inTurn.log.seen).toEqual([[]])
-  const optimize = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, { state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A } }, { suggestion })
+  const optimize = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A }), { suggestion })
   await deliverReport(optimize.io)
   expect(optimize.log.seen[0]!.some(c => c.startsWith('[context-editor: suggestion]'))).toBe(false)
   expect(asked).toEqual(['s'])

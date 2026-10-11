@@ -25,6 +25,7 @@ import {
   checkSeeded,
   contextHandoff,
   DOCUMENT_FRAME,
+  dropRequest,
   handleSeed,
   HANDOFF_DELAY_MS,
   HANDOFF_STALE_MS,
@@ -52,6 +53,7 @@ import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequ
 import { EMPTY_REGISTRY, MAX_TAGS, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted } from '../hooks/turns'
 import type { QueuedDelivery } from '../hooks/deliveries'
+import { result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const BIG = 'KEY_0042 = 2c5f\n' + 'x'.repeat(5000)
 const PNG = 'iVBORw0KGgo='
@@ -89,8 +91,6 @@ function api(bContent: unknown[] = [image()]): unknown[] {
 }
 
 const text = (role: 'user' | 'assistant', t: string): SessionMessage => ({ role, text: t, toolUses: [] })
-const use = (id: string, tool = 'Read'): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: {} }] })
-const result = (id: string, t = 'out'): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: t, isError: false }] })
 const alternating = (n: number): SessionMessage[] => Array.from({ length: n }, (_, i) => text(i % 2 ? 'assistant' : 'user', `row ${i}`))
 
 async function seedOf(over: Partial<SeedInput> = {}, edits: unknown[] = []) {
@@ -101,7 +101,7 @@ async function seedOf(over: Partial<SeedInput> = {}, edits: unknown[] = []) {
     rows,
     api: api(),
     edits: prepare(rows, edits).queued,
-    tags: { state: 'missing', value: { ...EMPTY_REGISTRY } },
+    tags: missingRead({ ...EMPTY_REGISTRY }),
     folder: FOLDER,
     archive: '/s/old/1.json',
     writeMedia: async path => (written.push(path), true),
@@ -142,7 +142,7 @@ test('BuildSeed — доставки в засіві: behind an untouched pair a
   const one = '<system-reminder>\nThe user sent a new message while you were working:\nPELICAN\n</system-reminder>'
   const two = '<system-reminder>\nThe user sent a new message while you were working:\nHERON\n</system-reminder>'
   const seed = built(
-    (await seedOf({ deliveries: { state: 'ok', value: { items: [d('d1', 'c', one), d('d2', 'a', two)] } } }, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out,
+    (await seedOf({ deliveries: okRead({ items: [d('d1', 'c', one), d('d2', 'a', two)] }) }, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out,
   )
   const at1 = seed.rows.findIndex(r => r.text === one)
   const at2 = seed.rows.findIndex(r => r.text === two)
@@ -438,7 +438,7 @@ test('BuildSeed — ScreenPinned: the state slot inside a collapse is refused as
   const state: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'state', target: { anchor: fingerprint(rows[1]!), hint: 1 }, created_turn: 0 }] }
   const out = built(
     (
-      await seedOf({ tags: { state: 'ok', value: state } }, [
+      await seedOf({ tags: okRead(state) }, [
         { op: 'collapse', from_index: 1, to_index: 3, summary: 's' },
         { op: 'rewrite', index: 1, text: 'state: handed off' },
       ])
@@ -451,10 +451,10 @@ test('BuildSeed — ScreenPinned: the state slot inside a collapse is refused as
 })
 
 test('BuildSeed: an unreadable tag registry fails every edit; a pinned target is refused', async () => {
-  const unreadable = built((await seedOf({ tags: { state: 'unreadable', reason: 'x' } }, [{ op: 'drop', tool_use_id: 'c' }])).out)
+  const unreadable = built((await seedOf({ tags: unreadableRead('x') }, [{ op: 'drop', tool_use_id: 'c' }])).out)
   expect(unreadable.report.failed).toEqual(['drop c: tag registry unreadable'])
   const pinned: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { tool_use_id: 'c' }, created_turn: 0 }] }
-  const out = built((await seedOf({ tags: { state: 'ok', value: pinned } }, [{ op: 'drop', tool_use_id: 'c' }])).out)
+  const out = built((await seedOf({ tags: okRead(pinned) }, [{ op: 'drop', tool_use_id: 'c' }])).out)
   expect(out.report.failed.join()).toContain('target is pinned')
 })
 
@@ -592,14 +592,14 @@ test('CurrentRows — межа засіяної сесії: /clear rows, the see
 
 test('PinSummary — реєстр нової сесії: none — made with one pin; full — no pin, a note; unreadable — the same', async () => {
   const row = text('user', SUMMARY)
-  const made = pinSummary({ state: 'missing', value: { ...EMPTY_REGISTRY } }, row)
+  const made = pinSummary(missingRead({ ...EMPTY_REGISTRY }), row)
   expect('registry' in made && made.registry).toEqual({ tags: [{ kind: 'pin', target: { anchor: fingerprint(row), hint: 0 }, created_turn: 0 }], turn: 0, firstPromptPinned: true, introduced: false, notes: [], nextNote: 1 })
   const full: TagRegistry = { ...EMPTY_REGISTRY, tags: Array.from({ length: MAX_TAGS }, (_, i) => ({ kind: 'review' as const, target: { tool_use_id: `t${i}` }, created_turn: 0 })) }
-  expect(pinSummary({ state: 'ok', value: full }, row)).toEqual({ note: ' The summary row was not pinned: the tag registry is full.' })
-  expect(pinSummary({ state: 'unreadable', reason: 'x' }, row)).toEqual({ note: ' The summary row was not pinned: the tag registry is unreadable.' })
+  expect(pinSummary(okRead(full), row)).toEqual({ note: ' The summary row was not pinned: the tag registry is full.' })
+  expect(pinSummary(unreadableRead('x'), row)).toEqual({ note: ' The summary row was not pinned: the tag registry is unreadable.' })
   // a tag already on that row is replaced, even in a full registry
   const taken: TagRegistry = { ...full, tags: [...full.tags.slice(1), { kind: 'review', target: { anchor: fingerprint(row), hint: 3 }, created_turn: 0 }] }
-  const replaced = pinSummary({ state: 'ok', value: taken }, row)
+  const replaced = pinSummary(okRead(taken), row)
   expect('registry' in replaced && replaced.registry.tags.at(-1)!.kind).toBe('pin')
 })
 
@@ -706,7 +706,7 @@ function host(o: HostOpts = {}) {
   }
   let chain: Promise<unknown> = Promise.resolve()
   const dir = (id = s.session) => `/s/${id}`
-  const read =<T>(v: T | undefined, empty: T): Read<T> => (v === undefined ? { state: 'missing', value: empty } : { state: 'ok', value: v })
+  const read =<T>(v: T | undefined, empty: T): Read<T> => (v === undefined ? missingRead(empty) : okRead(v))
   const seedIO: SeedIO = { sessionId: async () => s.session, recordBoundary: async b => void s.boundaries.set(s.session, b), hostId: () => undefined }
   // the host's /compact HANDOFF_MARKER: the handler's rows replace the session's, the command rows follow
   const handler = async () => {
@@ -1622,6 +1622,173 @@ test('RunHandoff — довгий хід під час /clear: past HANDOFF_STAL
   expect(seen[3]).toBe('transcript')
 })
 
+// ---- [SP_CTX_02_21] PrepareSeed, Deliver and DocumentWay when a step fails (audit PL_AUD_CTX_P6, TST-19)
+
+test('PrepareSeed — архів не записано: "the originals could not be archived"; only the seed folder is removed (the archive was never written); the document way names the reason', async () => {
+  const { io, s, oldQueue } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  const writes: string[] = []
+  io.writeText = async path => (writes.push(path), false)
+  expect(await runHandoff(io, s.mem, 0)).toBe('document')
+  // the seed.json is never tried once the archive failed
+  expect(writes).toEqual([`/s/old/${NOW}.json`])
+  expect(s.removed).toEqual([`/s/old/${NOW}`])
+  // the media file of the seed went with its folder
+  expect(s.files.size).toBe(0)
+  expect(s.commands).toEqual(['clear'])
+  expect(s.submitted[0]).toContain('The transcript way failed (transcript: the originals could not be archived). The 1 queued edit(s) were not carried over.')
+  expect(oldQueue().report).toContain('handed off to new (document)')
+})
+
+test('PrepareSeed — seed.json не записано: "the seed could not be written"; the folder and the archive written before it are removed (clean(true)); the document way names the reason', async () => {
+  const { io, s, oldQueue } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  const writes: string[] = []
+  io.writeText = async (path, body) => {
+    writes.push(path)
+    if (path.endsWith('/seed.json')) return false
+    s.files.set(path, body)
+    return true
+  }
+  expect(await runHandoff(io, s.mem, 0)).toBe('document')
+  expect(writes).toEqual([`/s/old/${NOW}.json`, `/s/old/${NOW}/seed.json`])
+  expect(s.removed).toEqual([`/s/old/${NOW}`, `/s/old/${NOW}.json`])
+  expect(s.files.size).toBe(0)
+  expect(s.commands).toEqual(['clear'])
+  expect(s.submitted[0]).toContain('The transcript way failed (transcript: the seed could not be written).')
+  expect(oldQueue().report).toContain('handed off to new (document)')
+})
+
+test('PrepareSeed — доставки старої сесії: readDeliveries reads the old storage; the delivery stands right after its anchor in the seeded rows and the report counts it; a read that throws or an unreadable file: "could not be restored"', async () => {
+  const one = '<system-reminder>\nThe user sent a new message while you were working:\nPELICAN\n</system-reminder>'
+  const d: QueuedDelivery = { uuid: 'd1', anchor: ['c'], kind: 'person', origin: 'composer', text: one, cut: 0, media: 0, at: 1 }
+  const { io, s } = host()
+  const dirs: string[] = []
+  io.readDeliveries = async dir => (dirs.push(dir), okRead({ items: [d] }))
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(dirs).toEqual(['/s/old'])
+  const seeded = s.sessions.get('new')!
+  const at = seeded.findIndex(r => r.text === one)
+  expect(at).toBeGreaterThan(0)
+  expect(seeded[at - 1]!.toolResults![0]!.tool_use_id).toBe('c')
+  expect(s.submitted[0]).toContain('Messages delivered during your tool calls: 1 now stand as rows.')
+  // a read that rejects: its error text is the reason; the seed goes without the deliveries
+  const thrown = host()
+  thrown.io.readDeliveries = async () => {
+    throw new Error('EACCES')
+  }
+  expect(await runHandoff(thrown.io, thrown.s.mem, 0)).toBe('transcript')
+  expect(thrown.s.submitted[0]).toContain('Messages delivered during your tool calls could not be restored (Error: EACCES).')
+  expect(thrown.s.sessions.get('new')!.some(r => r.text === one)).toBe(false)
+  const unreadable = host()
+  unreadable.io.readDeliveries = async () => unreadableRead('bad item 2')
+  expect(await runHandoff(unreadable.io, unreadable.s.mem, 0)).toBe('transcript')
+  expect(unreadable.s.submitted[0]).toContain('Messages delivered during your tool calls could not be restored (bad item 2).')
+})
+
+test('RunHandoff — медіа промпту не перенесено: an image in the person\'s prompt that no edit replaces; the report says "Media in 1 of the person\'s prompt(s) was not carried over."', async () => {
+  const withImage = [{ role: 'user', content: [{ type: 'text', text: 'task: find KEY_0042' }, image('cHJvbXB0')] }, ...api().slice(1)]
+  const { io, s } = host({ api: withImage })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.submitted[0]).toContain("context-editor: this session continues old (transcript). Media in 1 of the person's prompt(s) was not carried over.")
+  // only the tool result's image went to a file
+  expect([...s.files.keys()].filter(k => k.endsWith('.png'))).toEqual([`/s/old/${NOW}/1.png`])
+})
+
+test('Deliver — лише в черзі, сховище недоступне: seeded with resume false; the new storage is gone by the report; the report is lost, a toast names the step', async () => {
+  const { io, s, oldQueue } = host({ h: { resume: false } })
+  const storage = io.storage
+  // the new session's storage works until the seed compaction is done and is gone after it (for Deliver)
+  const run = io.runCommand
+  let seeded = false
+  io.runCommand = async (c, a) => {
+    await run(c, a)
+    if (c === 'compact') seeded = true
+  }
+  io.storage = async () => (s.session === 'new' && seeded ? { reason: 'HOME is not set' } : storage())
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.submitted).toEqual([])
+  expect(s.queues.has('/s/new')).toBe(false)
+  expect(s.toasts).toEqual(['context-editor: seeded the new session, but step deliver failed: the storage of this session is unavailable: HOME is not set.'])
+  expect(oldQueue().report).toContain('handed off to new (transcript)')
+  expect(oldQueue().handoff).toBeUndefined()
+})
+
+test('Deliver — лише в черзі, нова черга нечитабельна: seeded with resume false; the report is lost, a toast names the step; nothing written into the new queue', async () => {
+  const { io, s } = host({ h: { resume: false } })
+  const update = io.updateQueue
+  io.updateQueue = async (d, change) => (d === '/s/new' ? void (await change(unreadableRead('bad json'))) : update(d, change))
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.submitted).toEqual([])
+  expect(s.queues.has('/s/new')).toBe(false)
+  expect(s.toasts).toEqual(['context-editor: seeded the new session, but step deliver failed: the queue of this session cannot be read (bad json).'])
+})
+
+test('Deliver — AfterClear, сховище недоступне: a turn began right after /clear; the notice cannot wait in the new queue; FailAfterClear in the old one and a toast naming the step', async () => {
+  const { io, s, oldQueue } = host()
+  const run = io.runCommand
+  io.runCommand = async (c, a) => {
+    await run(c, a)
+    if (c === 'clear') turnStarted(s.turns)
+  }
+  const storage = io.storage
+  io.storage = async () => (s.session === 'new' ? { reason: 'mkdir: denied' } : storage())
+  expect(await runHandoff(io, s.mem, 0)).toBe('failed')
+  expect(s.submitted).toEqual([])
+  expect(s.queues.has('/s/new')).toBe(false)
+  expect(oldQueue().report).toContain('handoff failed after the session was cleared: transcript: a turn began in the new session')
+  expect(s.toasts).toContain('context-editor: handoff after /clear: step deliver failed: the storage of this session is unavailable: mkdir: denied')
+})
+
+// BUG (reported, not fixed here): in DocumentWay the Deliver after HandedOff is
+// not caught as a step. With resume false and the new session's storage or
+// queue unusable, the throw reaches onException after /clear with HandedOff
+// already written (terminal): no FailAfterClear, no toast. The document is
+// lost while the old queue says it was handed off.
+test('DocumentWay — Deliver лише в черзі падає (поточна поведінка): resume false, the new storage unavailable; outcome failed, the document lost without a toast; the old queue says handed off', async () => {
+  for (const breakNew of [
+    (h: ReturnType<typeof host>) => {
+      const storage = h.io.storage
+      h.io.storage = async () => (h.s.session === 'new' ? { reason: 'HOME is not set' } : storage())
+    },
+    (h: ReturnType<typeof host>) => {
+      const update = h.io.updateQueue
+      h.io.updateQueue = async (d, change) => (d === '/s/new' ? void (await change(unreadableRead('bad json'))) : update(d, change))
+    },
+  ]) {
+    const h = host({ h: { mode: 'document', document: 'my handoff', resume: false } })
+    breakNew(h)
+    expect(await runHandoff(h.io, h.s.mem, 0)).toBe('failed')
+    expect(h.s.commands).toEqual(['clear'])
+    expect(h.s.submitted).toEqual([])
+    expect(h.s.queues.has('/s/new')).toBe(false)
+    expect(h.s.toasts).toEqual([])
+    expect(h.oldQueue().report).toBe('context-editor: this session was handed off to new (document).')
+    expect(h.oldQueue().handoff).toBeUndefined()
+  }
+})
+
+test('DocumentWay — /clear відхилено: Fail with "document: /clear was refused: <host text>"; after a refused seed both reasons; the edits stay, no prompt', async () => {
+  const refuse = async () => {
+    throw new Error('T: busy')
+  }
+  const doc = host({ h: { mode: 'document', document: 'doc' }, edits: [{ op: 'drop', tool_use_id: 'c' }] })
+  doc.io.runCommand = refuse
+  expect(await runHandoff(doc.io, doc.s.mem, 0)).toBe('failed')
+  const text = 'context-editor: handoff failed: document: /clear was refused: T: busy; the session was not changed.'
+  expect(doc.oldQueue().report).toBe(text)
+  expect(doc.oldQueue().edits.length).toBe(1)
+  expect(doc.oldQueue().handoff).toBeUndefined()
+  expect(doc.s.submitted).toEqual([])
+  expect(doc.s.toasts).toEqual([text])
+  // the transcript way refused its seed first (WINDOW_FULL): both reasons, in order
+  const full = host({ rows: alternating(ROW_WINDOW), api: [] })
+  full.io.runCommand = refuse
+  expect(await runHandoff(full.io, full.s.mem, 0)).toBe('failed')
+  expect(full.oldQueue().report).toBe(
+    `context-editor: handoff failed: transcript: the conversation fills the host's ${ROW_WINDOW}-row window; its start may be cut; document: /clear was refused: T: busy; the session was not changed.`,
+  )
+  expect(full.s.submitted).toEqual([])
+})
+
 // ---- [SP_CTX_02_19] [SP_CTX_02_20] the tool, the command, the end of a turn
 
 test('context_handoff — перерваний хід запиту: the agent\'s request of an interrupted turn goes; after a reload (no requestTurn) it stays and runs after the next turn end', async () => {
@@ -1642,14 +1809,49 @@ test('context_handoff — перерваний хід запиту: the agent\'s
   expect(reloaded.s.timers.map(t => t.ms)).toEqual([HANDOFF_DELAY_MS])
 })
 
+// [SP_CTX_02_21] [SP_CTX_04_04] audit PL_AUD_CTX_P6, TST-21
+test('handoffAfterTurn — перерваний хід, запит людини: a person\'s request survives an interrupted turn, even one the agent also asked in; dropRequest limited to the agent leaves it', async () => {
+  const { io, s, oldQueue } = host({ h: { by: 'person' } })
+  turnStarted(s.turns)
+  // the agent asked in this turn, then the person's /handoff replaced the request
+  s.mem.requestTurn = s.turns.turns
+  turnCompleted(s.turns, true)
+  expect(await dropRequest(io, s.mem, 'the turn was interrupted', 'agent')).toBe(false)
+  expect(oldQueue().handoff).toEqual(handoff({ by: 'person' }))
+  expect(await handoffAfterTurn(io, s.mem, true)).toBe('scheduled')
+  expect(oldQueue().handoff).toEqual(handoff({ by: 'person' }))
+  expect(oldQueue().report).toBeUndefined()
+  expect(s.timers.map(t => t.ms)).toEqual([HANDOFF_DELAY_MS])
+})
+
+test('handoffAfterTurn — перерваний хід, запит агента з іншого ходу: the agent asked in turn 1, the run was deferred by turn 2, turn 2 is interrupted; the request stays and is scheduled again', async () => {
+  const { io, s, oldQueue } = host()
+  s.queues.set('/s/old', { ...EMPTY_QUEUE })
+  turnStarted(s.turns)
+  expect('result' in (await contextHandoff(io, s.mem, {}))).toBe(true)
+  expect(s.mem.requestTurn).toBe(1)
+  turnCompleted(s.turns, false)
+  expect(await handoffAfterTurn(io, s.mem, false)).toBe('scheduled')
+  // the person begins turn 2 before the planned run: it defers and plans nothing while the turn goes
+  turnStarted(s.turns)
+  expect(await startHandoff(io, s.mem, 1)).toBe('deferred')
+  expect(s.mem.scheduled).toBe(false)
+  turnCompleted(s.turns, true)
+  expect(await handoffAfterTurn(io, s.mem, true)).toBe('scheduled')
+  expect(oldQueue().handoff!.by).toBe('agent')
+  expect(oldQueue().handoff!.state).toBe('queued')
+  expect(oldQueue().report).toBeUndefined()
+  expect(s.timers.length).toBe(2)
+})
+
 test('context_handoff: a subagent, no storage, an unreadable or unwritable queue are refused with their codes', async () => {
   const h = host()
   expect(await contextHandoff(h.io, h.s.mem, { agentId: 'sub' })).toEqual({ code: 'DENIED_SUBAGENT', deny: 'only the main conversation can be handed off.' })
   h.io.storage = async () => ({ reason: 'HOME is not set' })
   expect(await contextHandoff(h.io, h.s.mem, {})).toEqual({ code: 'DENIED_STORAGE', deny: 'storage unavailable: HOME is not set' })
   const u = host()
-  u.io.readQueue = async () => ({ state: 'unreadable', reason: 'bad' })
-  u.io.updateQueue = async (_d, change) => void (await change({ state: 'unreadable', reason: 'bad' }))
+  u.io.readQueue = async () => unreadableRead('bad')
+  u.io.updateQueue = async (_d, change) => void (await change(unreadableRead('bad')))
   expect(await contextHandoff(u.io, u.s.mem, {})).toEqual({ code: 'DENIED_QUEUE', deny: 'the queue cannot be read (bad).' })
   const w = host()
   w.s.queues.set('/s/old', { ...EMPTY_QUEUE })

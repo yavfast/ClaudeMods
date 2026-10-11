@@ -995,6 +995,8 @@ export type ApplyOptions = {
   // they came, with their handle; `api` is the Messages API form, which tells
   // the rows of one response apart (ResponseStart)
   freeze?: { api: readonly unknown[] }
+  // [SP_CTX_02_04] FreshId of an edited call; tests pass a deterministic one
+  newId?: (id: string) => string
 }
 
 // [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
@@ -1021,6 +1023,7 @@ export function applyEdits(
     mediaFiles: [],
   }
   const made: Made[] = []
+  const newId = options.newId ?? freshId
   // [SP_CTX_02_04] an applied summarize's tool_use_id → its FreshId, for InsertDeliveries ([SP_CTX_02_36])
   const renamed = new Map<string, string>()
   // [C_CTX_DEC_18] the replacement itself says how to get the original back
@@ -1076,7 +1079,7 @@ export function applyEdits(
         run =
           edit.op === 'summarize'
             ? () => {
-                const id = freshId(edit.tool_use_id)
+                const id = newId(edit.tool_use_id)
                 const use = rows[useAt]!
                 const res = rows[resAt]!
                 report.originals.push({ edit: name, rows: [use, res] })
@@ -1142,7 +1145,7 @@ export function applyEdits(
           // The carrier keeps roles and pairing valid around the span; it is
           // never one of this plugin's own calls, which are dropped later.
           const carrier = span.flatMap(r => r.toolUses).find(u => !u.tool.startsWith(OWN_TOOLS))
-          const id = carrier && freshId(carrier.tool_use_id)
+          const id = carrier && newId(carrier.tool_use_id)
           const replacement: SessionMessage[] =
             carrier && id
               ? [
