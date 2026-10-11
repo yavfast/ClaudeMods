@@ -4,5 +4,10 @@ Each file here is the shared working space for one feature or fix; the dashboard
 
 ## Active Tasks
 
-- [task_C_CTX](task_C_CTX.md) — `claude-session-bd80217a` — `plan` — Редактор контексту агента: концепт і специфікація
-- [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md) — `claude-session-decd4bc6` — `verify` — Динамічна оптимізація частини контексту за етапами; тригер — теги в повідомленні агента (backlog M PL_CTX)
+- [task_C_CTX](task_C_CTX.md) — `claude-session-bd80217a` — `plan` — Редактор контексту агента: концепт, специфікація, план; фази 1–23 закомічені, відкрите — backlog PL_CTX
+- [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md) — `claude-session-decd4bc6` — `verify` — Динамічна оптимізація частини контексту за етапами (фази 14–23); практика на реальних задачах
+
+## Conventions
+
+- Naming: `task_<DocID>.md` for a task tied to a traceable document, else `task_YYYYMMDD_HHMMSS_<slug>.md`.
+- Closed tasks older than ~30 days move to [`../session_history/`](../session_history/); completed subtask blocks are archived there by date.

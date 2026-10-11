@@ -1,0 +1,433 @@
+# Редактор контексту агента — Specification: Contracts: handoff
+
+> **Code:** SP_CTX (дочірній файл набору)
+> **Status:** active
+> **Created:** 2026-10-11
+> **Updated:** 2026-10-11
+> **Umbrella:** [SP_CTX](./context_editor.sp.md)
+>
+> §02 Contracts 02_19–02_26 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_handoff`, `/handoff`, RunHandoff, BuildSeed, CheckSeed, CheckSeeded, ScrubCommandRows (вилучено), HandleSeed. Читати перед зміною `hooks/handoff.ts`.
+
+## Contents
+
+Розділи цього файлу (h3 розділу «02. Contracts» парасольки):
+
+- [02_19. context_handoff](#SP_CTX_02_19)
+- [02_20. HandoffCommand](#SP_CTX_02_20)
+- [02_21. RunHandoff](#SP_CTX_02_21)
+- [02_22. BuildSeed](#SP_CTX_02_22)
+- [02_23. CheckSeed](#SP_CTX_02_23)
+- [02_24. CheckSeeded](#SP_CTX_02_24)
+- [02_25. ScrubCommandRows (вилучено)](#SP_CTX_02_25)
+- [02_26. HandleSeed](#SP_CTX_02_26)
+
+## 02. Contracts — передача в нову сесію
+
+### 02_19. context_handoff  {#SP_CTX_02_19}
+
+Purpose: інструмент агента; ставить запит передачі розмови в нову сесію ([C_CTX_DEC_11](./context_editor.concept.md#C_CTX_DEC_11)).
+
+Input:
+| Parameter | Type | Required | Constraints |
+|-----------|------|----------|-------------|
+| mode | `transcript` \| `document` | no | типово `transcript` |
+| document | string | no | ≤ MAX_DOCUMENT; запасний документ для `transcript`, основний для `document` |
+| resume | bool | no | типово true |
+| resume_prompt | string | no | ≤ MAX_TEXT |
+
+Output: `Handoff queued (<mode>): it runs when this turn ends. End your turn now with a one-line status.` Після запису запиту `requestTurn = turns` ([SP_CTX_01_15](./context_editor.structures.sp.md#SP_CTX_01_15)). Новий запит замінює попередній у стані `queued`; правки, вже поставлені в чергу, застосує передача.
+
+Errors:
+| Code | Condition | Guidance |
+|------|-----------|----------|
+| DENIED_SUBAGENT | виклик із субагента | передає лише основна розмова |
+| DENIED_STORAGE | сховище `unavailable` | причина в повідомленні |
+| DENIED_BAD_MODE | `mode` не з двох значень | — |
+| DENIED_TOO_LONG | `document` > MAX_DOCUMENT або `resume_prompt` > MAX_TEXT | скоротити |
+| DENIED_RUNNING | `handoffInFlight`, або запит у стані `running`, який не покинутий за `Due` ([SP_CTX_01_15](./context_editor.structures.sp.md#SP_CTX_01_15)) | дочекатися кінця передачі; запит не замінюється |
+| DENIED_QUEUE | Queue `unreadable` або не записалась | причина в повідомленні |
+
+### 02_20. HandoffCommand  {#SP_CTX_02_20}
+
+Purpose: команда людини `/handoff [document|cancel]` — те саме, що інструмент, без ходу агента; `cancel` знімає запит, що ще не почався, або запит `running`, який цей екземпляр модуля не веде (зокрема лишений після невдалого запису старої черги).
+
+Processing logic (pseudocode):
+    ON command handoff (args):
+        IF args trimmed = "cancel": drop a queued request, or a running one while handoffInFlight = false (SP_CTX_04_04); RETURN text "handoff cancelled" or "no handoff waiting"
+        mode = args trimmed = "document" ? document : transcript
+        write Queue.handoff = { mode, resume: true, resumePrompt: DEFAULT_RESUME, by: person, state: queued, at: now }   # помилки — як у 02_19, зокрема DENIED_RUNNING
+        Schedule()                                  # SP_CTX_02_21: знімок turns0 і HANDOFF_DELAY; no-op, поки handoffInFlight
+        RETURN text "handoff (<mode>) starts"
+
+Команда не позначається `immediate`: під час ходу вона чекає його кінця, як вбудовані команди. Відповіді команди (`text`) не починаються з `context-editor:`: хост сам показує їх під назвою плагіна (у stream-json — з префіксом плагіна), і префікс мода повторився б; помилки з [SP_CTX_02_19](#SP_CTX_02_19) повертаються тим самим текстом без префікса. Обробник команди — подія, на яку не чекає жоден хід, тож відкладена дія з нього має походження, яке хост ставить у чергу (преамбула розділу 02); це підтверджує обов'язковий сценарій «Команда людини» в обох хостах ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)).
+
+### 02_21. RunHandoff  {#SP_CTX_02_21}
+
+> **Criticality:** core
+
+Purpose: виконати запит передачі. Для `transcript` — зібрати засів у старій сесії, очистити сесію вбудованою командою `/clear` і засіяти нову власною компактизацією з HANDOFF_MARKER ([C_CTX_DEC_11](./context_editor.concept.md#C_CTX_DEC_11), S); для `document` або коли засів не зібрався — передати документ першим промптом очищеної сесії. Засів спирається лише на вбудовані команди `/clear` і `/compact`, тож розрахований і на інтерактивний термінал, і на неінтерактивний хост з потоковим входом (stream-json: розширення VS Code, SDK streaming), де команди відновлення сесії немає. Спосіб `document` без документа агента додатково спирається на окремий запит до моделі (`$.model.fork`), перевірений лише в терміналі; у stream-json його підтверджує обов'язковий сценарій «Запасний шлях до очищення» ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)).
+
+Логіка — чиста функція за портом HandoffIO: читання й запис черги сесії за каталогом, рядки й API-подання, реєстр тегів, сховище нової сесії, запис і видалення файлів, команда хоста (`clear`, `compact`), відмова якої несе текст хоста, окремий запит до моделі, відправка промпту, спливне повідомлення, засів у пам'яті модуля.
+
+Processing logic (pseudocode):
+    # turns, inTurn — лічильник ходів з преамбули розділу 02; handoffInFlight, handoffScheduled, instance, Due — SP_CTX_01_15
+    ON turn complete (main loop), after inTurn = false:
+        IF aborted AND Queue.handoff.by = agent AND requestTurn = turns: drop it (SP_CTX_04_04)   # запит агента з цього ходу
+        ELSE IF Due(Queue): Schedule()                                      # і після перерваного ходу, що відклав передачу
+
+    FUNCTION Schedule():
+        IF handoffInFlight OR handoffScheduled: RETURN                      # другий запуск посеред першого неможливий
+        handoffScheduled = true; turns0 = turns
+        after HANDOFF_DELAY:                                                # відкладена дія з turn.complete або з обробника /handoff
+            handoffScheduled = false                                        # до RunHandoff і до повторного Schedule
+            outcome = RunHandoff(turns0); ON any exception: toast "context-editor: handoff failed: <error>"; outcome = failed
+            IF outcome = deferred AND NOT inTurn: Schedule()                # хід, що відклав передачу, уже скінчився: інший кінець ходу її не запустить
+
+    Moved() = MovedSince(turns0)                                           # хід ішов або почався від планування
+    MovedSince(t) = inTurn OR turns ≠ t
+
+    Outcome = deferred | nothing | failed | transcript | document          # результат RunHandoff
+
+    FUNCTION RunHandoff(turns0) → Outcome:
+        handoffInFlight = true; cleared = false; turnsClear = none          # cleared — /clear уже створив нову сесію
+        afterClearEntered = false; terminal = false; sessionChanged = false # terminal — запис HandedOff, Fail чи FailAfterClear удався
+        seed: HandoffSeed? = none; seedReason: string? = none
+        IF Moved(): RETURN deferred                                         # запит лишається queued
+        old = session id; oldDir = storage of old (prepared)
+        claim: on the queue chain, IF Due(q) ignoring handoffInFlight:
+            IF state = running AND some <oldDir>/<id>/seed.json with id ≥ at exists:   # покинутий запуск дійшов до засіву і міг дійти до /clear
+                handoff absent, report += "a previous handoff stopped after building <that file>; it is not re-run; ask again with /handoff or context_handoff"
+                RETURN nothing
+            state = running, at = now, owner = instance
+        ELSE RETURN nothing
+        h = the claimed request; reasons = []
+        IF h.mode = transcript:
+            (seed, seedReason) = PrepareSeed()                              # рівно одне з двох; лише стара сесія, без команд хоста
+            IF seedReason: reasons += "transcript: " + seedReason; seed = none   # сесія як була — далі document
+            ELSE IF Moved(): remove <oldDir>/<seed.id> and seed.archive; Defer(); RETURN deferred
+            ELSE: RETURN Seed(seed)
+        RETURN DocumentWay(reasons)
+        ON any exception after the claim:                                   # запит ніколи не лишається running; жоден запис не повторюється
+            pending seed = none
+            IF NOT cleared:
+                remove seed files of seed, if any
+                IF NOT terminal: TRY Fail(reasons + "failed: <error>") CATCH: toast "context-editor: handoff failed: <error>; the old queue could not be written"
+            ELSE IF seed present AND NOT afterClearEntered AND NOT sessionChanged:
+                RETURN AfterClear(seed, "failed: <error>", turnsClear)        # AfterClear ніколи не кидає; при SESSION_CHANGED — лише FailAfterClear нижче (сесія не мода)
+            ELSE IF NOT terminal:
+                TRY FailAfterClear(seed, reasons + "failed: <error>") CATCH: toast "context-editor: handoff failed after /clear: <error>; the old queue could not be written"
+            RETURN failed
+        FINALLY: handoffInFlight = false                                    # на кожному виході: поверненні, винятку, deferred, nothing
+                 IF cleared: status line = "<n> context edit(s) queued" from the current session's queue, or cleared when it is empty   # рядок стану старої сесії не лишається в новій
+
+    FUNCTION PrepareSeed() → (HandoffSeed, none) | (none, reason):
+        transcript = read main conversation rows; rows = CurrentRows(); api = read main conversation in Messages API form
+        id = now; folder = <oldDir>/<id>; archive = <oldDir>/<id>.json
+        batch = Queue.edits
+        built = BuildSeed(transcript, rows, api, batch, TagRegistry, folder, archive)   # SP_CTX_02_22; пише медіа-файли
+        IF built is a refusal: remove folder; RETURN built.reason
+        IF CheckSeed(built.rows) gives a reason: remove folder; RETURN that reason           # SP_CTX_02_23
+        IF built.report.originals not empty AND writing archive (compact JSON, host command) fails:
+            remove folder; RETURN "the originals could not be archived"
+        IF writing <folder>/seed.json (JSON list of rows, owner-only, host command) fails: remove folder and archive; RETURN "the seed could not be written"
+        RETURN HandoffSeed { old, id, rows: built.rows, file: <folder>/seed.json, archive: (originals written ? archive : ""),
+                             report: built.report, visible: built.visible, edits: batch,
+                             fromSummary: built.fromSummary, unmatchedPromptMedia: built.unmatchedPromptMedia, carried: built.carried, taken: false }
+        ON any exception: remove folder and archive; RETURN "failed: <error>"
+
+    FUNCTION Seed(s):
+        TRY run built-in command clear                                      # одна спроба; чекає, доки сесія вільна
+        CATCH err: remove <oldDir>/<s.id> and s.archive; Fail(["transcript: /clear was refused: " + err]); RETURN failed
+        new = session id
+        IF new = old: remove <oldDir>/<s.id> and s.archive; Fail(["transcript: /clear did not start a new session"]); RETURN failed
+        # процес уже в очищеній сесії; повернення в стару немає
+        cleared = true; s.new = new
+        turnsClear = turns                                                  # змінна RunHandoff; ходи після цієї точки — уже в новій сесії
+        IF inTurn: RETURN AfterClear(s, "a turn began in the new session", turnsClear)          # TURN_IN_NEW
+        IF turns ≠ turns0: RETURN AfterClear(s, "a turn ran before /clear; the seed would miss it", turnsClear)   # /clear чекав, доки хід скінчиться
+        newDir = PrepareStorage for new (SP_CTX_02_15)
+        IF unavailable: RETURN AfterClear(s, "the storage of the new session cannot be made: <reason>", turnsClear)
+        pending seed = s                                                    # пам'ять модуля; HandleSeed віддає його рядки
+        IF MovedSince(turnsClear): RETURN AfterClear(s, "a turn began in the new session", turnsClear)   # перевірка безпосередньо перед командою (SP_CTX_05_02)
+        TRY run built-in command compact with args = HANDOFF_MARKER         # одна спроба; чекає, доки сесія вільна
+        CATCH err: RETURN AfterClear(s, "the seed compaction was refused: " + err, turnsClear)
+        IF session id ≠ new:                                                # людина могла відкрити іншу сесію
+            sessionChanged = true; pending seed = none; FailAfterClear(s, ["transcript: the session changed during seeding"]); RETURN failed   # без другого /clear і без промпту; виняток тут — лише FailAfterClear обробника
+        IF NOT s.taken: RETURN AfterClear(s, "the seed compaction did not take the seed", turnsClear)     # skip (зокрема хід у новій сесії), збій обробника або відповідь іншого обробника
+        why = AwaitSeeded(s.rows, old, session id)                           # SP_CTX_02_24: опитування до SEED_WAIT (F2)
+        IF why: RETURN AfterClear(s, "the host did not keep the seeded conversation: " + why, turnsClear)
+        pending seed = none
+        # засіяно: далі жодного переходу на інший спосіб, хоч би що впало; кожен крок нижче захищений тут же,
+        # і обробник винятку RunHandoff не бачить жодного збою після цієї точки
+        step HandedOff: HandedOff(new, transcript)                          # спершу: стара черга більше не тримає запит running
+        step registries: done = [e IN s.edits | EditLabel(e) IN s.report.applied]   # EditLabel — опис правки, як у ApplyReport.applied
+                         FOR reg IN (TagRegistry, AliasRegistry):                        # окремо для кожного, на ланцюжку реєстру в newDir
+                             read reg from oldDir → transform → write into newDir (owner-only)   # реєстру в старій сесії немає — для нього нічого не пишеться, без речення
+                             transform: tags — RebindTags(reg, before = s.visible, after = s.rows, done, batch = s.edits), with the stage marks and the state slot (SP_CTX_02_14), and introduced = false;
+                                        aliases — pruning of changed and vanished pairs (SP_CTX_02_14)
+                             # теги й псевдоніми змінених пар (FreshId) і пар, яких засів не містить, видаляються — так само, як після компактизації в тій самій сесії
+                             a read or write failure, or a transform failure (then nothing is written): report += " Tags and aliases were not carried over." (once)
+        step pin: IF s.fromSummary: PinSummary(newDir, s.rows[0])
+        report = "context-editor: this session continues <old> (transcript)."
+                 + (s.fromSummary ? " It starts from the summary of an earlier compaction; the rows before it stay in <old>." : "")
+                 + (s.unmatchedPromptMedia > 0 ? " Media in <n> of the person's prompt(s) was not carried over." : "")
+                 + pin note of PinSummary, if any
+                 + (text ? "\n" + text : "")  WHERE text = FormatReport(s.report, s.archive, seed)   # SP_CTX_01_05; порожній — без переносу
+        Deliver(report, h.resumePrompt, turnsClear, queueOnly = NOT h.resume)    # без продовження звіт чекає наступного промпту (DeliverReport)
+        ON a failure of any step after seeding (caught here, the remaining steps still run):
+            toast "context-editor: seeded the new session, but step <step> failed: <error>"
+                  + (step = HandedOff ? " The old session <old> still holds a running handoff request; run /handoff cancel there." : "")
+        RETURN transcript
+
+    FUNCTION AfterClear(s, reason, turnsClear):                             # процес в очищеній сесії, стара — на диску без змін; ніколи не кидає
+        afterClearEntered = true; pending seed = none; reasons = ["transcript: " + reason]
+        # кожен крок нижче захищений тут же; збій кроку додає його назву до спливного повідомлення, решта кроків іде далі
+        IF MovedSince(turnsClear):                                          # людина вже працює в новій сесії: її не чіпати
+            step fail: FailAfterClear(s, reasons); step deliver: Deliver(notice(s, reasons), none, turnsClear, queueOnly = true)
+            RETURN failed                                                   # notice — у чергу поточної сесії
+        # другий /clear відхилено: `now` лишається засіяною сесією, і HandedOff та документ потрапляють у неї поверх засіву (прийнято)
+        step clear: IF s.taken: TRY run built-in command clear CATCH err: reasons += "/clear: " + err   # прибрати засіяну сесію; без засіву вона й так порожня
+        now = session id
+        IF h.document present:
+            step handed: HandedOff(now, document)
+            step deliver: Deliver(h.document + "\n\ncontext-editor: this session continues <old> (document). The transcript way failed (" + reasons + ")." + dropped, h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
+            RETURN document
+        step fail: FailAfterClear(s, reasons)
+        step deliver: Deliver(notice(s, reasons), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
+        RETURN failed
+        ON a failure of any step (caught here): toast "context-editor: handoff after /clear: step <step> failed: <error>"
+
+    notice(s, reasons) = "context-editor: the handoff from <old> failed after the session was cleared (" + reasons + "). The previous session <old> is unchanged." + (s present ? " The assembled conversation is in " + s.file + "." : "")
+
+    FUNCTION Deliver(text, resumePrompt?, turnsClear, queueOnly = false):   # кожна відправка після /clear
+        IF queueOnly OR MovedSince(turnsClear):                             # продовження вимкнено (h.resume = false) або людина активна
+            Queue of the current session: report += text, reportId = now, reportResume = false   # DeliverReport віддасть з наступним промптом
+        ELSE: submit prompt (text + (resumePrompt ? "\n\n" + resumePrompt : ""))
+
+    FUNCTION PinSummary(dir, row):                                          # у реєстрі тегів нової сесії, на його послідовному ланцюжку
+        reg = TagRegistry of dir; IF missing: reg = { tags: [], turn: 0, firstPromptPinned: false, introduced: false }
+        IF reg unreadable: RETURN note " The summary row was not pinned: the tag registry is unreadable."
+        IF the target already has a tag: replace it; ELSE IF len(reg.tags) = MAX_TAGS: RETURN note " The summary row was not pinned: the tag registry is full."
+        put Tag { kind: pin, target: { anchor: fingerprint(row), hint: 0 }, created_turn: reg.turn }; firstPromptPinned = true
+        write; IF the write fails: RETURN note " The summary row was not pinned: the tag registry could not be written."
+
+    FUNCTION DocumentWay(reasons):
+        doc = h.document OR model fork over the session with HANDOFF_PROMPT (no tools); a fork error adds "document: model fork failed: <error>" to reasons
+        IF doc empty: Fail(reasons + "document: no handoff document"); RETURN failed
+        IF Moved(): Defer(); RETURN deferred
+        TRY run built-in command clear CATCH err: Fail(reasons + "document: /clear was refused: " + err); RETURN failed
+        IF session id = old: Fail(reasons + "document: /clear did not start a new session"); RETURN failed
+        cleared = true; turnsClear = turns
+        why = reasons not empty ? " The transcript way failed (" + reasons + ")." : ""
+        IF turns ≠ turns0: why += " A turn ran before /clear; it stays in <old> and is not in this document."   # /clear чекав кінця ходу
+        new = session id; HandedOff(new, document)                         # стара черга — до промпту
+        Deliver(doc + "\n\ncontext-editor: this session continues <old> (document)." + why + dropped, h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
+        RETURN document
+
+    FUNCTION HandedOff(to, mode): old Queue: edits = [], handoff absent, report += "this session was handed off to <to> (<mode>)", reportId = now, reportResume = false; terminal = true
+    FUNCTION Defer(): old Queue: handoff.state = queued, owner removed     # знову після наступного кінця ходу
+    FUNCTION Fail(reasons): old Queue: handoff absent, report += "handoff failed: <reasons>; the session was not changed", reportId = now, reportResume = false; terminal = true; toast
+    FUNCTION FailAfterClear(s?, reasons): old Queue: handoff absent, report += "handoff failed after the session was cleared: <reasons>; this session was not changed" + (s present ? "; the assembled conversation is in <s.file>" : ""), reportId = now, reportResume = false; terminal = true; toast
+    # terminal ставиться лише після вдалого запису; у межах одного запуску жоден з трьох записів не робиться двічі
+
+`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`.
+
+Порядок має значення. Засів збирається і пишеться до очищення сесії: після `/clear` читання розмови й API-подання бачать уже нову, порожню сесію, а окремий запит до моделі над старою розмовою неможливий. Тому збій збирання веде до способу `document` у старій сесії, а збій після очищення — до повторного очищення (лише коли засів уже взято) і документа агента, а без нього — повідомлення з ідентифікатором старої сесії і шляхом до файлу засіву. Правки черги старої сесії при `Fail` і `FailAfterClear` лишаються в її черзі: стара сесія не змінена, і її можна відновити; при `HandedOff` вони йдуть у засів або, для `document`, не переносяться (`dropped`).
+
+Ідентифікатор нової сесії до `/clear` невідомий, тож файл засіву, архів оригіналів і перенесене медіа лежать у сховищі старої сесії ([SP_CTX_DEC_09](./context_editor.sp.md#SP_CTX_DEC_09)); їхні шляхи вписано в текст засіяних рядків. Засів живе в пам'яті модуля: перезавантаження модуля між `/clear` і компактизацією засіву лишає нову сесію порожньою, а запит у старій черзі — у стані `running`; новий екземпляр, у якого `handoffInFlight = false`, вважає його належним через HANDOFF_STALE ([SP_CTX_01_15](./context_editor.structures.sp.md#SP_CTX_01_15), [SP_CTX_05_04](./context_editor.scenarios.sp.md#SP_CTX_05_04)). Поки RunHandoff цього екземпляра йде, запит не належний, хоч би скільки `/clear` чекав кінця довгого ходу; будь-який виняток RunHandoff до засіву закінчується Fail, AfterClear або FailAfterClear, а збої після засіву Seed перехоплює сам (спливне повідомлення називає крок), тож запит не лишається `running`, хіба що не вдався сам запис старої черги. Теги й псевдоніми копіюються і одразу проходять ті самі RebindTags і очищення псевдонімів, що й після компактизації в тій самій сесії ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): незмінені засіяні пари зберігають ідентифікатори викликів старої сесії ([SP_CTX_01_17](./context_editor.structures.sp.md#SP_CTX_01_17)), тож їхні теги й псевдоніми працюють далі; змінені пари отримали FreshId, і їхні теги й псевдоніми видаляються, тож `ref` такої пари в новій сесії дає UNKNOWN_REF, а не TARGET_NOT_FOUND.
+
+Етапи, слот стану й інструкція в новій сесії. Відкритий етап і останній закритий блок переходять у реєстр нової сесії з межами, перенесеними RelocateMark з `s.visible` на `s.rows` ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): межа, чий рядок замінила правка засіву, переходить на останній створений нею рядок; рядок, що лишився до підсумку (`fromSummary`), має `lost` у «до» і дає `null`; рядок, змінений засівом (CarryNote, `s.carried`) або прибраний нормалізацією, — найближчий попередній незмінений засіяний рядок або `null`. Тег `state` незміненого рядка переходить за відбитком; переписаний правкою засіву — за правилом слоту стану. `introduced` у копії — `false`: нова сесія — інший ідентифікатор, а прихований контекст першого промпту старої сесії в засіяні рядки не потрапляє, тож інструкцію отримає перший промпт нової сесії, що проходить хуки мода ([SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27)); власні промпти мода (продовження після засіву, документ) хуків не проходять (F1). `lastApply` у копії реєстру знімається (виміряна зміна в новій сесії не була б звільненням застосування). Нотатки переходять разом із тегами: RelocateNote з `s.visible` на `s.rows` ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)); нотатка на рядку виклику незміненої пари, який засів злив з іншими рядками викликів тієї ж відповіді (MergeCallRows: жоден засіяний рядок не має `handle`), переходить на злитий рядок за ідентифікатором свого першого виклику, а не видаляється; `notesDropped` засіву називає звіт нової сесії. Журнал ефекту не переноситься: він лишається у сховищі старої сесії разом з архівами, які називає. Способом `document` реєстрів у новій сесії немає, тож `introduced` там теж `false`.
+
+Команди в черзі хоста. Кожна команда (`/clear`, `/compact HANDOFF_MARKER`, друге `/clear` в AfterClear) — одна спроба: відмова остаточна, її текст іде в причину. Команда, запущена, поки триває хід, чекає його кінця, тож лічильник ходів звіряється після кожної команди. Хід між плануванням і першим `/clear` уже виконано в старій сесії, і засів його не містить — Seed переходить до AfterClear; у способі `document` такий хід лишається в старій сесії, а промпт це називає. Хід, що йде одразу після `/clear` (`inTurn`), або хід між `/clear` і компактизацією засіву відбувається в новій сесії: Seed чи HandleSeed ([SP_CTX_02_26](#SP_CTX_02_26)) відмовляють, і AfterClear за `MovedSince(turnsClear)` не очищає сесію вдруге. Кожен текст після `/clear` (звіт засіву, документ, повідомлення про збій) іде через Deliver: якщо людина вже почала хід, текст лягає у звіт черги поточної сесії з `reportResume = false`, і DeliverReport ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)) додасть його до її наступного промпту, а промпту мод не надсилає. Якщо після компактизації засіву сесія інша, ніж створив `/clear` (людина могла відкрити іншу сесію), мод не очищає її і нічого в неї не надсилає: лише звіт у черзі старої сесії. Залишкове вікно: хід, що почнеться між перевіркою `MovedSince(turnsClear)` в AfterClear і виконанням другого `/clear`, хост виконає в напівзасіяній сесії, і друге `/clear` його прибере; хід лишиться лише в транскрипті цієї сесії.
+
+Закріплення підсумку. Коли засів починається з підсумку (`fromSummary`: голова з API-подання або перший рядок, що вже починався з SUMMARY_OPENER), у ньому, а не в першому промпті людини, лежить початкове завдання. R1 ([SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11)) бачить лише нові рядки людини, а засіяні рядки подію додавання або оминають (термінал), або проходять з походженням плагіна, яке AutoTag пропускає (stream-json, [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12)); скинути `firstPromptPinned` недостатньо — R1 закріпив би наступний промпт людини, а не підсумок. Тому RunHandoff сам ставить `pin` на перший засіяний рядок у скопійованому реєстрі (PinSummary): один запис, без нового правила. Реєстру немає — PinSummary створює його; реєстр повний (MAX_TAGS) або нечитабельний — `pin` не ставиться, і звіт нової сесії це називає. Інакше скопійований `pin` першого промпту знаходить той самий рядок за відбитком.
+
+Errors: відмови не виходять назовні — кожна причина потрапляє у звіт старої черги (`Fail`, `FailAfterClear`), у промпт нової сесії або веде до способу `document`.
+
+| Code | Condition | Outcome |
+|------|-----------|---------|
+| SEED_REFUSED | BuildSeed або CheckSeed відмовили, архів чи файл засіву не записались, виняток під час збирання | файли засіву видалено; спосіб `document` у старій сесії |
+| CLEAR_REFUSED | `/clear` відхилено або сесія не змінилась (обидва способи) | `Fail`: стара сесія без змін, правки лишаються в черзі |
+| TURN_BEFORE_CLEAR | `/clear` чекав кінця ходу, що почався після планування | AfterClear з `a turn ran before /clear; the seed would miss it` |
+| NEW_STORAGE | сховище нової сесії не створилось | AfterClear |
+| SEED_COMPACT_REFUSED | команду компактизації засіву відхилено | AfterClear з текстом відмови хоста |
+| SEED_NOT_TAKEN | обробник не взяв засів (`skip`, збій, інший обробник відповів) | AfterClear |
+| SEED_NOT_KEPT | CheckSeeded знайшов розбіжність | AfterClear з причиною розбіжності |
+| TURN_IN_NEW | хід іде одразу після `/clear` або почався в новій сесії до кінця засіву | FailAfterClear без повторного очищення; повідомлення про збій — у звіт черги поточної сесії (Deliver), без промпту |
+| SESSION_CHANGED | після компактизації засіву поточна сесія — не та, що створив `/clear` | FailAfterClear без повторного очищення, без промпту і без запису в поточну сесію |
+| PERSON_ACTIVE | людина почала хід до відправки звіту, документа чи повідомлення | текст — у звіт черги поточної сесії з `reportResume = false`; промпту немає |
+| REPORT_LOST | після засіву звіт не доставлено | спливне повідомлення; результат передачі — `transcript` |
+
+### 02_22. BuildSeed  {#SP_CTX_02_22}
+
+Purpose: зібрати рядки нової сесії з того, що бачить модель, і правок черги ([C_CTX_DEC_12](./context_editor.concept.md#C_CTX_DEC_12), C). Чиста функція, крім запису медіа-файлів через порт. До 2026-10-09 — BuildTranscript, що збирав записи файлу сесії.
+
+Input:
+| Parameter | Type | Required | Constraints |
+|-----------|------|----------|-------------|
+| transcript | list<Row> | yes | рядки, як їх повернуло читання розмови, ≤ ROW_WINDOW |
+| rows | list<Row> | yes | CurrentRows ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) — суфікс `transcript` |
+| api | list<json> | yes | API-подання основної розмови, ≤ ROW_WINDOW повідомлень |
+| edits | list<QueuedEdit> | yes | Queue.edits старої сесії, ≤ MAX_QUEUE_EDITS |
+| tags | TagRegistry зі станом читання | yes | для перевірки `pin`, як у [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07) |
+| folder | string | yes | `<old storage>/<id>` |
+| archive | string | yes | `<old storage>/<id>.json` |
+| writeMedia | функція (path, base64) → bool | yes | порт запису медіа-файлу, доступного лише власникові |
+| deliveries | list<QueuedDelivery> зі станом читання | yes | `deliveries.json` старої сесії ([SP_CTX_01_22](./context_editor.structures.sp.md#SP_CTX_01_22)); `unreadable` — без вставок, причина у звіті (фаза 20) |
+
+Output: `{ rows: list<Row>, report: ApplyReport, visible: list<Row>, fromSummary: bool, unmatchedPromptMedia: int, carried: list<string> }` або відмова з причиною; `visible` — рядки, передані в ApplyEdits; `carried` — результати з CarryNote.
+
+Processing logic (pseudocode):
+    FUNCTION BuildSeed(transcript, rows, api, edits, tags, folder, archive, writeMedia, deliveries):
+        (knownResults, apiTruncated) = CollectMedia(api, rows)                              # SP_CTX_02_10
+        hidden = some row of rows holds a tool result whose id is not in knownResults
+                 OR some user row of rows other than rows[0] has text that, trimmed, starts with SUMMARY_OPENER   # підсумок посеред рядків — межа не записана
+        early = []
+        IF NOT hidden:                                                                     # модель бачить усі рядки
+            IF rows = transcript (CurrentRows found no boundary) AND len(transcript) ≥ ROW_WINDOW:
+                REFUSE "the conversation fills the host's 4096-row window; its start may be cut"
+            head = none; visible = rows
+        ELSE:                                                                              # після вбудованої компактизації, чию межу цей процес не записав
+            IF apiTruncated OR len(transcript) ≥ ROW_WINDOW:                                # результат міг випасти з вікна читання, а не з погляду моделі
+                REFUSE "the conversation fills the host's 4096-row window; its start may be cut"
+            first = api[0]
+            summary = the text blocks of first that are not reminder blocks, joined with "\n\n"   # content given as a string = one text block; reminder block: trimmed text starts with "<system-reminder>"
+            IF first is not a user message OR first holds a tool_result block OR trimmed summary does not start with SUMMARY_OPENER:
+                REFUSE "the model does not see every row, and what it sees does not start with a compaction summary"
+            stripped(x) = x with every whitespace character removed
+            k = min(160, len(stripped(summary)))
+            s = the largest index such that rows[s] has role user, no toolResults,
+                and stripped(rows[s].text) starts with the first k characters of stripped(summary)    # SP_CTX_DEC_08
+            IF none: REFUSE "the summary the model sees was not found among the rows"
+            visible = rows[s+1 ..]
+            IF some row of visible holds a tool result whose id is not in knownResults: REFUSE "rows the model does not see follow the summary"
+            head = Row { role: user, text: summary, toolUses: [] }
+            FOR edit IN edits whose target lies in rows but not in visible:      # summarize, drop: call or result outside visible;
+                early += "<edit>: the model no longer sees this row"; remove edit  # collapse, rewrite, describe: Locate finds the anchor in rows, not in visible
+        (edits, refused) = ScreenPinned(visible, edits, tags)                               # SP_CTX_02_03: pin і state, як у SP_CTX_02_07
+        (found, unmatched) = CollectMedia(api, visible)                                    # власник {row} — індекс у visible, що закінчується там само, де api
+        n = 0; items = {}                                                                  # items[owner][k] — шлях k-го медіа власника або відсутній
+        FOR owner IN found WHERE owner is {tool_use_id} OR an edit of edits replaces it, FOR k, ref IN found[owner]:   # кожне медіа окремо; медіа промпту — лише для правки, що його замінює
+            IF ref.data absent: items[owner][k] = absent; CONTINUE
+            n += 1; path = <folder>/<n>.<ext of ref.mediaType>                             # ext — як у SP_CTX_01_06
+            IF NOT writeMedia(path, ref.data): REFUSE "media of <owner> could not be archived"
+            items[owner][k] = path
+        media = for each owner, the present paths of items[owner] in order                 # вхід ApplyEdits: шляхи для mediaNote
+        (seed, report, renamed) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatched, apiTruncated)   # SP_CTX_02_04
+        report.failed = early + refused + report.failed
+        (seed, report.deliveries, _, added) = InsertDeliveries(visible, seed, deliveries, renamed, allRebuilt = true)   # SP_CTX_02_36: у засіві жоден рядок не має handle, тож вставляється кожна доставка, чий якір лишився; {as: 'api'} доставок не має (пункт 43), без вставки передана розмова їх губить; фаза 20
+        (seed, report.ownCallsRemoved) = DropOwnCalls(seed, ∅, knownResults)                # зокрема виклик context_handoff; лічильник — для речення P13 (SP_CTX_01_05)
+        report.charsAfter = Σ size(seed) − added                                           # тут: «звільнено» рахує лише правки, без CarryNote, голови і вставлених доставок
+        replaced = owners whose media the edits in report.applied replace
+        FOR each tool result t in seed whose owner {t.tool_use_id} is in found and not in replaced:
+            t.text = t.text + (t.text blank ? "" : "\n\n") + CarryNote(found[owner], items[owner])
+        unmatchedPromptMedia = unmatched + count of owners {row} in found not in replaced   # медіа промптів, якого засів не несе: не зіставлене або не замінене правкою
+        seed = every row of seed rebuilt without handle                                    # handle старої сесії після /clear хост мовчки ігнорує
+        IF head present: seed = [head] + seed
+        IF seed[0] has role user AND seed[0].text has a line that holds TRANSCRIPT_LINE: remove every such line, then trim seed[0].text
+        UNTIL nothing changes: drop leading assistant rows; drop tool results whose call is in no earlier row;
+                               drop calls whose result is in no later row; drop rows without text, calls and results
+        seed = MergeCallRows(seed)                                                         # SP_CTX_02_04: жоден засіяний рядок не має handle — паралельні виклики однієї відповіді одним рядком (Verify фази 14, D1)
+        IF seed empty: REFUSE "no rows to carry over"
+        report.produced = Produced(seed, applied steps)               # після голови і нормалізації: індекси засіяних рядків
+        IF len(seed) > ROW_WINDOW − SEED_ROOM: REFUSE "the seed has <n> rows; at most ROW_WINDOW − SEED_ROOM fit the new session's read window"
+        report.mediaFiles = every present path in items; carried = tool_use_id of every result that got CarryNote
+        RETURN seed, report, fromSummary = (head present OR trimmed text of seed[0] starts with SUMMARY_OPENER), unmatchedPromptMedia, carried   # F5
+
+    CarryNote(refs, paths) = MARK + " media carried as files (open them with Read): " + one item per k, joined ", ":
+        paths[k] present → "<refs[k].mediaType> <paths[k]>"; paths[k] absent (refs[k] without inline data) → "<refs[k].mediaType> (not carried: no inline data)"
+
+Медіа в промпті людини (власник `{row}` за PromptMatch, [SP_CTX_02_10](./context_editor.edits.sp.md#SP_CTX_02_10)) засів несе лише через правку, що його замінює (`describe`, `collapse`: файл у `<folder>` і шлях у mediaNote); незмінений промпт з медіа переходить без нього і лічиться в `unmatchedPromptMedia` разом із незіставленим («Media in <n> of the person's prompt(s) was not carried over»), а файли для нього не пишуться (фаза 5). Нести таке медіа файлом, як CarryNote для результатів, — backlog плану.
+
+Голова — підсумок вбудованої компактизації, перше повідомлення API-подання. Вміст повідомлення API-подання, заданий рядком, — один текстовий блок з цим текстом. Результат поза API-поданням означає «модель цього рядка не бачить» лише тоді, коли жодне з вікон читання не заповнене: рядки, що випали за межу ROW_WINDOW, модель ще може бачити, тож за заповненого вікна засів відмовляє (WINDOW_FULL). Блок-нагадування — текстовий блок, обрізаний текст якого починається з `<system-reminder>`. `mediaOwners = ∅` у виклику ApplyEdits: усе медіа засіяних рядків уже лежить файлами, а засіяний рядок ніде не зберігає `handle`, тож правила ApplyEdits, що бережуть незаархівоване медіа сусідніх пар, тут не потрібні; шляхи замінених пар потрапляють у текст правки (`(media: …)`), як при компактизації. Медіа в промптах людини не переноситься, доки відкрите [SP_CTX_DEC_06](./context_editor.sp.md#SP_CTX_DEC_06): його кількість (`unmatchedPromptMedia`) називає звіт нової сесії. Thinking-блоки не переносяться: рядок без `handle` хост будує лише з тексту і блоків інструментів. Нагадування хоста (`<system-reminder>`) і повторно вкладені вбудованою компактизацією файли до засіву не потрапляють: голова — лише текст підсумку, а рядки беруться з транскрипту, не з API-подання. Рядки команд (`/compact`, «Compacted») поточної розмови засіваються як звичайні рядки людини.
+
+Errors (кожна — відмова з причиною, RunHandoff переходить на `document`):
+| Code | Condition |
+|------|-----------|
+| WINDOW_FULL | модель бачить усі рядки, CurrentRows не знайшов межі, а читання повернуло ROW_WINDOW рядків; або є результат поза API-поданням, а читання розмови повернуло ROW_WINDOW рядків чи API-подання обрізане (`apiTruncated`, ≥ ROW_WINDOW − 1 повідомлень) |
+| NO_SUMMARY | модель бачить не всі рядки, а перше повідомлення API-подання — не текст людини, що починається з SUMMARY_OPENER |
+| SUMMARY_NOT_FOUND | у рядках немає рядка людини з початком підсумку |
+| HIDDEN_AFTER_SUMMARY | після знайденого підсумку є результат, якого немає в API-поданні |
+| MEDIA_NOT_ARCHIVED | медіа з вбудованими даними не записалось у файл |
+| EMPTY | після нормалізації не лишилось рядків |
+| SEED_TOO_LONG | засів довший за ROW_WINDOW − SEED_ROOM рядків: разом з рядками `/clear` і команди компактизації він не вмістився б у вікно читання нової сесії, і CheckSeeded не знайшов би межі |
+
+### 02_23. CheckSeed  {#SP_CTX_02_23}
+
+Purpose: відкинути засів, який хост прийняв би, але модель отримала б зіпсовану розмову або API відхилив би запит ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13), перевірка перед засівом). Чиста функція; повертає першу порушену умову як причину або «гаразд». До 2026-10-09 — CheckTranscript.
+
+Rules (`i` — індекс рядка засіву):
+| Rule | Reason |
+|------|--------|
+| рядків ≥ 1 | `no rows to carry over` |
+| перший рядок має роль `user` | `the first row is not the person's` |
+| жоден рядок не має `handle` | `row <i>: holds a handle` |
+| у кожному рядку є текст, виклик або результат | `row <i>: empty` |
+| виклики лише в рядках `assistant`, результати лише в рядках `user` | `row <i>: tool_use in a user row` / `row <i>: tool_result in an assistant row` |
+| ідентифікатори викликів унікальні; ідентифікатори результатів унікальні | `row <i>: repeated call id <id>` / `row <i>: repeated result id <id>` |
+| кожен виклик має результат з тим самим ідентифікатором у пізнішому рядку, і між ними немає рядка `user` без результатів | `row <i>: call <id> has no result before the next prompt` |
+| кожен результат відповідає виклику з ранішого рядка | `row <i>: result <id> answers no call` |
+
+Рядки однієї ролі поспіль допустимі: засів зберігає форму рядків, у якій хост віддає їх обробнику компактизації і приймає назад при кожному застосуванні правок; BuildSeed рядків не зливає.
+
+### 02_24. CheckSeeded  {#SP_CTX_02_24}
+
+Purpose: після компактизації засіву переконатися, що хост тримає саме засіяну розмову ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13), A). Чиста функція; повертає причину або «гаразд». До 2026-10-09 — CheckSwitched.
+
+Input: `seed: list<Row>` (HandoffSeed.rows), `read: list<Row>` (рядки, прочитані в новій сесії після команди, увесь транскрипт), `old`, `now` — ідентифікатори старої і поточної сесії.
+
+Logic (перша порушена умова — причина):
+- `now ≠ old`, інакше `the session id did not change`;
+- `p = BoundaryAt(read, head = fingerprints of seed[0 .. min(len(seed), HEAD_ROWS)), count = len(seed))` ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)); немає — `the seeded rows were not found`;
+- текст `read[p]` — першого рядка після межі — містить перші SEED_PROBE символів тексту `seed[0]`, якщо той непорожній; інакше `the first row after the boundary is not the seeded one`;
+- кожен ідентифікатор виклику з `seed` є серед викликів `read[p ..]`; інакше `seeded call <id> is missing`.
+
+Очікування рядків. У неінтерактивному хості `$.command.run('compact')` завершується після відповіді обробника, але ще до того, як повернені рядки з'являються в читанні розмови (приблизно через 50 мс); у терміналі вони вже є на момент завершення (Verify фази 10, 2026-10-09, F2). Тому RunHandoff перевіряє засів через AwaitSeeded:
+
+    FUNCTION AwaitSeeded(seed, old, now):
+        deadline = clock + SEED_WAIT
+        LOOP:
+            why = CheckSeeded(seed, read main conversation rows, old, now)
+            IF why absent OR clock ≥ deadline: RETURN why                   # остання причина — SEED_NOT_KEPT
+            wait SEED_POLL
+
+Інших читань рядків одразу після компактизації мода немає: Flush читає лише чергу, записану до відповіді обробника; межу записують HandleCompaction і HandleSeed з рядків, які вони самі повертають, а спостерігач [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18) — з результату `next`, не з читання.
+
+Рядки перед `p` — рядки команди очищення, рядки після засіяних — рядки команди компактизації з HANDOFF_MARKER; перевірку вони не зачіпають. Повернені рядки стоять у наступному читанні суцільним блоком з тими самими відбитками (навичка plugin-hooks, пункт 13), тож межа знаходиться тим самим пошуком, що й у CurrentRows.
+
+### 02_25. ScrubCommandRows (вилучено)  {#SP_CTX_02_25}
+
+Вилучено 2026-10-09: у терміналі рядки команди, яку запускає мод, і копії після межі компактизації пишуться у файл сесії повз подію додавання рядка, тож переписати мітку там неможливо (спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md), Entry 4, «Мітка в рядках команди»; навичка plugin-hooks, пункт 24). Рядки команди лишаються з міткою; MARKER і HANDOFF_MARKER — самопояснювальні тексти ([SP_CTX_01_12](./context_editor.structures.sp.md#SP_CTX_01_12)), а інваріант [SP_CTX_05_02](./context_editor.scenarios.sp.md#SP_CTX_05_02) перевіряє, що обробник бачить ту саму мітку як `instructions`.
+
+### 02_26. HandleSeed  {#SP_CTX_02_26}
+
+> **Criticality:** core
+
+Purpose: гілка обробника компактизації для HANDOFF_MARKER ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)): повернути засіяні рядки замість розмови щойно очищеної сесії.
+
+Input: `messages: list<Row>` події компактизації; засів у пам'яті модуля (HandoffSeed або нічого); поточний ідентифікатор сесії.
+
+Processing logic (pseudocode):
+    FUNCTION HandleSeed(messages):
+        s = pending seed; IF absent: RETURN skip "no handoff seed waiting"
+        IF session id ≠ s.new: RETURN skip "this is not the session the handoff created"   # зокрема стара сесія; мод не пише в сесію, якої не створив
+        IF messages hold a row with role assistant: RETURN skip "the new session already has a turn"
+        s.taken = true
+        RecordBoundary(s.rows)                       # SP_CTX_02_18, у сховище нової сесії; збій запису не зупиняє засіву
+        RETURN { messages: s.rows }
+
+Errors:
+| Code | Condition | Guidance |
+|------|-----------|----------|
+| SKIP_NO_SEED | засіву в пам'яті немає (команду ввела людина, модуль перезавантажено) | розмова не змінюється |
+| SKIP_NOT_CLEARED | поточна сесія — не `s.new` (стара або інша, яку відкрила людина) | розмова не змінюється, мод нічого в неї не пише; RunHandoff — AfterClear або SESSION_CHANGED |
+| SKIP_TURN_STARTED | у новій сесії вже є рядок агента | розмова не змінюється; RunHandoff не очищає сесію вдруге |
+| SKIP_SEED_FAILED | обробник впав | `skip` одразу ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)); RunHandoff — AfterClear |
+
+Обробник не читає і не пише черги: засів не стосується черги нової сесії. Після очищення вхід компактизації — лише рядки команди `/clear` (спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md), Entry 2), тож повернений список заміняє їх, а відновлення нової сесії бачить саме засіяні рядки: перед межею у файлі сесії немає нічого, крім команди очищення ([C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) тут не діє).
+
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_19–02_26 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.handoff.sp.md](./context_editor.handoff.sp.md), якорі без змін |

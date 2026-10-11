@@ -91,7 +91,7 @@
 - **Беклог:** перевірити `--resume` після вставки; перевірити, чи `prompt.submit` з `turnId` потрібен як друге джерело (у `-p` без `session.append`-копій).
 
 **Artifacts to keep:**
-- Плагін і сценарії в scratchpad сесії `decd4bc6…` (`scratchpad/attach-spike/`): `aprobe/` (режими `same`, `plain-results`, `plain-results-inject`, `plain-results-transcript`, `inject`, `inject-end`; директиви `##cmp:<mode>##`, `##api##`), `sj.sh` (драйвер stream-json через fifo), `scen1.sh` (повідомлення посеред ходу), `scen2.sh` (фоновий `Bash` і субагент), `scen3.sh` (доставка, `--resume`, відновлення з транскрипту), `queued.jq` (витяг доставок з транскрипту з якорем). За потреби перенести в `.dev_flow/cache/attachments/`.
+- Плагін і сценарії в `.dev_flow/cache/attach-spike/` (перенесено зі scratchpad сесії `decd4bc6…`): `aprobe/` (режими `same`, `plain-results`, `plain-results-inject`, `plain-results-transcript`, `inject`, `inject-end`; директиви `##cmp:<mode>##`, `##api##`), `sj.sh` (драйвер stream-json через fifo), `scen1.sh` (повідомлення посеред ходу), `scen2.sh` (фоновий `Bash` і субагент), `scen3.sh` (доставка, `--resume`, відновлення з транскрипту), `queued.jq` (витяг доставок з транскрипту з якорем).
 
 **Artifacts to discard:**
 - Журнали й дампи (`log.txt`, `api-*`, `rows-after-*`, `compact-in-*`, `run-*/`, `sj-*/`) і тестові транскрипти в `~/.claude/projects/-tmp-claude-1000-…-attach-spike-work/`.

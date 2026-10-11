@@ -1,0 +1,490 @@
+# Редактор контексту агента — Specification: Verification: functional expectations
+
+> **Code:** SP_CTX (дочірній файл набору)
+> **Status:** active
+> **Created:** 2026-10-11
+> **Updated:** 2026-10-11
+> **Umbrella:** [SP_CTX](./context_editor.sp.md)
+>
+> §05_01 Functional Expectations специфікації [SP_CTX](./context_editor.sp.md): таблиця модульних очікувань за контрактами (вхід → очікуваний результат). Читати, коли пишете або звіряєте модульні тести.
+
+## Contents
+
+Розділи цього файлу (h3 розділу «05. Verification Criteria» парасольки):
+
+- [05_01. Functional Expectations](#SP_CTX_05_01)
+
+## 05. Verification Criteria — модульні очікування
+
+### 05_01. Functional Expectations  {#SP_CTX_05_01}
+
+| Contract | Scenario | Input | Expected outcome |
+|----------|----------|-------|------------------|
+| BuildSeed | правки й медіа | розмова з парою з PNG, summarize іншої пари, drop третьої | summarize і drop застосовані; PNG незміненої пари записано в `<folder>/1.png`, текст її результату закінчується CarryNote `image/png <path>`; виклику context_handoff немає; жоден рядок не має `handle` |
+| BuildSeed | однакові ролі поспіль | два рядки агента підряд | обидва рядки лишаються окремими, CheckSeed їх приймає |
+| BuildSeed | модель бачить усе | усі результати є в API-поданні | голови немає, `fromSummary = false`, засів — CurrentRows з правками |
+| BuildSeed | після вбудованої компактизації | рядки: 6 старих (результат `a` поза API-поданням), рядок-підсумок, що починається з SUMMARY_OPENER, з `read the full transcript at: …/old.jsonl`, копія тексту агента, пара `b`; API: підсумок, копія, `<system-reminder>`, пара `b` | перший рядок — підсумок без рядка зі шляхом, далі копія і пара `b`; `fromSummary = true`; `<system-reminder>` не перенесено; summarize `a` — `failed` `the model no longer sees this row` |
+| BuildSeed | відновлена сесія після `/compact` | CurrentRows після `--resume` починаються з рядка-підсумку (F5), усі результати видно | голови немає, але `fromSummary = true`; звіт нової сесії каже, що вона починається з підсумку; PinSummary закріплює перший рядок |
+| BuildSeed | підсумку немає | є результат поза API-поданням, перше повідомлення API — асистента / з `tool_result` / промпт людини без SUMMARY_OPENER | відмова NO_SUMMARY |
+| BuildSeed | заповнене вікно при прихованих рядках | є результат поза API-поданням, API-подання — рівно 4096 повідомлень (або читання — 4096 рядків), перше — підсумок | відмова WINDOW_FULL, підсумок не шукається |
+| BuildSeed | збіг підсумку | текст рядка-підсумку відрізняється від API лише пробілами й переносами; підсумок коротший за 160 символів | рядок знайдено (порівнюються перші min(160, довжина) символів без пробільних) |
+| BuildSeed | нагадування в підсумку | перше повідомлення API: текст підсумку + блок, обрізаний текст якого починається з `<system-reminder>` | голова — лише текст підсумку |
+| BuildSeed | підсумок не знайдено | перше повідомлення API — текст, якого немає в жодному рядку людини | відмова SUMMARY_NOT_FOUND |
+| BuildSeed | заповнене вікно | 4096 рядків, межі немає, усі результати видно | відмова WINDOW_FULL |
+| BuildSeed | завеликий засів | після нормалізації засів довший за ROW_WINDOW − SEED_ROOM рядків | відмова SEED_TOO_LONG до `/clear`; спосіб `document` |
+| BuildSeed | підсумок посеред рядків | усі результати видно, але рядок людини, крім першого, починається з SUMMARY_OPENER | гілка прихованих рядків: засів від останнього підсумку |
+| BuildSeed | вміст рядком | перше повідомлення API має `content` рядком, що починається з SUMMARY_OPENER | рядок — один текстовий блок; підсумок знайдено |
+| BuildSeed | заповнене вікно з межею | 4096 рядків, CurrentRows знайшов межу | засів зібрано |
+| BuildSeed | медіа не записалось | запис PNG незміненої пари падає | відмова MEDIA_NOT_ARCHIVED |
+| BuildSeed | медіа без даних | document `source.type = url` у незміненій парі (без `media_type` в API-поданні) | CarryNote `document (not carried: no inline data)` — тип береться з `media_type`, а без нього — з типу блоку; засів зібрано |
+| BuildSeed | змішане медіа одного власника | незмінена пара: image з даними і document без даних | image записано в `<folder>/1.png`; CarryNote `image/png <folder>/1.png, document (not carried: no inline data)`; засів зібрано |
+| BuildSeed | рядок зі шляхом у повній розмові | CurrentRows після `/compact` у цьому процесі починається з підсумку з рядком TRANSCRIPT_LINE | у першому рядку засіву цього рядка немає |
+| CheckSeed | порушення | рядок з `handle`; `tool_result` без виклику; виклик без результату; результат після нового промпту; дубль id виклику; перший рядок агента; порожній рядок | кожне — своя причина з таблиці [SP_CTX_02_23](./context_editor.handoff.sp.md#SP_CTX_02_23) |
+| CurrentRows | межа засіяної сесії | рядки `/clear`, засіяні рядки, рядки команди; Boundary від HandleSeed | від першого засіяного рядка |
+| CheckSeeded | засів на місці | прочитано: рядок `/clear`, засіяні рядки, два рядки команди | «гаразд» |
+| AwaitSeeded | рядки з запізненням | засіяні рядки з'являються в читанні через 50 мс після завершення `compact` (stream-json) | перше читання — `the seeded rows were not found`; після опитувань — «гаразд»; передача вдалася |
+| AwaitSeeded | рядків немає | засіяні рядки так і не з'являються | після SEED_WAIT — остання причина; RunHandoff — AfterClear з SEED_NOT_KEPT |
+| CheckSeeded | засів не взято | прочитано лише рядок `/clear` і рядки команди | `the seeded rows were not found` |
+| CheckSeeded | бракує виклику | засіяні рядки є, один виклик відсутній | `seeded call <id> is missing` |
+| CheckSeeded | сесія та сама | `now = old` | `the session id did not change` |
+| context_handoff | постановка | mode без значення / `document` / задовгий документ / запит `running` | `transcript` / `document` / DENIED_TOO_LONG / DENIED_RUNNING |
+| HandleCompaction | передача в черзі | правки + handoff | skip `handoff pending`, черга без змін |
+| HandleCompaction | збіг за інструкцією | MARKER з `trigger` `manual` / `plugin`; MARKER з `agentId`; інша інструкція з `manual` | застосування / застосування / далі / далі |
+| HandleCompaction | попереднє обчислення | `trigger = precompute`, інструкція MARKER або HANDOFF_MARKER | далі без змін; черга і засів не чіпаються |
+| HandleCompaction | збій гілки засіву | виняток у HandleSeed | skip `seeding failed` одразу, черга не чіпається |
+| HandleSeed | засів | засів у пам'яті, сесія нова, `messages` — один рядок `/clear` | повернено рядки засіву, `taken = true`, межу записано в сховище нової сесії з `host` = `hostId` (за наявності) і як власну межу екземпляра |
+| HandleSeed | відмови | засіву немає / сесія ≠ `s.new` (стара чи інша) / у `messages` є рядок агента | SKIP_NO_SEED / SKIP_NOT_CLEARED / SKIP_TURN_STARTED; `taken` не змінюється |
+| RunHandoff | засів | transcript, усе вдалося | порядок: збирання, файли в `<old storage>/<id>`, `clear`, сховище нової сесії, `compact HANDOFF_MARKER`, CheckSeeded, HandedOff, копії реєстрів, PinSummary, промпт зі звітом і продовженням |
+| RunHandoff | збирання відмовило | BuildSeed — WINDOW_FULL | файли засіву видалено; спосіб `document`, документ від окремого запиту до моделі; причина у звіті |
+| RunHandoff | хід почався | хід іде або лічильник змінився від планування — до захоплення, після збирання, перед `clear` способу `document` | `deferred`: без захоплення / файли засіву видалено; запит знову `queued` |
+| RunHandoff | хід перед `/clear` | `turns` змінився між плануванням і завершенням `clear` (transcript) | AfterClear з `a turn ran before /clear; the seed would miss it`; без другого `clear` (засів не взято); документ або повідомлення |
+| RunHandoff | хід перед `/clear` у способі document | те саме, `document` | документ надіслано; промпт називає хід, що лишився в `<old>` |
+| RunHandoff | закріплення підсумку | засів з `fromSummary = true` | у скопійованому реєстрі `pin` на перший засіяний рядок, `firstPromptPinned = true` |
+| RunHandoff | `/clear` відхилено | `clear` кидає виняток з текстом T | `Fail` з причиною, що містить T; правки лишаються; файли засіву видалено |
+| RunHandoff | компактизацію засіву відхилено | `compact` кидає виняток з текстом T | AfterClear без другого `clear` (засів не взято); з документом агента — HandedOff `document`, промпт з T у причині; без документа — FailAfterClear і промпт з `<old>` і шляхом `seed.json` |
+| RunHandoff | засів не взято | обробник відповів `skip` | AfterClear з `the seed compaction did not take the seed`, без другого `clear` (засів не взято) |
+| RunHandoff | розбіжність | CheckSeeded повертає причину | AfterClear з цією причиною |
+| RunHandoff | хід у новій сесії | хід почався після `clear` (`MovedSince(turnsClear)`), HandleSeed відповів SKIP_TURN_STARTED | FailAfterClear; другого `clear` і промпту немає |
+| RunHandoff | resume false | спосіб `transcript` | промпту немає; звіт у черзі нової сесії; у старій — нотатка, `reportResume` false |
+| RunHandoff | resume false, запасні тексти | `h.resume = false`; документ після збою засіву / повідомлення AfterClear / документ способу `document` | жодного промпту: кожен текст — у звіт черги нової сесії з `reportResume = false` |
+| RunHandoff | теги й псевдоніми | реєстри старої сесії | скопійовано в сховище нової сесії до промпту і узгоджено RebindTags; збій копіювання чи узгодження — речення у звіті, засів лишається |
+| RunHandoff | псевдонім зміненої пари | `c3` → пара `a`, summarize `a` застосовано в засіві | у новій сесії `ref: c3` — UNKNOWN_REF (`unknown ref c3`), не TARGET_NOT_FOUND |
+| RunHandoff | тег на зміненій парі | `review` на парі `a`, summarize `a` застосовано в засіві | у реєстрі нової сесії тегу немає — так само, як після компактизації в тій самій сесії |
+| RunHandoff | disposable з заміною в пакеті засіву | `disposable` на парі `b` з нотаткою N, у пакеті summarize `b` з `summary = N` — застосована або відхилена (зокрема через `pin`) | у реєстрі нової сесії тегу немає (пакет `s.edits` — до перевірки `pin`) |
+| RunHandoff | збій узгодження реєстру | RebindTags кидає виняток | реєстр у нову сесію не записано; у звіті « Tags and aliases were not carried over.» |
+| RunHandoff | незмінена пара | `c4` і `pin` на парі `b`, правок до `b` немає | у новій сесії `ref: c4` розв'язується на `b`; `pin` на `b` лишився |
+| RunHandoff | пара поза засівом | тег і псевдонім на парі, рядки якої лишились до підсумку (`fromSummary`) | видалено: цілі в засіяних рядках немає |
+| cancelHandoff | скасування | запит `queued` / `running` без `handoffInFlight` / `running` під час `handoffInFlight` | знятий зі звітом / знятий зі звітом / без змін |
+| RunHandoff | покинутий запуск із засівом | `running`, старший за HANDOFF_STALE, у сховищі є `<id>/seed.json` з `id ≥ at` | запит знято зі звітом «not re-run»; RunHandoff — `nothing` |
+| context_handoff | перерваний хід запиту | запит агента, `requestTurn = turns`, хід перервано / після перезавантаження модуля (`requestTurn` відсутній) | запит знято / запит лишається і запуститься після наступного кінця ходу |
+| RunHandoff | відкладено, хід уже скінчився | хід, що відклав передачу, скінчився до повернення RunHandoff (`deferred`, `inTurn = false`) | `handoffScheduled` скинуто до виклику; другий RunHandoff через HANDOFF_DELAY без жодного нового ходу |
+| RunHandoff | виняток до `/clear` | виняток після захоплення, до `/clear` | один Fail з `failed: <error>`, файли засіву видалено; запит не лишається `running`; `handoffInFlight = false` |
+| RunHandoff | Fail кидає до `/clear` | запис старої черги в Fail падає | одна спроба, повтору немає; спливне повідомлення; `handoffInFlight = false` |
+| RunHandoff | виняток після `/clear`, transcript | виняток у Seed до AfterClear | один AfterClear: з документом агента — HandedOff `document` і документ; без документа — FailAfterClear і повідомлення з шляхом `seed.json` |
+| RunHandoff | виняток усередині AfterClear | крок AfterClear кидає | перехоплено в AfterClear: жодного ще одного `/clear`, один FailAfterClear, без повторної доставки; спливне повідомлення називає крок |
+| RunHandoff | виняток після `/clear`, document | виняток у DocumentWay після `/clear` | FailAfterClear без шляху `seed.json`; повторної доставки немає |
+| Due | running без handoffInFlight | `running`, `handoffInFlight = false`, старший за HANDOFF_STALE / молодший | належний / ні (поле `owner` не читається) |
+| Flush | хід від планування, хід іде | `MovedSince(turns0)` перед командою, `inTurn = true` | команди немає, `scheduled = false`; кінець ходу запланує Flush |
+| Flush | хід від планування, скінчився звичайно | `MovedSince(turns0)`, `inTurn = false`, `lastTurnAborted = false` | команди немає; Flush заплановано знову через FLUSH_DELAY |
+| Flush | хід від планування, перерваний | `MovedSince(turns0)`, `inTurn = false`, `lastTurnAborted = true` | команди немає, повторного планування немає; черга чекає наступного завершеного ходу |
+| RunHandoff | хід перед компактизацією засіву | `MovedSince(turnsClear)` безпосередньо перед `compact HANDOFF_MARKER` | команди немає; AfterClear → FailAfterClear без другого `clear` |
+| RunHandoff | засів не взято, сесія порожня | компактизацію засіву відхилено (`taken = false`) | AfterClear без другого `clear`; документ або повідомлення через Deliver |
+| HandleSeed | інша сесія | засів у пам'яті, поточна сесія ≠ `s.new` | SKIP_NOT_CLEARED; нічого не записано |
+| RunHandoff | довгий хід під час `/clear` | `/clear` чекає кінця ходу довше за HANDOFF_STALE; кінець цього ходу знову перевіряє Due | другого запуску немає (`handoffInFlight`); `context_handoff` і `/handoff` — DENIED_RUNNING, запит не замінюється |
+| HandoffCommand | планування | `/handoff` між ходами | Schedule(): знімок `turns0`, запуск через HANDOFF_DELAY; під час `handoffInFlight` — DENIED_RUNNING |
+| RunHandoff | сесія змінилась під час засіву | після `compact` поточна сесія ≠ створеної `/clear` | FailAfterClear; другого `clear`, промпту і запису в поточну сесію немає |
+| RunHandoff | хід одразу після `/clear` | `inTurn` після завершення `clear` | AfterClear → FailAfterClear без другого `clear`; повідомлення — у звіт черги нової сесії, `reportResume = false` |
+| RunHandoff | людина активна перед відправкою | засів вдався, але `MovedSince(turnsClear)` перед відправкою звіту | звіт — у черзі нової сесії з `reportResume = false`, промпту немає |
+| PinSummary | реєстр нової сесії | реєстру немає / повний (MAX_TAGS) / нечитабельний | створено з одним `pin` / `pin` не поставлено, звіт називає причину / те саме |
+| BuildSeed | вікно посеред пари | перший рядок — результат без виклику | сирітські результати прибрано, перший рядок — людини; без рядка людини — відмова EMPTY |
+| CurrentRows | без межі | транскрипт 9 рядків, Boundary відсутній | усі 9 рядків |
+| CurrentRows | після компактизації | старі 9 рядків, повернені 7, нові 3; Boundary з голови повернених | 10 рядків, починаючи з першого поверненого |
+| CurrentRows | дві компактизації | транскрипт з трьох сегментів, голови однакові | від останнього входження голови |
+| CurrentRows | гаряче перезавантаження | Boundary з `host` = `hostId`; модуль перезавантажено в тому самому процесі (токен HOST_ENV і ppid ті самі) | межа довірена; рядки від неї |
+| CurrentRows | інший процес | Boundary з `host` іншого процесу (перезапуск, `--resume`) | увесь транскрипт |
+| CurrentRows | межа без `host` | Boundary без поля `host` (зокрема записана версією до цього правила) / з `host` не рядком; записана не цим екземпляром | увесь транскрипт (межа читається, `host` ігнорується) |
+| CurrentRows | власна межа без `host` | `hostId` відсутній; цей екземпляр записав Boundary у цій сесії (`ownBoundary` = текст файлу) | межа довірена; після перезавантаження модуля або зміни сесії — увесь транскрипт |
+| CurrentRows | `/resume` у тому самому процесі | процес записав Boundary сесії A з `host` = `hostId`; `/clear`, потім `/resume` A в тому самому процесі | підготовка сховища A знімає `host` з її межі; CurrentRows — увесь транскрипт |
+| CurrentRows | перша підготовка після завантаження | модуль щойно завантажено (зокрема гаряче перезавантаження), Boundary поточної сесії з `host` = `hostId` | `host` не знімається; межа довірена. Залишкове вікно: гаряче перезавантаження між `/resume` у тому самому процесі і наступним PrepareStorage старого екземпляра лишає `host` — новий екземпляр довіряє межі над завантаженим ланцюжком; так само, коли перше після перемикання PrepareStorage припало на обробник компактизації, а обіцянка ще не виконана |
+| CurrentRows | ідентичність не прочиталась | `sh -c 'echo $PPID'` не вдалася або вивід не десяткове число, або `$.env.set` не вдався | `hostId` відсутній; RecordBoundary пише Boundary без `host`; довіра лише до власної межі екземпляра |
+| ParseHostId | розбір | (`k3x9…`, `"12345\n"`) / (`k3x9…`, `"abc"`) / (`""`, `"12345"`) / (`k3x9…`, `""`) | `k3x9…:12345` / відсутній / відсутній / відсутній |
+| hostId | ще не прочитано | обробник компактизації (лише HandleCompaction, HandleSeed, спостерігач) пише межу, поки обіцянка `hostId` не виконана | не чекає і процесу не запускає; Boundary без `host`; межа — власна межа екземпляра |
+| CurrentRows | перший перелік після перезавантаження | обіцянка `hostId` ще виконується; Boundary з `host` = `hostId` | чекає обіцянку; межа довірена; `Key()` не змінюється після її виконання |
+| CurrentRows | межа поза вікном | голови в транскрипті немає | увесь транскрипт |
+| CurrentRows | замало рядків після збігу | збіг голови, але `len - p < count` | цей збіг не підходить |
+| RecordBoundary | запис | 12 повернених рядків | `head` — 8 відбитків, `count` 12 |
+| RecordBoundary | `host` | `hostId` є / відсутній | Boundary з `host` = `hostId` / без `host`; в обох випадках `ownBoundary` = записаний текст |
+| RecordBoundary | спостерігач | `manual`, `auto`, `plugin` з іншими інструкціями / MARKER або HANDOFF_MARKER з `manual` чи `plugin`, `precompute`, `agentId`, `skip`, порожній результат | межа / немає межі |
+| PrepareEdits, context_tag | застарілі індекси | межа змінилась після переліку; collapse, rewrite, тег за `index`, summarize за id | правки й тег за індексом відхилено, summarize і тег за id прийнято |
+| PrepareEdits, context_tag, context_note | текст відмови після `count: 0` (фаза 18) | межа змінилась; `context_list` з `count: 0`; потім rewrite за `index`, тег за `index`, нотатка за `index` | усі три відхилено (`listedKey` не оновлено); текст кожної відмови містить `call context_list with a page of rows (count > 0) for current indexes` і `count 0 and "full" do not renew them`; після `context_list` з `count: 1` ті самі виклики приймаються |
+| HandleCompaction | довгий текст у `data` | пара з заархівованим медіа і довгим текстом у `data` | текст лишається, замінено лише base64 |
+| HandleCompaction | архів без дубля медіа | summarize пари з PNG у `result` виклику і результату | у JSON архіву base64 замінено на `[media archived: …]`; інші поля без змін |
+| context_list, context_edit, context_tag, context_handoff, context_note | опис інструмента | описи п'яти інструментів | кожен ≤ MAX_DESCRIPTION |
+| context_note | додати і зняти | `add` з текстом на пару за `ref`; `add` на рядок #5; `add` діапазону #4..#7; дві нотатки на ту саму пару; `remove` `n2` | `n1`..`n4` у реєстрі, `nextNote = 5`; обидві нотатки пари лишаються; `n2` знято, наступна нова — `n5` |
+| context_note | нотатка і тег незалежні | `pin` на парі `a`, потім `add` нотатки на `a`, потім `remove` тегу | нотатка лишається; тег на цілі з нотатками ставиться і знімається як завжди |
+| context_note | помилки | кожен рядок таблиці Errors [SP_CTX_02_32](./context_editor.stages.sp.md#SP_CTX_02_32), зокрема `remind_in_turns: 0`, текст на MAX_NOTE + 1 символ, MAX_NOTES + 1-ша нотатка, `remove` невідомого `id` | відповідний код; решта пакета обробляється |
+| context_note | нагадування | `add` з `remind_in_turns: 2` при `TagRegistry.turn = 7` | `remindAt = 9` |
+| NoteReminders | доставка один раз | `remindAt = 9`; виклик Read при `turn = 8` / при `turn = 9` / ще один виклик | без рядка / рядок `[context-editor] reminder n1 (set 2 turn(s) ago): <text>` після рядка псевдоніма, `remindAt` знято / без рядка |
+| NoteReminders | не для відхилених і субагентів | належне нагадування; відхилений виклик / виклик субагента | нагадування не доставлено, `remindAt` лишається |
+| NoteReminders | збій запису | належне нагадування, запис реєстру падає | рядка немає; `remindAt` лишається; наступний виклик доставляє |
+| context_list | нотатки на сторінці | нотатки `n1` на #3, `n2` діапазону #5..#8, `n3` на #70 (поза сторінкою 0..59), `n4` з `remindAt = turn + 2` | `[n1]` на #3, `[n2 #5..#8]` на #5; блок `Notes:` з `n1 #3: …`, `n2 #5: …`; `n3` немає; `n4 … (reminder in 2 turn(s))` |
+| RebindTags | нотатка на заміненому рядку | `n1` на парі `a`; застосовано summarize `a` | `n1` — ціль-рядок на рядку результату з FreshId (`produced`), текст і `remindAt` ті самі |
+| RebindTags | нотатка на прибраному рядку | `n1` на парі `b`; застосовано `drop b` | `n1` видалено; звіт закінчується ` Notes dropped (their rows were removed): n1.` |
+| RebindTags | діапазон нотатки | `n2` на #4..#8; `drop` пари в #8/#9 (кінець прибрано) / collapse 4..8 | кінець переходить на #7 (найближчий рядок діапазону, що лишився) / одна ціль-рядок на носії згортання |
+| RebindTags | засів з CarryNote | `n1` на парі з медіа, засів дописав CarryNote | `n1` на тій самій парі в реєстрі нової сесії |
+| RebindTags | нотатки на паралельних викликах | засів (або застосування) зливає незмінені рядки `tool_use a` і `tool_use b` однієї відповіді; `n1` на рядку `a`, `n2` на рядку `b`, `n3` діапазону, що закінчується на `b` | усі три лишаються, ціль — злитий рядок; `notesDropped` порожній |
+| context_note | рядок без тексту | `add` за `index` рядка лише з thinking / `to` на такому рядку | TARGET_NOT_FOUND з порадою `note a neighbouring row` |
+| BlockReport | нотатки в блоці | блок #4..#11, нотатки на #6 і #20 | `Your notes in the block: n1 #6: …`; `#20` не названо |
+| OptimizeText, PersonAdvice | нотатки без рядків | у реєстрі 3 нотатки | речення `You have 3 note(s); context_list shows them…`; рядків розмови не читано |
+| Telemetry | нотатки | 3 нотатки, одна з `remindAt` / жодної | `Notes: 3 (1 with a reminder pending)` / рядка немає |
+| ApplyEdits | summarize | пара `a`, результат 5000 символів | рядки пари перезібрано, спільний id `a_ce…`, виклик без `text`, результат містить summary; рядки без результатів зберігають `handle`, крім рядків асистента того самого відрізка, що й перезібраний рядок `tool_use a` — і до, і після нього (KeepResponsesWhole) |
+| ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `you read these 4 rows, then collapsed them into your note`; вміст наступного рядка не змінено (рядок асистента того самого відрізка перезібрано без `handle` — KeepResponsesWhole) |
+| ApplyEdits | collapse зі службовим викликом першим | діапазон, що починається з виклику `context_list` | носій — перший не службовий виклик; після DropOwnCalls підсумок присутній |
+| ApplyEdits | collapse без викликів | діапазон лише з текстових рядків | один рядок з підсумком |
+| ApplyEdits | drop | пара `c` | рядки пари зникли |
+| ApplyEdits | перекриття | summarize `b` + collapse 2..5 | одна застосована, одна в `failed` |
+| ApplyEdits | паралельні виклики | summarize двох паралельних викликів з тих самих рядків | обидві застосовано, обидва результати змінено, ідентифікатори пар збігаються |
+| ApplyEdits | медіа сусідньої пари | summarize `p`, у тому самому рядку результат `q` з медіа | `failed` `row also holds media of q`; рядок зберігає `handle`; з summarize `q` у тому самому пакеті й заархівованим медіа — обидві застосовано |
+| ApplyEdits | медіа в промптах не зіставлено | collapse діапазону з рядком промпту, `unmatchedPromptMedia = 1` | `failed`; рядок зберігає `handle` |
+| ApplyEdits | вікно API | незмінений рядок результату, id якого немає в knownResults | рядок зберігає `handle` |
+| ApplyEdits | правка поза вікном | summarize пари, рядок результату якої має id поза knownResults; collapse з таким рядком; collapse з промптом до першого відомого результату при `apiTruncated = true` | `failed` `outside the API window; media unknown` |
+| ApplyEdits | промпт перед першою парою, повне подання | collapse промпту людини і першої пари; API-подання повне (`len(api) < ROW_WINDOW − 1`, `apiTruncated = false`), усі результати в knownResults | застосовано |
+| ApplyEdits | промпт перед першою парою, обрізане подання | те саме, `len(api) ≥ ROW_WINDOW − 1` (`apiTruncated = true`) | `failed` `outside the API window; media unknown` |
+| ApplyEdits | носій без input | collapse з викликом великого інструменту | у носія `input = {}` |
+| DropOwnCalls | спільний рядок | службова пара в рядку з результатом, що має медіа або id поза knownResults | службова пара лишається, рядок зберігає `handle` |
+| ApplyEdits | зсув | rewrite #6, на початок додано рядок | застосовано до #7 |
+| ApplyEdits | якір не знайдено | rewrite #6, рядок змінено | `failed` з причиною |
+| ApplyEdits | архів не записано | archive `""` | немає `original:` у тексті |
+| ApplyEdits | незмінений рядок з медіа | mediaOwners містить власника незачепленого результату | рядок зберігає `handle` |
+| ApplyEdits | одна відповідь: текст і два Read | відрізок: промпт; рядок асистента з текстом; `tool_use a`; результат `a`; `tool_use b`; результат `b` з медіа (усі з `handle`); summarize `a` | рядок `tool_use a` і результат `a` перезібрано; рядок `tool_use b` теж перезібрано (KeepResponsesWhole); результат `b` з медіа зберігає `handle`; рядок тексту перед ними теж перезібрано (вміст той самий, без `handle`) |
+| ApplyEdits | без перезібраного асистента у відрізку | правка лише рядка результату (рядки асистента відрізка не змінено) або перезібраний рядок асистента в іншому відрізку | жоден інший рядок асистента цього відрізка не перезібрано |
+| ApplyEdits | рядок лише з thinking | у відрізку з перезібраним рядком асистента — до нього або після — стоїть рядок асистента з `handle`, що має лише thinking (`text` порожній, викликів немає) | рядок перезібрано, він порожній і видалений |
+| ApplyEdits | thinking перед зміненим викликом | відрізок: промпт; рядок лише з thinking; `tool_use a`; результат `a` (одна відповідь з thinking, усі з `handle`); summarize `a` | рядок thinking перезібрано й видалено; рядок `tool_use a` і результат перезібрано; жоден рядок асистента відрізка не має `handle` |
+| DropOwnCalls | службовий виклик посеред відповіді | відрізок: текст, `context_list`, Read з медіа (одна відповідь) | пару `context_list` прибрано; рядок `tool_use` Read і рядок тексту перед ним перезібрано (вміст той самий); результат Read з `handle` |
+| ApplyEdits | медіа не заархівовано | правка замінює власника з mediaOwners без шляхів у media | `failed` `media could not be archived` |
+| ApplyEdits | describe | рядок промпту з медіа, шлях медіа в `media` | `describe #0` застосовано; рядок без `handle`; текст `MARK you saw the media here, then replaced it with your description (original: …) (media: <path>): <опис>`, порожній рядок, оригінальний текст; звіт містить DESCRIBE_DROPS |
+| ApplyEdits | describe без медіа при застосуванні | `describe #0`, у `media` немає шляхів рядка: власник у mediaOwners без файлу / власника немає в mediaOwners (PromptMatch дав «немає») | перший: `describe #0: media could not be archived`; другий: `describe #0: no media found in that row now`; рядок зберігає `handle` в обох |
+| HandleCompaction | describe без зіставлення при застосуванні | у черзі `describe #0` (при постановці медіа знайдено); `e.messages` закінчується рядком `user`, якого немає в API | медіа не записано; skip; звіт черги — `describe #0: no media found in that row now` |
+| BuildSeed | describe без зіставлення | те саме для засіву | файлів немає; `failed = [describe #0: no media found in that row now]`; текст промпту без змін |
+| BuildSeed | медіа в промпті після підсумку | рядки: результат поза API, рядок-підсумок, відповідь, промпт; API починається з підсумку, далі промпт з image; `describe` промпту | PromptMatch на видимих рядках; один файл, шлях у рядку з описом; `fromSummary = true`; `unmatchedPromptMedia = 0` |
+| context_edit | needsApi, hasMediaFrom | правки з `describe` / без нього / `edits` не список; власники CollectMedia / без читання | true / false / false; `hasMedia` — за ключами `found`, без читання — false; прийнятий `describe` додає рядок DESCRIBE_DROPS |
+| context_edit | describe | `describe #0`; `hasMedia` за CollectMedia / без нього | у черзі / `no media found in that row` |
+| HandleCompaction | describe | два промпти з медіа, `describe #0` | один медіа-файл; рядок #0 з описом без `handle`; рядок #2 зберігає `handle` (медіа лишається) |
+| BuildSeed | медіа в промптах | два промпти з медіа, `describe #0` | записано лише медіа #0, шлях — у його рядку; `unmatchedPromptMedia = 1` (незмінений #2) |
+| FreshId | повторна правка | id з суфіксом `_ce…` | один суфікс |
+| PrepareEdits | обов'язкові поля | summarize без summary; rewrite з порожнім text | `summary is required`, `text is required` |
+| PrepareEdits | помилки | невідомий op; невідомий id; індекс поза межами; collapse розриває пару; rewrite рядка з викликом; describe рядка без медіа | відповідні причини з [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03) |
+| PrepareEdits | pin | collapse діапазону з рядком `pin` | `target is pinned` |
+| DropOwnCalls | службові виклики | пара `context_list` | пару прибрано |
+| ApplyEdits | паралельні виклики в окремих рядках | промпт; рядок `tool_use x`; рядок `tool_use y`; рядок результатів `x`, `y` (усі з `handle`); summarize `x` і `y` | один рядок асистента без `handle` з обома викликами (FreshId, по порядку), одразу за ним рядок результатів; `produced` обох правок — цей рядок результатів |
+| MergeCallRows | змішані рядки | текст агента; `tool_use a`; `tool_use b`; текст агента; рядок результатів; `tool_use c`; `tool_use d` з `handle` (рядки без `handle`, крім останнього) | текст перед викликами окремо; `a`, `b` і текст після них — один рядок; рядок результатів, `c`, `d` (з `handle`) — без змін |
+| DropOwnCalls | службовий виклик між паралельними | `tool_use a`, `tool_use context_list`, `tool_use b` окремими рядками, спільний рядок результатів | службову пару прибрано; `a` і `b` — один рядок, за ним результати `a`, `b` |
+| BuildSeed | паралельні виклики в окремих рядках | незмінені `tool_use a`, `tool_use c` окремими рядками, спільний рядок результатів | у засіві один рядок з обома викликами, за ним результати; CheckSeed приймає |
+| context_list | сторінка | from 0, count 4 | `#0 user`, `#3! user`, `Next page: from=4`; після summarize — `#3* user` |
+| context_list | порожня розмова | 0 рядків | `0 rows.`, далі телеметрія |
+| context_list | лише телеметрія | `count: 0`, 12 рядків | заголовок з кількістю рядків і TelemetryText, жодного рядка `#…`, без `Next page`; `listedKey` не змінюється |
+| context_list | позначки етапів і тегів | відкритий етап з `after` на #3; `state` на #5; `review` з `reason = stale` на парі в #7/#8; діапазон `disposable` #9..#11; Read у #12/#13 | `[stage ▶ <name>]` на #4; `[state]` на #5; `[review: stale]` на #7 і #8; `[disposable #9..#11: "…"]` на #9; `tool_use Read~` на #12 і `tool_result~` на #13 |
+| context_list | `~` у змішаному рядку | рядок асистента з паралельними `Read` і `WebFetch` та їхній рядок результатів | `~` лише на частинах пари `Read`; частини `WebFetch` без `~` |
+| context_list | останній закритий блок | `lastClosed = { name A, after #3, end #9 }` / без назви | `[block ▶ A]` на #4, `[block end]` на #9 / `[block ▶]` на #4; телеметрія `Last block "A" #4..#9 (~… tokens)` |
+| context_list | кінець блоку загублено | `lastClosed.end` не знаходиться (вбудована компактизація) | позначки `[block end]` немає; телеметрія `...: its end row is gone`, а не `it is empty` |
+| context_list | межа етапу зникла | `stage.after` не знаходиться (Locate — не знайдено) | `[stage ▶ …]` на #0; телеметрія: `its start row is gone, so it runs from #0` |
+| context_list | початок блоку зник | `lastClosed.after` не знаходиться, `end` — #9 | `[block ▶ …]` на #0, `[block end]` на #9; телеметрія `Last block … #0..#9 (…); its start row is gone, so it runs from #0` |
+| context_edit | помилки | черга `unreadable`; переповнення; збій запису; довгий resume_prompt | DENIED_QUEUE_READ, DENIED_QUEUE_FULL, DENIED_QUEUE_WRITE, DENIED_PROMPT_TOO_LONG; черга не перезаписана |
+| context_edit | продовження | `resume:false`, потім застосування | звіт з `reportResume = false`; наступний пакет знову `resume = true` |
+| context_edit | хід оптимізації без `resume` (фаза 18, SP_CTX_DEC_16) | `optimizePrompted = true`, черга порожня / лише заміни з тегів (`tagsOnly`); виклик без `resume` і без `resume_prompt` | `resume = false`; результат без речення «The session then resumes by itself…»; після застосування `reportResume = false`, Resume нічого не надсилає |
+| context_edit | хід оптимізації з продовженням | `optimizePrompted = true`, черга порожня; виклик з `resume: true` / лише з `resume_prompt` P / з `resume: false` і P | `resume = true` / `resume = true`, `resumePrompt = P` / `resume = false`, `resumePrompt = P` |
+| context_edit | хід оптимізації, другий виклик | `optimizePrompted = true`; перший виклик з `resume: true`, другий без `resume` і без `resume_prompt` | `resume = true` лишається |
+| context_edit | поза ходом оптимізації | `optimizePrompted = false`, виклик без `resume` | `resume` як був (за замовчуванням `true`) |
+| context_edit | хід оптимізації, повтор після відмови (рев'ю 46) | `optimizePrompted = true`; перший виклик з `resume: true`, усі правки відхилено (0 поставлено); повтор без `resume` / перший лише з `resume_prompt` P, другий без нього / перший з `resume: false`, другий лише з `resume_prompt` Q | `resumeSet = true` після першого; `resume = true` після повтору / `resume = true` / `resume = false` |
+| context_edit | результат у ході оптимізації | `optimizePrompted = true`, виклик без `resume` / поза ходом оптимізації з `resume: false` | результат містить `The session then stops; pass "resume": true to go on.` / речення немає |
+| Flush (swapOptimize) | пакет, що лишився (рев'ю 46) | `optimize = true`, у черзі пакет ходу з міткою з `resume = true`, `resumeSet = true` (компактизацію покинуто) / черга порожня / `optimize = false` | `resume = false`, `resumeSet = false`, `optimizePrompted = true`; правка ходу оптимізації без `resume` — `resume = false`, з `resume: true` — `true` / `resume = true` лишається / заміни немає |
+| Queue | `resumeSet` у файлі | `resumeSet: "x"` / поля немає | `unreadable` / `ok` з `resumeSet = false` |
+| EDIT_DESCRIPTION | продовження в ході оптимізації (F2) | константа | ≤ MAX_DESCRIPTION; містить `unless "resume" is false; in an optimization turn only on "resume": true or "resume_prompt".` |
+| HandleCompaction | збій запису архіву | запис архіву падає | skip; жодна правка не застосована; пакет очищено; звіт `originals could not be archived` для кожної правки |
+| HandleCompaction | збій обробника | виняток у застосуванні | skip; черга очищена; звіт про збій |
+| HandleCompaction | charsAfter | пакет з викликами `context_list` | `charsAfter` рахується після DropOwnCalls |
+| FormatReport | форми | `kind = compaction`, applied порожній, failed [x] / `kind = seed`, обидва порожні / applied [y] | «no edit was applied; the conversation was not changed. Not applied: x.» без рядка розміру / порожній рядок (звіт передачі без переносу) / рядок розміру є |
+| HandleCompaction | жодної правки | усі правки пакета `failed` (напр. ціль не знайдено) | skip `no edit could be applied`; звіт `context-editor: no edit was applied; the conversation was not changed. Not applied: …` без рядка розміру і без «tokens freed» |
+| HandleCompaction | правки застосовано | ≥ 1 правку застосовано; `charsPerToken = 2.0` / відсутній | звіт з рядком `Conversation ~A -> ~B chars (~<(A−B)/2> tokens freed)` / `(~<(A−B)/4> tokens (approx.) freed)`; телеметрії обробник не запитує |
+| Calibrate | калібрування | телеметрія `messages`, `conversation = 268 000`, Σ size рядків 482 400 | відношення 1.8; `charsPerToken = 1.8` записано |
+| Calibrate | без калібрування | `measure = request` / `conversation < CALIB_TOKENS` / відношення в межах 5 % від збереженого | повертає збережене; реєстр не записується |
+| Calibrate | межі | Σ size / conversation = 0.5 / 12 | 1.0 / 8.0 |
+| Estimate | форми | 9000 символів, відношення 1.8 / без відношення | `~5000 tokens` / `~2250 tokens (approx.)` |
+| context_list | один розмір | телеметрія `messages` 268k; Σ символів 482k | заголовок називає лише `~268k` токенів з телеметрії, без `chars/4`; без телеметрії — Estimate з `approx.`, якщо відношення немає |
+| context_list | повний рядок | `index: 12, full: true`, рядок з підсумком згортання 30 000 символів / `full: true` без `index` / `index` без `full` | весь вміст до MAX_FULL_ROW і хвіст `… (+10000 chars; …)`; `listedKey` не змінено / BAD_FULL / BAD_FULL |
+| context_list | нотатки поза сторінкою | сторінка 0..59, нотатки на #70 і #300, одна з ненайденою ціллю | заголовок `Notes elsewhere: n3 #70, n5 #300, n7 (row not found)` |
+| Telemetry | кандидати з рядками | `review` big на #12 і #40, stale на #5 | `Candidates: review 3 (big 2: #12, #40; stale 1: #5)` — за причинами з фази 15; до неї один список `review 3 (#5, #12, #40)` |
+| Telemetry | виміряне звільнення | `lastApply.tokensBefore = 574 000`; перша відповідь після застосування — запит 261 000 / ще без відповіді (`unknown`) | рядок `Last apply: ~313k tokens freed (measured …)`, `lastApply` знято, наступна телеметрія рядка не має / рядка немає, `lastApply` лишається |
+| HandleCompaction | розмір перед застосуванням | застосовано ≥ 1 правку; `context.tokens = 574 000` / відсутній | `lastApply = { at: reportId, tokensBefore: 574000 }` / не записано |
+| context_edit | повідомлення людини | collapse 2..9, де #3 — промпт людини, #6 — результат AskUserQuestion; summarize пари AskUserQuestion; collapse без таких рядків | правки поставлено; попередження `covers the person's messages: #3 (prompt), #6 (AskUserQuestion answer)` / `#<рядок результату> (AskUserQuestion answer)` / без попередження |
+| context_edit | не промпти людини | у діапазоні — рядок звіту мода (`context-editor: …`), рядок команди `/compact <MARKER>`, рядок з MARK, промпт розширення в рамці `The context-editor plugin sent a message:`, рядок `<local-command-stdout>Compacted`, `<command-name>`, `<task-notification>`, рядок-підсумок SUMMARY_OPENER | без попередження |
+| NoteReminders | не з `context_edit` і `context_handoff` | належне нагадування; прийнятий `context_edit` / `context_handoff` | нагадування не доставлено (виклик прибере DropOwnCalls), `remindAt` лишається |
+| NoteReminders | після інструмента мода | належне нагадування; виклик `context_list` / відхилений `context_edit` | рядок нагадування в кінці результату переліку, `remindAt` знято / нагадування не доставлено |
+| BuildSeed | засів без правок | черга порожня або всі правки `failed`; у рядках є виклик `context_list` | звіт нової сесії без рядка розміру; без `failed` — без речення про правки взагалі; з `failed` — `no queued edit was applied. Not applied: …` |
+| BuildSeed | засів з правками | ≥ 1 правку застосовано; у рядках є незмінена пара з медіа | рядок розміру: `charsBefore` — видимі рядки, `charsAfter` — після ApplyEdits і DropOwnCalls, до CarryNote і голови |
+| DeliverReport | один раз | звіт у черзі, два промпти людини поспіль | звіт додано лише до першого |
+| DeliverReport | порада з промптом людини | `optimize` є, `lastClosed` — етап «A», один `disposable` у ньому | прихований контекст — PersonAdvice з назвою «A», ListHint і STAGE_ADVICE, без індексів; замін з тегів не поставлено, рядків розмови не читано; після входу `optimize` знято, `listedKey` не змінено |
+| DeliverReport | ADVICE_FAILED | побудова PersonAdvice кидає виняток | промпт без поради; після входу `optimize = false` |
+| DeliverReport | збій поради | побудова поради кидає виняток | промпт іде без поради (зі звітом, якщо він є); після входу `optimize` знято |
+| DeliverReport | без блоку | `optimize = true`, реєстр `unreadable` або без `lastClosed` | ADVICE_NO_BLOCK: промпт без поради; після входу `optimize = false` |
+| DeliverReport | INTRO_NOT_RECORDED | промпт з INTRO_TEXT увійшов, запис `introduced = true` падає | наступний промпт знову несе INTRO_TEXT |
+| SessionIntro | перший промпт | реєстр відсутній або `introduced = false`, промпт людини | прихований контекст починається з INTRO_TEXT; після входу `introduced = true`; другий промпт без INTRO_TEXT |
+| SessionIntro | нова сесія | `/clear`, потім промпт людини | сховище нової сесії, реєстру немає — INTRO_TEXT знову |
+| SessionIntro | промпт відхилено | нижчий обробник повертає `drop` | `introduced` лишається `false` |
+| SessionIntro | реєстр нечитабельний | TagRegistry `unreadable` | INTRO_TEXT не додається |
+| SessionIntro | перезавантаження модуля | `introduced = true`, модуль перезавантажено | INTRO_TEXT не повторюється |
+| SessionIntro | INTRO_TEXT | константа | ≤ 1000 символів (968); містить OPTIMIZE_MARK дослівно, `"op":"open"`, `"op":"close"`, `"count":0`, речення про власні виклики `context_*` `When edits apply, your own context_* calls are removed from the conversation; …` (P13, з фази 15), речення про рядок `[context-editor: suggestion] … it only informs: decide by the logical state of the work.` (фаза 23) без «Nothing reminds you by size» і `context-editor:` + SKILL |
+| SKILL.md | файл навички | `mods/context-editor/skills/<SKILL>/SKILL.md` | `name` = SKILL; `description` ≤ 250 символів; є всі розділи таблиці [SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27); ≤ 8000 символів; `claude plugin validate` проходить |
+| Flush | запуск | хід завершено, у черзі 2 правки | після FLUSH_DELAY — одна команда `compact` з аргументом MARKER |
+| Flush | хід оптимізації без пакета | `optimize` є, черга порожня (агент нічого не ставив, тегів `disposable` немає), хід не зсунувся | команди немає; рядків розмови не читано; один промпт OptimizeText з реченням про зупинку після пакета (`"resume": true` лише для продовження); перед відправкою `optimize = false`, `optimizePrompted = true` одним записом |
+| Flush | хід оптимізації після пакета | `optimize` є, у черзі 2 правки агента з `resume = true`, `resume_prompt = P` і заміна з тегу | `compact MARKER` одним пакетом; один промпт: звіт застосування + OptimizeText з назвою блоку, ListHint і реченням про зупинку після пакета; текст P не пересилається; окремого промпту продовження немає; RemoveDelivered(звіт) після входу |
+| Flush | людина почала хід | `optimize` є, `MovedSince(turns0)` перед командою або після неї | промпту ходу оптимізації немає (OPTIMIZE_PERSON); `optimize` лишається; звіт лишається для DeliverReport |
+| Flush | промпт ходу оптимізації відхилено | `submit` повертає `drop` | `optimizePrompted = false`, `optimize = true` одним записом; звіт лишається; рядок стану (OPTIMIZE_FAILED) |
+| Flush | людина під час команди | промпт людини проходить DeliverReport, поки Flush чекає `compact` | DeliverReport віддає звіт і пораду, `optimize = false`; Optimize бачить `MovedSince(turns0)` перед заміною (або порівняння-і-запис не застає `optimize`) — OPTIMIZE_PERSON, `optimizePrompted` не записано, промпт не надіслано |
+| OptimizeText | без індексів | блок `lastClosed` з назвою «A» / без назви; `compacted = true` / `false` | текст містить `stage "A"` / `the last block (no stage)`, ListHint (`Last block #<a>..#<b>`, `from=<a>`), STAGE_ADVICE, речення `the session stops after this batch: pass "resume": true (or a resume_prompt) … only if the task should go on` (фаза 18; до неї — порада `"resume": false`), без лічильника замін з тегів; речення `The batch queued in that turn, with the replacements from your disposable tags, was processed…` лише при `compacted = true`; жодного індексу рядка, розміру чи кандидатів; `listedKey` не змінено |
+| OptimizeText | ListHint при загубленому кінці | `lastClosed.end` загублено, `start` — #4 | заголовок переліку `Last block … from #4: its end row is gone`; ListHint посилається на `from=<a>` з цього рядка |
+| OptimizeText | усі правки пакета не застосовано | `compacted = true`, звіт «no edit was applied» | речення про оброблений пакет і «see the report above», без «applied» |
+| Flush | OPTIMIZE_BUILD_FAILED | OptimizeText кидає виняток; пакет не просив / просив продовження (`compacted AND reportResume`) | промпту ходу оптимізації немає, `optimizePrompted` не записано; `optimize` лишається `true` / `optimize = false` і Resume з `reportPrompt` |
+| Flush | `compacted` за `reportId` | команда виконалась, але обробник відповів `skip` «no queued edits» без запису звіту | `compacted = false`; з `optimize` — OptimizeText без речення про пакет; без `optimize` — Resume нічого не надсилає (нового звіту немає) |
+| Flush | OPTIMIZE_NO_BLOCK | після застосування реєстр `unreadable` / `lastClosed` відсутній | `optimize = false`; рядок стану; продовження застосування за `reportResume`, як без мітки |
+| DetectOptimize | заміни на кінці ходу з міткою | мітка; у реєстрі `disposable` на парі `a`; агент поставив summarize `b` | QueueTagReplacements на рядках ходу ставить summarize `a` у ту саму чергу; Flush застосовує `a` і `b` однією компактизацією, потім промпт ходу оптимізації |
+| DetectOptimize | MARK_NO_REPLACEMENTS | QueueTagReplacements кидає виняток | заміни не поставлено; блок закрито; `optimize = true` |
+| DetectOptimize | запобіжник петлі | `optimizePrompted = true`; хід оптимізації завершився відповіддю з міткою останнім рядком / без мітки / перерваний | мітку проігноровано (MARK_IN_OPTIMIZATION); у всіх трьох випадках `optimizePrompted = false`; блок не закривається, `optimize` не пишеться |
+| DeliverReport | людина взяла хід | `optimizePrompted = true`; промпт людини між ходами / повідомлення посеред ходу | після входу `optimizePrompted = false` / лишається |
+| Flush | передача в черзі | правки + handoff | команда не запускається |
+| Flush | людина почала хід | `turns` змінився, поки команда чекала; у звіті `reportResume = true` | промпт продовження не надіслано; `lastSubmittedReportId = reportId`; звіт лишається в черзі для DeliverReport |
+| Лічильник ходів | промпт з цитатою мітки | промпт людини з текстом `context-editor: apply queued edits` (`turn.start` з цим текстом) | рахується як хід: `turns` +1, `inTurn`; після його кінця — звичайні кроки 02_06, 02_12, 02_21 |
+| Лічильник ходів | команди мода | `$.command.run` `clear` і `compact` без подій ходу (Entry 4) | `turns`, `inTurn` і `TagRegistry.turn` не змінюються |
+| Flush | продовження один раз | той самий reportId двічі | промпт продовження надіслано один раз |
+| Flush | звіт доходить до ходу продовження | звіт `T` у черзі, `reportResume = true`, хід не зсунувся | надіслано один промпт `T + "\n\n" + reportPrompt`; після входу промпту RemoveDelivered(T): звіту в черзі немає; хук `prompt.submit` мода для цього промпту не викликається (F1) |
+| AutoTag | копія промпту | у stream-json рядок промпту, повернений компактизацією, знову додається з `door = prompt`, `origin { kind: plugin, name: context-editor }`, `firstPromptPinned = false` | R1 не спрацьовує; реєстр без змін |
+| AutoTag | копія великого результату | копія рядка результату Read 5000 символів з `origin.kind = plugin` / та сама копія з `door = tool-result`, `origin { kind: tool, tool: Read }`, а її `tool_use_id` — у `Copied` (так копію бачить хук у stream-json, проба фази 15) / той самий рядок після початку ходу (`Copied` порожня) | R2 і R3 не спрацьовують; тег не дублюється / теж / новий рядок: `review` `big` |
+| context_tag | помилки | кожен рядок таблиці Errors [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11) | відповідний код |
+| context_tag | відкриття без index | рядки #0..#9; рядок асистента з викликом `open` (`callId`) — #8, #7 — результат | `stage.after` = RowMark #7; результат `opened; its block starts at #8` |
+| context_tag | рядок виклику ще не записано | `callId` не знайдено в рядках #0..#9 | `stage.after` = RowMark #9 |
+| context_tag | межа не на thinking | перед рядком виклику — рядок лише з thinking (#7), перед ним результат (#6) | `stage.after` = RowMark #6 |
+| context_tag | відкриття з index | `open` з `index: 4` / `index: 0` | `after` = RowMark #3 / `null` |
+| context_tag | закриття | етап з `after` #3, рядок виклику `close` — #12 | `lastClosed = { name, after #3, end #11, turn }`; `stage` знято; результат — звіт блоку #4..#11 з телеметрією і STAGE_ADVICE; QueueTagReplacements один раз |
+| context_tag | open при відкритому етапі | етап A відкрито, `open` B | звіт закриття A в результаті; `lastClosed` — блок A; `stage` — B з тією самою межею, що й кінець A |
+| context_tag | закриття без етапу | `close`, етапу немає | NO_STAGE; `open` з `index` + `close` в одному виклику — блок від `index` закрито |
+| context_tag | порожній блок | `close` одразу після `open` | звіт `no rows in it.` без STAGE_ADVICE |
+| context_tag | REPORT_FAILED | `close`, BlockReport кидає виняток | етап закрито, реєстр записано; результат `Stage "<name>" closed; its report failed: <error>; call context_list` |
+| BlockReport | без рядків | `close` одразу після `open` (`no rows in it.`) / кінець блоку загублено | `listedKey` не оновлено; другий випадок — текст `its end row is gone; call context_list.`, а не `no rows in it.` |
+| Telemetry | порожній блок | `lastClosed.end = null` / `start > end` | `Last block … : it is empty` |
+| BlockReport | межа індексів | 25 активних `review` з причиною `big` у блоці | `big #i, …` — 20 індексів (MAX_BLOCK_INDEXES), далі `+5 more` |
+| context_tag | слот стану | `add state` на #5 (текст агента), потім `add state` на #9 | один тег `state` на #9; результат `The state slot moved from #5 to #9.` |
+| context_tag | слот стану не там | `add state` на рядок з викликом / на результат за `tool_use_id` / рядок лише з thinking | BAD_TARGET |
+| context_tag | disposable на слоті стану | `state` на #1; `add disposable` за `index: 1` без `to` / за `index: 4` (інший текстовий рядок агента) | BAD_TARGET, тег `state` лишається / тег поставлено |
+| context_tag | діапазон | `add disposable` з `index: 4`, `to: 7`, note — пари цілі / `to: 5` розриває пару / у діапазоні `pin` / `to` з `pin` | тег-діапазон / BAD_RANGE / BAD_RANGE / BAD_RANGE |
+| context_tag | зняття діапазону | `remove` з `index: 4` | тег-діапазон, що починається на #4, знято |
+| context_tag | агентський review | `add review` на пару | `reason = agent` |
+| context_tag | застарілі індекси етапу | `open` з `index` після компактизації без нового переліку | INDEXES_STALE |
+| context_tag | загублена межа | `stage.after` і `lastClosed.end` не знаходяться; будь-який `add` | записаний реєстр має `stage.after = null`; `lastClosed.end` лишається тим самим RowMark (не `null`) |
+| AutoTag | R5 однаковий результат | два Read по 5000 символів з однаковим текстом (різні виклики) | `review` з `reason = duplicate` на першій парі; друга без нового тегу (R2 — `big`) |
+| AutoTag | R5 той самий діапазон | Read `f` з `offset 10, limit 50` двічі, тексти по 5000 символів різні (файл змінився) / `offset 10` і `offset 60` / той самий діапазон, тексти по 300 символів | перша пара — `duplicate` / тегу дубліката немає / тегу дубліката немає (менше BIG_ROW) |
+| AutoTag | R5 паралельні виклики | рядок з результатами паралельних `Read` (5000) і `Grep` (5000), обидва тексти повторюють раніші | `duplicate` на обидві раніші пари; поле `Read` звіряється лише для результату `Read` |
+| AutoTag | R5 перезапис | раніша пара має `review` `big` / `stale` / `pin` | стає `duplicate` / лишається `stale` / лишається `pin` |
+| AutoTag | R5 стиснута раніша пара | раніша пара `Read` того самого діапазону вже стиснута (текст результату починається з MARK), новий результат 5000 символів | тегу дубліката немає |
+| AutoTag | R5 рядок без результатів | два рядки `user` без результатів (двері `attachment`, текст 6000 символів однаковий), обидва в поточній розмові | `review` `duplicate` на раніший рядок за `anchor`; рядка в поточній розмові немає — тегу немає — R5 (б) у backlog (проба фази 15, [SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11)): до повернення R5 (б) рядок дверей `attachment` чи `tool-message` правил не викликає, тегу немає |
+| MarkCall | R4 застаріле читання | Read `f` (пара `a`, тег `review big`), Read `g` (пара `b`), Edit `f` без помилки | на `a` — `review` `stale`; `b` без змін; результат Edit без доданого тексту |
+| MarkCall | R4 не чіпає інших тегів | Read `f` з `pin` / з `disposable`; Edit `f` | теги лишаються |
+| MarkCall | R4 повторний запис | пара `Read` `f` уже має `review` `stale`; ще один Edit `f` | реєстр без змін (не переписується) |
+| MarkCall | R4 відмова чи помилка | Edit `f` відхилено / з `isError` | тегів немає |
+| MarkCall | R4 NotebookEdit | Read `n.ipynb`, NotebookEdit з `notebook_path` `n.ipynb` | пара Read — `stale` |
+| MarkCall | без пропозицій | будь-який виклик без позначки при контексті 300k, зокрема запис без помилки | результат незмінний; SoftHint не викликається; CallLines без позначки — порожньо (фаза 23: межу етапу замінив канал ходу) |
+| MarkCall | окремий рядок (фаза 23) | MarkAlias дає `c4`; SoftHint дає рядок / не дає | рядок псевдоніма `[context-editor] id c4: use it as "ref" in context_tag / context_edit`, далі окремий рядок, що починається `[context-editor: suggestion] ` і не містить ` id c` / лише рядок псевдоніма |
+| SoftHint | розмір, вигідно (фаза 23) | 150 обмінів з людиною, промпт 599 000 символів, 5 пар WebFetch `review big` по 40 000 символів (`c1`..`c5`); запит 240 000, `Messages` 200 000, вікно 1 000 000 | рядок `[context-editor: suggestion] summarize c1, c2, c3, c4, c5 by ref in one context_edit: frees …` — форма з `with "keep_cache": true` з прикладів [SP_CTX_02_37](./context_editor.stages.sp.md#SP_CTX_02_37): `… pays back after ~53 requests, this conversation has made ~155 → worth it now. Without keep_cache: the whole conversation (~163k), pays back after ~209 → borderline: …; with it, a later --resume may show earlier answers twice.`; `hint` = `{ tokens: 240 000, marks: 6, proposed: 37 500 }`; розбивку прочитано раз; модель — Opus 5.5 |
+| SoftHint | глибоко | те саме і 15 обмінів після виводів | `… rewrites the prompt cache of the whole conversation once (~163k): its earliest row is ~40 positions back, beyond the ~20 the API looks back; …`, вердикт `→ borderline: worth it only if the work goes on that long.` |
+| SoftHint | невигідно | те саме без обмінів до виводів (R̂ = 5) | `[context-editor: suggestion] not worth it yet: to summarize c1, c2, c3, c4, c5 by ref would free ~38k of the ~200k conversation but would rewrite the prompt cache of the whole conversation once (~162k); pays back after ~208 requests, this conversation has made ~5. Batch more, or compress at the end of a stage.` |
+| SoftHint | малий запит | запит < HINT_CONVERSATION при вікні 1M | рядка немає; рядків розмови, розбивки і запису немає |
+| SoftHint | вікно | Threshold і Step для 1 000 000 / 200 000 / без вікна; запит 100 000 при вікні 200 000 / 1 000 000 | 150 000 і 75 000 / 70 000 і 20 000 / константи; рядок / `small`, нічого не прочитано |
+| SoftHint | крок | `hint.tokens` = 240 000; запит 240 000 + HINT_STEP − 1 / + HINT_STEP | рядка немає, рядків не читано / рядок, `hint.tokens` — новий запит |
+| SoftHint | мало кандидатів | один вивід (~7,5k звільнено); запит 240 000, потім + HINT_RECHECK − 1, потім + HINT_RECHECK | рядка немає, `checked` = 240 000, розбивки не читано, стану не записано; другий виклик рядків не читає; третій — читає знову |
+| SoftHint | мала розмова | запит 240 000, `Messages` 100 000 (незмінна частина VS Code), кандидатів досить | рядка немає; `checked` = 240 000; `hint` не записано |
+| SoftHint | малий пакет | розмова ~450 000, пакет звільняє ~38 000 (< HINT_BATCH) | рядка немає; `checked` = запит; `hint` не записано |
+| SoftHint | lastApply лишається | реєстр з `lastApply`, рядок дано | `lastApply` у реєстрі без змін |
+| SoftHint | назви | 8 кандидатів 41 000..48 000 символів, найбільший без псевдоніма | `summarize c7, c6, c5, c4, c3, c2 +2 more (see context_list) by ref` |
+| SoftHint | зменшення | `hint` = `{ tokens: 200 000, marks: 3 }`, запит 90 000 | рядка немає; `hint` = `{ tokens: 90 000, marks: next }`; `checked` знято; рядків не читано |
+| SoftHint | запізнення (рев'ю 52) | строк минув до претензії: SoftHint при запиті 240 000 / TurnSuggestion | рядка немає, `hint` не записано; `checked` = 240 000, наступний вивід — без читання рядків / серію спожито (`hint` = `{ marks: next }`) |
+| SoftHint | одна перевірка за раз (рев'ю 52) | перевірка за розміром чекає рядків розмови; тим часом SoftHint і TurnSuggestion | обидва — `busy`, нічого не читають; перша дає рядок; `busy` знято |
+| SoftHint | реєстри | реєстр тегів `unreadable` / `missing` / реєстр псевдонімів `unreadable` / жодного тегу `review`; обидва канали | рядка немає, запит не читано |
+| SoftHint | без відповіді моделі | `tokens` відсутній | рядка немає (`no-size`) |
+| SoftHint | паралельний виклик | між читанням і записом `hint` змінено іншим викликом | рядка немає |
+| TurnSuggestion | межа ходу (фаза 23, рев'ю 54) | як «розмір, вигідно», але 250 обмінів; етап `read` відкрито; `next` = 6, `hint` немає | рядок `[context-editor: suggestion] before you go on: close stage "read" with context_tag and summarize c1, c2, c3, c4, c5 by ref in one context_edit? It frees ~38k …`, з `rewrites the prompt cache of the whole conversation once (~163k): edits queued now apply when this turn ends` (канал ходу — завжди глибоко), закінчується `→ worth it now. Your call: nothing runs unless you do it.`; `hint` = `{ tokens: 240 000, marks: 6, proposed: 37 500 }`; наступна перевірка — `short-run` |
+| TurnSuggestion | повтор (рев'ю 54) | `hint` = `{ tokens: 240 000, marks: 1, proposed: 37 500 }`, той самий пакет / 10 виводів (~75k, приріст ≥ пакета) / `hint.tokens` 400 000 (застосування між ними) | рядка немає (`repeated`), серію спожито, `proposed` лишився / рядок / рядок |
+| TurnSuggestion | коротка серія | `next` − `marks` < HINT_RUN | рядка немає; ні запиту, ні рядків, ні розбивки |
+| TurnSuggestion | невигідно | лише 5 виводів (розмова ~50 000, R̂ = 5) / розмова 200 000 без обмінів | рядка немає, у фоні `hint` = `{ marks: 6 }` / рядок `[context-editor: suggestion] not worth it yet: …` |
+| TurnSuggestion | без кандидатів | один вивід; `hint` = `{ tokens: 100 000, marks: 1 }`, `next` = 7 | рядка немає; у фоні `hint` = `{ tokens: 100 000, marks: 7 }` (база розміру та сама) |
+| Candidates | черга, стиснуті, неактивні | `summarize` пари `a1` у черзі; результат `a3` починається з MARK; `review search` з `ttl_turns = 3` на `g` (Grep), `turn` 1 / 3 | лише `c2` / `c2` (WebFetch — невідтворюваний) і `g` без псевдоніма (Grep — відтворюваний) |
+| Propose | пакет | Read 40 000 і WebFetch 40 000 символів, відношення 4, розмова 21 000, запит 30 000, канал розміру, відношення Opus / канал ходу | `freed` = 17 000 (10 000 − 500 + 10 000 − 2 500); `cost.start` — рядок виклику Read, `rewrite` = 4 000 (уся розмова); R̂ = 3; `not-yet`; `keep` немає (з `keep_cache` вердикт той самий) / `keep` немає ніколи |
+| Propose | ціни моделі (рев'ю 54) | світ «вигідно», відношення Sonnet 5.5 / Opus 5.5 / Fable 5.1 / невідома; SoftHint на Sonnet | R* Sonnet < Opus < Fable; невідома — як Fable / рядок без `keep_cache`: `rewrites the prompt cache of the whole conversation once (~163k); pays back after ~105 requests, … → worth it now.` |
+| CallLines | рядки виклику (рев'ю 54) | позначений з `c4` і пропозицією / з `c4` без неї / без псевдоніма з пропозицією / без позначки з пропозицією | рядок псевдоніма, пропозиція / рядок псевдоніма / пропозиція / нічого (рядок «MarkCall без пропозицій») |
+| CostRatios | ціни (рев'ю 54) | `claude-opus-5-5`, `opus[1m]` / `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-mythos-5` / `claude-fable-5-1`, невідома, відсутня | 40 / 100 / 20 / 50 / 80 / 200 |
+| CacheCost | запас кінця ходу (рев'ю 54) | 15 викликів; найраніша правка — виклик 11 (11 позицій) без запасу / з APPLY_MARGIN; останній рядок із запасом ∞ | `within` / не `within` / не `within`, `rewrite` = розмова |
+| Responses | паралельні виклики (рев'ю 54) | промпт, thinking, виклик a, результат a, виклик b, результат b, текст; API: одне повідомлення з a і b / без API; промпт між двома викликами одного API-повідомлення | старт для b і його результату — thinking, позицій від нього 4, R̂ = 2 / старт b — b, позицій 6, R̂ = 3 / промпт розділяє |
+| SuggestionText | рядок | типово, вигідно / з `keep` (`worth`) при типовому `borderline` / з `keep` при типовому `not-yet` / хід з етапом, `borderline` / розмір, глибоко / хід без етапу / без псевдонімів, `not-yet`, R* ≥ 100 000 | `rewrites the prompt cache of the whole conversation once (~156k); pays back …` / форма `with "keep_cache": true … Without keep_cache: the whole conversation (~156k), pays back after ~400 → borderline …; with it, a later --resume may show earlier answers twice.` / `… → not worth it yet; with it, …` / `… edits queued now apply when this turn ends …` / `… its earliest row is ~64 positions back …` / `before you go on: summarize …` / `compress 3 candidates (see context_list)`, `would rewrite`, `~100000+` |
+| Bounded | строк | робота довша за строк / претензію на стан зроблено до кінця строку | рядка немає і `hint` не записано / рядок повертається, `hint` записано |
+| DeliverReport | пропозиція (фаза 23) | між ходами зі звітом R / посеред ходу / з `optimize` / пропозиція кидає виняток | прихований контекст `R`, далі рядок пропозиції / TurnSuggestion не викликано / не викликано, лише порада / промпт іде без пропозиції |
+| Positions | серії (фаза 23) | промпт, thinking, текст, `tool_use a`, `tool_result a`, `tool_use b` і `tool_use c` окремими рядками, їхні результати окремими рядками, текст; рядок з двома викликами | 8 позицій; кожен рядок відповіді b, c рахує від її початку — 3; два виклики одного рядка — одна позиція |
+| ResponseStartRows | відповідь | промпт, thinking, текст, `tool_use a`, результат a, текст | для виклику і результату — рядок thinking; для останнього тексту — він сам; для промпту — він сам |
+| LookbackStart | межа | промпт, 15 послідовних викликів, текст / 3 виклики / порожньо | 13 (виклик 7: 19 позицій, виклик 6: 21) / 0 / 0 |
+| CacheCost | вікно | 15 викликів по 4000 символів; найраніша правка — виклик 14 / виклик 2 / результат 14; звільнено 500, розмова 100 000, відношення 4 | 5 позицій, `within`, `rewrite` = 2002 − 500 / 29 позицій, `rewrite` = 99 500 / `start` — виклик 14 |
+| Requests | відповіді | 3 послідовні виклики й текст / thinking, текст, виклик, результат, текст / лише промпт | 4 / 2 / 1 |
+| BreakEven | формула | rewrite 44 000, freed 12 000, summary 0, request 84 000 / rewrite 0, freed 10 000, summary 1000, request 50 000 — відношення Opus; перше — Sonnet; freed 0 | 150 (P22) / 15 / (19·44 000 + 84 000) / 12 000 / ∞ |
+| Verdict | межі | R* і R̂: 10 і 10 / 30 і 10 / 31 і 10 | `worth` / `borderline` / `not-yet` |
+| Summary | розмір | 1000, 100, 30 токенів відтворюваного / 1000, 100 іншого | 50, 40, 30 / 250, 100 |
+| Telemetry | рядок Cache (фаза 23) | 15 викликів по 4000 символів / 3 виклики / один рядок з 11 паралельними викликами і 11 рядків результатів / 21 рядок асистента поспіль / рядків немає | другим рядком `Cache: an apply rewrites the whole conversation once; with "keep_cache": true, an earliest edit from #13 on (within …) rewrites only the rows from it (at most ~…) if your turn ends soon: …` / `… with "keep_cache": true only the rows from its earliest edit (the whole conversation is within …)` / те саме / `… even the last response is beyond …, so "keep_cache" would not help` / рядка немає |
+| ResponseStart | відповідь (фаза 23) | хід: промпт; R1 thinking, Read a; R2 thinking, `context_list`; R3 thinking, Bash b; R4 thinking, Bash c; текст; API — повідомлення асистента на відповідь | для виклику c і його результату — рядок thinking R4; для тексту — він сам; для `at` = 0 і `len` — вони самі |
+| ResponseStart | паралельні виклики | промпт, текст, thinking, `tool_use a`, результат a, `tool_use b`, результат b; API: одне повідомлення з `a`, `b` / без повідомлень; текст після результату a, який API показує в повідомленні з `a` / окремим повідомленням | для `tool_use b` — 1 (рядки асистента поспіль від тексту) / 1 (початок відрізка); текст — рядок виклику a / він сам |
+| ApplyEdits | заморожений префікс (фаза 23) | хід вище, `freeze` з API, summarize c | `prefix` = 10; рядки #0..#9 — ті самі рядки з `handle` (thinking, `context_list`, рядки результатів); thinking R4 зник, пара `c_ce…`, текст перезібрано; 13 рядків; DropOwnCalls із цим префіксом — `removed` = 0, рядки префікса ті самі |
+| ApplyEdits | без заморожування | те саме без `freeze` (засів, виклики поза компактизацією) | `prefix` = 0; усі рядки асистента відрізка без `handle`, рядки thinking зникли (10 рядків); DropOwnCalls прибирає `context_list` |
+| ApplyEdits | найраніша правка | summarize c і a / те саме, a не застосовано (медіа без архіву) / порожній пакет | `prefix` = 1 / 10 / `len(rows)`, рядки без змін |
+| ApplyEdits | collapse і rewrite з префіксом | collapse #7..#9 / rewrite #13 | `prefix` = 7 / 13; рядки до нього ті самі |
+| HandleCompaction | заморожений префікс (фаза 23, `keepCache`) | пакет з `keep_cache: true`; хід: промпт; thinking, `context_list`; thinking, Bash a; thinking, Bash b; текст; доставки за a і за b; summarize b; API з повідомленнями відповідей | рядки #0..#6 — ті самі (доставка за a їде на `handle`, рядком не вставлена); пара `b_ce…`, доставка за b — рядок після її результату; текст перезібрано; звіт без речення про власні виклики, `Messages delivered during your tool calls: 1 now stand as rows.`; з файлу доставок прибрано лише b |
+| HandleCompaction | без keep_cache (типово; після живого прогону) | той самий хід і API-подання з повідомленнями відповідей, пакет без `keep_cache` | як до фази 23: усі рядки асистента відрізка без `handle`, рядки thinking зникли, рядок результату a перезібрано (SP_CTX_DEC_02), доставку за ним вставлено рядком, пару `context_list` прибрано (`Your own context-editor calls (1) were removed`); у черзі після пакета `keepCache` = `false` |
+| context_edit | keep_cache | без поля / `true` / наступний виклик без поля / `false`; файл черги без поля / з `"yes"` | `keepCache` false / true / true / false; `false` / `unreadable` |
+| EDIT_DESCRIPTION | keep_cache | константа | містить `Batch edits in one call (see "keep_cache").`; 2029 з 2048 |
+| HandleCompaction | префікс без API-повідомлень | пакет з `keep_cache`, API лише з результатами | рядки thinking і пару `context_list` прибрано, доставку за a вставлено рядком; звіт `Your own context-editor calls (1) were removed` |
+| TagRegistry | поле `hint` | `{ tokens: 120 000, marks: 7 }`, `{ marks: 1 }` / `{ tokens: 5 }`, `{ marks: 0 }`, `{ marks: 2, tokens: −1 }`, `{ marks: 1.5 }`, `"x"` | `ok` / `unreadable` |
+| MarkCall | повторне читання | у журналі `apply` з `compressed` [`/p/f`]; Read `/p/f` | запис `reread { path: /p/f, archive: false }` |
+| MarkCall | читання після власної зміни | `apply` з `compressed` [`/p/f`]; Edit `/p/f`; Read `/p/f` | запис `changed { path: /p/f }`; `reread` немає |
+| MarkCall | R4 лише раніші читання | одна відповідь: Edit `f`, далі паралельний Read `f`; раніше — Read `f` у минулому ході | `stale` лише на раніше читання; Read після запису без тегу |
+| MarkCall | читання архіву | Read `<storage>/<at>.json` / `<storage>/<at>/1.png` запису `apply` | `reread` з `archive: true` |
+| Journal | застосування | HandleCompaction застосував summarize пари Read `/p/f` і drop пари Grep | запис `apply` з `edits = 2`, `compressed = [/p/f]`, без поля оцінки звільненого |
+| Journal | межа | MAX_JOURNAL записів, ще один | найстаріший видалено |
+| Journal | нечитабельний | файл не JSON | записи пропускаються, файл не перезаписується; телеметрія `Effect: journal unreadable (…)` |
+| Telemetry | журнал | журналу немає або в ньому нуль `apply` і `reread` / 2 `apply`, 3 `reread`, з них 1 з `archive: true` | рядка `Effect` немає / `Effect: 2 application(s); 3 reread(s) of compressed content (1 of archives)`; оцінки «freed» у рядку немає |
+| Telemetry | рядок Messages | розбивка з `Messages` 12 000 (`used`), `totalTokens` 82 000, `autoCompactThreshold` 160 000, `tokens` є | `Context: conversation ~12k tokens; fixed part … ~70k; window …; auto-compaction in ~78k` |
+| Telemetry | без рядка Messages | розбивки немає або в ній немає `Messages` | `Context: last request ~<tokens> tokens, the fixed part … included` |
+| Telemetry | ще невідомо | `tokens` відсутній | `Context: size unknown yet …` |
+| Telemetry | щойно після компактизації | `tokens` є, розбивка з `apiUsage = null` і `Messages` 15 | `Context: size unknown yet …`, а не «~15 tokens»; з `apiUsage` — `messages` |
+| Telemetry | незмінна частина більша за запит | `tokens` 36 979, `totalTokens` 43 062, `Messages` 15 (живий прогін після `/compact` хоста) | `Context: last request ~37k tokens, the fixed part … included`, а не «conversation ~15» |
+| Telemetry | сума трохи більша за запит | `tokens` 57 471, `totalTokens` 60 000, `Messages` 17 000 | `Context: conversation ~17k tokens` (міра лишається `messages`) |
+| Telemetry | збій | `usage` кидає виняток | `Context: size unavailable (<error>)`; решта рядків є; перелік будується |
+| Telemetry | автокомпактизація вимкнена | розбивка без `autoCompactThreshold` | `auto-compaction off` |
+| Telemetry | кандидати | `review` big на #12, stale на #5, без `reason` (тег до фази 15) на #7, `agent` з невичерпаним `ttl_turns` ×1; `disposable` ×1, ціль якого зникла | `Candidates: review 3 (big 1: #12; stale 1: #5; no reason 1: #7); disposable 0` — формат з рядками, як у рядку «кандидати з рядками» |
+| Telemetry | слот стану | тег `state` знаходиться / не знаходиться / тегу немає | `State slot: #5` / `State slot: its row is no longer in the conversation` / рядка `State slot` немає |
+| context_list | `review` без причини | тег `review` без `reason`, записаний до фази 15 / агентський `review`, поставлений з фази 15 | `[review]` / `[review: agent]` |
+| context_tag | попередження про людину | `add disposable` з `index` 10, `to` 14, у діапазоні промпт людини #11 і результат AskUserQuestion #13 / `add disposable` за `tool_use_id` пари AskUserQuestion / діапазон без рядків людини | тег поставлено; результат `Warning: disposable #10..#14 covers the person's messages: #11 (prompt), #13 (AskUserQuestion answer). …` / тег поставлено з попередженням про рядок результату / без попередження |
+| ScreenPinned | `pin` і `state` | пакет: summarize пари з `pin`, collapse з рядком `state`, rewrite рядка `state`; реєстр нечитабельний | перші дві — `refused` (`target is pinned`, `target holds the state slot`), rewrite лишається / кожна правка `tag registry unreadable`; той самий результат у HandleCompaction і BuildSeed |
+| DropOwnCalls | лічильник | прибрано пари `context_note` і `context_list`; пара `context_tag` лишилась біля медіа | `removed = 2` |
+| FormatReport | власні виклики (P13) | компактизація з непорожнім `applied`, `ownCallsRemoved = 2` / `ownCallsRemoved = 0` / компактизація без застосованих правок / засів без правок, `ownCallsRemoved = 1` | звіт закінчується ` Your own context-editor calls (2) were removed; tags and notes stay — see context_list.` / речення немає / речення немає (розмова не змінилась) / `context-editor: Your own context-editor calls (1) were removed; …` |
+| FormatReport | NowIndex (фаза 18) | `applied` [`rewrite #23`, `summarize a`, `drop b`, `collapse #3..#6`]; `produced` [`rewrite #23` → 18, `summarize a` → 9, `collapse #3..#6` → 4] | `applied 4 edit(s): rewrite #23 (now #18); summarize a (now #9); drop b; collapse #3..#6 (now #4).`; `report.applied` після форматування — без суфіксів |
+| FormatReport | NowIndex без запису | застосовано `rewrite #5`, а його рядка в кінцевому списку немає (запису в `produced` немає) / індекс не змінився (`describe #0` → 0) | `rewrite #5` без суфікса / `describe #0 (now #0)` |
+| HandleCompaction | NowIndex після DropOwnCalls | у пакеті `rewrite #23`; до рядка 23 — 5 рядків власних викликів мода | звіт черги містить `rewrite #23 (now #18)`; рядок #18 повернених рядків — `[context-editor] you rewrote this row …`; RebindTags звіряє правки з пакетом за `applied` без суфіксів (стан етапів і нотаток — як до фази 18) |
+| BuildSeed | NowIndex у засіві | засів із `summarize a` | звіт нової сесії називає `summarize a (now #k)`, де `k` — індекс рядка результату в засіяному списку (`produced`, після голови, якщо вона є, і нормалізації); `report.applied` — `summarize a` |
+| DetectOptimize | мітка з відкритим етапом | останній рядок `answer` — OPTIMIZE_MARK, етап відкрито, рядки #0..#20 | `lastClosed = { name, after, end #20, turn }`; `stage` знято; `optimize = true` записано до кроку `TagRegistry.turn += 1` |
+| DetectOptimize | без етапу | етапу немає, `lastClosed.end` — #8 | `lastClosed = { name відсутня, after #8, end #20 }` |
+| DetectOptimize | без етапу, перший блок | етапів не було | `lastClosed = { after: null, end #20 }` |
+| DetectOptimize | закрито інструментом у цьому ході | `lastClosed.turn = TagRegistry.turn`, відкрито новий етап | `lastClosed` і `stage` без змін; `optimize` записано |
+| DetectOptimize | мітка не дослівно | останній рядок `[context-editor:optimize]` / `[Context-Editor: optimize]` | мітки немає |
+| DetectOptimize | цитата посеред тексту | `answer`: «put [context-editor: optimize] on the last line», далі ще рядок / мітка з текстом у тому самому останньому рядку | мітки немає |
+| DetectOptimize | останній рядок | `answer`: текст, порожній рядок, `  [context-editor: optimize]  `, порожні рядки в кінці | мітка діє |
+| DetectOptimize | ігнорується | `handoff` є / черга `unreadable` / хід перервано / субагент | нічого не записано; рядок стану для `handoff` і `unreadable` |
+| DetectOptimize | MARK_NO_STORAGE | сховище `unavailable` | нічого не записано; рядок стану `optimization mark ignored: storage unavailable` |
+| DetectOptimize | MARK_REGISTRY_UNREADABLE | реєстр `unreadable` / запис реєстру падає | блок не закрито, `optimize` не записано; рядок стану з причиною |
+| DetectOptimize | MARK_NOT_QUEUED | реєстр записано, а запис черги падає / повторне читання черги знаходить `handoff` | блок закрито в реєстрі; `optimize = false`; рядок стану `the block is closed, but no optimization turn: …` |
+| RebindTags | межа після перегляду | `stage.after` — рядок результату `context_list` (#7), #6 — рядок асистента лише з викликом `context_list`, #5 — текст агента; застосовано summarize іншої пари | DropOwnCalls прибрав #6 і #7; `stage.after` — відбиток #5 з новим індексом |
+| RebindTags | межа на переписаному рядку | `lastClosed.end` — рядок `rewrite` | межа на переписаному рядку (`report.produced`) |
+| RebindTags | закриття, стискання і новий етап | закрито етап A (кінець — рядок результату останньої пари A, #11), відкрито B (`after` = той самий рядок); застосовано summarize цієї пари | `lastClosed.end` і `stage.after` B — рядок результату з FreshId; B починається після носія A, стиснутий хвіст A — у блоці A |
+| RebindTags | найпізніший створений рядок | `lastClosed.end` — рядок асистента #7 з паралельними викликами `a` і `b`, результати яких у різних рядках; застосовано summarize `a` і summarize `b`; у кінцевому списку їхні рядки результатів — #9 і #10 | межа — рядок #10 (найбільший індекс серед `produced` правок, що замінили #7) |
+| RebindTags | спільний рядок результатів | рядок #8 тримає результати паралельних викликів `a` і `b`; `lastClosed.end` — #8; застосовано summarize `a` і summarize `b` | `produced` має обидві правки з індексами в кінцевому списку; межа на рядку з найбільшим індексом серед них |
+| ApplyEdits | `produced` після DropOwnCalls | summarize пари, чий рядок результату ділить службовий результат `context_list` | `produced.index` і `fingerprint` — рядка після прибирання службового результату |
+| RebindTags | межа на згорнутому діапазоні | `stage.after` — #6, застосовано collapse 4..7 з носієм | межа на рядку результату носія |
+| RebindTags | межа на прибраній парі | `stage.after` — рядок результату пари, яку прибрав `drop` | межа на найближчому попередньому рядку, що лишився |
+| RebindTags | засів з CarryNote | `stage.after` — рядок результату незміненої пари з медіа, якому засів дописав CarryNote | межа на найближчому попередньому незміненому рядку засіву |
+| RebindTags | межа на перезібраному рядку | `stage.after` — рядок асистента з `handle`, перезібраний KeepResponsesWhole без змін | межа лишається на ньому (відбиток той самий), `hint` оновлено |
+| RebindTags | межа без попередників | межа на #1, пару #0/#1 прибрано `drop` | `null` |
+| RebindTags | слот стану переписано | `state` на #5, застосовано `rewrite` #5 | тег `state` на переписаному рядку (`anchor` — відбиток `[context-editor] you rewrote this row (original: …): <text>`) |
+| RebindTags | діапазон | тег-діапазон #4..#7, застосовано summarize пари в #6/#7 / зсув на 2 рядки без правок у діапазоні | тег видалено / `hint` і `toHint` оновлено |
+| RebindTags | заміна діапазону в пакеті | `collapse` 4..7 з `summary = note` діапазону | тег видалено (застосована чи відхилена) |
+| RunHandoff | етапи в новій сесії | відкритий етап і `lastClosed`, `introduced = true` у старій сесії | у реєстрі нової сесії межі перенесено RelocateMark з `s.visible` на `s.rows`; `introduced = false` |
+| PrepareEdits | слот стану | `state` на #5: rewrite #5 / collapse 3..6 / rewrite #5 після `remove` тегу | прийнято / `target holds the state slot…` / прийнято |
+| HandleCompaction | слот стану при застосуванні | у черзі collapse 3..6, а `state` на #5 поставлено після постановки | `failed` `target holds the state slot` |
+| ApplyEdits | примітка оригіналу | archive `/s/1.json` | текст заміни містить `(original: /s/1.json, open with Read)` |
+| AutoTag | R1, R2, R3 | перший промпт людини; Read 5000 символів; Grep | `pin`; `review` з `reason = big`; `review` з `reason = search` і `ttl_turns = 3`; другий промпт без тегу |
+| AutoTag | R1 у stream-json | перший промпт людини з `door = prompt`, `origin.kind = unclassified` (F3) | `pin`, `firstPromptPinned = true`; рядок з `origin.kind = plugin` — без тегу |
+| QueueTagReplacements | заміни з тегів | два `disposable` при порожній черзі | дві правки, `tagsOnly = true`; після context_edit — `false` |
+| QueueTagReplacements | діапазон | `disposable` з діапазоном #4..#7 і нотаткою N | правка `collapse` 4..7 з `summary = N` і якорями кінців; `freed` рахує суму `size` рядків діапазону |
+| QueueTagReplacements | без повтору | `disposable` на парі `a`, його заміна вже в черзі (закриття етапу), потім мітка в тому самому ході | друга постановка нічого не додає (`queued = 0`) |
+| QueueTagReplacements | слот стану в діапазоні | діапазон `disposable`, у який після тегування потрапив рядок `state` | PrepareEdits відхиляє `collapse`; черга без змін; тег лишається |
+| RebindTags | після застосування | тег на змінену пару і на незмінену | перший видалено, другий лишився; псевдонім зміненої пари видалено |
+| MarkCall | великий вивід | Read 5000 символів | рядок `[context-editor] id c1`; `map.c1` = id виклику; поля `last` у записаному реєстрі немає (фаза 21) |
+| MarkCall | малий вивід / службовий інструмент | Read 100 символів; `context_list` | без позначки |
+| MarkCall | реєстр нечитабельний | — | без позначки, результат не змінено |
+| ResolveRef | розв'язання | `last`, `c1`, `c99`, `ref` разом з `tool_use_id` | id останнього виклику за рядками; id; `unknown ref c99`; `ref and tool_use_id are exclusive` |
+| context_tag | ціль за `ref` | `{op: add, kind: disposable, ref: last, note}` | тег на пару останнього виклику перед цим (позначеного чи ні); у результаті `"last" = <CallLabel>` |
+| ResolveLast | малий виклик після позначеного (s5 фази 20) | Bash `cat big.log` 16 000 символів (`c1`), далі Bash `cat c.log` 2500 символів без псевдоніма, далі `context_edit` summarize `ref: last` | правка на пару `cat c.log`; у результаті `"last" = Bash id=<id> input="{"command":"cat c.log"}"`; `big.log` у черзі не згадано |
+| ResolveLast | осиротілий виклик (рев'ю 50) | Read `a` з результатом; Bash `x` без результату; рядок промпту; рядок `context_edit` (callId); окремо — без рядка-носія | LAST_ORPHAN з CallLabel Bash `x` в обох випадках; не LAST_PENDING і не Read `a` |
+| ResolveLast | власні виклики не рахуються | Read `a`; `context_note` з `ref: last`; `context_edit` summarize `ref: last` | нотатка і правка — на пару Read `a` |
+| ResolveLast | паралельні виклики | одна відповідь: Read `a`, Read `b` (рядки викликів у цьому порядку), результат `b` раніше за `a`; далі `context_tag` з `ref: last` | ціль — Read `b` (написаний останнім), не той, що завершився останнім |
+| ResolveLast | виклик тієї самої відповіді без результату | рядки: Read `a` з результатом (минула відповідь); Bash `x` без результату; рядок `context_edit` (callId) | LAST_PENDING з CallLabel Bash `x`; правку відхилено, інші правки виклику поставлено; Read `a` не обрано |
+| ResolveLast | виклик тієї самої відповіді з результатом | Bash `x` з результатом перед рядком `context_note` тієї самої відповіді | ціль — Bash `x` |
+| ResolveLast | виклики після свого | рядок `context_tag` (callId), за ним рядок Read `z` тієї самої відповіді | ціль — останній виклик перед рядком `context_tag`; Read `z` не розглядається |
+| ResolveLast | немає виклику | розмова лише з промптом і власними викликами `context_*` | LAST_NONE |
+| ResolveLast | без callId / рядка-носія | `callId` відсутній або його рядка немає | carrier = len(rows): останній невласний виклик розмови; без результату — LAST_PENDING |
+| ResolveLast | реєстр псевдонімів нечитабельний чи старий | `aliases.json` нечитабельний; окремо — старий файл з полем `last` | `last` розв'язується за рядками; `c1` — `unknown ref c1` / старий файл читається, `last` у ньому ігнорується |
+| EDIT_DESCRIPTION | `last` (фаза 21) | константа | ≤ MAX_DESCRIPTION; містить `"ref":"last" your latest call, without context_list.`; не містить `latest marked` |
+| AliasRegistry | межа | MAX_ALIASES + 1 позначок | найстаріший псевдонім видалено |
+| PrepareStorage | права | команда встановлення прав завершується з помилкою | сховище `unavailable`, інструменти відмовляють DENIED_STORAGE |
+| CollectMedia | медіа в результаті | `tool_result` з image base64 | власник `{tool_use_id}`, `data` присутні, `bytes` = довжина декодованих даних |
+| CollectMedia | медіа посиланням | `tool_result` з document `source.type = url` | MediaRef без `data`; правка, що його замінює, — `media could not be archived` |
+| CollectMedia | медіа в промпті | повідомлення людини з image, рядків немає (`rows = []`) | не в `found`; `unmatchedPromptMedia = 1` |
+| CollectMedia | медіа в промпті зіставлено | рядки «промпт, відповідь»; API: нагадування, текст промпту, image | `found[{row: 0}]` — MediaRef з `data`; `unmatchedPromptMedia = 0`; перелік ставить `@`; `describe #0` з `hasMedia` прийнято, без нього — `no media found in that row` |
+| PromptMatch | живі дампи | 7 обрізаних дампів проби 2.1.296 (`tests/media-fixtures.ts`): stream-json після компактизації обробником і в `e.messages`; термінал з `@файл` і рядками команд, після вбудованої `/compact`, `e.messages` під час неї; посеред ходу з паралельними викликами; `@image.png` разом із вставленим | кожне повідомлення з медіа → рядок, як у еталоні `match_v3` (`.dev_flow/cache/media-spike/match.py`) |
+| PromptMatch | лише зображення | промпт без тексту (`Row.text = ""`), API: нагадування, image, нотатка `[Image: source: …]` | зіставлено за позицією |
+| PromptMatch | однаковий текст | два промпти з тим самим текстом і різними зображеннями, різні відповіді | кожне зображення — своєму рядку |
+| PromptMatch | прикраси | нагадування перед промптом, нотатка `[Image: source: …]` після, `\n` на стику; текст промпту двома блоками навколо зображення | зіставлено (`Row.text` — блоки без розділювача) |
+| PromptMatch | рядки команди | рядки `/compact` і `Compacted` перед промптом злиті в одне API-повідомлення з `<local-command-caveat>` | власник — рядок промпту, не рядок команди |
+| PromptMatch | `@файл` у терміналі | API-повідомлення лише з нагадуванням «Called the Read tool…» між відповіддю і промптом | пропущено; обидва медіа зіставлено |
+| PromptMatch | зсув | (а) у рядках немає ходу з однаковим текстом промпту; (б) немає ходу з промптом лише із зображенням | (а) «немає» для всіх старших (відповіді різні); (б) медіа новішого ходу не довірене — «немає»; `unmatchedPromptMedia = 2` |
+| PromptMatch | `tool_result` у повідомленні | image верхнього рівня в повідомленні з `tool_result` (доставка посеред ходу) | «немає»; `unmatchedPromptMedia = 1` |
+| PromptMatch | `/compact` у хвості | API закінчується повідомленням `/compact <args>`, рядки — відповіддю асистента | повідомлення пропущено; зіставлено |
+| PromptMatch | паралельні виклики | рядки «виклик a, результат a, виклик b, результат b»; API — один `assistant(a, b)` і один `user(a, b)` | зіставлено |
+| PromptMatch | після вбудованої `/compact` | рядки: старий промпт, підсумок, відповідь, новий промпт; API починається з підсумку | пара на першому повідомленні API не перевіряється, новіша зіставлена |
+| CollectMedia | вікно | три `tool_result`, один без медіа | `knownResults` містить усі три id |
+| CollectMedia | `apiTruncated` | 4096 / 4095 / 4094 повідомлень API-подання | true / true / false (поріг ROW_WINDOW − 1) |
+| HandleCompaction | покинута диспетчеризація | `next.signal` перервано | skip `compaction abandoned`; черга не записується |
+| HandleCompaction | недоставлений звіт | у черзі є попередній звіт | новий звіт дописано після старого |
+| HandleCompaction | зберігає optimize | у черзі правки, `optimize = true`; застосування / відмова архіву / гілка збою | записана черга має `optimize = true` і те саме `optimizePrompted`, що було прочитано |
+| DeliverReport | промпт відхилено | нижчий обробник повертає `drop` | звіт лишається в черзі |
+| context_edit | нечитабельна черга | файл з полем не свого типу, JSON-масив, елемент `edits` не правка | файл перенесено (QUEUE_QUARANTINED), правки поставлено в нову чергу; без переносу — DENIED_QUEUE_READ зі шляхом |
+| DeliverReport | дописаний звіт | під час входу промпту дописано новий звіт | видалено лише доставлений текст |
+| Flush | відправка відхилена | `submit` падає або повертає `drop` | `lastSubmittedReportId` не змінюється; звіт лишається в черзі; попередження; наступний промпт людини отримує звіт через DeliverReport |
+| Flush | хост відмовляє | `compact` падає з текстом T | одна спроба, без очікувань; черга лишається; рядок стану містить T |
+| ApplyEdits | хто написав заміну (фаза 19) | summarize, collapse, rewrite, describe одним пакетом | тексти починаються з `[context-editor] you read the full output here, then replaced it with your summary`, `[context-editor] you read these <n> rows, then collapsed them into your note`, `[context-editor] you rewrote this row`, `[context-editor] you saw the media here, then replaced it with your description`; позначка `*` переліку, R5 (а) і PersonText розпізнають їх, як і раніше |
+| QueueTagReplacements | заміна з тегу називає автора (фаза 19) | тег `disposable` на пару, мітка оптимізації, застосування | текст результату — `[context-editor] you read the full output here, then replaced it with your summary (original: …): <note>` |
+| RecordDelivery | якір — попередній результат | `tool-result` з результатами a і b, далі `delivery` з `queued_command` | запис з `anchor = [a, b]` і `kind` за рамкою |
+| RecordDelivery | ланцюжок доставок | `tool-result` a, `delivery` d1, `delivery` d2 | два записи з `anchor = [a]` у порядку подій |
+| RecordDelivery | без якоря | `prompt`, далі `delivery`; `response`, далі `delivery` | запису немає |
+| RecordDelivery | копія stream-json | у файлі є (d, [a]); `tool-result` a (копія), `delivery` d | нового запису немає |
+| RecordDelivery | субагент | ті самі події з `agentId` | ні `lastAnchor`, ні файлу не змінено |
+| RecordDelivery | межі | текст 50 000 символів; запис понад MAX_DELIVERIES; нечитабельний файл | текст обрізано до MAX_DELIVERY_TEXT з хвостом, `cut = 10000`; найстаріший запис видалено; файл перенесено в `deliveries.json.bad-<ms>`, новий файл з одним записом |
+| DeliveryKind | рамки | текст людини, звіт субагента (`<system-reminder id="…">`), сповіщення задачі, інший `<system-reminder>`, текст без рамки | `person`, `agent`, `task`, `other`, `other` |
+| InsertDeliveries | незмінений якір перезібрано | рядок результату a без медіа, перезібраний; запис за a | рядок `user` з текстом доставки одразу після рядка a; `inserted = 1`; запис у `done` |
+| InsertDeliveries | якір з `handle` | рядок a з медіа повертається з `handle`, `allRebuilt = false` | вставки немає; запису в `done` немає |
+| InsertDeliveries | summarize якоря | summarize a | рядок доставки — після рядка результату з FreshId з `renamed` |
+| InsertDeliveries | drop і collapse якоря | drop a; collapse діапазону з рядком a | вставки немає; `removed = 1`; запис у `done` |
+| InsertDeliveries | уже рядок | у `before` є рядок `user` без результатів з тим самим текстом | вставки немає; запис у `done` |
+| InsertDeliveries | якір зник | id якоря немає в `before` | вставки немає, `removed` не змінюється; запис у `done` |
+| InsertDeliveries | дві доставки за одним якорем | записи d1, d2 за a | d1, d2 одразу після рядка a в порядку файлу |
+| InsertDeliveries | однаковий текст за різними якорями | два записи з однаковим текстом за a і за b; потім застосування, де за a текст уже рядок | обидва вставлено; удруге вставлено лише запис за b, обидва в `done` |
+| InsertDeliveries | рядок з `handle`, що піде | рядок результатів лише службових викликів поза вікном API лишається з `handle`; `goes` для нього — так | доставку вставлено після нього; DropOwnCalls прибирає рядок, доставка лишається на місці |
+| PersonDelivered | паралельні результати | якір — рядок з результатами a і b; `drop a` / `drop` обох | без попередження / з попередженням |
+| InsertDeliveries | засів | `allRebuilt = true`, рядок a мав `handle` | вставлено |
+| HandleCompaction | доставка за службовим викликом | доставка за результатом `context_list`; summarize іншої пари | DropOwnCalls прибрав пару `context_list`, рядок доставки стоїть після попереднього рядка відповіді; кожен виклик має результат |
+| HandleCompaction | звіт і розмір з доставками | одна доставка вставлена, одна пішла разом з якорем, прибраним `drop` | звіт закінчується ` Messages delivered during your tool calls: 1 now stand as rows, 1 went with the rows your edits replaced.`; `charsAfter` без тексту вставленої; NowIndex рахує вставлений рядок |
+| HandleCompaction | файл доставок після застосування | вставлено d1; d2 лишився за рядком з `handle`; між читанням і записом додано d3 | у файлі d2 і d3 |
+| HandleCompaction | нечитабельний файл доставок | `deliveries.json` пошкоджено | правки застосовано без вставок; звіт: `Messages delivered during your tool calls could not be restored (<reason>).` |
+| BuildSeed | доставки в засіві | доставка за незміненою парою, доставка за парою з summarize | обидва рядки доставок — після своїх рядків результату; CheckSeed приймає; `charsAfter` без них |
+| PersonText | вставлені доставки | рядок доставки людини / субагента / сповіщення задачі | слова людини між рядком рамки і «This is how Claude Code surfaces» / порожньо / порожньо |
+| PersonWarnings | доставка від людини | collapse діапазону з рядком-якорем; drop якоря; summarize якоря | попередження з `#<k> (message sent during this tool call)` для collapse і drop; для summarize — немає |
+| PromptMatch | вставлена доставка | рядки: промпт з медіа, відповідь, рядок результату, рядок доставки (`<system-reminder id="…">`), відповідь; API: те саме з повідомленням `user [tool_result, text]` | пари ходів збігаються; медіа промпту зіставлено, як без доставки |
+
+Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `media.test.ts` (PromptMatch на живих дампах `media-fixtures.ts` і штучних випадках, describe наскрізно: context_edit, ApplyEdits, HandleCompaction, BuildSeed), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти, збіг за інструкцією за будь-якого `trigger`, гілка HANDOFF_MARKER), `flush.test.ts` (Flush через порт FlushIO). Зв'язування портів з `$` (PrepareStorage, запуск команд хоста) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag з етапами, слотом стану і діапазонами, AutoTag з R5, R4, QueueTagReplacements, RebindTags з межами етапів і слотом стану, розбір реєстру, перелік з тегами, позначками етапу і `~`) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildSeed, CheckSeed, CheckSeeded, HandleSeed, пропуск компактизації, RunHandoff через порт: засів, збій до і після `/clear`, документ, відкладання, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). Етапи, мітка і хід оптимізації — `stages.test.ts` (CloseStage, BlockReport, OptimizeText, PersonAdvice, DetectOptimize, Telemetry через порт `usage`, SessionIntro) і `flush.test.ts` (хід оптимізації, повторна перевірка й порівняння-і-запис, запасні шляхи до звичайного продовження); журнал — `journal.test.ts` (JournalApply, JournalReread, Trim, розбір файлу); м'яке нагадування (фази 22–23) — `hints.test.ts` (SoftHint і TurnSuggestion через порт HintIO, Candidates, Propose, SuggestionText, Bounded, поле `hint` реєстру, окремий рядок після MarkAlias) і `queue.test.ts` (пропозиція в DeliverReport); ціна кешу (фаза 23) — `cache.test.ts` (Positions, ResponseStartRows, LookbackStart, CacheCost, Requests, BreakEven, Verdict, Summary, рядок `Cache` телеметрії); заморожений префікс (фаза 23) — `edits.test.ts` (ResponseStart, ApplyEdits з `freeze`, DropOwnCalls з префіксом) і `compaction.test.ts` (HandleCompaction з API-поданням і без нього); доставки хоста (фаза 20) — `deliveries.test.ts` (RecordDelivery через порт, DeliveryKind, InsertDeliveries, розбір і межі файлу), `compaction.test.ts` і `handoff.test.ts` (вставка в HandleCompaction і BuildSeed), `queue.test.ts` (PersonText і PersonWarnings з доставками), `media.test.ts` (PromptMatch з рядком доставки); вміст навички (рядок SKILL.md вище) перевіряють `claude plugin validate` і рев'ю за таблицею [SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27), бо модулі мода не мають файлового API поза `$`. describe і PromptMatch не реалізовані (план PL_CTX).
+
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §05_01 Functional Expectations перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.expectations.sp.md](./context_editor.expectations.sp.md), якорі без змін |

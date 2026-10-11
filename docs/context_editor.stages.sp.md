@@ -1,0 +1,536 @@
+# Редактор контексту агента — Specification: Contracts: stages, notes, deliveries, hints, cache
+
+> **Code:** SP_CTX (дочірній файл набору)
+> **Status:** active
+> **Created:** 2026-10-11
+> **Updated:** 2026-10-11
+> **Umbrella:** [SP_CTX](./context_editor.sp.md)
+>
+> §02 Contracts 02_27–02_38 специфікації [SP_CTX](./context_editor.sp.md): контракти SessionIntro, Telemetry, StageBlock, DetectOptimize, Journal, `context_note`, NoteReminders, Estimate, RecordDelivery, InsertDeliveries, SoftHint, CacheCost. Читати перед зміною `hooks/stages.ts`, `notes.ts`, `journal.ts`, `deliveries.ts`, `hints.ts` або `cache.ts`.
+
+## Contents
+
+Розділи цього файлу (h3 розділу «02. Contracts» парасольки):
+
+- [02_27. SessionIntro](#SP_CTX_02_27)
+- [02_28. Telemetry](#SP_CTX_02_28)
+- [02_29. StageBlock](#SP_CTX_02_29)
+- [02_30. DetectOptimize](#SP_CTX_02_30)
+- [02_31. Journal](#SP_CTX_02_31)
+- [02_32. context_note](#SP_CTX_02_32)
+- [02_33. NoteReminders](#SP_CTX_02_33)
+- [02_34. Estimate](#SP_CTX_02_34)
+- [02_35. RecordDelivery](#SP_CTX_02_35)
+- [02_36. InsertDeliveries](#SP_CTX_02_36)
+- [02_37. SoftHint](#SP_CTX_02_37)
+- [02_38. CacheCost](#SP_CTX_02_38)
+
+## 02. Contracts — етапи, телеметрія, нотатки, доставки, нагадування, кеш
+
+### 02_27. SessionIntro  {#SP_CTX_02_27}
+
+Purpose: на початку кожної сесії сказати агенту, що він може позначати етапи, просити оптимізацію міткою і бачити телеметрію, а м'яке нагадування ([SP_CTX_02_37](#SP_CTX_02_37)) лише інформує ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15); [SP_CTX_DEC_11](./context_editor.sp.md#SP_CTX_DEC_11)): коротка інструкція прихованим контекстом першого промпту і навичка мода з повним посібником.
+
+Processing logic (pseudocode):
+    # частина хука prompt.submit DeliverReport (SP_CTX_02_08)
+    ON prompt submitted (main conversation, passes the mod's hooks):
+        IF storage ready AND TagRegistry state IN (ok, missing) AND introduced = false:
+            add INTRO_TEXT as hidden context, before the report
+            once the prompt entered (no drop): on the registry chain, re-read TagRegistry; IF not unreadable: introduced = true; write (missing → a new registry with defaults)
+
+Прапорець `introduced` живе в реєстрі тегів сесії ([SP_CTX_01_10](./context_editor.structures.sp.md#SP_CTX_01_10)), тож перезавантаження модуля інструкції не повторює. Сесія — за ідентифікатором: після `/clear` чи `/resume` у тому самому процесі сховище інше (PrepareStorage, [SP_CTX_02_15](./context_editor.tags.sp.md#SP_CTX_02_15)), і перший промпт нової сесії отримує інструкцію знову; відновлена `/resume` сесія, що вже мала інструкцію, має `introduced = true` і повтору не отримує. Передача копіює реєстр з `introduced = false` ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)). Промпти, які мод надсилає сам (продовження, хід оптимізації, Deliver передачі), хука не проходять (F1), тож інструкцію несе перший промпт людини або іншого розширення. Сховище недоступне або реєстр `unreadable` — інструкції немає: інструменти тоді й так відмовляють, а доставку нема де записати.
+
+Навичка мода. Файл `mods/context-editor/skills/<SKILL>/SKILL.md` поруч із `hooks/`; агент бачить її в переліку навичок як `context-editor:<SKILL>` з описом із frontmatter і відкриває повний текст сам (навичка plugin-hooks, пункт 39). Вимоги до файлу:
+
+| Part | Requirement |
+|------|-------------|
+| frontmatter `name` | дорівнює SKILL |
+| frontmatter `description` | одне речення англійською, ≤ 250 символів: коли відкривати навичку — довга або багатоетапна задача з модом context-editor, рішення про етапи, стискання блоку, мітку, телеметрію |
+| розділ «Stages» | коли відкривати етап (початок логічного блоку роботи: фаза, підзадача, дослідження) і закривати (блок завершено, результат відомий); етапи пласкі, `open` закриває поточний; `open` з `index`; `open` з `index` + `close` для блоку, який не відкривали |
+| розділ «Compressing a block» | одна `context_edit` на блок; шаблон запису етапу (мета; рішення з причиною, дослівними словами людини і причинами відмови від інших варіантів — пропозиція P11; перевірені факти з джерелами — шляхи, рядки, версії; змінені артефакти; відкриті питання — пропозиція P5); що зазвичай лишається дослівно ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04)); відтворюване (`~`: Read, Grep, Glob) — вказівник «що, де, що знайдено — перечитати за потреби», невідтворюване (відповіді людини, зокрема через AskUserQuestion — P12, живі проби, звіти субагентів, веб-вміст) — обережний підсумок або без змін (пропозиція P2); медіа — описом, якщо завдання дозволяє; одне речення: застосування прибирає з розмови власні виклики `context_*`, а теги й нотатки лишаються — пропозиція P13; застосування переписує кеш промпту один раз — тож правки блоку одним викликом; `"keep_cache": true` зберігає його до найранішої правки, якщо в кінці ходу вона в межах останніх ~20 позицій (рядок `Cache:`), але пізніше відновлення може показати раніші відповіді двічі (фаза 23, [SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22), [SP_CTX_02_38](#SP_CTX_02_38)) |
+| розділ «Dead ends» | `disposable` з нотаткою на діапазон `index`..`to` у мить відмови від гілки (пропозиція P4) |
+| розділ «Optimization mark» | OPTIMIZE_MARK дослівно; ставити окремим останнім рядком фінальної відповіді ходу (посеред тексту чи з іншим текстом у рядку вона не діє), коли агент завершує хід для людини, а посеред роботи — закривати етап інструментом; у ході оптимізації взяти діапазон з рядка `Last block #a..#b` заголовка `context_list` і перелічити рядки від `from = a` перед правками за індексом; хід оптимізації — звичайний хід, заміни з тегів ставляться на кінці ходу з міткою, після оптимізації сесія зупиняється, якщо агент не передасть `"resume": true` ([SP_CTX_DEC_16](./context_editor.sp.md#SP_CTX_DEC_16); до фази 18 — «зазвичай зупинитися (`resume: false`)»; рядок фази 18: `Then the session stops unless "resume": true. Mid-work, close the stage with the tool.`; у розділі про правки — виняток ходу оптимізації `(in an optimization turn only with "resume": true)`; файл — 7991 символ, 7997 байтів); мітка в ході оптимізації не діє |
+| розділ «Telemetry» | `context_list` з `count: 0`; що означають рядки TelemetryText ([SP_CTX_02_28](#SP_CTX_02_28)); м'яке нагадування — рядок `[context-editor: suggestion]` (коли контекст росте або з наступним промптом людини після багатьох читань), що пропонує пакет з виграшем, ціною кешу і вердиктом і лише інформує ([SP_CTX_02_37](#SP_CTX_02_37); до фази 23 — рядок `[context-editor]` з кандидатами й розмірами, зокрема на першому записі після багатьох читань); рішення — за логічним станом роботи, а не за розміром; вбудована компактизація хоста — запобіжник |
+| розділ «Candidates» | причини `review`: `big`, `search`, `stale`, `duplicate`, `agent` ([SP_CTX_01_09](./context_editor.structures.sp.md#SP_CTX_01_09)) і що з ними робити; `[review]` без причини (тег зі старішої версії) пояснює опис `context_list`, тож навичка з фази 22 цього речення не має (місце — для м'якого нагадування) |
+| розділ «Restoring an original» | оригінал читається `Read` за шляхом `(original: …)` у заміні ([C_CTX_DEC_18](./context_editor.concept.md#C_CTX_DEC_18)); журнал ефекту рахує такі читання (рядок `Effect` телеметрії) |
+| розділ «Notes» | інструмент `context_note`: кілька нотаток на рядок, діапазон чи пару, нуль токенів; приклади — одразу позначити, що рядок можна видалити чи стиснути і як; нагадування собі через `remind_in_turns`; перехресне посилання між рядками; нотатка переходить на рядок заміни і зникає з прибраним рядком; нагадування приходить один раз з результатом наступного виклику будь-якого інструменту основної розмови, зокрема інструментів мода, крім `context_edit` і `context_handoff`; текст нотатки — про зміст, а не про номери рядків: індекси після застосування застарівають (прогін на копії сесії, фаза 17) |
+| розділ «State slot» | один власний текстовий рядок з тегом `state`; оновлювати `rewrite` на місці, не дописувати новий стан у кінець ([C_CTX_DEC_19](./context_editor.concept.md#C_CTX_DEC_19)); кожне оновлення — застосування (з фази 23 текст: `Each update is an apply: do it together with a block's edits, not on its own.`), тож оновлювати його разом із правками блоку, а не окремо (прогін на копії сесії: правка біля початку розмови ~250 тисяч токенів коштувала ~$0.9) |
+| розмір | ≤ 8000 символів разом із frontmatter; мова — англійська, як у всіх текстах для агента (після фази 22 — 7953 символи: речення про м'яке нагадування вміщено скороченням наявних; після фази 23 — 7982 (з живого прогону: речення про `keep_cache` і його компроміс замість речення про кеш з кінцем ходу; до того — 7992): речення про кеш (з кінцем ходу), власні виклики від найранішої правки і рядок пропозиції вміщено скороченням рядка `Tools:` до назв інструментів, пункту `[pin]` у «Candidates», який дублював речення розділу «Compressing a block», і речення про повторні читання в «Restoring an original»). Після фази 17 файл — 7916 символів, тож новий зміст фази 15 (слот стану, причини `review`, `~`, діапазон, журнал, речення P13, нотатки про зміст) вміщується скороченням наявних розділів (рішення розробника на design sign-off фази 15; [PL_CTX_P15](./context_editor.plan.md#PL_CTX_P15)) |
+
+Формулювання розділів пише план; специфікація задає обов'язкові частини, межу розміру і те, що INTRO_TEXT називає навичку як `context-editor:<SKILL>`. Файл перевіряє `claude plugin validate` (валідатор приймає теку `skills/`, пункт 39).
+
+Errors: відмов немає — інструкція або додається, або ні; збій запису `introduced` — INTRO_NOT_RECORDED ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)).
+
+### 02_28. Telemetry  {#SP_CTX_02_28}
+
+Purpose: обчислити телеметрію контексту ([SP_CTX_01_20](./context_editor.structures.sp.md#SP_CTX_01_20)) на запит агента — у заголовку перегляду (і окремо, з `count: 0`) та у звіті закриття етапу інструментом — і ніколи після звичайного виклику інструменту ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)). Виняток без тексту телеметрії: м'яке нагадування ([SP_CTX_02_37](#SP_CTX_02_37)) викликає Telemetry лише заради рядка MESSAGES_ROW і калібрування, з реєстром без `lastApply`, тож виміряне звільнення агент і далі бачить у своїй телеметрії.
+
+Input: `rows` — поточна розмова; `reg` — TagRegistry; `journal` — Journal зі станом читання; порт `usage(breakdown)` — `$.session.usage({ breakdown: 'summary' })`.
+
+Processing logic (pseudocode):
+    FUNCTION Telemetry(rows, reg, journal):
+        TRY u = usage(summary)                          # 23–87 мс, без запитів до API (навичка plugin-hooks, пункт 37)
+        CATCH err: u = none; t.measure = unavailable; t.error = err text   # частини розміру нижче пропускаються, решта рахується
+        IF u present:
+            b = u.context.breakdown
+            IF u.context.tokens absent OR (b present AND b.apiUsage = null): t.measure = unknown   # моделі ще не відповідали в живому вікні
+            ELSE IF b present AND some category c of b has kind = used AND name = MESSAGES_ROW AND b.totalTokens − c.tokens <= u.context.tokens:   # після /compact хоста розбивка завищує незмінну частину понад весь запит і урізає MESSAGES_ROW (Verify фази 14, D2); сума понад запит сама по собі нормальна — оцінка рядків після останньої відповіді (рев'ю 36)
+                t.measure = messages; t.conversation = c.tokens; t.fixed = max(0, b.totalTokens − c.tokens)
+            ELSE: t.measure = request; t.request = u.context.tokens      # незмінна частина всередині
+            t.window = b ? b.rawMaxTokens : u.context.window
+            IF b: IF b.autoCompactThreshold present: t.autoCompactLeft = b.autoCompactThreshold − b.totalTokens ELSE t.autoCompactOff = true
+        IF rows not empty: k = LookbackStart(rows); t.cache = { start: k, chars: Σ size(rows[k..]) }   # SP_CTX_02_38, фаза 23; і без реєстру
+        IF reg.stage: first = StartOf(rows, reg.stage.after); t.stage = { name, first, chars = Σ size(rows[first ..]), turnsAgo = reg.turn − openedTurn, lost = MarkIndex is lost }
+        IF reg.lastClosed: s0 = StartOf(rows, after); e = MarkIndex(rows, end)
+            t.lastClosed = { name, start = s0, end = (e is an index ? e : absent), chars = (e is an index AND s0 ≤ e ? Σ size(rows[s0..e]) : absent), lost = e is lost, startLost = MarkIndex(rows, after) is lost }
+        t.reviews = active review tags whose target resolves on rows, by reason (absent → none: a tag written before phase 15, SP_CTX_01_09), with the first row of each target
+        t.ratio = Calibrate(rows, t, reg)                               # SP_CTX_02_34: оновлює TagRegistry.charsPerToken, коли є MESSAGES_ROW; інакше — збережене
+        t.disposable = disposable tags whose target resolves on rows
+        t.journal = journal unreadable ? { unreadable: reason } : { applications: count of apply, rereads: count of reread, archiveRereads: count of reread with archive }   # missing → zeros
+        t.state = the state tag ? (Locate finds its row ? { row } : lost) : none
+        t.notes = { count: len(reg.notes), reminders: count of reg.notes with remindAt }   # після доставки нагадувань цього виклику
+        IF reg.lastApply AND t.measure IN (messages, request) AND u.context.tokens ≠ reg.lastApply.tokensBefore:   # перша відповідь моделі після застосування
+            t.measuredFreed = reg.lastApply.tokensBefore − u.context.tokens; on the registry chain: remove lastApply
+        RETURN t
+
+    TelemetryText(t) = lines, numbers of tokens in thousands rounded to an integer ("~12k"), under 1000 as they are:
+        messages:    "Context: conversation ~<conversation> tokens; fixed part (system prompt, tools, skills, memory) ~<fixed>; window <window>; auto-compaction in ~<autoCompactLeft>" | "...; auto-compaction off"
+        request:     "Context: last request ~<request> tokens, the fixed part (system prompt, tools, skills, memory) included; window <window>" + the same auto-compaction part when the breakdown has it
+        unknown:     "Context: size unknown yet (no model response since the session start or the last compaction); window <window>"
+        unavailable: "Context: size unavailable (<error>)"
+        cache:       right after the size line, without rows omitted: (start = len(rows)) "Cache: an apply rewrites the whole conversation once; even the last response is beyond the API's ~20-position cache lookback, so \"keep_cache\" would not help" | (start = 0) "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true only the rows from its earliest edit (the whole conversation is within the API's ~20-position cache lookback)" | "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true, an earliest edit from #<start> on (within the API's ~20-position cache lookback) rewrites only the rows from it (at most <Estimate(chars, t.ratio)>) if your turn ends soon: edits apply at its end, and each call until then pushes them deeper"
+        stage:       "Stage \"<name>\" open from #<first> (opened <turnsAgo> turn(s) ago), <Estimate(chars, t.ratio)>" + (lost ? "; its start row is gone, so it runs from #0" : "") | "No open stage"
+        lastClosed:  "Last block \"<name>\" | (no stage) #<start>..#<end> (<Estimate(chars, t.ratio)>)" | (end null or start > end) "...: it is empty" | (end lost) "Last block \"<name>\" | (no stage) from #<start>: its end row is gone"; + (startLost ? "; its start row is gone, so it runs from #0" : "") — line omitted without lastClosed; a lost end is never shown as an empty block
+        candidates:  "Candidates: review <total> (<reason> <n>: #<i>, …; reasons with 0 omitted; the group none is named \"no reason\"; ≤ MAX_BLOCK_INDEXES rows per reason, then +<n> more); disposable <n>"
+        journal:     "Effect: <applications> application(s); <rereads> reread(s) of compressed content (<archiveRereads> of archives)" | "Effect: journal unreadable (<reason>)" — line omitted when the journal is readable and applications + rereads = 0
+        state:       "State slot: #<row>" | "State slot: its row is no longer in the conversation" — line omitted when there is no state tag
+        notes:       "Notes: <count> (<reminders> with a reminder pending)" — line omitted when count = 0
+        measured:    "Last apply: ~<measuredFreed> tokens freed (measured: request before it − request now; net of the rows added since)" — once, only when measuredFreed is present
+
+Рядок `Cache` (фаза 23, [SP_CTX_02_38](#SP_CTX_02_38)) каже агенту, що типове застосування переписує всю розмову один раз, хоч би скільки правок було в пакеті, і де межа вікна пошуку кешу API для `keep_cache`: правки від `#<start>` з цим полем переписують лише хвіст від найранішої з них (заморожений префікс, [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)); тому правки варто збирати в один пакет, а щойно опрацьовані виводи останніх викликів з `keep_cache` стискати недорого. Межа — оцінка за рядками без API-подання (LookbackStart): блоки вкладень промпту, доставки й кілька блоків thinking одного рядка не видно, тож біля межі вона оптимістична на кілька позицій, а паралельні виклики, записані «виклик, результат, виклик», рахуються окремими відповідями — песимістично. Межа міряється зараз, а застосування буде в кінці ходу: рядок це каже (рев'ю 54). Розбивки рядок не потребує і є також у звіті закриття етапу.
+
+Розмір рядків розмови береться з рядка MESSAGES_ROW розбивки: розмір усього запиту для рішення не годиться, бо незмінна частина залежить від хоста (~38 тисяч токенів у терміналі, ~70 тисяч у розширенні VS Code, [C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02)). Рядок шукається за назвою: власного `kind` він не має, а типи хоста радять розгалужуватись за `kind`; якщо назва зміниться в іншій версії хоста, телеметрія переходить на весь запит із позначкою, що незмінна частина в ньому (`request`), і нічого не ламається. `tokens` відсутній, поки моделі не відповіли (свіжа сесія, щойно після компактизації), — тоді `unknown`. Щойно після вбудованої компактизації хоста `tokens` ще є (це останній запит до неї), а рядок MESSAGES_ROW — гола локальна оцінка (наживо «conversation ~15 tokens», Verify фази 14, D2): розбивка позначає це полем `apiUsage = null` (відповіді API в живому вікні ще не було; рядок `Messages` звіряється саме з нею), і тоді теж `unknown`. Поле `apiUsage` відсутнє (інша версія хоста) — правило не діє. Розбивка рахує «зараз» з локальною оцінкою рядків після останньої відповіді, а `tokens` — останній запит, тож суми не мусять збігатися. Збій `usage` не валить переліку чи звіту блоку: решта рядків телеметрії не залежить від нього. Розмір блоку й етапу — Estimate ([SP_CTX_02_34](#SP_CTX_02_34)) суми символів рядків поточної розмови з відношенням цієї телеметрії (`t.ratio`; без нього — символи/4 з позначкою `approx.`), а не розбивка: вона не ділиться за рядками. Журнал не дає оцінки звільненого: виміряну зміну показує рядок `Last apply` ([SP_CTX_01_19](./context_editor.structures.sp.md#SP_CTX_01_19)). Рядки журналу і слоту стану, як і `Notes`, з'являються лише тоді, коли є що показати: інакше кожна телеметрія несла б два рядки без інформації.
+
+### 02_29. StageBlock  {#SP_CTX_02_29}
+
+Purpose: закрити етап і скласти звіт закриття — межі, розмір, медіа, кандидати, телеметрія і порада — для закриття етапу інструментом ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); скласти без індексів текст промпту ходу оптимізації ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)) і поради з промптом людини ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)); порада одна для всіх трьох ([C_CTX_DEC_17](./context_editor.concept.md#C_CTX_DEC_17), A).
+
+Processing logic (pseudocode):
+    FUNCTION CloseStage(reg, rows, carrier) → ClosedBlock:            # реєстр пише викликач
+        IF reg.stage absent: error NO_STAGE
+        reg.lastClosed = { name: reg.stage.name, after: reg.stage.after, end: MarkBefore(rows, carrier), turn: reg.turn }
+        reg.stage = absent
+        RETURN reg.lastClosed
+
+    FUNCTION BlockReport(block, replaced?):                            # лише закриття інструментом: між закриттям і звітом компактизації немає
+        key = Key()                                                     # SP_CTX_02_18, до читання рядків
+        rows = CurrentRows(); reg = TagRegistry; api = read main conversation in Messages API form
+        t = Telemetry(rows, reg, Journal)                               # спершу: Calibrate дає відношення, тож розмір блоку і телеметрія звіту — одним відношенням (рев'ю 39)
+        a = StartOf(rows, block.after); e = MarkIndex(rows, block.end)
+        head = (block.name ? "Stage \"<name>\" closed: " : "Block (no stage): ")
+             + (e is lost ? "its end row is gone; call context_list."
+                : block.end null OR a > e ? "no rows in it."
+                : "rows #<a>..#<e>, <Estimate(Σ size(rows[a..e]), t.ratio)>, <m> media (~<KB>KB).")   # медіа — CollectMedia(api, rows) для власників у a..e
+        IF the block has rows (a ≤ e, e not lost):
+            cand = for each reason (a tag without reason, written before phase 15 — "no reason"), active review tags whose target rows lie in a..e: "<reason> #i, #j, …" (≤ MAX_BLOCK_INDEXES, then "+<n> more")
+                   + disposable tags in a..e + count of reproducible pairs (REPRO_FLAG) whose call and result lie in a..e: "reproducible pairs (~) <n>"
+            text = head + "\nCandidates in the block: " + (cand or "none") + "."
+            notes = notes of reg whose target (first row of a range) lies in a..e: "<id> #<i>: <text>" (≤ MAX_BLOCK_INDEXES, then "+<n> more")
+            IF notes: text += "\nYour notes in the block: " + notes joined "; "
+        ELSE text = head
+        IF replaced AND replaced.queued > 0: text += "\nReplacements from your disposable tags queued: <queued> (<freed> freed when this turn ends)."
+        text += "\n" + TelemetryText(t)                                # SP_CTX_02_28
+        IF the block has rows: text += "\n" + STAGE_ADVICE
+        IF the block has rows: listedKey = key                          # звіт перелічує індекси рядків блоку, як перелік; «no rows in it.» і загублений кінець — ні
+        RETURN text
+
+    BlockName(block) = block.name ? "stage \"<name>\"" : "the last block (no stage)"
+
+    ListHint = " Call context_list: its header names the block's range (Last block #<a>..#<b>, or Last block from #<a> when its end row is gone); list from its first row (from=<a>) to see those rows ([block ▶ …] .. [block end]) before you edit by index."
+
+    NotesHint(notes) = notes > 0 ? " You have <notes> note(s); context_list shows them next to their rows and in full below each page." : ""   # notes — len(reg.notes); рядків не треба
+
+    OptimizeText(block, compacted, notes) = "context-editor: optimization turn for " + BlockName(block)
+        + " (you ended your last answer with [context-editor: optimize])."
+        + (compacted ? " The batch queued in that turn, with the replacements from your disposable tags, was processed (see the report above); if it changed the conversation, indexes from earlier listings no longer hold." : "")
+        + ListHint + NotesHint(notes) + "\n" + STAGE_ADVICE
+        + "\nYou asked for this while finishing your turn for the person, so the session stops after this batch: pass \"resume\": true (or a resume_prompt) in context_edit only if the task should go on, then end your turn. The mark has no effect in this turn."   # фаза 18, SP_CTX_DEC_16; до неї — «usually stop after it: pass \"resume\": false … unless the task should go on»
+
+    PersonAdvice(block, notes) = "context-editor: you asked to optimize " + BlockName(block) + " after your previous answer; the optimization turn did not run, so the advice comes with this prompt."
+        + ListHint + NotesHint(notes) + "\n" + STAGE_ADVICE
+        + "\nCompress the block when it suits the person's request; edits apply when your turn ends."
+
+Блок закритого етапу — від рядка після `after` (або від голови) до рядка `end` включно. `block` викликач читає з TagRegistry безпосередньо перед текстом: context_tag — щойно записаний `lastClosed`; Flush — `lastClosed` після команди компактизації (його межі вже переніс RebindTags, але Flush бере лише назву); DeliverReport — `lastClosed` у момент хука. Реєстр `unreadable` або `lastClosed` відсутній — тексту немає: Flush — OPTIMIZE_NO_BLOCK ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)), DeliverReport — ADVICE_NO_BLOCK ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)); в обох `optimize` стає `false`. Кінець при закритті інструментом — останній рядок перед рядком із викликом `close` (MarkBefore від `carrier`, [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); при закритті міткою — останній рядок ходу ([SP_CTX_02_30](#SP_CTX_02_30)).
+
+Індекси, розмір і кандидатів має лише звіт закриття інструментом: між закриттям і звітом компактизації немає, тож індекси правильні, і звіт із рядками блоку оновлює `listedKey`, як перелік, — інакше правка за індексом з нього без окремого `context_list` відхилялась би; звіт «no rows in it.» або з загубленим кінцем індексів рядків не перелічує і `listedKey` не оновлює. OptimizeText і PersonAdvice індексів, розміру і кандидатів не мають ([SP_CTX_DEC_15](./context_editor.sp.md#SP_CTX_DEC_15)): у ході з міткою застосування черги змінює індекси, а в неінтерактивному хості повернені рядки з'являються в читанні із запізненням (F2), тож агент бачить межі блоку в перегляді, який однаково робить перед правками за індексами; ці тексти `listedKey` не оновлюють. Перегляд типово показує першу сторінку від рядка 0 (LIST_COUNT рядків), а блок у довгій розмові стоїть далі, тому ListHint просить узяти діапазон з рядка `Last block #a..#b` заголовка і перелічити рядки від `from = a` — один-два виклики `context_list`. Речення про оброблений пакет (з замінами з тегів) OptimizeText додає лише при `compacted = true`; воно не каже «застосовано», бо обробник міг відповісти «no edit was applied» — тоді звіт у промпті це називає, а індекси попереднього перегляду лишаються чинними. Загублений кінець блоку (`lost`) ніколи не показується як порожній блок: звіт каже, що рядка кінця вже немає. У BlockReport порожній блок поради не має: агент нічого не ставить у чергу, а без тегів `disposable` компактизації немає ([C_CTX_03_03](./context_editor.mechanisms.concept.md#C_CTX_03_03)). Порада про продовження в OptimizeText: хід оптимізації — звичайний хід, і його пакет застосовується з `resume` і `resume_prompt` власного `context_edit` агента ([C_CTX_DEC_03](./context_editor.concept.md#C_CTX_DEC_03)); оскільки мітку ставлять, завершуючи хід для людини, промпт радить передати `resume: false`, якщо завдання не має йти далі. Агент, що нічого не ставить у чергу, просто завершує хід — компактизації і промпту продовження тоді немає. Заміни з тегів `disposable` у промпті не рахуються: на кінці ходу з міткою їх поставив DetectOptimize, і застосування перед промптом їх уже обробило — звіт називає кожну.
+
+Errors:
+| Code | Condition | Outcome |
+|------|-----------|---------|
+| NO_STAGE | CloseStage без відкритого етапу | context_tag відхиляє запит ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); реєстр без змін |
+| REPORT_FAILED | BlockReport кинув виняток (читання рядків, API-подання чи реєстру) | етап уже закрито й реєстр записано: результат context_tag замість звіту має `Stage "<name>" closed; its report failed: <error>; call context_list`; `listedKey` не оновлено |
+
+### 02_30. DetectOptimize  {#SP_CTX_02_30}
+
+Purpose: помітити мітку оптимізації у фінальному тексті ходу, закрити блок і поставити запит оптимізації ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02), «Мітка оптимізації в тексті»; [SP_CTX_DEC_12](./context_editor.sp.md#SP_CTX_DEC_12)).
+
+Input: подія завершення ходу (`agentId?`, `isAborted`, `answer` — фінальний видимий текст ходу; навичка plugin-hooks, пункт 38).
+
+Processing logic (pseudocode):
+    ON turn completed (main loop, aborted or not), on the registry chain, before TagRegistry.turn += 1 (преамбула 02):
+        prompted = false
+        IF storage ready: on the queue chain: q = read Queue; IF ok AND q.optimizePrompted: prompted = true; optimizePrompted = false; write   # кінець ходу оптимізації знімає запобіжник
+        IF aborted OR LastLine(answer) ≠ OPTIMIZE_MARK: RETURN                # LastLine — останній рядок, непорожній після обрізання пробільних символів, обрізаний
+        IF prompted: RETURN                                                   # MARK_IN_OPTIMIZATION: мітка у відповіді ходу оптимізації не діє — мод не входить у петлю
+        IF storage unavailable: status "context-editor: optimization mark ignored: storage unavailable"; RETURN
+        q = read Queue
+        IF q unreadable: status "context-editor: optimization mark ignored: the queue is unreadable"; RETURN
+        IF q.handoff present: status "context-editor: optimization mark ignored: a handoff is pending"; RETURN   # передача має перевагу
+        reg = TagRegistry; IF unreadable: status "context-editor: optimization mark ignored: the tag registry is unreadable"; RETURN
+        rows = CurrentRows(); normalize a lost stage.after or lastClosed.after to null; a lost lastClosed.end stays (SP_CTX_01_18)
+        IF NOT (reg.lastClosed present AND reg.lastClosed.turn = reg.turn):    # у цьому ході етап інструментом не закривали
+            end = MarkBefore(rows, len(rows))                                 # останній рядок ходу, разом із відповіддю з міткою
+            IF reg.stage: reg.lastClosed = { name: reg.stage.name, after: reg.stage.after, end, turn: reg.turn }; reg.stage = absent
+            ELSE: reg.lastClosed = { name: absent, after: reg.lastClosed ? reg.lastClosed.end : null, end, turn: reg.turn }   # SP_CTX_DEC_14
+        write TagRegistry                                                      # збій запису: status "...ignored: <error>"; RETURN
+        TRY QueueTagReplacements()                                            # SP_CTX_02_13: заміни з disposable — тим самим пакетом, що й правки агента цього ходу; рядки ходу на місці, компактизації ще не було
+        CATCH: replacements skipped                                           # MARK_NO_REPLACEMENTS: обробка мітки йде далі
+        on the queue chain: re-read Queue
+            IF unreadable OR handoff present: status "context-editor: optimization mark: the block is closed, but no optimization turn: <the queue is unreadable | a handoff is pending>"; RETURN   # MARK_NOT_QUEUED
+            optimize = true; write                                             # збій запису: той самий рядок стану з "<error>" (MARK_NOT_QUEUED)
+
+Мітка діє лише окремим останнім рядком фінального тексту ходу (поле `answer` події `turn.complete`): останній непорожній рядок після обрізання пробільних символів дорівнює OPTIMIZE_MARK дослівно ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02)). Мітка раніше в ході (у проміжному тексті перед викликами), процитована посеред відповіді (агент пояснює людині, як просити оптимізацію) або з іншим текстом у тому самому рядку не діє. Блок мітки — `lastClosed` після цього кроку: якщо в тому самому ході агент закрив етап інструментом (`lastClosed.turn` дорівнює ще не збільшеному `TagRegistry.turn`), мітка стосується блоку цього етапу, а відкритий після нього етап лишається відкритим; інакше мітка закриває відкритий етап кінцем ходу; без відкритого етапу — закриває блок без етапу від кінця попереднього закритого блоку (або від голови) до кінця ходу. Межі блоку в реєстрі переносить застосування, якщо воно відбудеться до ходу оптимізації (RebindTags, [SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)), тож перегляд агента в ході оптимізації показує `[block ▶ …]` і `[block end]` уже після нього; Flush бере з `lastClosed` лише назву. Чи записано рядок фінальної відповіді в транскрипт до `turn.complete`, не перевірено: якщо ні, кінець блоку — рядок перед відповіддю, і відповідь з міткою в блок не потрапляє (на пораду це не впливає). Перерваний хід мітки не дає. Заміни з тегів `disposable` DetectOptimize ставить у чергу на кінці ходу з міткою — рядки ходу вже на місці, а компактизації ще не було, тож цілі знаходяться на тих самих рядках, які застосування візьме з події компактизації; це той самий пакет, що й правки агента цього ходу, і Flush застосовує його однією компактизацією перед промптом ходу оптимізації. Запобіжник петлі: Flush ставить `optimizePrompted`, коли промпт ходу оптимізації увійшов; кінець наступного ходу основної розмови (ходу оптимізації, зокрема перерваного) знімає прапорець, а мітку в його відповіді ігнорує. «Закрито в цьому ході» звіряється з лічильником завершених ходів: етап, закритий у перерваному ході (лічильник тоді не росте), мітка наступного ходу вважає закритим у своєму ході і бере його блок.
+
+Errors (жодна не виходить до агента; рядок стану бачить людина):
+| Code | Condition | Outcome |
+|------|-----------|---------|
+| MARK_NO_STORAGE | сховище `unavailable` | мітка ігнорується |
+| MARK_QUEUE_UNREADABLE | Queue `unreadable` | мітка ігнорується; файл перенесе наступний `context_edit` |
+| MARK_REGISTRY_UNREADABLE | TagRegistry `unreadable` або не записався | мітка ігнорується; блок не закрито |
+| MARK_HANDOFF | у черзі запит передачі | мітка ігнорується: передача переносить розмову цілою, а оптимізацію агент може попросити в новій сесії |
+| MARK_IN_OPTIMIZATION | `optimizePrompted` був `true` — це відповідь ходу оптимізації | мітка ігнорується мовчки; прапорець знято |
+| MARK_NO_REPLACEMENTS | QueueTagReplacements кинув виняток | заміни з тегів не поставлено (теги лишаються до наступного закриття етапу чи мітки); блок закрито, `optimize` пишеться як завжди |
+| MARK_NOT_QUEUED | реєстр уже записано (блок закрито), а запис черги не вдався або повторне читання черги знайшло `unreadable` чи `handoff` | блок лишається закритим у реєстрі; ходу оптимізації і поради немає; рядок стану «the block is closed, but no optimization turn: <причина>»; агент може закрити наступний блок або поставити мітку знову |
+
+### 02_31. Journal  {#SP_CTX_02_31}
+
+Purpose: вести журнал ефекту ([SP_CTX_01_19](./context_editor.structures.sp.md#SP_CTX_01_19)): що стиснуло кожне застосування (без оцінки звільненого — її дає виміряний `Last apply`, [SP_CTX_02_28](#SP_CTX_02_28)) і які вже стиснуті відтворювані виводи агент читав знову — сигнал надмірного стискання і матеріал для дослідження впливу змінного контексту на якість завдань ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02), «Журнал ефекту»).
+
+Processing logic (pseudocode):
+    FUNCTION JournalApply(id, report, archive, before, edits):             # HandleCompaction (SP_CTX_02_07), коли report.applied непорожній; у фоні
+        j = read Journal; IF unreadable: RETURN                            # не перезаписується
+        applied = [e IN edits | EditLabel(e) IN report.applied]
+        compressed = distinct input.file_path of every Read call in the pairs of before that applied summarize or drop edits name, or that applied collapse spans hold (≤ MAX_QUEUE_EDITS, first ones kept)
+        j.entries += { kind: apply, at: id, edits: len(applied), archive, compressed }
+        Trim(j); write Journal                                             # збій запису — без наслідків для застосування
+
+    FUNCTION JournalReread(path, tool_use_id):                             # хук викликів (SP_CTX_02_16), після Read без помилки; у фоні
+        j = read Journal; IF unreadable OR missing: RETURN
+        archiveHit = some apply entry e with e.archive ≠ "" AND (path = e.archive OR path starts with "<storage>/<e.at>/")
+        compressedHit = some apply entry e with path IN e.compressed AND no later changed entry with that path   # власний Edit/Write після стискання — читається новий вміст
+        IF NOT archiveHit AND NOT compressedHit: RETURN
+        j.entries += { kind: reread, at: now, path, tool_use_id, archive: archiveHit }
+        Trim(j); write Journal
+
+    FUNCTION JournalChanged(path):                                         # хук викликів, після WRITE_TOOLS без помилки; у фоні
+        j = read Journal; IF unreadable OR missing: RETURN
+        IF some apply entry e has path IN e.compressed: j.entries += { kind: changed, at: now, path }; Trim(j); write Journal
+
+    Trim(j): drop the oldest entries while len(j.entries) > MAX_JOURNAL or the serialized file > MAX_QUEUE_BYTES
+
+Повторне читання помічається лише для `Read`: `Grep` і `Glob` шляху одного файлу не мають, тож їх повтор журнал не бачить. Читання файлу архіву або медіа застосування (`archive = true`) — повернення оригіналу ([C_CTX_DEC_18](./context_editor.concept.md#C_CTX_DEC_18)); часті такі записи — тригер повернутися до операції відновлення на місці (C_CTX_DEC_18, B). Засів нової сесії записів журналу не робить, і журнал у нову сесію не переноситься ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)). Журнал — частина телеметрії ([SP_CTX_02_28](#SP_CTX_02_28)); інших читачів у моді немає.
+
+Errors: відмов немає; журнал `unreadable` — записи пропускаються, телеметрія показує причину; збій запису — запис губиться.
+
+### 02_32. context_note  {#SP_CTX_02_32}
+
+Purpose: інструмент агента; додає і знімає службові нотатки до рядків, діапазонів і пар виклику ([C_CTX_03_07](./context_editor.mechanisms.concept.md#C_CTX_03_07), [C_CTX_DEC_20](./context_editor.concept.md#C_CTX_DEC_20)). Окремий інструмент, а не операції `context_tag`: опис `context_tag` уже близько 1770 з 2048 символів MAX_DESCRIPTION, а фаза етапів додає до нього `state`, діапазон і причини `review`, тож операції нотаток туди не вмістяться без втрати обов'язкового змісту ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), пріоритети опису).
+
+Input:
+| Parameter | Type | Required | Constraints |
+|-----------|------|----------|-------------|
+| notes | list<NoteRequest> | yes | 1..MAX_NOTES; запити обробляються по порядку |
+
+NoteRequest:
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| op | `add` \| `remove` | yes | — | — | Дія |
+| text | string? | для `add` | — | непорожній після обрізання, ≤ MAX_NOTE | Текст нотатки |
+| tool_use_id / ref / index | як у TagRequest ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)) | для `add` рівно одне з трьох | — | — | Ціль |
+| to | int? | no | — | лише з `add` і `index`; `index < to ≤ len-1` | Останній рядок діапазону включно |
+| remind_in_turns | int? | no | — | 1..MAX_REMIND; лише з `add` | Через скільки завершених ходів нагадати: `remindAt = TagRegistry.turn + remind_in_turns` |
+| id | string? | для `remove` | — | ідентифікатор нотатки | Яку нотатку зняти |
+
+Output: `Added <ids>; removed <ids>; <n> note(s) in the registry.`, рядок `"last" = <CallLabel>`, коли запит з `ref: "last"` розв'язався (фаза 21), і відхилені запити з причинами.
+
+Errors (рівень виклику позначено *, решта — рівень запиту):
+| Code | Condition | Guidance |
+|------|-----------|----------|
+| DENIED_SUBAGENT* | виклик із субагента | — |
+| DENIED_EMPTY* | `notes` відсутній, порожній або не список | — |
+| DENIED_STORAGE* | сховище `unavailable` | — |
+| DENIED_REGISTRY_READ* | TagRegistry `unreadable` | реєстр не перезаписується |
+| DENIED_REGISTRY_WRITE* | реєстр не записався | нотатки цього виклику не додано і не знято |
+| BAD_OP | `op` не `add`/`remove` | — |
+| NOTE_TEXT_REQUIRED | `add` без коректного `text` | 1..MAX_NOTE символів |
+| TARGET_REQUIRED, UNKNOWN_REF, TARGET_NOT_FOUND, INDEXES_STALE | як у context_tag ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); крім того, TARGET_NOT_FOUND — `index` або `to` на рядку без тексту і без викликів чи результатів (рядок лише з thinking, відбиток `assistant||`): Locate не знаходить такого рядка однозначно, і перше ж застосування видалило б нотатку (рев'ю 37, W2) | для рядка без тексту — `this row cannot be tracked (no text, no tool call); note a neighbouring row` |
+| BAD_RANGE | `to` без `index` чи з `remove`; `to ≤ index` або поза межами | — |
+| BAD_REMIND | `remind_in_turns` не ціле в 1..MAX_REMIND або з `remove` | — |
+| NOTES_FULL | MAX_NOTES нотаток у реєстрі або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні нотатки |
+| NO_NOTE | `remove` з `id`, якого немає | — |
+
+Processing logic (pseudocode):
+    FUNCTION context_note(notes, callId):                             # на ланцюжку реєстру тегів; callId — власний tool_use_id з події tool.call (фаза 21: для ResolveLast)
+        REQUIRE storage ready, TagRegistry state != unreadable
+        rows = CurrentRows(); reg = TagRegistry
+        FOR req IN notes:
+            validate (table above); on error → rejected += reason; CONTINUE
+            add: target as context_tag builds it (SP_CTX_02_11) + range from to
+                 reg.notes += { id: NOTE_PREFIX + reg.nextNote, target, text: trimmed text, createdTurn: reg.turn,
+                                remindAt: remind_in_turns ? reg.turn + remind_in_turns : absent }; reg.nextNote += 1
+            remove: delete the note with that id
+        write TagRegistry
+        RETURN text report
+
+Опис інструмента (NOTE_DESCRIPTION, ≤ MAX_DESCRIPTION, близько 880 символів) називає: нотатки живуть поза розмовою і нічого не змінюють; кілька на ціль; цілі — як у `context_tag` плюс діапазон `index`..`to`; `remind_in_turns` — одне нагадування після стількох завершених ходів, з результатом наступного виклику будь-якого інструменту, зокрема інструментів мода, крім `context_edit` і `context_handoff`; нотатки видно в `context_list` (`[nN]` і повний текст під сторінкою) і в результаті `close`; нотатка переходить на рядок, що замінив її рядок, і зникає з прибраним; приклади — позначити, що видалити чи стиснути, нагадування, перехресне посилання. Виклики `context_note`, як і інших інструментів мода, DropOwnCalls прибирає при застосуванні ([SP_CTX_02_05](./context_editor.edits.sp.md#SP_CTX_02_05)).
+
+### 02_33. NoteReminders  {#SP_CTX_02_33}
+
+Purpose: один раз доставити агенту належні нагадування його нотаток ([C_CTX_03_07](./context_editor.mechanisms.concept.md#C_CTX_03_07)) після виклику будь-якого інструменту основної розмови: для інструментів хоста й інших розширень — додатковим контекстом у загальному хуку, тим самим шляхом, що й рядок псевдоніма ([SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)); для інструментів мода (`context_list`, `context_edit`, `context_tag`, `context_note`, `context_handoff`) — рядками в кінці їхнього власного результату ([C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)).
+
+Processing logic (pseudocode):
+    FUNCTION NoteReminders() → list<string>:                          # загальний хук викликів або обробник інструмента мода; на ланцюжку реєстру тегів; результат чекає
+        reg = TagRegistry; IF unreadable OR missing: RETURN []
+        due = notes of reg with remindAt present AND remindAt ≤ reg.turn, oldest first
+        IF due empty: RETURN []
+        remove remindAt from each of due; write TagRegistry; IF the write fails: RETURN []   # без запису нагадування повторилось би
+        RETURN ["[context-editor] reminder <id> (set <reg.turn − createdTurn> turn(s) ago): <text>" FOR n IN due]
+
+Ходи рахує `TagRegistry.turn` (завершені ходи основної розмови, [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12)), тож нагадування переживає перезавантаження модуля і не рахує власних команд мода. Нагадування приходить з результатом першого виклику інструменту основної розмови (будь-якого, зокрема інструменту мода; не субагента, не відхиленого), що завершився, коли `turn ≥ remindAt`; без викликів воно чекає. Прогін на копії реальної сесії показав, що агент, який у ході викликає лише інструменти мода (перегляд, правки), нагадування не отримував ([C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)). Інструмент мода додає нагадування після власного тексту і лише тоді, коли сам виклик не відхилено (`deny`) — так само, як загальний хук пропускає відхилені виклики. Винятки — `context_edit` і `context_handoff`: їхні виклики DropOwnCalls прибирає саме тим застосуванням чи засівом, які вони запускають, тож доставлене з ними нагадування зникло б непрочитаним; `remindAt` лишається для наступного виклику (рев'ю 39). `context_list` рахує в телеметрії нагадування так, ніби належні вже доставлено, а доставляє їх (знімає `remindAt`) лише після того, як перелік побудовано: збій переліку нагадувань не губить (рев'ю 40). Доставлене нагадування не повторюється, а нотатка лишається (агент знімає її сам). Ціна — читання реєстру тегів на кожен такий виклик; хук його вже чекає заради псевдоніма лише для великих виводів, тож тут читання додається до кожного виклику (файл малий, читання — мілісекунди); інструменти мода реєстр тегів здебільшого вже читають. Нагадування — запит агента самому собі, а не нагадування за розміром ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)).
+
+Errors: відмов немає; реєстр `unreadable` або збій запису — нагадувань цього виклику немає, `remindAt` лишається, і спроба повториться з наступним викликом.
+
+### 02_34. Estimate  {#SP_CTX_02_34}
+
+Purpose: оцінювати розмір у токенах калібровано за телеметрією, а не «символи/4» ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02), «Телеметрія на запит»; [C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)). Прогін на копії реальної сесії: перелік казав «~57 тисяч токенів» при 268 тисячах за телеметрією, звіт — «~121 тисяча звільнено» при ~271 тисячі: україномовний текст займає близько 1,8 символу на токен, а приховані міркування моделі займають токени, яких мод як текст не бачить.
+
+Processing logic (pseudocode):
+    FUNCTION Calibrate(rows, t, reg) → number?:                       # Telemetry (SP_CTX_02_28): перелік, звіт закриття
+        c = Σ size(rows)                                              # поточна розмова, SP_CTX_02_18
+        IF t.measure = messages AND t.conversation ≥ CALIB_TOKENS AND c > 0:   # CALIB_TOKENS = 20 000: на малій розмові відношення шумне
+            r = clamp(c / t.conversation, CALIB_MIN, CALIB_MAX)
+            IF reg.charsPerToken absent OR |r − reg.charsPerToken| > 0.05 · reg.charsPerToken:
+                on the registry chain: re-read TagRegistry; IF not unreadable: charsPerToken = r; write   # збій запису — без наслідків
+            RETURN r
+        RETURN reg.charsPerToken                                      # без MESSAGES_ROW — останнє калібрування
+
+    Estimate(chars, ratio?) = ratio ? "~<round(chars / ratio)> tokens" : "~<round(chars / 4)> tokens (approx.)"
+
+Відношення зберігається в реєстрі тегів сесії (`charsPerToken`), а не в пам'яті модуля: обробник компактизації (звіт застосування, [SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)) і BuildSeed мусять мати його без запиту телеметрії — обробник не чекає розбивки (23–87 мс) і не запускає зайвого; перезавантаження модуля його не губить. Після компактизації збережене відношення діє далі (застосування змінює і символи, і токени, але склад розмови переважно той самий), а наступна телеметрія калібрує заново; передача копіює його разом із реєстром. Оцінки, що спираються на збережене відношення: розмір блоку в звіті закриття, розмір етапу і блоку в телеметрії, «freed» звіту застосування й QueueTagReplacements, підсумок журналу. Без відношення (свіжа сесія без відповіді моделі, реєстр нечитабельний) — «символи/4» з позначкою `approx.`. Розміри окремих рядків (`<size>c`) лишаються в символах. Калібрування рахує й приховані міркування в середньому по розмові, тож оцінка окремого блоку з багатьма міркуваннями чи без них відхиляється від справжньої в обидва боки; живий сценарій «Повтор на копії сесії» перевіряє, що телеметрія один раз показує виміряне звільнення (`Last apply`), а число звіту позначено як оцінку (критерій ±20 % для оцінки відкинуто, рев'ю 39–40). Залишкове зміщення калібрування (рев'ю 39, прогін на копії сесії: оцінка «freed» на 46 % вища за виміряну): приховані міркування моделі (thinking) мають токени без видимих символів і розподілені нерівно — стиснуті рядки бувають «важкими» на символи, а лишені — на міркування; вкладення хоста (перелік навичок, нагадування) входять у `Messages`, але не в рядки; медіа рахується токенами без символів; читання бачить не більше ROW_WINDOW рядків. Тому відношення служить лише орієнтовним розмірам переліку, етапу і блоку, а «freed» застосування вимірює телеметрія (`Last apply`, [SP_CTX_02_28](#SP_CTX_02_28)); число звіту позначено як оцінку.
+
+Errors: відмов немає; збій запису відношення — оцінки цього виклику з новим відношенням, наступні — зі старим.
+
+### 02_35. RecordDelivery  {#SP_CTX_02_35}
+
+Purpose: записати доставку хоста посеред ходу ([SP_CTX_01_22](./context_editor.structures.sp.md#SP_CTX_01_22)) в мить, коли хост проводить її через `session.append`, разом із рядком, за яким вона висить. Фаза 20; [SP_CTX_DEC_19](./context_editor.sp.md#SP_CTX_DEC_19).
+
+Джерело тексту — лише `session.append`: доставка проходить його в обох хостах дверима `delivery` (`type: attachment`, `name: queued_command`, `content` — відрендерений текст), а попередній рядок у порядку подій — рядок-якір з `tool_result`, той самий, що батько запису в транскрипті (спайк, Entry 1–2; навичка plugin-hooks, пункт 43). `prompt.submit` з `turnId` дає лише сирий текст людини без рамки й без якоря і не використовується.
+
+Processing logic (pseudocode):
+    memory of the module: lastAnchor: list<string> = []              # результати останнього рядка tool-result основної розмови
+    # частина хука session.append AutoTag (SP_CTX_02_12): рядок спершу збережено, хук його не змінює і не затримує
+    ON row appended (main loop; agentId absent; the row not denied):
+        IF door = tool-result: lastAnchor = tool_use_id of every tool_result block of the row; RETURN
+        IF door IN (prompt, response): lastAnchor = []; RETURN        # промпт (і рядок, вставлений модом, у stream-json) чи відповідь моделі: наступна доставка висіла б уже не за тим результатом
+        IF door = delivery AND message.type = attachment AND message.name = queued_command:
+            text = the text blocks of message.content joined with "\n"; media = count of the other blocks
+            IF lastAnchor empty OR text blank after trim: RETURN      # не спостерігалось (35 з 35 — за рядком з tool_result); не записується
+            item = { uuid: event uuid, anchor: lastAnchor, kind: DeliveryKind(text), origin: origin.kind or "?",
+                     text: text cut to MAX_DELIVERY_TEXT (tail "… [context-editor: <n> chars cut]"), cut: n, media, at: now }
+            in the background, on the deliveries chain, IF storage ready:
+                read QueuedDeliveries; unreadable → move the file aside to deliveries.json.bad-<ms> and start empty
+                IF some item has text = item.text AND shares an id with item.anchor: RETURN   # копія після компактизації (stream-json)
+                append item; drop the oldest items while there are more than MAX_DELIVERIES or the file would exceed MAX_QUEUE_BYTES; write
+        # інші двері (note, tool-message, attachment інших назв) lastAnchor не змінюють: ланцюжок доставок за одним результатом ділить якір
+
+Хости. Термінал: копії рядків після компактизації (і вкладення за рядками з `handle`) оминають `session.append` (пункт 24), тож копій доставок немає. Stream-json: копія рядка-якоря приходить дверима `tool-result`, за нею копія доставки — дверима `delivery`; запис відсікає перевірка пари (`text`, `anchor`). Рядок, який вставив InsertDeliveries, у stream-json приходить дверима `prompt` з походженням плагіна: він скидає `lastAnchor` і доставкою не є. Подія субагента (`agentId`) не чіпає ні пам'яті, ні файлу.
+
+Межі. Гаряче перезавантаження модуля скидає `lastAnchor`: доставка до наступного рядка `tool-result` не записується (вікно — один виклик інструмента). `/clear` і `/resume`: сховище переходить до нової сесії (PrepareStorage, [SP_CTX_02_15](./context_editor.tags.sp.md#SP_CTX_02_15)), а `lastAnchor` скидає перший рядок промпту. `--resume` новим процесом: файл сесії лишається, пам'ять нова. Доставка, що прийшла, коли сесія вільна, починає новий хід звичайним промптом-рядком (`door: prompt`) і не губиться — запису не потребує (спайк, Entry 2).
+
+Errors: відмов немає; збій читання, переносу чи запису губить лише цей запис, рядок розмови не змінюється.
+
+### 02_36. InsertDeliveries  {#SP_CTX_02_36}
+
+Purpose: повернути доставки на їхнє місце в списку, що замінює розмову: рядок `user` з текстом доставки одразу після рядка-якоря, коли цей рядок іде без `handle` і хост вкладення за ним не перенесе. Чиста функція. Фаза 20; [SP_CTX_DEC_19](./context_editor.sp.md#SP_CTX_DEC_19).
+
+Input:
+| Parameter | Type | Required | Constraints |
+|-----------|------|----------|-------------|
+| before | list<Row> | yes | рядки, до яких застосовано правки: `e.messages` компактизації або видимі рядки засіву |
+| rows | list<Row> | yes | вихід ApplyEdits ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) |
+| items | list<QueuedDelivery> | yes | у порядку файлу; порожньо, коли файлу немає чи він не прочитався |
+| renamed | map<string, string> | yes | вихід ApplyEdits: `tool_use_id` застосованої `summarize` → FreshId |
+| allRebuilt | bool | yes | `true` у засіві: жоден засіяний рядок не має `handle` |
+| goes | функція (Row) → bool | no | типово «ні»; у HandleCompaction — рядок з результатами лише службових викликів (OWN_TOOLS) поза замороженим префіксом: поза вікном API він лишається з `handle`, але DropOwnCalls його прибере; рядок префікса DropOwnCalls не чіпає (фаза 23) |
+
+Output: `{ rows, counts: { inserted, removed }, done: set<string>, added: int }`; `done` — `uuid` записів, які більше не потрібні; `added` — сума розмірів вставлених рядків.
+
+Processing logic (pseudocode):
+    FUNCTION InsertDeliveries(before, rows, items, renamed, allRebuilt, goes):
+        FOR item IN items (file order):
+            IF no row of before holds a result whose id is in item.anchor: done += item; CONTINUE   # якір до межі або зник після вбудованої компактизації
+            IF a user row with item.text stands right after that row, past result-less user rows only: done += item; CONTINUE   # уже рядок (вставлено раніше, запис не видалився); той самий текст деінде — інша доставка (рев'ю 48)
+            ids = item.anchor ∪ { renamed[id] : id ∈ item.anchor }
+            k = the index in rows of the row that holds a result whose id is in ids
+            IF k absent: removed += 1; done += item; CONTINUE                  # якір прибрано (drop) або згорнуто (collapse): доставка йде з ним; людину попереджено при постановці (SP_CTX_02_02)
+            IF rows[k] has handle AND NOT allRebuilt AND NOT goes(rows[k]): CONTINUE   # вкладення переносить хост; вставка дала б дубль (пункт 44); запис лишається. goes — рядок лише службових результатів, який DropOwnCalls прибере (рев'ю 48)
+            insert Row { role: user, text: item.text, toolUses: [] } right after rows[k] and after the rows already inserted after it
+            inserted += 1; added += size(item.text); done += item
+        RETURN rows, { inserted, removed }, done, added
+
+Чому одразу після якоря. Хост зливає рядок результату і наступний рядок `user` в одне повідомлення `user` (`tool_result`, далі текст) без лагодження пар, і модель знову бачить доставку (спайк, Entry 1–2, режим `plain-results-inject`: «PELICAN», «HERON», «TEAL» в обох хостах; без вставки — «NOT-VISIBLE» і відмова від власних слів). Текст лишається відрендереним, з рамкою `<system-reminder…>`; роль — `user` замість системного ходу, як і в пробі. Порядок кількох доставок за одним якорем — порядок запису.
+
+Відповідь не розривається. Хост доставляє чергу після останнього результату відповіді, перед наступним запитом, тож за рядком доставки починається нова відповідь; KeepResponsesWhole (у DropOwnCalls) вважає вставлений рядок промптом — і відповідь через нього справді не йде. Це припущення з даних (35 доставок робочої сесії, кожна за рядком з `tool_result`, спайк — без паралельних викликів); перевіряє сценарій 05_03 «Доставки посеред ходу» з паралельними викликами — без `ensureToolResultPairing` у журналі.
+
+Де викликається. HandleCompaction — після ApplyEdits, до DropOwnCalls ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)): доставка за результатом службового виклику лишається на місці, коли DropOwnCalls прибирає його рядки ([SP_CTX_02_05](./context_editor.edits.sp.md#SP_CTX_02_05)). BuildSeed — так само, з `allRebuilt = true` ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)). Produced, NowIndex, RebindTags і межа поточної розмови бачать список уже з вставленими рядками; `charsAfter` їх не рахує ([SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)). Межа етапу «після рядка-якоря» робить рядок доставки першим рядком блоку, а кінець блоку на якорі лишає доставку наступному блоку — прийнято: модель бачила доставку саме після цього результату.
+
+Заморожений префікс (фаза 23, [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)). Рядок результату до відповіді першої зміни повертається з `handle`, тож доставка за ним не вставляється, а їде з ним — тим самим системним повідомленням, що й до застосування: байти префікса й кеш промпту лишаються. Запис такої доставки лишається у файлі до застосування, яке перезбере її якір.
+
+Після вставки доставка — звичайний рядок: `context_list` її показує, `collapse` може її згорнути, PersonText бачить у доставці від людини її слова ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)), PromptMatch вважає її прикрасою (PROMPT_DECORATIONS), а наступне застосування повертає її з `handle`, як будь-який рядок `user` без результатів. Медіа доставки (`media` > 0) не переноситься: рядок несе лише текст.
+
+Errors: відмов немає.
+
+### 02_37. SoftHint  {#SP_CTX_02_37}
+
+Purpose: м'яке нагадування ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15), E; [C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02); [SP_CTX_DEC_21](./context_editor.sp.md#SP_CTX_DEC_21); з фази 23 — [SP_CTX_DEC_23](./context_editor.sp.md#SP_CTX_DEC_23)) — окремий рядок-пропозиція з префіксом SUGGESTION, лише коли є що пропонувати: пакет усіх ще не стиснутих кандидатів як одне застосування — яка дія (які `cN` стиснути, чи закрити відкритий етап), що вона звільняє, скільки коштує кешу промпту і вердикт беззбитковості ([SP_CTX_02_38](#SP_CTX_02_38)). Два канали: (1) розміру — у результаті великого виводу чи пошуку (виклик, що отримав позначку, [SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)), коли рядки розмови ≥ Threshold(window) і запит від минулої пропозиції виріс на Step(window); (2) ходу — прихованим контекстом наступного промпту людини між ходами ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)), коли від минулої пропозиції набралося HINT_RUN позначених виводів: кінець ходу — природна межа пакета. Обидва — лише коли пакет звільняє ≥ max(HINT_CANDIDATES, HINT_BATCH · розмова). Рядок нічого не ставить у чергу, не закриває етапу і не запускає оптимізації: рішення — за агентом. До фази 23 рядок стояв на місці рядка псевдоніма й починався ним, другим моментом був перший запис файлу після серії позначених виводів, поріг розміру — 50 тисяч, а вердикту не було.
+
+Input: порти: TagRegistry, AliasRegistry (на ланцюжку псевдонімів, уже з псевдонімом цього виклику), Queue, CurrentRows, звичайна `usage` (1–3 мс; `context.tokens` — увесь останній запит з незмінною частиною, `context.window`), `usage` з розбивкою (23–87 мс), запис стану на ланцюжку реєстру тегів з повідомленням, чи записано. Пам'ять модуля, спільна для обох каналів: `checked: int?` — розмір запиту останньої перевірки за розміром, яка читала рядки і пропозиції не дала (або запізнилась); `busy: bool` — перевірка йде зараз.
+
+Processing logic (pseudocode):
+    Threshold(window) = window ? min(HINT_CONVERSATION, round(HINT_WINDOW_SHARE · window)) : HINT_CONVERSATION
+    Step(window)      = window ? min(HINT_STEP, round(HINT_STEP_SHARE · window)) : HINT_STEP
+
+    FUNCTION SoftHint(deadline):                                           # канал розміру: після позначеного виводу
+        IF busy: RETURN none; busy = true; … ; finally busy = false        # одна перевірка за раз на обидва канали
+        reg = TagRegistry; aliases = AliasRegistry
+        IF reg is not ok OR aliases is unreadable OR no tag of reg is review: RETURN none
+        state = reg.hint; next = aliases.next
+        tokens, window = plain usage                                       # 1–3 мс
+        IF state.tokens present AND tokens present AND tokens < state.tokens:   # застосування, компактизація чи передача між пропозиціями
+            checked = none; in the background: CAS(state → { tokens, marks: next }); RETURN none   # і серію каналу ходу: виводи до застосування вже були в його пакеті (рев'ю 54)
+        IF tokens absent: RETURN none                                      # моделі ще не відповідали
+        T = Threshold(window)
+        IF tokens < T OR tokens − (state.tokens or 0) < Step(window): RETURN none   # запит містить незмінну частину: менший запит — менша розмова
+        IF checked present AND checked ≤ tokens < checked + HINT_RECHECK: RETURN none
+        Settle = checked = tokens                                          # перевірка, що нічого не дала чи запізнилась, чекає HINT_RECHECK росту
+        rows = CurrentRows(); cands = Candidates(rows, reg, Queue.edits (unreadable → []), aliases)
+        IF Freed(cands, reg.charsPerToken or 4) < HINT_CANDIDATES: Settle; RETURN none   # до розбивки
+        (conversation, ratio) = Measure(rows, reg)
+        IF conversation < T: Settle; RETURN none
+        p = Propose(rows, cands, { ratio, conversation, request: tokens, channel: size, api: API form, ratios: CostRatios($.session.model()) })   # API і модель — лише тут, після дешевих порогів; збій — рядки самі, DEFAULT_RATIOS
+        IF p.freed < max(HINT_CANDIDATES, HINT_BATCH · conversation): Settle; RETURN none
+        line = SuggestionText(p)                                           # і з вердиктом «not worth it yet»: розмова вже велика (SP_CTX_DEC_23)
+        Claim({ tokens, marks: next, proposed: p.freed }) — late: Settle; RETURN none; taken: RETURN none
+        checked = none; RETURN line
+
+    FUNCTION TurnSuggestion(deadline):                                     # канал ходу: промпт людини між ходами без optimize (SP_CTX_02_08)
+        busy as above; reg, aliases and their gates as above
+        state = reg.hint; next = aliases.next
+        IF next − (state ? state.marks : 1) < HINT_RUN: RETURN none        # без жодного читання хоста
+        Settle = in the background: CAS(state → { tokens: state.tokens, proposed: state.proposed, marks: next })   # перевірка споживає серію: наступна — після нової
+        rows, cands as above; IF Freed(cands, reg.charsPerToken or 4) < HINT_CANDIDATES: Settle; RETURN none
+        (conversation, ratio) = Measure(rows, reg); tokens, window = plain usage
+        p = Propose(rows, cands, { ratio, conversation, request: tokens, channel: turn, stage: reg.stage ? reg.stage.name : none, api, ratios })
+        IF p.freed < max(HINT_CANDIDATES, HINT_BATCH · conversation): Settle; RETURN none
+        IF NOT (state.tokens present AND tokens present AND tokens < state.tokens)          # без застосування між ними
+           AND state.proposed present AND p.freed − state.proposed < max(HINT_CANDIDATES, HINT_BATCH · conversation): Settle; RETURN none   # пакет, який агент лишив, — знову лише коли виріс на цілий пакет (рев'ю 54)
+        IF p.verdict = not-yet AND conversation < Threshold(window): Settle; RETURN none   # мала розмова і невигідно: нічого пропонувати (SP_CTX_DEC_23)
+        line = SuggestionText(p)
+        Claim({ tokens, marks: next, proposed: p.freed }) — late: Settle; RETURN none; taken: RETURN none   # tokens absent — без поля
+        checked = none; RETURN line
+
+    Claim(next): IF deadline expired: late; on the registry chain: IF deadline expired: late; IF reg.hint still = state: claimed; hint = next; write ELSE taken   # паралельний виклик уже дав рядок — другого немає
+    Measure(rows, reg): t = Telemetry(rows, reg without lastApply); ratio = t.ratio or reg.charsPerToken or 4   # SP_CTX_02_28: рядок MESSAGES_ROW і калібрування; lastApply лишається для телеметрії агента
+                        conversation = t.measure = messages ? t.conversation : Σ size(rows) / ratio
+
+    Candidates(rows, reg, queued, aliases): for each tag of reg with kind = review AND IsActive(tag, reg.turn) whose target resolves on rows:
+        skip it IF a queued edit touches its target (TouchedBy: its tool_use_id or any of its rows)   # правка вже в черзі, застосується в кінці ходу
+        pair target: skip it IF the result's text starts with MARK; chars = len(result text); alias = alias of its tool_use_id, if any; reproducible = the call's tool IN REPRODUCIBLE_TOOLS
+        row target: chars = Σ size of its rows; no alias; reproducible = false
+        row = the first row of the target
+      sorted by chars descending, then by row
+
+    Freed(cands, ratio) = Σ (t − Summary(t, reproducible)), t = chars / ratio of each candidate   # Summary — SP_CTX_02_38
+
+    Propose(rows, cands, { ratio, conversation, request, channel, stage, api, ratios }):
+        freed = Freed(cands, ratio); summary = Σ Summary(t, reproducible)
+        cost = CacheCost(rows, the least row of cands, freed, conversation, ratio, margin = ∞, api)   # типове застосування: уся розмова (SP_CTX_DEC_22)
+        rHat = Requests(rows, api); rStar = BreakEven(cost.rewrite, freed, summary, request or conversation, ratios or DEFAULT_RATIOS); verdict = Verdict(rStar, rHat)
+        IF channel = size:                                                # варіант з keep_cache; канал ходу пропонує на початку ходу — завжди глибоко (рев'ю 54)
+            k = CacheCost(…, margin = APPLY_MARGIN, api); kStar = BreakEven(k.rewrite, …); kVerdict = Verdict(kStar, rHat)
+            IF k.within AND kVerdict better than verdict: keep = { cost: k, rStar: kStar, verdict: kVerdict }
+        named = the aliases of cands in their order, at most HINT_NAMES; more = len(cands) − len(named)
+        RETURN { channel, stage, named, more, freed, conversation, cost, rStar, rHat, verdict, keep }
+
+    SuggestionText(p) = SUGGESTION + " " + by verdict and channel, with
+        names = named joined ", " + (more ? " +<more> more (see context_list)" : "")        # без псевдонімів — "<more> candidates (see context_list)"
+        what  = named ? "summarize <names> by ref" : "compress <names>"
+        verb  = not-yet ? "would rewrite" : "rewrites"; whole = "<verb> the prompt cache of the whole conversation once (~<rewrite>)"
+        cache = turn ? whole + ": edits queued now apply when this turn ends, beyond the ~20 positions the API looks back"
+              : positions + APPLY_MARGIN > 20 ? whole + ": its earliest row is ~<positions> positions back, beyond the ~20 the API looks back"
+              : whole
+        keep present (size only): "<what> in one context_edit with \"keep_cache\": true: frees <gain>; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~<keep.rewrite>) if you end the turn within a few calls (edits apply when it ends; the earliest is ~<keep.positions> positions back now, and past ~20 the API finds no cache); <pays(keep.rStar)> → <keep verdict>. Without keep_cache: the whole conversation (~<rewrite>), pays back after ~<rStar> → <verdict>; with it, a later --resume may show earlier answers twice."
+        pays  = "pays back after ~<rStar> requests, this conversation has made ~<rHat>"   # rStar округлено; ≥ 100 000 — "100000+"
+        gain  = "~<freed> of the ~<conversation> conversation"
+        not-yet (both): "not worth it yet: to <what> would free <gain> but <cache>; <pays>. Batch more, or compress at the end of a stage."
+        size:           "<what> in one context_edit: frees <gain>; <cache>; <pays> → <verdict>."
+        turn:           "before you go on: " + (stage ? "close stage \"<stage>\" with context_tag and " : "") + "<what> in one context_edit? It frees <gain>; <cache>; <pays> → <verdict>. Your call: nothing runs unless you do it."
+        verdict: worth → "worth it now"; borderline → "borderline: worth it only if the work goes on that long"
+      numbers of tokens in thousands as TelemetryText ("~12k")
+
+    CallLines(marked, alias, hint) = marked ? (alias ? [alias line] : []) + (hint ? [hint] : []) : []   # порядок рядків виклику (SP_CTX_02_16)
+
+    Bounded(work, HINT_WAIT): the line of `work`, or none once HINT_WAIT passes first; a claim made before that is waited for, so a written state always has its line, and after it no claim writes
+
+Приклади (модульні тести фази 23; вікно 1M, Opus 5.5). Канал розміру, кандидати щойно прочитані, сесія довга — `keep_cache` змінює вердикт, тож рядок його називає: `[context-editor: suggestion] summarize c1, c2, c3, c4, c5 by ref in one context_edit with "keep_cache": true: frees ~38k of the ~200k conversation; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~13k) if you end the turn within a few calls (edits apply when it ends; the earliest is ~10 positions back now, and past ~20 the API finds no cache); pays back after ~53 requests, this conversation has made ~155 → worth it now. Without keep_cache: the whole conversation (~163k), pays back after ~209 → borderline: worth it only if the work goes on that long; with it, a later --resume may show earlier answers twice.` Ті самі кандидати за 15 обмінами з людиною (поза вікном, `keep_cache` не допоможе): `… rewrites the prompt cache of the whole conversation once (~163k): its earliest row is ~40 positions back, beyond the ~20 the API looks back; pays back after ~209 requests, this conversation has made ~170 → borderline: worth it only if the work goes on that long.` Рано в сесії (і з `keep_cache` невигідно): `[context-editor: suggestion] not worth it yet: to summarize c1, c2, c3, c4, c5 by ref would free ~38k of the ~200k conversation but would rewrite the prompt cache of the whole conversation once (~162k); pays back after ~208 requests, this conversation has made ~5. Batch more, or compress at the end of a stage.` На Sonnet 5.5 той самий пакет вигідний і без `keep_cache` (`pays back after ~105 requests … → worth it now`), і рядок поля не називає. Канал ходу з відкритим етапом: `[context-editor: suggestion] before you go on: close stage "read" with context_tag and summarize c1, c2, c3, c4, c5 by ref in one context_edit? It frees ~38k of the ~200k conversation; rewrites the prompt cache of the whole conversation once (~163k): edits queued now apply when this turn ends, beyond the ~20 positions the API looks back; pays back after ~209 requests, this conversation has made ~255 → worth it now. Your call: nothing runs unless you do it.`
+
+Чому так. Пропозиція — одна дія над усім пакетом, бо ціна застосування визначається не обсягом, а тим, де перша зміна: усередині вікна пошуку кешу платиться лише хвіст, поза ним — уся розмова, хоч би скільки правок було в пакеті (спайки кешу й ефективності; [SP_CTX_02_38](#SP_CTX_02_38)). Агент практики 5 (P22) прочитав рядок фази 22 як службову довідку через спільний префікс з рядками псевдонімів і попросив окремий рядок, конкретну дію з вердиктом «вигідно / невигідно» і пропозицію наприкінці ходу; він сам оцінив стиснення c11–c13 як «збиток або нуль» — правило беззбитковості дає ~150 запитів проти 14 зроблених, тобто «not worth it yet». Поріг розміру — на рядках розмови (MESSAGES_ROW), бо незмінна частина залежить від хоста; 150 тисяч рядків розмови — початок зони L_q спайку ефективності (контекст ~200k), де R̂ уже десятки запитів і за ціною проходять пакети етапів; частка вікна тримає канал живим у вікні 200k. Крок 75 тисяч — 20–50 запитів робочої сесії між рядками. Пакет ≥ 10% розмови — гістерезис спайку, який прибирає часті дрібні застосування. «Not worth it yet» канал розміру каже коротко, бо розмова вже велика: для мети розробника вирішальне місце, і агент має бачити обмін місця на ціну, а рядок підказує, як зробити його вигідним (більший пакет, кінець етапу); канал ходу в малій розмові за такого вердикту мовчить — тиску місця немає, а рядок був би шумом (P19). Канал ходу замінив перший запис файлу: мод не бачить наміру писати, тож рядок межі етапу приходив уже після запису, а кінець ходу — межа, яку бачить і мод; агент отримує пропозицію разом із наступним завданням людини і вирішує, чи закрити етап зараз. Типове застосування переписує всю розмову (заморожений префікс — лише з `keep_cache`, [SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22)); варіант з `keep_cache` рядок називає лише тоді, коли той змінює вердикт, і разом з компромісом відновлення — рішення за агентом. Глибина міряється зараз, а правки застосовуються в кінці ходу (рев'ю 54): для варіанта з `keep_cache` канал розміру додає APPLY_MARGIN позицій і каже агенту, що неглибока ціна — лише якщо хід скінчиться за кілька викликів; канал ходу пропонує на початку ходу, тож до застосування пройде весь хід — правку він вважає глибокою завжди. Пакет, який агент лишив без дії, канал ходу не повторює з кожною серією: лише коли той виріс на цілий пакет (max(HINT_CANDIDATES, HINT_BATCH · розмова)) або між ними було застосування (менший запит). Відношення цін — за родиною моделі (CostRatios). Холодний кеш (пауза людини понад TTL) не робить пропозицію вигідною: правки застосовуються в кінці ходу, у якому агент їх поставив, а перший запит цього ходу вже переписав кеш. Кандидати — ті самі активні `review`, що в рядку `Candidates` телеметрії, без уже поставлених у чергу (у довгому ході правки застосовуються лише в його кінці) і без замінених; поточний вивід кандидатом ще не є (його тег ставить AutoTag після цього хука, [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12)); «+n more (see context_list)» лише відсилає до переліку, де вони мають `[review: …]`. Рядок псевдоніма лишається як до фази 22: пропозиція — окремий рядок після нього (P19 — кандидат беклогу).
+
+Ціна на гарячому шляху. Кожен позначений вивід читає два малі файли (реєстри тегів і псевдонімів) і звичайну `usage` (1–3 мс); рядки розмови й черга читаються лише після дешевих порогів (запит ≥ Threshold, ріст ≥ Step, не раніше ніж через HINT_RECHECK після невдалої перевірки), розбивка (23–87 мс) — лише коли кандидатів досить. Кожен промпт людини між ходами читає ті самі два файли; рядки й розбивку — лише раз на серію з HINT_RUN позначених виводів. Результат і промпт чекають не довше HINT_WAIT; калібрування з розбивки пишеться у фоні; CacheCost — лінійний прохід по рядках.
+
+Errors: відмов немає; будь-який збій — рядок псевдоніма без пропозиції (промпт — без неї), стан не змінюється. Стан пишеться порівнянням-і-записом: якщо паралельний виклик змінив `hint` між читанням і записом, другий рядок не з'являється.
+
+### 02_38. CacheCost  {#SP_CTX_02_38}
+
+Purpose: оцінити, скільки кешу промпту коштує застосування, і чи окупиться воно ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02); спайки [context_editor_cache](./context_editor_cache.spike.md) і [context_editor_efficiency](./context_editor_efficiency.spike.md); [SP_CTX_DEC_23](./context_editor.sp.md#SP_CTX_DEC_23)). Чисті функції `hooks/cache.ts`; читають SoftHint ([SP_CTX_02_37](#SP_CTX_02_37)) і Telemetry ([SP_CTX_02_28](#SP_CTX_02_28)). Фаза 23.
+
+Модель. Хост ставить мітки кешу на системний промпт і на останній блок двох останніх повідомлень кожного запиту; мітка знаходить попередній запис кешу не далі ніж за CACHE_LOOKBACK позицій назад (навичка plugin-hooks, пункти 53–55). Тому перший запит після застосування читає кеш до першої зміни, лише коли від неї до кінця розмови ≤ CACHE_LOOKBACK позицій, і тоді пише лише хвіст від неї; глибше — читає тільки незмінну частину (`tools + system`, P0) і пише всю розмову. Рядки розмови (MESSAGES_ROW) і є C − P0: незмінна частина розбивки — це P0 разом із файлами пам'яті й переліком навичок, що лежать у повідомленнях, тож запис глибокої правки занижено на ці кілька тисяч токенів. Типове застосування перезбирає відрізок і прибирає всі власні пари, тож переписує всю розмову; лише з `keep_cache` ([SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22)) першою зміною FrozenPrefix ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) робить відповідь найранішої правки, і тоді діє вікно; до фази 23 мод сам зсував її на початок ходу чи розмови, і спайк ефективності міряв лише режим «уся розмова» (`p0`).
+
+Processing logic (pseudocode):
+    Kinds(row): assistant → "text" if text, then "use" per call; neither → "thinking"   # thinking видно лише як рядок без тексту й викликів (навичка plugin-hooks, пункт 36)
+                user → "result" per result, then "text" if text or no result
+    Responses(rows, api): the first row of each row's response: consecutive assistant rows are one; a result row joins the response of its calls;
+        with api, assistant rows whose call id or text one assistant message of api holds join the response of its earliest row (parallel calls written "call, result, call"), never across a prompt row; a prompt row is its own   # рев'ю 54
+    Positions(rows, i, api) = from the start of rows[i]'s response to the end, each response counted in the order the host sends it — the kinds of its assistant rows, then of its other rows —
+        so that a "use" right after a "use" and a "result" right after a "result" (also across responses) add nothing   # серії — одна позиція (довідка API; спайк кешу, Entry 4)
+    ResponseStartRows(rows, at, api) = Responses(rows, api)[at]        # застосування бере межу з ResponseStart (SP_CTX_02_04); тут — та сама ідея одним проходом
+    LookbackStart(rows, api) = the least k such that Positions(rows, j, api) ≤ CACHE_LOOKBACK for every j in k..len(rows)−1; len(rows) when not even the last row passes
+    CacheCost(rows, first, freed, conversation, ratio, margin = 0, api):
+        start = ResponseStartRows(rows, first, api); positions = Positions(rows, start, api); within = positions + margin ≤ CACHE_LOOKBACK
+        tail = min(round(Σ size(rows[start..]) / ratio), conversation)
+        RETURN { start, positions, within, rewrite: max(0, (within ? tail : conversation) − freed) }
+    Requests(rows, api) = max(1, number of responses that start with an assistant row)   # R̂: запити розмови досі; копернікова оцінка — попереду стільки ж
+    Summary(t, reproducible) = min(t, max(min, share · t)), SUMMARY_REPRO for a reproducible output, SUMMARY_OTHER otherwise
+    CostRatios(model) = the first family of the CostRatios table (01_12) whose name the model id holds; none → DEFAULT_RATIOS
+    BreakEven(rewrite, freed, summary, request, r) = ((r.write − 1) · rewrite + r.out · summary + request) / freed   # freed ≤ 0 → ∞
+    Verdict(rStar, rHat) = rStar ≤ rHat ? worth : rStar > VERDICT_MARGIN · rHat ? not-yet : borderline
+
+BreakEven — точка беззбитковості спайку ефективності (Entry 4): чистий виграш після R запитів `G(R) = r_r·Δ·R − (r_w − r_r)·(x − Δ) − r_out·S − n_x·r_r·C` дорівнює нулю при `R* = (ρ_w − 1)·(x − Δ)/Δ + ρ_o·S/Δ + n_x·C/Δ`; тут `ρ_w`, `ρ_o` — CostRatios моделі (у спайку — 40 і 100 з калібрування за `costUSD`; з рев'ю 54 — опубліковані ціни за родиною моделі), `n_x = 1` (запит, що ставить правку, читає весь контекст C), `x − Δ = rewrite`, `Δ = freed`, `S = summary`. Від спайку відрізняється `x`: хвіст від відповіді найранішої правки в межах вікна і вся розмова поза ним (спайк кешу, рекомендація «режим вікно»), а не завжди вся розмова. Приклад P22 (контекст 84k, перебудова 44k, звільнено 12k) — R* = 150 на Opus 5.5 і ~77 на Sonnet 5.5. Без API-подання (телеметрія, збій читання) паралельні виклики, записані «виклик, результат, виклик», рахуються окремими відповідями: позицій більше, R̂ теж більше (рев'ю 54) — тому SoftHint читає API-подання після дешевих порогів. Оцінка R̂ — копернікова (попереду стільки ж запитів, скільки позаду), груба, тож вердикт має три значення із запасом VERDICT_MARGIN. Позиції — за рядками: блоки вкладень промпту, доставки й кілька блоків thinking одного рядка не видно, тож оцінка оптимістична на 1–3 позиції; глибина міряється зараз, а застосування буде в кінці ходу, коли хвіст ще виросте, — звідси `margin` (APPLY_MARGIN для каналу розміру, ∞ для каналу ходу). Межу й вердикт калібрує живий сценарій 05_03 «Кеш після застосування».
+
+Errors: відмов немає (чисті функції).
+
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_27–02_38 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.stages.sp.md](./context_editor.stages.sp.md), якорі без змін |

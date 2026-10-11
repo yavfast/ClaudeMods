@@ -9,7 +9,7 @@
 > **Mode:** single
 >
 > **Target concept:** [C_CTX](./context_editor.concept.md)
-> **Serves:** рішення розробника щодо форми м'якого нагадування (P22, [C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)) і порогів HINT_* ([SP_CTX_02_37](./context_editor.sp.md#SP_CTX_02_37))
+> **Serves:** рішення розробника щодо форми м'якого нагадування (P22, [C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)) і порогів HINT_* ([SP_CTX_02_37](./context_editor.stages.sp.md#SP_CTX_02_37))
 > **Question(s):**
 > 1. Як порахувати ефективність стиснення з урахуванням кешу промпту: скільки коштує правка, коли вона окупається і скільки кроків роботи додає до межі контексту?
 > 2. Яка стратегія — покрокова, інтервальна, поетапна, порогова чи гібрид — найкраща на реальних слідах сесій?
@@ -241,7 +241,7 @@ decd (`decd4bc6`): S0 = 36,00 $, пік 724k.
 - `.dev_flow/cache/efficiency/results/` — `main.txt`, `main.csv`, `main_table.md`, `sens.txt`, `sens.csv`, `breakeven.txt`.
 
 **Artifacts to discard:**
-- `.dev_flow/cache/efficiency/data/*.jsonl` — копії транскриптів зі змістом (потрібні лише для повторного витягу; можна видалити після рішення).
+- `.dev_flow/cache/efficiency/data/*.jsonl` — копії транскриптів зі змістом; видалено після рішення (витяги лишились у `efficiency/traces/`).
 
 ## Unverified
 

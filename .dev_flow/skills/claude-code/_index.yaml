@@ -1,17 +1,18 @@
 domain: claude-code
 description: Як писати і перевіряти моди (плагіни function hooks) для Claude Code у цьому проєкті
-updated: 2026-10-09
+updated: 2026-10-11
 
 skills:
   - file: plugin-hooks.md
     skill: ClaudeCodePluginHooks
-    topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript]
+    topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript, headless, stream-json, vscode, prompt-cache, install]
     source: implementation
-    updated: 2026-10-09
+    updated: 2026-10-11
+    written_against: Claude Code 2.1.296
     promotion: candidate
     applies_to: { paths: ["mods/**"] }
     evidence:
       state: exercised
       source: live scenarios and review rounds of task_C_CTX
-      observed_at: 2026-10-08
+      observed_at: 2026-10-11
       ref: .dev_flow/tasks/task_C_CTX.md
