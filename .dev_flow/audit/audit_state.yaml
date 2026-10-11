@@ -1,0 +1,12 @@
+# AuditState for /dev-flow audit code (references/code-audit.md)
+run: 20261011_182951
+status: planning
+scope: mods/context-editor (whole codebase; the only mod)
+lenses: [architecture+standards, specifications, patterns+duplication, security, correctness(+types, concurrency), performance, tests]
+depth: standard
+mode: full
+preview_only: false
+baseline: docs/context_editor.{concept,sp}.md sets, CLAUDE.md, .dev_flow/skills/claude-code/plugin-hooks.md; no .dev_flow/rules/, no docs/_framework.md
+units: {done: 7, total: 7}
+started: 2026-10-11T18:29:51+03:00
+finished: 2026-10-11T18:51:53+03:00

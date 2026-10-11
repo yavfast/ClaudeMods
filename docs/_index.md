@@ -10,6 +10,12 @@
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, рішення SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
 | [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План: фази 1–23 (усі виконані) і backlog наступної роботи |
 
+## Maps
+
+| File | Що це |
+|------|-------|
+| [_framework.md](_framework.md) | Архітектурна карта коду мода: шари модулів `hooks/*.ts`, шаблон портів, де живе стан, заплановані абстракції з аудиту коду (ведуть лише onboard і `audit code`) |
+
 ## Spikes
 
 | File | Status | Що досліджено |
