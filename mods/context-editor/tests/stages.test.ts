@@ -438,7 +438,10 @@ test('OptimizeText — без індексів: the block name, ListHint, STAGE_
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
-  expect(INTRO_TEXT.length).toBe(866)
+  expect(INTRO_TEXT.length).toBe(944)
+  // [SP_CTX_02_37] the soft hint in a few words: it only informs
+  expect(INTRO_TEXT).toContain('A [context-editor] line may name earlier outputs not compressed yet as the context grows; it only informs: decide by the logical state of the work.')
+  expect(INTRO_TEXT.includes('Nothing reminds you by size')).toBe(false)
   // [SP_CTX_01_12] P13: the sentence about the agent's own calls
   expect(INTRO_TEXT).toContain('When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list).')
   expect(INTRO_TEXT).toContain(OPTIMIZE_MARK)

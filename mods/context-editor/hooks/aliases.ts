@@ -186,10 +186,10 @@ export type AliasIO = {
   writeAliases: (reg: AliasRegistry) => Promise<void>
 }
 
-// [SP_CTX_02_16] The alias line to add after the call's result, or undefined:
-// no mark without storage, from an unreadable registry, or when the registry
-// could not be written (the alias would resolve to nothing).
-export async function markCall(io: AliasIO, f: CallFacts): Promise<string | undefined> {
+// [SP_CTX_02_16] The new alias of the call, or undefined: no mark without
+// storage, from an unreadable registry, or when the registry could not be
+// written (the alias would resolve to nothing).
+export async function markAlias(io: AliasIO, f: CallFacts): Promise<string | undefined> {
   if (!wantsMark(f) || !(await io.ready())) return undefined
   const read = await io.readAliases()
   if (read.state === 'unreadable') return undefined
@@ -199,7 +199,14 @@ export async function markCall(io: AliasIO, f: CallFacts): Promise<string | unde
   } catch {
     return undefined
   }
-  return aliasLine(alias)
+  return alias
+}
+
+// [SP_CTX_02_16] The alias line to add after the call's result, or undefined;
+// a soft hint replaces it with a line that starts with the same id ([SP_CTX_02_37]).
+export async function markCall(io: AliasIO, f: CallFacts): Promise<string | undefined> {
+  const alias = await markAlias(io, f)
+  return alias ? aliasLine(alias) : undefined
 }
 
 // The settled result with `lines` added to what the model reads after it;

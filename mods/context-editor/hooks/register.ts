@@ -3,7 +3,7 @@ import {
   aliasesById,
   callFacts,
   EMPTY_ALIASES,
-  markCall,
+  markAlias,
   parseAliases,
   refResolver,
   wantsMark,
@@ -38,6 +38,7 @@ import {
   type RefResolver,
 } from './edits'
 import { enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
+import { bounded, HINT_WAIT_MS, hintCall, newHintMemo, pickLine, softHint, type HintCall, type HintIO } from './hints'
 import {
   contextHandoff,
   handleSeed,
@@ -315,6 +316,8 @@ const copied = new Set<string>()
 // [SP_CTX_02_35] The result ids of the last tool-result row of the main
 // conversation: the anchor of a delivery that follows it.
 const anchorMem = newAnchorMemory()
+// [SP_CTX_02_37] The request size of the last size check without a hint.
+const hintMemo = newHintMemo()
 
 function noteCopies(rows: readonly SessionMessage[] | undefined): void {
   copied.clear()
@@ -762,6 +765,45 @@ async function dueLines($: EngineInterface): Promise<string[]> {
 async function remindAfter<T extends object>($: EngineInterface, tool: string, agentId: unknown, out: T): Promise<T> {
   if (agentId || 'deny' in out || !remindsAfter(tool)) return out
   return withReminderLines(out, await dueLines($))
+}
+
+// [SP_CTX_02_37] SoftHint bound to the host: the plain usage first, the
+// breakdown only for the size trigger, the calibration in the background, the
+// hint state on the registry's chain (true when written).
+function hintIO($: EngineInterface): HintIO {
+  return {
+    readTags: () => readTags($),
+    readAliases: () => serial('aliases', () => readAliases($)),
+    readQueue: () => readQueue($),
+    rows: () => conversation($),
+    request: async () => {
+      const u = await $.session.usage()
+      return { tokens: u.context.tokens, window: u.context.window }
+    },
+    usage: () => usageInfo($),
+    updateRegistry: change => {
+      void updateRegistry($, change).catch(() => undefined)
+      return Promise.resolve()
+    },
+    updateTags: change =>
+      serial('tags', async () => {
+        if (!(await ensureStorage($))) return false
+        const next = change(await readTags($))
+        if (!next) return false
+        await writeTags($, next)
+        return true
+      }),
+  }
+}
+
+// [SP_CTX_02_37] The hint for this call, if it is one that may carry it: a
+// marked output, or a write without error. Never longer than HINT_WAIT_MS.
+async function hintFor($: EngineInterface, call: HintCall | undefined): Promise<string | undefined> {
+  if (!call || !(await ensureStorage($).catch(() => undefined))) return undefined
+  return bounded(
+    d => softHint(hintIO($), hintMemo, call, d).then(o => o.line),
+    () => $.clock.sleep(HINT_WAIT_MS),
+  )
 }
 
 function blockIO($: EngineInterface): BlockIO {
@@ -1218,20 +1260,23 @@ export const register: Register = on => {
   })
 
   // [SP_CTX_02_16] After any other tool call of the main loop: the alias line
-  // of a call worth editing, then the due reminders of the agent's own notes
-  // ([SP_CTX_02_33]); nothing else ([SP_CTX_02_09]: no reminder by size). It
-  // never changes the result itself; a failure only drops its line. The alias
-  // chain, then the registry's chain, one after the other.
+  // of a call worth editing, or the soft hint that starts with the same id
+  // ([SP_CTX_02_37]: on a marked output or the first write after a run of
+  // them; it only informs), then the due reminders of the agent's own notes
+  // ([SP_CTX_02_33]). It never changes the result itself; a failure only
+  // drops its line. The alias chain, then the registry's chain, one after the other.
   on('tool.call', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId || done.deny !== undefined || String(e.tool).startsWith(OWN_TOOLS)) return done
     const facts = callFacts(e, done)
     if (!remindable(facts)) return done
     const lines: string[] = []
-    if (wantsMark(facts)) {
-      const alias = await serial('aliases', () => markCall(aliasIO($), facts)).catch(() => undefined)
-      if (alias) lines.push(alias)
-    }
+    const marked = wantsMark(facts)
+    const alias = marked ? await serial('aliases', () => markAlias(aliasIO($), facts)).catch(() => undefined) : undefined
+    const follow = callFollowUp(String(e.tool), e as unknown as Record<string, unknown>, done.isError === true)
+    const hint = await hintFor($, hintCall(marked, !!follow && 'write' in follow, alias)).catch(() => undefined)
+    const line = pickLine(hint, alias)
+    if (line) lines.push(line)
     if (await ensureStorage($).catch(() => undefined)) lines.push(...(await serial('tags', () => noteReminders(tagIO($))).catch((): string[] => [])))
     // [SP_CTX_02_16] R4 and the journal in the background, queued only once the
     // lines are built: the result waits for neither (the reminders above share

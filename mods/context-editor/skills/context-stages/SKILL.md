@@ -5,9 +5,9 @@ description: Open this for a long or multi-stage task with the context-editor mo
 
 # Managing your context in stages
 
-The context-editor mod lets you edit your own conversation. Nothing reminds you by size: you decide when to clean, by the logical state of the work. Attention degrades as the context grows: compress what is processed once a piece of work is done. The host's auto-compaction is only a safety net.
+The context-editor mod lets you edit your own conversation. You decide when to clean, by the logical state of the work. Attention degrades as the context grows: compress what is processed once a piece of work is done. The host's auto-compaction is only a safety net.
 
-Tools: `context_tag` (stages, tags), `context_list` (rows, telemetry), `context_edit` (edits, applied when your turn ends), `context_note` (notes).
+Tools: `context_tag` (stages, tags), `context_list` (rows, telemetry), `context_edit` (edits), `context_note` (notes).
 
 ## Stages
 
@@ -17,7 +17,7 @@ A stage is a logical block of your work: a phase, a sub-task, an investigation, 
 - Close it when the block is done and its result is known: `{"tags":[{"op":"close"}]}`. The result names the block's rows `#a..#b`, its size and media, cleanup candidates, the telemetry and the advice. Its indexes are current: you may edit by them right away.
 - Stages are flat: opening a stage closes the open one first.
 - To close a block you never opened: `{"tags":[{"op":"open","stage":"<name>","index":<its first row>},{"op":"close"}]}`.
-- `context_list` shows `[stage ▶ name]` on the first row of the open stage, and `[block ▶ name]` .. `[block end]` around the last closed block.
+- `context_list` shows `[stage ▶ name]` on the open stage's first row, `[block ▶ name]` .. `[block end]` around the last closed block.
 
 ## Compressing a block
 
@@ -43,7 +43,7 @@ When you abandon a branch, mark it at once: tag the span `disposable` with a not
 
 ## Optimization mark
 
-When you finish your turn for the person and want the block optimized, make this the last line of your final answer, on its own:
+To have the block optimized when you finish your turn for the person, make this the last line of your answer, on its own:
 
 [context-editor: optimize]
 
@@ -54,21 +54,21 @@ When you finish your turn for the person and want the block optimized, make this
 
 ## Telemetry
 
-`context_list` with `"count":0` gives the header alone: the conversation's size without the fixed part (system prompt, tools, skills, memory), the window, the open stage, the last block, the candidates by reason with their rows, and only when there is something to show:
+`context_list` with `"count":0` gives the header alone: the conversation's size without the fixed part, the window, the open stage, the last block, the candidates by reason with their rows, and only when there is something to show:
 
 - `Effect: N application(s); M reread(s) of compressed content (K of archives)`: rereads of what you compressed; many mean you compress too much;
 - `State slot: #i`, or that its row is gone;
 - `Last apply: ~N tokens freed (measured …)`, once after an apply.
 
-Sizes are calibrated estimates (`approx.` until known). Decide by the state of the work, not the numbers.
+Sizes are calibrated estimates (`approx.` until known). A `[context-editor]` line may name outputs not compressed yet, with sizes, as the context grows or at a first write after much reading; it only informs. Decide by the state of the work, not the numbers.
 
 ## Candidates
 
-- `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A bare `[review]` comes from an older version. A review suggests a look, not an edit.
+- `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
 - `[disposable: note]`: your own replacement, applied when you close a stage or end a turn with the mark.
 - `[pin]`: never edited.
 
-The close report lists the candidates in the block by reason, with the count of `~` pairs.
+The close report lists the block's candidates by reason and counts its `~` pairs.
 
 ## State slot
 
@@ -86,4 +86,4 @@ Write about the content, not row numbers: indexes change after an apply. `contex
 
 ## Restoring an original
 
-Every replacement says where its original is: `(original: <path>, open with Read)`, and media files as `(media: <path>)`. If you need something you compressed, `Read` that file. It comes back at the end of the conversation, not in its old place, so read only what you need. Such reads count in the `Effect` line.
+Every replacement says where its original is: `(original: <path>, open with Read)`, and media files as `(media: <path>)`. If you need something you compressed, `Read` that file. It comes back at the end of the conversation, so read only what you need; such reads count in the `Effect` line.

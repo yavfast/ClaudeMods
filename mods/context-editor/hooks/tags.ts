@@ -82,6 +82,19 @@ export type TagRegistry = {
   // [SP_CTX_01_10] the last application with edits and the request size
   // before it; the telemetry measures the change once ([SP_CTX_02_28])
   lastApply?: { at: number; tokensBefore: number }
+  // [SP_CTX_01_10] [SP_CTX_02_37] the soft hint's state
+  hint?: HintState
+}
+
+// [SP_CTX_01_10] TagRegistry.hint: `marks` — AliasRegistry.next at the last
+// hint (or at the last stage-boundary check, which consumes the run);
+// `tokens` — the request size at the last hint, absent before the first one.
+export type HintState = { tokens?: number; marks: number }
+
+export function isHintState(v: unknown): v is HintState {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
+  const h = v as Record<string, unknown>
+  return isCount(h.marks, 1) && (h.tokens === undefined || isCount(h.tokens, 0))
 }
 
 export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false, notes: [], nextNote: 1 }
@@ -174,6 +187,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     typeof reg.introduced !== 'boolean' && 'introduced',
     badNoteFields(reg.notes, reg.nextNote),
     reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
+    reg.hint !== undefined && !isHintState(reg.hint) && 'hint',
     reg.charsPerToken !== undefined && !(typeof reg.charsPerToken === 'number' && reg.charsPerToken >= CALIB_MIN && reg.charsPerToken <= CALIB_MAX) && 'charsPerToken',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
