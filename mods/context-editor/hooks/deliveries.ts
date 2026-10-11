@@ -12,7 +12,7 @@
 import type { SessionMessage } from 'claude-code'
 import { rowChars } from './edits'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
-import type { Read } from './queue'
+import { isCount, jsonObject, trimOldest, type Read } from './store'
 
 // [SP_CTX_01_12]
 export const MAX_DELIVERIES = 200
@@ -80,10 +80,6 @@ export function deliveryWords(text: string): string | undefined {
   return (ends.length ? body.slice(0, Math.min(...ends)) : body).trim()
 }
 
-function isCount(v: unknown): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= 0
-}
-
 const KINDS: readonly string[] = ['person', 'agent', 'task', 'other']
 
 function isItem(raw: unknown): raw is QueuedDelivery {
@@ -109,29 +105,18 @@ function isItem(raw: unknown): raw is QueuedDelivery {
 // [SP_CTX_01_22] Read states as the queue's: a bad item makes the file
 // unreadable, never silently an empty list.
 export function parseDeliveries(text: string): Read<Deliveries> {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    return { state: 'unreadable', reason: `not JSON: ${String(err)}` }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
-  const items = (raw as { items?: unknown }).items
+  const raw = jsonObject(text)
+  if (raw.state === 'unreadable') return raw
+  const items = raw.value.items
   if (!Array.isArray(items) || items.length > MAX_DELIVERIES) return { state: 'unreadable', reason: 'bad field(s): items' }
   const bad = items.findIndex(e => !isItem(e))
   return bad >= 0 ? { state: 'unreadable', reason: `bad item ${bad + 1}` } : { state: 'ok', value: { items } }
 }
 
-function bytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
-}
-
 // [SP_CTX_01_22] The oldest items go while there are more than
 // MAX_DELIVERIES or the file would exceed `maxBytes` (MAX_QUEUE_BYTES).
 export function trimDeliveries(d: Deliveries, maxBytes: number): Deliveries {
-  let items = d.items
-  if (items.length > MAX_DELIVERIES) items = items.slice(items.length - MAX_DELIVERIES)
-  while (items.length && bytes({ items }) > maxBytes) items = items.slice(1)
+  const items = trimOldest(d.items, MAX_DELIVERIES, maxBytes, i => ({ items: i }))
   return items === d.items ? d : { items }
 }
 
@@ -244,21 +229,23 @@ export function withDelivery(d: Deliveries, item: QueuedDelivery, maxBytes: numb
   return trimDeliveries({ items: [...d.items, item] }, maxBytes)
 }
 
-// What RecordDelivery and the apply need from the host; register.ts binds it
-// to `$` and runs each change on the deliveries' serial chain.
+// What RecordDelivery and the apply need from the host: a part of the
+// deliveries' Store ([SP_CTX_01_07]); register.ts runs each change on the
+// deliveries' serial chain.
 export type DeliveryIO = {
   read: () => Promise<Read<Deliveries>>
   write: (d: Deliveries) => Promise<void>
-  // moves an unreadable file aside
-  quarantine: () => Promise<void>
+  // moves an unreadable file aside; the new path, or undefined when it could not
+  quarantine: () => Promise<string | undefined>
 }
 
 // [SP_CTX_02_35] Writes one item; an unreadable file is moved aside and the
-// list starts anew. A failure loses this item only.
+// list starts anew; one that cannot be moved aside is never overwritten. A
+// failure loses this item only.
 export async function recordDelivery(io: DeliveryIO, item: QueuedDelivery, maxBytes: number): Promise<void> {
   let read = await io.read()
   if (read.state === 'unreadable') {
-    await io.quarantine()
+    if ((await io.quarantine()) === undefined) return
     read = { state: 'missing', value: { items: [] } }
   }
   const next = withDelivery(read.value, item, maxBytes)

@@ -24,7 +24,7 @@ import {
 } from './edits'
 import { distinctive, survivors } from './stages'
 import { MAX_REGISTRY_BYTES, type TagDeny, type TagIO, type TagRegistry } from './tags'
-import { storageRefusal } from './store'
+import { bytes, isCount, storageRefusal } from './store'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -38,10 +38,6 @@ export const MAX_REMIND = 1000
 export type NoteTarget = { tool_use_id: string } | { anchor: string; hint: number } | { anchor: string; hint: number; toAnchor: string; toHint: number }
 
 export type Note = { id: string; target: NoteTarget; text: string; createdTurn: number; remindAt?: number }
-
-function isCount(v: unknown, min: number): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= min
-}
 
 // The number of a note id (`n3` → 3), or undefined for anything else.
 export function noteNumber(id: unknown): number | undefined {
@@ -181,10 +177,6 @@ const UNTRACKABLE = (i: number) => `row #${i} cannot be tracked (no text, no too
 
 // `lines`: the line naming the call "last" resolved to ([SP_CTX_02_17]).
 export type NoteOutcome = { registry: TagRegistry; added: string[]; removed: string[]; rejected: { code: NoteError; reason: string }[]; lines: string[] }
-
-function bytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
-}
 
 // [SP_CTX_02_32] Applies the requests in order to the registry on the rows as
 // they are now; a rejected request leaves the rest of the batch going. Targets

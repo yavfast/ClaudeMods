@@ -1,7 +1,8 @@
 import type { CompactionIO } from '../hooks/compaction'
 import type { Boundary } from '../hooks/edits'
 import { EMPTY_ALIASES, type AliasRegistry } from '../hooks/aliases'
-import type { Queue, Read } from '../hooks/queue'
+import type { Queue } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
 // [SP_CTX_02_07] A HandleCompaction port over fakes, shared by the

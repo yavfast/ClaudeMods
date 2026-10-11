@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { BIG_ROW, callLabel, MARK, OWN_TOOLS, touchedBy, unknownRef, type QueuedEdit, type RefResolver, type Resolved } from './edits'
-import type { Read } from './queue'
+import { jsonObject, type Read } from './store'
 import { SEARCH_TOOLS } from './tags'
 
 // [SP_CTX_01_12]
@@ -27,14 +27,9 @@ function aliasNumber(alias: string): number | undefined {
 // [SP_CTX_01_13] Read states as the queue's: a wrong field or entry makes the
 // whole file unreadable, never silently an empty registry.
 export function parseAliases(text: string): Read<AliasRegistry> {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    return { state: 'unreadable', reason: `not JSON: ${String(err)}` }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
-  const reg = { ...EMPTY_ALIASES, ...(raw as Partial<AliasRegistry>) }
+  const raw = jsonObject(text)
+  if (raw.state === 'unreadable') return raw
+  const reg = { ...EMPTY_ALIASES, ...(raw.value as Partial<AliasRegistry>) }
   const map = reg.map as unknown
   const bad = [
     !(typeof reg.next === 'number' && Number.isInteger(reg.next) && reg.next >= 1) && 'next',

@@ -10,7 +10,8 @@ import type { SessionMessage } from 'claude-code'
 import { describeEdit, distinctive, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
 import { CACHE_LOOKBACK, lookbackStart } from './cache'
 import type { JournalSummary } from './journal'
-import type { Queue, Read } from './queue'
+import type { Queue } from './queue'
+import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, type ReviewGroup, type Tag, type TagRegistry } from './tags'
 import { blockNotes, notesHint } from './notes'
 
@@ -287,8 +288,10 @@ export function headerSize(t: Pick<Telemetry, 'measure' | 'conversation' | 'rati
 // [SP_CTX_02_28] Telemetry(rows, reg): the size from the MESSAGES_ROW of the
 // breakdown, else the whole request; a failed usage read leaves the rest.
 // `update` changes the registry on its chain: a new calibration
-// ([SP_CTX_02_34]), the measured apply consumed ([SP_CTX_02_28]).
-export type RegistryUpdate = (change: (reg: TagRegistry) => TagRegistry) => Promise<void>
+// ([SP_CTX_02_34]), the measured apply consumed ([SP_CTX_02_28]). The part of
+// an Update port ([SP_CTX_01_07]) the telemetry uses: its change always
+// returns a registry, and its result is not read.
+export type RegistryUpdate = (change: (reg: TagRegistry) => TagRegistry) => Promise<unknown>
 
 export async function telemetry(
   rows: readonly SessionMessage[],
@@ -346,7 +349,7 @@ export async function telemetry(
     t.cache = { start, chars: charsOf(rows, start, rows.length - 1), rows: rows.length }
   }
   if (!reg) return t
-  const save = update ? (ratio: number) => update(r => ({ ...r, charsPerToken: ratio })) : undefined
+  const save = update ? async (ratio: number) => void (await update(r => ({ ...r, charsPerToken: ratio }))) : undefined
   t.ratio = await calibrate(rows, t, reg, save)
   // the first model response after an apply: the request now against the one before it
   const last = reg.lastApply
@@ -493,8 +496,8 @@ export type BlockIO = {
   // media sizes by owner key, from CollectMedia over the API form
   media: () => Promise<MediaSizes>
   usage: () => Promise<UsageInfo>
-  // [SP_CTX_02_34] stores a new calibration in the registry, on its chain
-  updateRegistry?: RegistryUpdate
+  // [SP_CTX_02_34] stores a new calibration in the registry, on its chain (Update)
+  updateTags?: RegistryUpdate
   // [SP_CTX_02_31] the journal's summary for the telemetry; absent: no line
   journal?: () => Promise<JournalSummary>
   // [SP_CTX_02_18] listedKey = key: the report lists the block's row indexes
@@ -542,7 +545,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   // first: the calibration gives the ratio, so the block's size and the
   // telemetry below use one ratio (review round 39)
   const journal = io.journal ? await io.journal().catch((err): JournalSummary => ({ unreadable: errorText(err) })) : undefined
-  const t = await telemetry(rows, reg, io.usage, io.updateRegistry, journal)
+  const t = await telemetry(rows, reg, io.usage, io.updateTags, journal)
   const a = startOf(rows, block.after)
   const e = markIndex(rows, block.end)
   const hasRows = e !== 'lost' && block.end !== null && a <= e
@@ -695,11 +698,12 @@ export function markClose(reg: TagRegistry, rows: readonly SessionMessage[]): Ta
 export type DetectIO = {
   ready: () => Promise<boolean>
   readQueue: () => Promise<Read<Queue>>
-  // on the queue chain: `change` sees the queue as read then; undefined
-  // writes nothing; a failed write rejects
-  updateQueue: (change: (read: Read<Queue>) => Queue | undefined) => Promise<void>
+  // on the queue chain, the Change contract ([SP_CTX_01_07]): `change` sees
+  // the queue as read then, unreadable too; undefined writes nothing; a
+  // failed write rejects
+  changeQueue: Change<Queue>
   // on the registry chain, the same way
-  updateTags: (change: (read: Read<TagRegistry>) => TagRegistry | undefined) => Promise<void>
+  changeTags: Change<TagRegistry>
   // CurrentRows ([SP_CTX_02_18])
   rows: () => Promise<readonly SessionMessage[]>
   // QueueTagReplacements on the queue chain ([SP_CTX_02_13])
@@ -726,7 +730,7 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   let prompted = false
   if (ready)
     await io
-      .updateQueue(read => {
+      .changeQueue(read => {
         if (read.state !== 'ok' || !read.value.optimizePrompted) return undefined
         prompted = true
         return { ...read.value, optimizePrompted: false }
@@ -743,7 +747,7 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   const rows = await io.rows()
   let regWhy: string | undefined
   try {
-    await io.updateTags(read => {
+    await io.changeTags(read => {
       if (read.state === 'unreadable') {
         regWhy = 'the tag registry is unreadable'
         return undefined
@@ -758,7 +762,7 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   await io.replace().catch(() => undefined)
   let why: string | undefined
   try {
-    await io.updateQueue(read => {
+    await io.changeQueue(read => {
       if (read.state === 'unreadable') why = 'the queue is unreadable'
       else if (read.value.handoff) why = 'a handoff is pending'
       else return { ...read.value, optimize: true }

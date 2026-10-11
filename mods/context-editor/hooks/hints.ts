@@ -13,7 +13,8 @@ import type { SessionMessage } from 'claude-code'
 import { aliasesById, aliasLine, type AliasRegistry } from './aliases'
 import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
 import { MARK, REPRODUCIBLE_TOOLS, rowChars, totalChars, touchedBy, type QueuedEdit } from './edits'
-import type { Queue, Read } from './queue'
+import type { Queue } from './queue'
+import type { Change, Read } from './store'
 import { telemetry, tokensText, type RegistryUpdate, type UsageInfo } from './stages'
 import { dropLastApply, isActive, resolveTarget, type HintState, type TagRegistry } from './tags'
 
@@ -80,11 +81,13 @@ export type HintIO = {
   api?: () => Promise<readonly unknown[]>
   // [SP_CTX_02_38] the main loop's model, for CostRatios; absent: the default
   model?: () => Promise<string | undefined>
-  // a new calibration, in the background ([SP_CTX_02_34])
-  updateRegistry?: RegistryUpdate
-  // on the registry chain: `change` sees the registry as read then; undefined
-  // writes nothing; resolves true when written
-  updateTags: (change: (read: Read<TagRegistry>) => TagRegistry | undefined) => Promise<boolean>
+  // on the registry chain, an Update port ([SP_CTX_01_07]): a new
+  // calibration ([SP_CTX_02_34]); the hint never waits for it
+  updateTags?: RegistryUpdate
+  // on the registry chain, the Change contract ([SP_CTX_01_07]): `change`
+  // sees the registry as read then; undefined writes nothing; resolves true
+  // when written
+  changeTags: Change<TagRegistry>
 }
 
 // One candidate: an active review tag whose target is in the conversation and
@@ -328,9 +331,19 @@ async function costContext(io: HintIO): Promise<{ api: readonly unknown[]; ratio
 // The conversation by the breakdown (the Messages row), else by the rows; the ratio.
 async function measure(io: HintIO, rows: readonly SessionMessage[], reg: TagRegistry): Promise<{ conversation: number; ratio: number }> {
   // [SP_CTX_02_28] the Messages row; lastApply stays for the agent's own telemetry
-  const t = await telemetry(rows, dropLastApply(reg), io.usage, io.updateRegistry)
+  const t = await telemetry(rows, dropLastApply(reg), io.usage, inBackground(io.updateTags))
   const ratio = t.ratio ?? reg.charsPerToken ?? PLAIN_RATIO
   return { conversation: t.measure === 'messages' ? t.conversation! : Math.round(totalChars(rows) / ratio), ratio }
+}
+
+// [SP_CTX_02_34] A calibration the hint does not wait for: queued on the
+// registry chain, its failure dropped.
+function inBackground(update: RegistryUpdate | undefined): RegistryUpdate | undefined {
+  if (!update) return undefined
+  return change => {
+    void update(change).catch(() => undefined)
+    return Promise.resolve()
+  }
 }
 
 // A rough sum of what the candidates free, before the breakdown is read.
@@ -342,7 +355,7 @@ function roughFreed(found: readonly Candidate[], ratio: number): number {
 async function claim(io: HintIO, seen: HintState | undefined, next: HintState, d: Deadline): Promise<'claimed' | 'late' | 'taken'> {
   let late = false
   const written = await io
-    .updateTags(read => {
+    .changeTags(read => {
       if (d.expired) {
         late = true
         return undefined
@@ -367,7 +380,7 @@ async function sizeCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outco
   // a handoff came between; counting starts again from here
   if (state?.tokens !== undefined && tokens !== undefined && tokens < state.tokens) {
     memo.checked = undefined
-    void io.updateTags(read => withHint(read, state, { tokens, marks: next })).catch(() => undefined)
+    void io.changeTags(read => withHint(read, state, { tokens, marks: next })).catch(() => undefined)
     return { outcome: 'shrunk' }
   }
   if (tokens === undefined) return { outcome: 'no-size' }
@@ -405,7 +418,7 @@ async function turnCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outco
   // a check that proposes nothing consumes the run: the next turn needs a new one
   const settle = (outcome: HintOutcome): Outcome => {
     const keep = { ...(state?.tokens !== undefined ? { tokens: state.tokens } : {}), ...(state?.proposed !== undefined ? { proposed: state.proposed } : {}) }
-    void io.updateTags(read => withHint(read, state, { ...keep, marks: next })).catch(() => undefined)
+    void io.changeTags(read => withHint(read, state, { ...keep, marks: next })).catch(() => undefined)
     return { outcome }
   }
   const { rows, found } = await batch(io, reg, aliases)

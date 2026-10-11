@@ -20,7 +20,8 @@ import {
   type DeliveryIO,
   type QueuedDelivery,
 } from '../hooks/deliveries'
-import { MAX_QUEUE_BYTES, type Read } from '../hooks/queue'
+import { MAX_QUEUE_BYTES } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 
 import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
 import { result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
@@ -50,6 +51,7 @@ function fakeIO(start: Read<Deliveries>) {
     quarantine: async () => {
       log.quarantined++
       log.file = missingRead({ items: [] })
+      return '/s/deliveries.json.bad-1'
     },
   }
   return { io, log }
@@ -144,6 +146,12 @@ test('RecordDelivery — межі: a long text is cut, the oldest item goes past
   await recordDelivery(c.io, item('d', ['a']), MAX_QUEUE_BYTES)
   expect(c.log.quarantined).toBe(1)
   expect(c.log.file.state === 'ok' && c.log.file.value.items.length).toBe(1)
+  // [PL_AUD_CTX_P7] a file that cannot be moved aside is never overwritten
+  const stuck = fakeIO(unreadableRead('not JSON'))
+  stuck.io.quarantine = async () => undefined
+  await recordDelivery(stuck.io, item('d', ['a']), MAX_QUEUE_BYTES)
+  expect(stuck.log.writes).toBe(0)
+  expect(stuck.log.file.state).toBe('unreadable')
   expect(parseDeliveries('{"items":[{"uuid":1}]}').state).toBe('unreadable')
   expect(parseDeliveries('[]').state).toBe('unreadable')
 })

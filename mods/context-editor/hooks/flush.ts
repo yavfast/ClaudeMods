@@ -4,7 +4,8 @@
 // `$.command.run('compact')` reaches its own handlers. Free of the host:
 // register.ts binds FlushIO to `$`.
 import { MARKER } from './compaction'
-import { DEFAULT_RESUME, resumeText, type Queue, type Read } from './queue'
+import { DEFAULT_RESUME, resumeText, type Queue } from './queue'
+import type { Read, Update } from './store'
 import { optimizeText } from './stages'
 import type { TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
@@ -15,10 +16,11 @@ export const FLUSH_DELAY_MS = 300
 export type FlushIO = {
   // the queue of the current session; `unreadable` too when there is no storage
   readQueue: () => Promise<Read<Queue>>
-  // [SP_CTX_02_06] on the queue's serial chain: `change` sees the queue as it
-  // is then; undefined writes nothing. True once written; false for an
-  // unreadable queue or no change. A failed write rejects.
-  updateQueue: (change: (q: Queue) => Queue | undefined) => Promise<boolean>
+  // [SP_CTX_02_06] on the queue's serial chain, the Update contract
+  // ([SP_CTX_01_07]): `change` sees the queue as it is then; undefined writes
+  // nothing. True once written; false for an unreadable queue, no storage or
+  // no change. A failed write rejects.
+  updateQueue: Update<Queue>
   // the tag registry: Optimize reads only the block's name from it
   readTags: () => Promise<Read<TagRegistry>>
   // runs the built-in /compact with `args`, once; rejects with the host's text

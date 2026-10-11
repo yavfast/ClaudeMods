@@ -26,14 +26,14 @@ import {
   type MediaRef,
   type QueuedEdit,
 } from './edits'
-import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
+import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
-import { storageRefusal, type StorageState } from './store'
+import { storageRefusal, type ChangeFn, type Read, type StorageState } from './store'
 
 export { ROW_WINDOW }
 
@@ -515,9 +515,10 @@ export type HandoffIO = {
   // [SP_CTX_02_15] the storage of the current session, prepared for it
   storage: () => Promise<StorageState>
   readQueue: (dir: string) => Promise<Read<Queue>>
-  // a read-modify-write of the queue in `dir`: `change` gets the queue as it
-  // is then; undefined writes nothing; a failed write rejects
-  updateQueue: (dir: string, change: (read: Read<Queue>) => Queue | undefined | Promise<Queue | undefined>) => Promise<void>
+  // the queue in `dir` on its chain, the Change contract ([SP_CTX_01_07]):
+  // `change` gets the queue as it is then, unreadable too; undefined writes
+  // nothing; true once written; a failed write rejects
+  changeQueue: (dir: string, change: ChangeFn<Queue>) => Promise<boolean>
   // [SP_CTX_02_18] the whole transcript and CurrentRows, a suffix of it
   view: () => Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[] }>
   readApi: () => Promise<readonly unknown[]>
@@ -526,7 +527,7 @@ export type HandoffIO = {
   // [SP_CTX_01_22] the deliveries recorded in `dir`, on their chain; absent: none
   readDeliveries?: (dir: string) => Promise<Read<Deliveries>>
   // the same for the tag registry in `dir`
-  updateTagsAt: (dir: string, change: (read: Read<TagRegistry>) => TagRegistry | undefined) => Promise<void>
+  changeTags: (dir: string, change: ChangeFn<TagRegistry>) => Promise<boolean>
   // ids of the folders `<dir>/<id>` that hold a seed.json
   listSeeds: (dir: string) => Promise<number[]>
   writeMedia: (path: string, base64: string) => Promise<boolean>
@@ -582,7 +583,7 @@ function dropped(run: Run): string {
 }
 
 async function updateOld(run: Run, change: (q: Queue) => Queue): Promise<void> {
-  await run.io.updateQueue(run.oldDir, read => {
+  await run.io.changeQueue(run.oldDir, read => {
     if (read.state === 'unreadable') throw new Error(`the queue of ${run.old} cannot be read (${read.reason})`)
     return change(read.value)
   })
@@ -666,7 +667,7 @@ async function deliver(
   if (queueOnly || movedSince(io.turns, turnsClear)) {
     const st = await io.storage()
     if ('reason' in st) throw new Error(`the storage of this session is unavailable: ${st.reason}`)
-    await io.updateQueue(st.dir, read => {
+    await io.changeQueue(st.dir, read => {
       if (read.state === 'unreadable') throw new Error(`the queue of this session cannot be read (${read.reason})`)
       return withReport(read.value, text, io.now())
     })
@@ -881,7 +882,7 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
     await step('pin', async () => {
       let note = ''
       try {
-        await io.updateTagsAt(newDir, read => {
+        await io.changeTags(newDir, read => {
           const out = pinSummary(read, first)
           if ('registry' in out) return out.registry
           note = out.note
@@ -1073,7 +1074,7 @@ export async function runHandoff(io: HandoffIO, mem: HandoffMemory, turns0: numb
     if ('reason' in st) return 'nothing'
     const oldDir = st.dir
     const got: { claim?: { q: Queue; h: HandoffRequest } } = {}
-    await io.updateQueue(oldDir, async read => {
+    await io.changeQueue(oldDir, async read => {
       if (read.state === 'unreadable' || !dueIgnoringFlight(read.value, io.now())) return undefined
       const q = read.value
       const h = q.handoff!
@@ -1183,7 +1184,7 @@ export async function dropRequest(io: HandoffIO, mem: HandoffMemory, why: string
   const st = await io.storage()
   if ('reason' in st) return false
   let done = false
-  await io.updateQueue(st.dir, read => {
+  await io.changeQueue(st.dir, read => {
     if (read.state === 'unreadable' || !read.value.handoff || (onlyBy && read.value.handoff.by !== onlyBy)) return undefined
     const next = cancelHandoff(read.value, why, io.now(), mem.inFlight)
     if (next === read.value) return undefined
@@ -1219,7 +1220,7 @@ export async function requestHandoff(
   if ('reason' in st) return { code: 'DENIED_STORAGE', deny: storageRefusal(st.reason) }
   let out: { mode: HandoffRequest['mode'] } | { deny: string; code: HandoffDeny } = { code: 'DENIED_QUEUE', deny: 'the queue was not written.' }
   try {
-    await io.updateQueue(st.dir, read => {
+    await io.changeQueue(st.dir, read => {
       if (read.state === 'unreadable') {
         out = { code: 'DENIED_QUEUE', deny: `the queue cannot be read (${read.reason}).` }
         return undefined

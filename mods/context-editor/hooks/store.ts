@@ -144,3 +144,248 @@ export async function ensureStorage(mem: StorageMemory, io: PrepareIO): Promise<
   if (mem.sessionId === id && !mem.inFlight.has(id)) return { ...mem.state, sessionId: id }
   return prepareStorage(mem, io, id)
 }
+
+// ---- [SP_CTX_01_07] [SP_CTX_02] [PL_AUD_CTX_P7] The storage port: the files
+// of the storage, their read states, one read-modify-write contract, and the
+// serial chains with their lock order. Pure: register.ts binds FileIO to
+// `$.fs` once (CF-15).
+
+// [SP_CTX_01_04] [SP_CTX_01_07] The state of a storage file once read:
+// missing (no file: its default value), ok, or unreadable (it cannot be read
+// or parsed, or a field breaks its constraints); unreadable is never silently
+// a default.
+export type Read<T> = { state: 'missing' | 'ok'; value: T } | { state: 'unreadable'; reason: string }
+
+// A read that has a value: missing or ok.
+export type Readable<T> = Extract<Read<T>, { value: T }>
+
+// The size of `value` in bytes, as a storage file holds it (JSON, UTF-8).
+export function bytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length
+}
+
+// An integer of at least `min`.
+export function isCount(v: unknown, min = 0): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= min
+}
+
+// [SP_CTX_01_07] The parse prologue every storage file shares: JSON, then an
+// object; the parser checks its fields after it.
+export function jsonObject(text: string): { state: 'ok'; value: Record<string, unknown> } | { state: 'unreadable'; reason: string } {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch (err) {
+    return { state: 'unreadable', reason: `not JSON: ${String(err)}` }
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
+  return { state: 'ok', value: raw as Record<string, unknown> }
+}
+
+// [SP_CTX_01_19] [SP_CTX_01_22] The newest items of a capped list: the oldest
+// go while there are more than `maxItems` or the file (`frame` gives its
+// value from the items) would exceed `maxBytes`. The same array when nothing goes.
+export function trimOldest<I>(items: I[], maxItems: number, maxBytes: number, frame: (items: I[]) => unknown = i => i): I[] {
+  let kept = items
+  if (kept.length > maxItems) kept = kept.slice(kept.length - maxItems)
+  while (kept.length && bytes(frame(kept)) > maxBytes) kept = kept.slice(1)
+  return kept
+}
+
+// ---- [SP_CTX_02] The serial chains
+
+// [SP_CTX_02] One serial chain per kind of storage file: no two
+// read-modify-writes of one file overlap. A chain is shared by the storages
+// of every session.
+export type ChainKey = 'queue' | 'tags' | 'aliases' | 'deliveries' | 'journal'
+
+// [SP_CTX_02] The lock order: a chain nests only inside chains of a lower
+// rank, queue → tags → aliases → deliveries | journal (deliveries and the
+// journal never nest in each other).
+export const CHAIN_RANK: Readonly<Record<ChainKey, number>> = { queue: 1, tags: 2, aliases: 3, deliveries: 4, journal: 4 }
+
+// The chains a piece of work holds while it runs, and where an order problem
+// of a chain nested in it goes.
+export type Held = { readonly keys: readonly ChainKey[]; readonly report?: (problem: string) => void }
+
+export const NOT_HELD: Held = { keys: [] }
+
+// How a chain is entered: inside the chains `within` holds (the order is
+// checked against them), and where an order problem goes (else the holder's).
+export type Nest = { within?: Held; report?: (problem: string) => void }
+
+// [SP_CTX_02] The order problem of entering `key` inside `within`, or
+// undefined: the rank of `key` must be above every rank held.
+export function lockOrder(key: ChainKey, within: Held): string | undefined {
+  let top: ChainKey | undefined
+  for (const k of within.keys) if (top === undefined || CHAIN_RANK[k] >= CHAIN_RANK[top]) top = k
+  if (top === undefined || CHAIN_RANK[key] > CHAIN_RANK[top]) return undefined
+  return `context-editor: chain order: "${key}" (rank ${CHAIN_RANK[key]}) entered inside "${top}" (rank ${CHAIN_RANK[top]}); the order is queue → tags → aliases → deliveries | journal`
+}
+
+// Runs `work` once every earlier work on the chain `key` settled; it gets
+// the chains it holds. A failed work rejects its caller only: the chain goes on.
+export type Chains = <T>(key: ChainKey, work: (held: Held) => Promise<T>, nest?: Nest) => Promise<T>
+
+// [SP_CTX_02] [PL_AUD_CTX_P7] The serial chains of one module instance. An
+// order problem goes to the report and never throws: the work still runs (a
+// chain entered inside itself then waits forever, as before the check).
+export function serialChains(): Chains {
+  const tails = new Map<ChainKey, Promise<unknown>>()
+  return <T>(key: ChainKey, work: (held: Held) => Promise<T>, nest: Nest = {}): Promise<T> => {
+    const within = nest.within ?? NOT_HELD
+    const report = nest.report ?? within.report
+    const problem = lockOrder(key, within)
+    if (problem)
+      try {
+        report?.(problem)
+      } catch {
+        // a failed report never breaks the work
+      }
+    const held: Held = { keys: [...within.keys, key], ...(report ? { report } : {}) }
+    const run = () => work(held)
+    const next = (tails.get(key) ?? Promise.resolve()).then(run, run)
+    tails.set(key, next.catch(() => undefined))
+    return next
+  }
+}
+
+// A store's chain: its work runs on it, inside the chains `within` holds.
+export type Lock = <R>(work: (held: Held) => Promise<R>, within?: Held) => Promise<R>
+
+// A store without a chain: its work runs at once (tests, a caller that holds the chain).
+export const NO_LOCK: Lock = work => work(NOT_HELD)
+
+// ---- [SP_CTX_01_07] The store of one storage file
+
+// [PL_AUD_CTX_P7] What a storage file needs from the host; register.ts binds
+// it to `$` once.
+export type FileIO = {
+  exists: (path: string) => Promise<boolean>
+  read: (path: string) => Promise<string>
+  write: (path: string, text: string) => Promise<void>
+  // moves `from` to `to`; false when it could not
+  move: (from: string, to: string) => Promise<boolean>
+  now: () => number
+}
+
+// [SP_CTX_01_07] What Update does with an unreadable file: 'skip' leaves it
+// and calls no change; 'change' passes the unreadable read to the change;
+// 'quarantine' moves it aside and changes the default value, as if missing;
+// when the move fails, it calls no change and writes nothing.
+export type OnUnreadable = 'skip' | 'change' | 'quarantine'
+
+export type UpdateOptions<U extends OnUnreadable> = {
+  onUnreadable?: U
+  // a change that returns the very value read writes nothing
+  skipUnchanged?: boolean
+  // the chains the caller holds: the store's chain nests inside them
+  within?: Held
+}
+
+// The read a change sees: every state with 'change', else one with a value.
+export type Seen<T, U extends OnUnreadable> = U extends 'change' ? Read<T> : Readable<T>
+
+export type Store<T> = {
+  readonly path: string
+  // [SP_CTX_01_07] missing, ok, or unreadable (a failed read or parse); a
+  // failed existence check rejects
+  read: () => Promise<Read<T>>
+  // a failed write rejects
+  write: (value: T) => Promise<void>
+  // moves the file aside to `<path>.bad-<ms>`; the new path, or undefined
+  quarantine: () => Promise<string | undefined>
+  // `work` on the file's chain
+  onChain: Lock
+  // [SP_CTX_01_07] The one read-modify-write, on the file's chain: read,
+  // change, write. `change` returns the new value, or undefined to write
+  // nothing; resolves true once written. A failed read, change or write rejects.
+  update: <U extends OnUnreadable = 'skip'>(change: (read: Seen<T, U>) => T | undefined | Promise<T | undefined>, opts?: UpdateOptions<U>) => Promise<boolean>
+}
+
+// [SP_CTX_01_07] [PL_AUD_CTX_P7] A JSON storage file at `path`: `empty` gives
+// its value when missing, `parse` its read state from the text. `lock` is its
+// serial chain; `written` runs after each write of this store.
+export function jsonFile<T>(
+  fs: FileIO,
+  path: string,
+  empty: () => T,
+  parse: (text: string) => Read<T>,
+  opts: { lock?: Lock; written?: (value: T) => void } = {},
+): Store<T> {
+  const lock = opts.lock ?? NO_LOCK
+  const read = async (): Promise<Read<T>> => {
+    if (!(await fs.exists(path))) return { state: 'missing', value: empty() }
+    try {
+      return parse(await fs.read(path))
+    } catch (err) {
+      return { state: 'unreadable', reason: String(err) }
+    }
+  }
+  const write = async (value: T): Promise<void> => {
+    await fs.write(path, JSON.stringify(value))
+    opts.written?.(value)
+  }
+  const quarantine = async (): Promise<string | undefined> => {
+    const moved = `${path}.bad-${fs.now()}`
+    return (await fs.move(path, moved).catch(() => false)) ? moved : undefined
+  }
+  const update = <U extends OnUnreadable = 'skip'>(change: (read: Seen<T, U>) => T | undefined | Promise<T | undefined>, o: UpdateOptions<U> = {}): Promise<boolean> =>
+    lock(async () => {
+      let now = await read()
+      if (now.state === 'unreadable') {
+        const mode: OnUnreadable = o.onUnreadable ?? 'skip'
+        if (mode === 'skip') return false
+        if (mode === 'quarantine') {
+          // a file that could not be moved aside is never overwritten
+          if ((await quarantine()) === undefined) return false
+          now = { state: 'missing', value: empty() }
+        }
+      }
+      const next = await change(now as Seen<T, U>)
+      if (next === undefined) return false
+      if (o.skipUnchanged && now.state !== 'unreadable' && next === now.value) return false
+      await write(next)
+      return true
+    }, o.within)
+  return { path, read, write, quarantine, onChain: lock, update }
+}
+
+// ---- [PL_AUD_CTX_P7] The two read-modify-write contracts of the ports
+
+// [SP_CTX_01_07] Update: `change` sees the value (the default when missing);
+// an unreadable file is left alone and `change` is not called. A change that
+// returns undefined or the value as read writes nothing. Resolves true once
+// written; a failed write rejects.
+export type Update<T> = (change: (value: T) => T | undefined) => Promise<boolean>
+
+// [SP_CTX_01_07] Change: `change` sees the read state, unreadable too, and
+// decides; otherwise as Update.
+export type Change<T> = (change: ChangeFn<T>) => Promise<boolean>
+
+// The change a Change port runs: the new value, or undefined to write nothing.
+export type ChangeFn<T> = (read: Read<T>) => T | undefined | Promise<T | undefined>
+
+// The Update port of `store`.
+export function updateOf<T>(store: Store<T>, within?: Held): Update<T> {
+  return change => store.update(read => change(read.value), { skipUnchanged: true, ...(within ? { within } : {}) })
+}
+
+// The Change port of `store`.
+export function changeOf<T>(store: Store<T>, within?: Held): Change<T> {
+  return change => store.update<'change'>(change, { onUnreadable: 'change', skipUnchanged: true, ...(within ? { within } : {}) })
+}
+
+// [SP_CTX_02_21] One file into the storage of another session, on its chain:
+// read in `from`, changed, written into `to`. 'missing' when `from` has none
+// (nothing written); an unreadable file (named by `name`), a throw of
+// `change` or a failed write rejects, and nothing is written.
+export function carry<T>(from: Store<T>, to: Store<T>, change: (value: T) => T, name: string): Promise<'missing' | 'carried'> {
+  return to.onChain(async () => {
+    const read = await from.read()
+    if (read.state === 'missing') return 'missing'
+    if (read.state === 'unreadable') throw new Error(`${name} of the old session cannot be read (${read.reason})`)
+    await to.write(change(read.value))
+    return 'carried'
+  })
+}

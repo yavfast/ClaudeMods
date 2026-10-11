@@ -19,8 +19,8 @@ import {
   type DeliverIO,
   type Queue,
   type QueueIO,
-  type Read,
 } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { adviceFor, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntroduced } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import type { QueuedDelivery } from '../hooks/deliveries'

@@ -24,7 +24,8 @@ import {
 import { handleCompaction } from '../hooks/compaction'
 import { boundaryOf, callLabel, listRows, prepare } from '../hooks/edits'
 import { harness } from './compaction-fixtures'
-import { EMPTY_QUEUE, queueEdits, type Queue, type Read } from '../hooks/queue'
+import { EMPTY_QUEUE, queueEdits, type Queue } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { contextTag, EMPTY_REGISTRY, type TagIO, type TagRegistry } from '../hooks/tags'
 import { missingRead, okRead, unreadableRead } from './row-fixtures'
 

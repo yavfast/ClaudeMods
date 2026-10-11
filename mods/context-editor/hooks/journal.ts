@@ -5,7 +5,8 @@
 // a small port; register.ts binds it to `$` on the journal's own chain.
 import type { SessionMessage } from 'claude-code'
 import { describeEdit, MAX_QUEUE_EDITS, touchedBy, type ApplyReport, type QueuedEdit } from './edits'
-import { MAX_QUEUE_BYTES, type Read } from './queue'
+import { MAX_QUEUE_BYTES } from './queue'
+import { isCount, jsonObject, trimOldest, type Read } from './store'
 
 // [SP_CTX_01_12]
 export const MAX_JOURNAL = 1000
@@ -19,10 +20,6 @@ export type JournalEntry =
 export type Journal = { entries: JournalEntry[] }
 
 export const EMPTY_JOURNAL: Journal = { entries: [] }
-
-function isCount(v: unknown, min: number): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= min
-}
 
 function isEntry(raw: unknown): raw is JournalEntry {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false
@@ -49,29 +46,18 @@ function isEntry(raw: unknown): raw is JournalEntry {
 // [SP_CTX_01_19] Read states as the queue's: a bad entry makes the file
 // unreadable, never silently an empty journal.
 export function parseJournal(text: string): Read<Journal> {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    return { state: 'unreadable', reason: `not JSON: ${String(err)}` }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
-  const entries = (raw as { entries?: unknown }).entries
+  const raw = jsonObject(text)
+  if (raw.state === 'unreadable') return raw
+  const entries = raw.value.entries
   if (!Array.isArray(entries) || entries.length > MAX_JOURNAL) return { state: 'unreadable', reason: 'bad field(s): entries' }
   const bad = entries.findIndex(e => !isEntry(e))
   return bad >= 0 ? { state: 'unreadable', reason: `bad entry ${bad + 1}` } : { state: 'ok', value: { entries } }
 }
 
-function bytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
-}
-
 // [SP_CTX_02_31] Trim: the oldest entries go while there are more than
 // MAX_JOURNAL or the file would exceed MAX_QUEUE_BYTES.
 export function trimJournal(j: Journal): Journal {
-  let entries = j.entries
-  if (entries.length > MAX_JOURNAL) entries = entries.slice(entries.length - MAX_JOURNAL)
-  while (entries.length && bytes({ entries }) > MAX_QUEUE_BYTES) entries = entries.slice(1)
+  const entries = trimOldest(j.entries, MAX_JOURNAL, MAX_QUEUE_BYTES, e => ({ entries: e }))
   return entries === j.entries ? j : { entries }
 }
 
@@ -137,8 +123,8 @@ export function journalSummary(read: Read<Journal>): JournalSummary {
   }
 }
 
-// What the journal needs from the host; register.ts binds it to `$` and runs
-// each change on the journal's serial chain.
+// What the journal needs from the host: a part of the journal's Store
+// ([SP_CTX_01_07]); register.ts runs each change on the journal's serial chain.
 export type JournalIO = {
   read: () => Promise<Read<Journal>>
   write: (j: Journal) => Promise<void>

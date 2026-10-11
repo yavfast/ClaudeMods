@@ -24,7 +24,8 @@ import {
   type Proposal,
 } from '../hooks/hints'
 import { costRatios } from '../hooks/cache'
-import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
+import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { MESSAGES_ROW, type UsageInfo } from '../hooks/stages'
 import { EMPTY_REGISTRY, parseRegistry, type HintState, type Tag, type TagRegistry } from '../hooks/tags'
 import { missingRead, okRead, unreadableRead } from './row-fixtures'
@@ -120,12 +121,12 @@ function harness(s: Setup, over: Partial<HintIO> = {}) {
         },
       }
     },
-    updateRegistry: async change => {
+    updateTags: async change => {
       log.calibrations++
       log.reg = change(log.reg)
     },
-    updateTags: async change => {
-      const next = change(okRead(log.reg))
+    changeTags: async change => {
+      const next = await change(okRead(log.reg))
       if (!next) return false
       log.writes++
       log.reg = next
@@ -167,6 +168,18 @@ test('SoftHint — розмір, вигідно: a line of its own names the act
   // the state of this suggestion: the request now and the alias count
   expect(log.reg.hint).toEqual({ tokens: 240_000, marks: 6, proposed: 37_500 })
   expect(log.usage).toBe(1)
+})
+
+test('SoftHint — калібрування у фоні: a new calibration is queued on the registry chain, and the hint never waits for it ([PL_AUD_CTX_P7])', async () => {
+  let asked = 0
+  const { io } = harness(setup(WORTH), {
+    updateTags: () => {
+      asked++
+      return new Promise<never>(() => undefined)
+    },
+  })
+  expect((await softHint(io, newHintMemo())).outcome).toBe('hint')
+  expect(asked).toBe(1)
 })
 
 test('SoftHint — глибоко: an earliest output beyond the lookback rewrites the whole conversation; the verdict weighs that', async () => {
@@ -413,7 +426,7 @@ test('SoftHint — паралельний виклик: a state changed since th
   const { io, log } = harness(setup(WORTH))
   const taken: HintIO = {
     ...io,
-    updateTags: async change => change(okRead({ ...log.reg, hint: { tokens: 240_000, marks: 6 } })) !== undefined,
+    changeTags: async change => (await change(okRead({ ...log.reg, hint: { tokens: 240_000, marks: 6 } }))) !== undefined,
   }
   expect((await softHint(taken, newHintMemo())).outcome).toBe('not-claimed')
 })
@@ -436,8 +449,8 @@ test('Bounded — строк: a suggestion later than its deadline is dropped an
   const sleeping = new Promise<void>(r => (endSleep = r))
   const claimed: HintIO = {
     ...fast.io,
-    updateTags: async change => {
-      const ok = await fast.io.updateTags(change)
+    changeTags: async change => {
+      const ok = await fast.io.changeTags(change)
       endSleep()
       await settle()
       return ok
@@ -466,9 +479,9 @@ test('SoftHint — строк минув під час claim: the deadline expir
   const memo = newHintMemo()
   const late: HintIO = {
     ...size.io,
-    updateTags: async change => {
+    changeTags: async change => {
       d.expired = true
-      return size.io.updateTags(change)
+      return size.io.changeTags(change)
     },
   }
   expect((await softHint(late, memo, d)).outcome).toBe('expired')
@@ -480,10 +493,10 @@ test('SoftHint — строк минув під час claim: the deadline expir
   let calls = 0
   const lateTurn: HintIO = {
     ...turn.io,
-    updateTags: async change => {
+    changeTags: async change => {
       // the claim sees the deadline gone; the settle after it writes the consumed run
       if (calls++ === 0) t.expired = true
-      return turn.io.updateTags(change)
+      return turn.io.changeTags(change)
     },
   }
   expect((await turnSuggestion(lateTurn, newHintMemo(), t)).outcome).toBe('expired')
@@ -492,10 +505,10 @@ test('SoftHint — строк минув під час claim: the deadline expir
   expect(turn.log.reg.hint).toEqual({ marks: 6 })
 })
 
-test('SoftHint — claim не записано: updateTags rejects: no line, outcome not-claimed on either channel; the size check is not throttled for it', async () => {
+test('SoftHint — claim не записано: changeTags rejects: no line, outcome not-claimed on either channel; the size check is not throttled for it', async () => {
   for (const check of [softHint, turnSuggestion]) {
     const { io, log } = harness(setup(WORTH))
-    const failing: HintIO = { ...io, updateTags: async () => Promise.reject(new Error('disk full')) }
+    const failing: HintIO = { ...io, changeTags: async () => Promise.reject(new Error('disk full')) }
     const memo = newHintMemo()
     const d = { expired: false, claimed: false }
     const out = await check(failing, memo, d)

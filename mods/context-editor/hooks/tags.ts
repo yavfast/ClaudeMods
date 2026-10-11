@@ -25,7 +25,7 @@ import {
   type QueuedEdit,
   type RefResolver,
 } from './edits'
-import { MAX_QUEUE_BYTES, personTagWarning, queueBytes, type Queue, type Read } from './queue'
+import { MAX_QUEUE_BYTES, personTagWarning, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
 import {
   carrierRow,
@@ -45,7 +45,7 @@ import {
   type Stage,
 } from './stages'
 import { badNoteFields, type Note } from './notes'
-import { storageRefusal } from './store'
+import { bytes, isCount, jsonObject, storageRefusal, type Read } from './store'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
@@ -110,10 +110,6 @@ const KINDS: readonly string[] = ['pin', 'disposable', 'review', 'state']
 // stream-json files the person's prompt rows as `unclassified`, not `sdk`
 const HUMAN: readonly string[] = ['composer', 'bridge', 'sdk', 'unclassified']
 
-function isCount(v: unknown, min: number): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= min
-}
-
 // [SP_CTX_01_09] Every field of one stored tag, by type and constraint.
 function isTag(raw: unknown): raw is Tag {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return false
@@ -176,14 +172,9 @@ function isLastApply(v: unknown): boolean {
 // [SP_CTX_01_10] Read states as the queue's: a wrong field, tag, stage,
 // closed block or note makes the whole file unreadable, never silently an empty registry.
 export function parseRegistry(text: string): Read<TagRegistry> {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    return { state: 'unreadable', reason: `not JSON: ${String(err)}` }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
-  const reg = { ...EMPTY_REGISTRY, ...(raw as Partial<TagRegistry>) }
+  const raw = jsonObject(text)
+  if (raw.state === 'unreadable') return raw
+  const reg = { ...EMPTY_REGISTRY, ...(raw.value as Partial<TagRegistry>) }
   const bad = [
     !Array.isArray(reg.tags) && 'tags',
     !isCount(reg.turn, 0) && 'turn',
@@ -199,10 +190,6 @@ export function parseRegistry(text: string): Read<TagRegistry> {
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badTag = reg.tags.findIndex(t => !isTag(t))
   return badTag >= 0 ? { state: 'unreadable', reason: `bad tag ${badTag + 1}` } : { state: 'ok', value: reg }
-}
-
-function bytes(value: unknown): number {
-  return new TextEncoder().encode(JSON.stringify(value)).length
 }
 
 // [SP_CTX_01_09] A row target and a range target are one target by the
@@ -873,7 +860,7 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const { queued } = prepare(rows, tagEdits(rows, fresh), undefined, pinnedTargets(rows, tags.value))
   if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return NOTHING
   const next: Queue = { ...q, edits: [...q.edits, ...queued], tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
-  if (queueBytes(next) > MAX_QUEUE_BYTES) return NOTHING
+  if (bytes(next) > MAX_QUEUE_BYTES) return NOTHING
   try {
     await io.writeQueue(next)
   } catch {

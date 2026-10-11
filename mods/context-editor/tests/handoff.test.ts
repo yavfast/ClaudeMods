@@ -50,7 +50,8 @@ import {
   type SeedInput,
   type SeedIO,
 } from '../hooks/handoff'
-import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
+import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, MAX_TAGS, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted } from '../hooks/turns'
 import type { QueuedDelivery } from '../hooks/deliveries'
@@ -731,13 +732,13 @@ function host(o: HostOpts = {}) {
     },
     readQueue: async d => read(s.queues.get(d), { ...EMPTY_QUEUE }),
     // one serial chain, as register.ts binds it
-    updateQueue: (d, change) => {
+    changeQueue: (d, change) => {
       const next = chain.then(async () => {
         const q = await change(read(s.queues.get(d), { ...EMPTY_QUEUE }))
-        if (q) {
-          s.log.push(`queue ${d}`)
-          s.queues.set(d, q)
-        }
+        if (!q) return false
+        s.log.push(`queue ${d}`)
+        s.queues.set(d, q)
+        return true
       })
       chain = next.catch(() => undefined)
       return next
@@ -749,12 +750,12 @@ function host(o: HostOpts = {}) {
     },
     readApi: async () => (s.session === 'old' ? (o.api ?? api()) : []),
     readTags: async () => read(s.tags.get(dir()), { ...EMPTY_REGISTRY }),
-    updateTagsAt: async (d, change) => {
-      const next = change(read(s.tags.get(d), { ...EMPTY_REGISTRY, tags: [] }))
-      if (next) {
-        s.log.push(`tags ${d}`)
-        s.tags.set(d, next)
-      }
+    changeTags: async (d, change) => {
+      const next = await change(read(s.tags.get(d), { ...EMPTY_REGISTRY, tags: [] }))
+      if (!next) return false
+      s.log.push(`tags ${d}`)
+      s.tags.set(d, next)
+      return true
     },
     listSeeds: async d =>
       [...s.files.keys()].flatMap(p => {
@@ -1132,8 +1133,8 @@ test('RunHandoff — сесія змінилась, і FailAfterClear падає
     await run(c, a)
   }
   let failWrites = 0
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) =>
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) =>
     update(d, async r => {
       const next = await change(r)
       if (d === '/s/old' && next?.report?.includes('after the session was cleared')) {
@@ -1421,10 +1422,11 @@ test('RunHandoff — покинутий запуск із засівом: runnin
 test('RunHandoff claims once: of two runs at the same time one finds nothing; the claim stamps owner', async () => {
   const { io, s } = host()
   let owner: string | undefined
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) => {
-    await update(d, change)
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) => {
+    const wrote = await update(d, change)
     owner ??= s.queues.get('/s/old')!.handoff?.owner
+    return wrote
   }
   const [a, b] = await Promise.all([runHandoff(io, s.mem, 0), runHandoff(io, s.mem, 0)])
   expect([a, b].filter(o => o === 'nothing').length).toBe(1)
@@ -1473,8 +1475,8 @@ test('RunHandoff — Fail кидає до /clear: one attempt, no retry; a toast
     throw new Error('refused')
   }
   let failWrites = 0
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) =>
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) =>
     update(d, async r => {
       const next = await change(r)
       if (next?.report?.includes('handoff failed')) {
@@ -1523,8 +1525,8 @@ test('RunHandoff — виняток усередині AfterClear: caught there;
     await run(c, a)
   }
   let failWrites = 0
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) =>
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) =>
     update(d, async r => {
       const next = await change(r)
       if (d === '/s/old' && next?.report?.includes('after the session was cleared')) {
@@ -1542,8 +1544,8 @@ test('RunHandoff — виняток усередині AfterClear: caught there;
 
 test('RunHandoff — HandedOff падає після /clear, document: the document is still delivered; the toast names HandedOff and the running request; outcome document', async () => {
   const { io, s, oldQueue } = host({ h: { mode: 'document', document: 'doc' } })
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) =>
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) =>
     update(d, async r => {
       const next = await change(r)
       if (next?.report?.includes('handed off to')) throw new Error('disk full')
@@ -1563,8 +1565,8 @@ test('RunHandoff — HandedOff падає після /clear, document: the docum
 
 test('RunHandoff — запис старої черги після засіву не вдався: seeded, the report and resume delivered; the toast names HandedOff and the running request', async () => {
   const { io, s } = host()
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) =>
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) =>
     update(d, async r => {
       const next = await change(r)
       if (d === '/s/old' && next?.report?.includes('handed off to')) throw new Error('disk full')
@@ -1576,7 +1578,7 @@ test('RunHandoff — запис старої черги після засіву 
     'context-editor: seeded the new session, but step HandedOff failed: disk full. The old session old still holds a running handoff request; run /handoff cancel there.',
   )
   // the old session resumed later, past HANDOFF_STALE: its claim sees this run's seed.json and drops the request, no second handoff
-  io.updateQueue = update
+  io.changeQueue = update
   s.session = 'old'
   s.now += HANDOFF_STALE_MS + 1
   const commands = s.commands.length
@@ -1721,8 +1723,12 @@ test('Deliver — лише в черзі, сховище недоступне: s
 
 test('Deliver — лише в черзі, нова черга нечитабельна: seeded with resume false; the report is lost, a toast names the step; nothing written into the new queue', async () => {
   const { io, s } = host({ h: { resume: false } })
-  const update = io.updateQueue
-  io.updateQueue = async (d, change) => (d === '/s/new' ? void (await change(unreadableRead('bad json'))) : update(d, change))
+  const update = io.changeQueue
+  io.changeQueue = async (d, change) => {
+    if (d !== '/s/new') return update(d, change)
+    await change(unreadableRead('bad json'))
+    return false
+  }
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
   expect(s.submitted).toEqual([])
   expect(s.queues.has('/s/new')).toBe(false)
@@ -1751,8 +1757,12 @@ const breakNewStorage = (h: ReturnType<typeof host>) => {
   h.io.storage = async () => (h.s.session === 'new' ? { reason: 'HOME is not set' } : storage())
 }
 const breakNewQueue = (h: ReturnType<typeof host>) => {
-  const update = h.io.updateQueue
-  h.io.updateQueue = async (d, change) => (d === '/s/new' ? void (await change(unreadableRead('bad json'))) : update(d, change))
+  const update = h.io.changeQueue
+  h.io.changeQueue = async (d, change) => {
+    if (d !== '/s/new') return update(d, change)
+    await change(unreadableRead('bad json'))
+    return false
+  }
 }
 const DOC_COPY = `/s/old/${NOW}/document.txt`
 
@@ -1787,10 +1797,11 @@ test('DocumentWay — хід між /clear і Deliver, шлях черги па�
   const h = host({ h: { mode: 'document', document: 'my handoff' } })
   breakNewStorage(h)
   // a turn starts in the new session right after HandedOff
-  const update = h.io.updateQueue
-  h.io.updateQueue = async (d, change) => {
-    await update(d, change)
+  const update = h.io.changeQueue
+  h.io.changeQueue = async (d, change) => {
+    const wrote = await update(d, change)
     if (d === '/s/old' && h.oldQueue().report?.includes('handed off to') && !h.s.turns.inTurn) turnStarted(h.s.turns)
+    return wrote
   }
   expect(await runHandoff(h.io, h.s.mem, 0)).toBe('document')
   expect(h.s.submitted).toEqual([])
@@ -1950,11 +1961,14 @@ test('context_handoff: a subagent, no storage, an unreadable or unwritable queue
   expect(await contextHandoff(h.io, h.s.mem, {})).toEqual({ code: 'DENIED_STORAGE', deny: 'storage unavailable: HOME is not set' })
   const u = host()
   u.io.readQueue = async () => unreadableRead('bad')
-  u.io.updateQueue = async (_d, change) => void (await change(unreadableRead('bad')))
+  u.io.changeQueue = async (_d, change) => {
+    await change(unreadableRead('bad'))
+    return false
+  }
   expect(await contextHandoff(u.io, u.s.mem, {})).toEqual({ code: 'DENIED_QUEUE', deny: 'the queue cannot be read (bad).' })
   const w = host()
   w.s.queues.set('/s/old', { ...EMPTY_QUEUE })
-  w.io.updateQueue = async () => {
+  w.io.changeQueue = async () => {
     throw new Error('disk full')
   }
   const out = await contextHandoff(w.io, w.s.mem, {})

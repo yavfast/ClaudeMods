@@ -17,7 +17,8 @@ import {
   type JournalIO,
 } from '../hooks/journal'
 import { MAX_QUEUE_EDITS } from '../hooks/edits'
-import { MAX_QUEUE_BYTES, type Read } from '../hooks/queue'
+import { MAX_QUEUE_BYTES } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { prompt, result, use, missingRead, okRead } from './row-fixtures'
 
 const DIR = '/home/u/.claude/context-editor/s1'

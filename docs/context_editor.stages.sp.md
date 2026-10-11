@@ -350,7 +350,7 @@ Processing logic (pseudocode):
             item = { uuid: event uuid, anchor: lastAnchor, kind: DeliveryKind(text), origin: origin.kind or "?",
                      text: CutDelivery(text).text, cut: CutDelivery(text).cut, media, at: now }
             in the background, on the deliveries chain, IF storage ready:
-                read QueuedDeliveries; unreadable → move the file aside to deliveries.json.bad-<ms> and start empty
+                read QueuedDeliveries; unreadable → move the file aside to deliveries.json.bad-<ms> and start empty (the move fails → record nothing: the unreadable file is never overwritten)
                 IF some item has text = item.text AND shares an id with item.anchor: RETURN   # копія після компактизації (stream-json)
                 append item; drop the oldest items while there are more than MAX_DELIVERIES or the file would exceed MAX_QUEUE_BYTES; write
         # інші двері (note, tool-message, attachment інших назв) lastAnchor не змінюють: ланцюжок доставок за одним результатом ділить якір
@@ -550,3 +550,4 @@ Errors: відмов немає (чисті функції).
 | 2026-10-11 | PL_AUD_CTX фаза 3 (CF-3): 02_32 — правило «рядок лише з thinking не ціль за індексом» спільне з тегами і правками `rewrite`/`collapse` (посилання) |
 | 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: 02_32 — правило стосується лише рядка асистента з одним thinking; підказка людини лише з медіа лишається ціллю тегів, `context_note` її, як і раніше, не приймає |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8, CF-9): рядок нагадування називає автора — `reminder from your note <id>`, промптом нагадування не стає (02_33); CutDelivery обрізає доставку в рамці всередині тіла і повертає закривальні теги, які забрало обрізання, у межах MAX_DELIVERY_TEXT (02_35) |
+| 2026-10-11 | PL_AUD_CTX фаза 7, рев'ю: RecordDelivery (02_35) — файл доставок, який не вдалося перенести вбік, не перезаписується; запис втрачено |

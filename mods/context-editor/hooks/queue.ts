@@ -1,6 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { checkShape, DESCRIBE_DROPS, describeEdit, MARK, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { deliveryWords, personDelivered, type QueuedDelivery } from './deliveries'
+import { bytes, jsonObject, type Read } from './store'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -58,8 +59,6 @@ export type Queue = {
   optimizePrompted: boolean
 }
 
-export type Read<T> = { state: 'missing' | 'ok'; value: T } | { state: 'unreadable'; reason: string }
-
 export const EMPTY_QUEUE: Queue = {
   edits: [],
   resume: true,
@@ -109,14 +108,9 @@ export function appendReport(q: Queue, text: string, id: number, resume = false,
 // constraints (the prompt texts go to the model as a prompt); a wrong one
 // makes the whole file unreadable, never silently a default.
 export function parseQueue(text: string): Read<Queue> {
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    return { state: 'unreadable', reason: `not JSON: ${String(err)}` }
-  }
-  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
-  const q = { ...EMPTY_QUEUE, ...(raw as Partial<Queue>) }
+  const raw = jsonObject(text)
+  if (raw.state === 'unreadable') return raw
+  const q = { ...EMPTY_QUEUE, ...(raw.value as Partial<Queue>) }
   const bad = [
     (!Array.isArray(q.edits) || q.edits.length > MAX_QUEUE_EDITS) && 'edits',
     typeof q.resume !== 'boolean' && 'resume',
@@ -162,10 +156,6 @@ function isQueuedEdit(raw: unknown): boolean {
   if (typeof checkShape(raw) === 'string') return false
   const anchors = (raw as { anchors?: unknown }).anchors
   return anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))
-}
-
-export function queueBytes(q: Queue): number {
-  return new TextEncoder().encode(JSON.stringify(q)).length
 }
 
 export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
@@ -327,7 +317,7 @@ export function queueEdits(
   // [SP_CTX_02_02] [SP_CTX_DEC_22] the last explicit "keep_cache" of the batch
   // wins; a call without it leaves the batch's choice (default false)
   if (typeof args.keep_cache === 'boolean') next.keepCache = args.keep_cache
-  if (queueBytes(next) > MAX_QUEUE_BYTES)
+  if (bytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
   const warnings = personWarnings(rows, queued, delivered)
   if (queued.some(e => e.op === 'describe')) warnings.push(DESCRIBE_DROPS)

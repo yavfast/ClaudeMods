@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import type { Read } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
 // [PL_AUD_CTX_P6] Shared builders of SessionMessage rows and port reads for

@@ -1,7 +1,8 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare, producedRows, type QueuedEdit } from '../hooks/edits'
-import { EMPTY_QUEUE, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
+import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
+import type { Read } from '../hooks/store'
 import {
   blockReport,
   calibrate,
@@ -496,19 +497,19 @@ function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = okRead({ ..
   const io: DetectIO = {
     ready: async () => true,
     readQueue: async () => log.queue,
-    updateQueue: async change => {
-      const next = change(log.queue)
-      if (next) {
-        log.queue = okRead(next)
-        log.order.push(next.optimize ? 'optimize' : 'queue')
-      }
+    changeQueue: async change => {
+      const next = await change(log.queue)
+      if (!next) return false
+      log.queue = okRead(next)
+      log.order.push(next.optimize ? 'optimize' : 'queue')
+      return true
     },
-    updateTags: async change => {
-      const next = change(log.tags)
-      if (next) {
-        log.tags = okRead(next)
-        log.order.push('tags')
-      }
+    changeTags: async change => {
+      const next = await change(log.tags)
+      if (!next) return false
+      log.tags = okRead(next)
+      log.order.push('tags')
+      return true
     },
     rows: async () => list,
     replace: async () => {
@@ -591,7 +592,7 @@ test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable regi
   expect(queueOf(unread)!.optimize).toBe(false)
   expect(unread.log.statuses[0]).toContain('the tag registry is unreadable')
   const unwritten = detectHarness(okRead(reg()), undefined, {
-    updateTags: async () => {
+    changeTags: async () => {
       throw new Error('disk full')
     },
   })
@@ -602,8 +603,9 @@ test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable regi
 
 test('DetectOptimize — MARK_NOT_QUEUED / MARK_NO_REPLACEMENTS', async () => {
   const failing = detectHarness(okRead(reg({ stage: { name: 'S', after: null, openedTurn: 0 } })))
-  failing.io.updateQueue = async change => {
-    if (change(failing.log.queue)?.optimize) throw new Error('disk full')
+  failing.io.changeQueue = async change => {
+    if ((await change(failing.log.queue))?.optimize) throw new Error('disk full')
+    return false
   }
   expect(await detectOptimize(failing.io, { aborted: false, answer })).toBe('not-queued')
   expect(regOf(failing)!.lastClosed!.name).toBe('S')

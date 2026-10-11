@@ -1,15 +1,31 @@
 import { expect, test } from 'claude-code/testing'
 import {
+  bytes,
+  carry,
+  CHAIN_RANK,
+  changeOf,
   dirOf,
   ensureStorage,
+  isCount,
+  jsonFile,
+  jsonObject,
+  lockOrder,
   madeStorage,
   newStorageMemory,
+  NOT_HELD,
   prepareStorage,
   publishedDir,
+  serialChains,
   singleFlight,
   storagePlan,
   storageRefusal,
+  trimOldest,
+  updateOf,
+  type ChainKey,
+  type FileIO,
+  type Lock,
   type PrepareIO,
+  type Read,
 } from '../hooks/store'
 import { contextTag, type TagIO } from '../hooks/tags'
 import { contextNote } from '../hooks/notes'
@@ -216,4 +232,304 @@ test('PrepareStorage — обробник компактизації приєд�
   // hostId absent: the boundary keeps its host (nothing written), as inside a compaction
   expect(steps).toEqual([])
   expect(mem.hurry.size).toBe(0)
+})
+
+// ---- [SP_CTX_02] [PL_AUD_CTX_P7] the serial chains
+
+// A work that waits at its gate until opened; `log` records its start and end.
+function gated(log: string[], name: string) {
+  let open: () => void = () => undefined
+  const gate = new Promise<void>(r => (open = r))
+  const work = async () => {
+    log.push(`${name} start`)
+    await gate
+    log.push(`${name} end`)
+    return name
+  }
+  return { work, open }
+}
+
+test('serialChains — порядок: works on one chain run one after another in call order; another chain does not wait', async () => {
+  const serial = serialChains()
+  const log: string[] = []
+  const a = gated(log, 'a')
+  const b = gated(log, 'b')
+  const c = gated(log, 'c')
+  const pa = serial('queue', a.work)
+  const pb = serial('queue', b.work)
+  const pc = serial('tags', c.work)
+  await yields()
+  // b waits for a; c, on its own chain, has started
+  expect(log).toEqual(['a start', 'c start'])
+  c.open()
+  b.open()
+  await yields()
+  expect(log).toEqual(['a start', 'c start', 'c end'])
+  a.open()
+  expect(await Promise.all([pa, pb, pc])).toEqual(['a', 'b', 'c'])
+  expect(log).toEqual(['a start', 'c start', 'c end', 'a end', 'b start', 'b end'])
+})
+
+test('serialChains — ізоляція збою: a work that throws rejects its own caller only; the chain goes on with the next work', async () => {
+  const serial = serialChains()
+  const failed = serial('tags', async () => {
+    throw new Error('disk full')
+  })
+  const sync = serial('tags', () => {
+    throw new Error('sync throw')
+  })
+  const next = serial('tags', async held => held.keys)
+  expect(await failed.then(() => 'ok', err => String(err))).toBe('Error: disk full')
+  expect(await sync.then(() => 'ok', err => String(err))).toBe('Error: sync throw')
+  expect(await next).toEqual(['tags'])
+})
+
+test('serialChains — порядок вкладення: queue → tags → aliases → deliveries passes silently; a chain of a lower or equal rank inside its holder is reported to the debug report, never thrown, and its work runs', async () => {
+  const serial = serialChains()
+  const problems: string[] = []
+  const report = (p: string) => void problems.push(p)
+  const held = await serial('queue', q => serial('tags', t => serial('aliases', a => serial('deliveries', async d => d.keys, { within: a }), { within: t }), { within: q }), { report })
+  expect(held).toEqual(['queue', 'tags', 'aliases', 'deliveries'])
+  expect(problems).toEqual([])
+  // queue inside tags: the report inherited from the holder names both chains
+  const ran = await serial('tags', t => serial('queue', async () => 'ran', { within: t }), { report })
+  expect(ran).toBe('ran')
+  expect(problems).toEqual(['context-editor: chain order: "queue" (rank 1) entered inside "tags" (rank 2); the order is queue → tags → aliases → deliveries | journal'])
+  // the journal inside deliveries: one rank, never nested
+  await serial('deliveries', d => serial('journal', async () => undefined, { within: d }), { report })
+  expect(problems[1]).toContain('"journal" (rank 4) entered inside "deliveries" (rank 4)')
+  // a chain inside itself: reported; not awaited here, so it runs once its holder is done
+  let inner: Promise<string> | undefined
+  await serial('aliases', async a => {
+    inner = serial('aliases', async () => 'later', { within: a })
+  }, { report })
+  expect(await inner).toBe('later')
+  expect(problems[2]).toContain('"aliases" (rank 3) entered inside "aliases" (rank 3)')
+})
+
+test('serialChains — збій звіту: a report that throws never breaks the work; without a report the problem is dropped', async () => {
+  const serial = serialChains()
+  const out = await serial('aliases', a => serial('tags', async () => 'ok', { within: a, report: () => { throw new Error('no log') } }))
+  expect(out).toBe('ok')
+  expect(await serial('aliases', a => serial('queue', async () => 'quiet', { within: a }))).toBe('quiet')
+})
+
+test('lockOrder: the rank table is the lock order in force; nothing held gives no problem', async () => {
+  const order: ChainKey[] = ['queue', 'tags', 'aliases', 'deliveries']
+  expect(order.map(k => CHAIN_RANK[k])).toEqual([1, 2, 3, 4])
+  expect(CHAIN_RANK.journal).toBe(CHAIN_RANK.deliveries)
+  expect(lockOrder('queue', NOT_HELD)).toBeUndefined()
+  expect(lockOrder('deliveries', { keys: ['tags'] })).toBeUndefined()
+  expect(lockOrder('journal', { keys: ['queue', 'tags', 'aliases'] })).toBeUndefined()
+  // the highest rank held counts, not the last one entered
+  expect(lockOrder('aliases', { keys: ['deliveries', 'tags'] })).toContain('inside "deliveries"')
+})
+
+// ---- [SP_CTX_01_07] [PL_AUD_CTX_P7] the store of one storage file
+
+type Doc = { n: number; tag?: string }
+
+function parseDoc(text: string): Read<Doc> {
+  const raw = jsonObject(text)
+  if (raw.state === 'unreadable') return raw
+  return isCount(raw.value.n) ? { state: 'ok', value: { n: raw.value.n } } : { state: 'unreadable', reason: 'bad field(s): n' }
+}
+
+// Files in memory; `failRead`/`failWrite`/`failMove` make the host calls fail.
+function memFiles(init: Record<string, string> = {}) {
+  const files = new Map(Object.entries(init))
+  const log: string[] = []
+  const fail = { read: false, write: false, move: false }
+  const fs: FileIO = {
+    exists: async path => files.has(path),
+    read: async path => {
+      if (fail.read) throw new Error('EIO')
+      return files.get(path)!
+    },
+    write: async (path, text) => {
+      if (fail.write) throw new Error('disk full')
+      log.push(`write ${path}`)
+      files.set(path, text)
+    },
+    move: async (from, to) => {
+      if (fail.move) return false
+      log.push(`move ${from} ${to}`)
+      files.set(to, files.get(from)!)
+      files.delete(from)
+      return true
+    },
+    now: () => 7,
+  }
+  return { fs, files, log, fail }
+}
+
+const PATH = '/s/a/doc.json'
+
+function docStore(init: Record<string, string> = {}, lock?: Lock) {
+  const m = memFiles(init)
+  const written: Doc[] = []
+  const store = jsonFile<Doc>(m.fs, PATH, () => ({ n: 0 }), parseDoc, { ...(lock ? { lock } : {}), written: d => void written.push(d) })
+  return { ...m, store, written }
+}
+
+test('jsonFile read — стани: no file → missing with the default; a parsed file → ok; a bad field, bad JSON, a failed read or a throwing parse → unreadable with the reason', async () => {
+  expect(await docStore().store.read()).toEqual({ state: 'missing', value: { n: 0 } })
+  expect(await docStore({ [PATH]: '{"n":3}' }).store.read()).toEqual({ state: 'ok', value: { n: 3 } })
+  expect(await docStore({ [PATH]: '{"n":-1}' }).store.read()).toEqual({ state: 'unreadable', reason: 'bad field(s): n' })
+  expect(await docStore({ [PATH]: '[1]' }).store.read()).toEqual({ state: 'unreadable', reason: 'not an object' })
+  const bad = await docStore({ [PATH]: '{' }).store.read()
+  expect(bad.state === 'unreadable' && bad.reason.startsWith('not JSON: ')).toBe(true)
+  const eio = docStore({ [PATH]: '{"n":1}' })
+  eio.fail.read = true
+  expect(await eio.store.read()).toEqual({ state: 'unreadable', reason: 'Error: EIO' })
+  const m = memFiles({ [PATH]: '{}' })
+  const throwing = jsonFile<Doc>(m.fs, PATH, () => ({ n: 0 }), () => {
+    throw new Error('parser bug')
+  })
+  expect(await throwing.read()).toEqual({ state: 'unreadable', reason: 'Error: parser bug' })
+})
+
+test('Store.update — запис: the change sees the value; a new value is written as JSON (written runs) and resolves true; undefined writes nothing and resolves false', async () => {
+  const d = docStore({ [PATH]: '{"n":1}' })
+  expect(await d.store.update(read => ({ n: read.value.n + 1 }))).toBe(true)
+  expect(d.files.get(PATH)).toBe('{"n":2}')
+  expect(d.written).toEqual([{ n: 2 }])
+  expect(await d.store.update(() => undefined)).toBe(false)
+  expect(d.log).toEqual([`write ${PATH}`])
+  // missing: the change sees the default, and its result creates the file
+  const fresh = docStore()
+  expect(await fresh.store.update(read => (read.state === 'missing' ? { n: 5 } : undefined))).toBe(true)
+  expect(fresh.files.get(PATH)).toBe('{"n":5}')
+})
+
+test('Store.update — skipUnchanged: the very value read writes nothing (missing too); without it the same value is written again', async () => {
+  const d = docStore({ [PATH]: '{"n":1}' })
+  expect(await d.store.update(read => read.value, { skipUnchanged: true })).toBe(false)
+  const fresh = docStore()
+  expect(await fresh.store.update(read => read.value, { skipUnchanged: true })).toBe(false)
+  expect(fresh.files.has(PATH)).toBe(false)
+  expect(await d.store.update(read => read.value)).toBe(true)
+  expect(d.log).toEqual([`write ${PATH}`])
+})
+
+test('Store.update — onUnreadable: skip (default) calls no change; change passes the unreadable read; quarantine moves the file aside and changes the default', async () => {
+  const skip = docStore({ [PATH]: 'garbage' })
+  let called = false
+  expect(await skip.store.update(() => ((called = true), { n: 1 }))).toBe(false)
+  expect(called).toBe(false)
+  expect(skip.files.get(PATH)).toBe('garbage')
+  const change = docStore({ [PATH]: 'garbage' })
+  const seen: string[] = []
+  expect(await change.store.update(read => void seen.push(read.state), { onUnreadable: 'change' })).toBe(false)
+  expect(await change.store.update(read => (read.state === 'unreadable' ? { n: 9 } : undefined), { onUnreadable: 'change' })).toBe(true)
+  expect(seen).toEqual(['unreadable'])
+  expect(change.files.get(PATH)).toBe('{"n":9}')
+  const q = docStore({ [PATH]: 'garbage' })
+  expect(await q.store.update(read => ({ n: read.value.n + 1 }), { onUnreadable: 'quarantine' })).toBe(true)
+  expect(q.files.get(`${PATH}.bad-7`)).toBe('garbage')
+  expect(q.files.get(PATH)).toBe('{"n":1}')
+  expect(q.log).toEqual([`move ${PATH} ${PATH}.bad-7`, `write ${PATH}`])
+  // the move fails (EACCES, EXDEV): no change is called, the unreadable file is never overwritten
+  const stuck = docStore({ [PATH]: 'garbage' })
+  stuck.fail.move = true
+  let changed = false
+  expect(await stuck.store.update(() => ((changed = true), { n: 1 }), { onUnreadable: 'quarantine' })).toBe(false)
+  expect(changed).toBe(false)
+  expect(stuck.files.get(PATH)).toBe('garbage')
+  expect(stuck.log).toEqual([])
+})
+
+test('Store.update — збої: a failed write or a throwing change rejects; a failed existence check rejects (never a silent default)', async () => {
+  const d = docStore({ [PATH]: '{"n":1}' })
+  d.fail.write = true
+  expect(await d.store.update(() => ({ n: 2 })).then(String, err => String(err))).toBe('Error: disk full')
+  expect(d.written).toEqual([])
+  const t = docStore({ [PATH]: '{"n":1}' })
+  expect(
+    await t.store
+      .update(() => {
+        throw new Error('bad change')
+      })
+      .then(String, err => String(err)),
+  ).toBe('Error: bad change')
+  const m = memFiles()
+  m.fs.exists = async () => {
+    throw new Error('EACCES')
+  }
+  const s = jsonFile<Doc>(m.fs, PATH, () => ({ n: 0 }), parseDoc)
+  expect(await s.read().then(() => 'read', err => String(err))).toBe('Error: EACCES')
+})
+
+test('Store.update — на ланцюжку: two updates at once both land (the second reads what the first wrote); `within` checks the order against the holder', async () => {
+  const serial = serialChains()
+  const problems: string[] = []
+  const lock: Lock = (work, within) => serial('tags', work, { ...(within ? { within } : {}), report: p => void problems.push(p) })
+  const d = docStore({ [PATH]: '{"n":0}' }, lock)
+  await Promise.all([d.store.update(read => ({ n: read.value.n + 1 })), d.store.update(read => ({ n: read.value.n + 1 }))])
+  expect(d.files.get(PATH)).toBe('{"n":2}')
+  // inside the aliases chain: tags is of a lower rank
+  await serial('aliases', a => d.store.update(read => ({ n: read.value.n + 1 }), { within: a }))
+  expect(d.files.get(PATH)).toBe('{"n":3}')
+  expect(problems.length).toBe(1)
+  expect(problems[0]).toContain('"tags" (rank 2) entered inside "aliases" (rank 3)')
+})
+
+test('Store.quarantine: the new path once moved; undefined when the move fails, and the file stays', async () => {
+  const d = docStore({ [PATH]: 'garbage' })
+  expect(await d.store.quarantine()).toBe(`${PATH}.bad-7`)
+  const f = docStore({ [PATH]: 'garbage' })
+  f.fail.move = true
+  expect(await f.store.quarantine()).toBeUndefined()
+  expect(f.files.get(PATH)).toBe('garbage')
+})
+
+test('updateOf / changeOf — контракти портів: Update skips an unreadable file and an unchanged value; Change sees the unreadable read; both resolve true once written', async () => {
+  const bad = docStore({ [PATH]: 'garbage' })
+  let called = 0
+  expect(await updateOf(bad.store)(d => (called++, { n: d.n + 1 }))).toBe(false)
+  expect(called).toBe(0)
+  const seen: string[] = []
+  expect(await changeOf(bad.store)(read => (seen.push(read.state), read.state === 'unreadable' ? { n: 1 } : undefined))).toBe(true)
+  expect(seen).toEqual(['unreadable'])
+  const ok = docStore({ [PATH]: '{"n":4}' })
+  expect(await updateOf(ok.store)(d => d)).toBe(false)
+  expect(await changeOf(ok.store)(read => (read.state === 'ok' ? read.value : undefined))).toBe(false)
+  expect(await updateOf(ok.store)(d => ({ n: d.n * 2 }))).toBe(true)
+  expect(ok.files.get(PATH)).toBe('{"n":8}')
+  expect(ok.log).toEqual([`write ${PATH}`])
+})
+
+test('carry — у сховище іншої сесії: missing writes nothing; ok is changed and written into the new folder; unreadable rejects with the name', async () => {
+  const m = memFiles({ '/s/old/doc.json': '{"n":3}', '/s/bad/doc.json': '{"n":-1}' })
+  const at = (dir: string) => jsonFile<Doc>(m.fs, `${dir}/doc.json`, () => ({ n: 0 }), parseDoc)
+  expect(await carry(at('/s/none'), at('/s/new'), d => d, 'the doc')).toBe('missing')
+  expect(m.files.has('/s/new/doc.json')).toBe(false)
+  expect(await carry(at('/s/old'), at('/s/new'), d => ({ ...d, tag: 'carried' }), 'the doc')).toBe('carried')
+  expect(m.files.get('/s/new/doc.json')).toBe('{"n":3,"tag":"carried"}')
+  expect(await carry(at('/s/bad'), at('/s/new2'), d => d, 'the doc').then(String, err => String(err))).toBe('Error: the doc of the old session cannot be read (bad field(s): n)')
+  expect(m.files.has('/s/new2/doc.json')).toBe(false)
+})
+
+// ---- [PL_AUD_CTX_P7] the shared helpers of the storage parsers
+
+test('bytes, isCount, jsonObject: the JSON size in UTF-8 bytes; integers from a minimum; the parse prologue', async () => {
+  expect(bytes({ a: 'é' })).toBe(10)
+  expect(isCount(0)).toBe(true)
+  expect(isCount(0, 1)).toBe(false)
+  expect(isCount(1.5)).toBe(false)
+  expect(isCount('1')).toBe(false)
+  expect(jsonObject('{"a":1}')).toEqual({ state: 'ok', value: { a: 1 } })
+  expect(jsonObject('null')).toEqual({ state: 'unreadable', reason: 'not an object' })
+  expect(jsonObject('[]')).toEqual({ state: 'unreadable', reason: 'not an object' })
+  expect(jsonObject('{').state).toBe('unreadable')
+})
+
+test('trimOldest: the newest maxItems stay; then the oldest go while the framed file exceeds maxBytes; the same array when nothing goes', async () => {
+  const items = ['aa', 'bb', 'cc', 'dd']
+  expect(trimOldest(items, 10, 1000)).toBe(items)
+  expect(trimOldest(items, 2, 1000)).toEqual(['cc', 'dd'])
+  // ["cc","dd"] is 11 bytes; framed as {"items":[...]} 21
+  expect(trimOldest(items, 10, bytes(['cc', 'dd']))).toEqual(['cc', 'dd'])
+  expect(trimOldest(items, 10, 21, i => ({ items: i }))).toEqual(['cc', 'dd'])
+  expect(trimOldest(items, 10, 1)).toEqual([])
 })
