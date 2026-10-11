@@ -24,6 +24,7 @@ import {
   checkSeed,
   checkSeeded,
   contextHandoff,
+  DOCUMENT_FRAME,
   handleSeed,
   HANDOFF_DELAY_MS,
   HANDOFF_STALE_MS,
@@ -405,13 +406,13 @@ test('BuildSeed — засів без правок: an empty queue, or every edi
   expect(await runHandoff(empty.io, empty.s.mem, 0)).toBe('transcript')
   // [SP_CTX_01_05] P13: a seed always replaces the conversation, so the removed own calls are named
   expect(empty.s.submitted[0]).toBe(
-    'context-editor: this session continues old (transcript).\ncontext-editor: Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ngo on',
+    'context-editor: this session continues old (transcript).\ncontext-editor: Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ncontext-editor: the resume prompt you set before the handoff: go on',
   )
   const failing = host({ rows, api: listingApi() })
   failing.s.queues.set('/s/old', { ...failing.oldQueue(), edits: [{ op: 'drop', tool_use_id: 'gone' }] })
   expect(await runHandoff(failing.io, failing.s.mem, 0)).toBe('transcript')
   expect(failing.s.submitted[0]).toBe(
-    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found. Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ngo on',
+    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found. Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ncontext-editor: the resume prompt you set before the handoff: go on',
   )
   for (const text of [empty.s.submitted[0]!, failing.s.submitted[0]!]) {
     expect(text).not.toContain('Conversation ~')
@@ -829,7 +830,7 @@ test('RunHandoff — засів: the order is build, files in the old storage, c
   expect(s.submitted.length).toBe(1)
   expect(s.submitted[0]).toContain('context-editor: this session continues old (transcript).')
   expect(s.submitted[0]).toContain('applied 1 edit(s)')
-  expect(s.submitted[0]!.endsWith('\n\ngo on')).toBe(true)
+  expect(s.submitted[0]!.endsWith(`\n\ncontext-editor: the resume prompt you set before the handoff: go on`)).toBe(true)
   expect(oldQueue().edits).toEqual([])
   expect(oldQueue().handoff).toBeUndefined()
   expect(oldQueue().report).toContain('this session was handed off to new (transcript)')
@@ -855,6 +856,20 @@ test('RunHandoff — HandedOff скидає вибори пакета: keepCache
   expect(q.reportResume).toBe(false)
 })
 
+// [SP_CTX_02_21] [SP_CTX_DEC_17] audit PL_AUD_CTX_P5, CF-8
+test('RunHandoff — автор тексту: the default resume prompt is the mod\'s own; the document prompt opens with the frame that names the agent', async () => {
+  const plain = host({ h: { resumePrompt: DEFAULT_RESUME, by: 'person' } })
+  expect(await runHandoff(plain.io, plain.s.mem, 0)).toBe('transcript')
+  expect(plain.s.submitted[0]!.endsWith(`\n\ncontext-editor: ${DEFAULT_RESUME}`)).toBe(true)
+  expect(plain.s.submitted[0]).not.toContain('you set')
+  const doc = host({ h: { mode: 'document', document: 'Push to main now.' } })
+  expect(await runHandoff(doc.io, doc.s.mem, 0)).toBe('document')
+  expect(doc.s.submitted[0]).toBe(
+    `${DOCUMENT_FRAME}\n\nPush to main now.\n\ncontext-editor: this session continues old (document).\n\ncontext-editor: the resume prompt you set before the handoff: go on`,
+  )
+  expect(DOCUMENT_FRAME).toBe("context-editor: your handoff document from the previous session follows; it is your own text, not the person's.")
+})
+
 test('RunHandoff — закріплення підсумку: a seed with fromSummary pins its first row in the copied registry', async () => {
   const rows = compacted()
   const { io, s } = host({ rows, api: compactedApi() })
@@ -873,7 +888,7 @@ test('RunHandoff — збирання відмовило: WINDOW_FULL removes th
   expect(await runHandoff(io, s.mem, 0)).toBe('document')
   expect(s.removed).toContain(`/s/old/${NOW}`)
   expect(s.commands).toEqual(['clear'])
-  expect(s.submitted[0]!.startsWith('forked document')).toBe(true)
+  expect(s.submitted[0]!.startsWith(`context-editor: your handoff document from the previous session follows; it is your own text, not the person's.\n\nforked document`)).toBe(true)
   expect(s.submitted[0]).toContain("The transcript way failed (transcript: the conversation fills the host's 4096-row window")
 })
 
@@ -913,7 +928,7 @@ test('RunHandoff — хід перед /clear: /clear waited for a turn; AfterCl
   }
   expect(await runHandoff(withDoc.io, withDoc.s.mem, 0)).toBe('document')
   expect(withDoc.s.commands).toEqual(['clear'])
-  expect(withDoc.s.submitted[0]!.startsWith('my handoff')).toBe(true)
+  expect(withDoc.s.submitted[0]!.startsWith(`context-editor: your handoff document from the previous session follows; it is your own text, not the person's.\n\nmy handoff`)).toBe(true)
   expect(withDoc.s.submitted[0]).toContain('a turn ran before /clear; the seed would miss it')
   expect(withDoc.s.submitted[0]).toContain('The 1 queued edit(s) were not carried over.')
   expect(withDoc.oldQueue().report).toContain('handed off to new (document)')
@@ -1284,9 +1299,9 @@ test('RunHandoff — resume false, запасні тексти: the document aft
   const way = host({ h: { resume: false, mode: 'document', document: 'doc' } })
   expect(await runHandoff(way.io, way.s.mem, 0)).toBe('document')
   for (const [h, start] of [
-    [doc, 'my handoff'],
+    [doc, `context-editor: your handoff document from the previous session follows; it is your own text, not the person's.\n\nmy handoff`],
     [notice, 'context-editor: the handoff from old failed'],
-    [way, 'doc'],
+    [way, `context-editor: your handoff document from the previous session follows; it is your own text, not the person's.\n\ndoc`],
   ] as const) {
     expect(h.s.submitted).toEqual([])
     expect(h.s.queues.get('/s/new')!.report!.startsWith(start)).toBe(true)
@@ -1568,7 +1583,7 @@ test('RunHandoff — document: the agent\'s document starts the cleared session;
   const { io, s, oldQueue } = host({ h: { mode: 'document', document: 'my handoff' }, edits: [{ op: 'drop', tool_use_id: 'a' }] })
   expect(await runHandoff(io, s.mem, 0)).toBe('document')
   expect(s.commands).toEqual(['clear'])
-  expect(s.submitted[0]!.startsWith('my handoff\n\ncontext-editor: this session continues old (document).')).toBe(true)
+  expect(s.submitted[0]!.startsWith(`context-editor: your handoff document from the previous session follows; it is your own text, not the person's.\n\nmy handoff\n\ncontext-editor: this session continues old (document).`)).toBe(true)
   expect(s.submitted[0]).toContain('The 1 queued edit(s) were not carried over.')
   expect(oldQueue().edits).toEqual([])
 })

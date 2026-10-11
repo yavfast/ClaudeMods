@@ -4,6 +4,12 @@ import { deliveryWords, personDelivered, type QueuedDelivery } from './deliverie
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
+// [SP_CTX_01_12] [SP_CTX_DEC_17] The author of a resume prompt the agent set
+// (resume_prompt of context_edit / context_handoff): the mod submits it as a
+// `user` prompt, and the call that set it leaves with DropOwnCalls, so without
+// the frame it would read as the person's words (audit PL_AUD_CTX, CF-8).
+export const RESUME_FRAME = 'context-editor: the resume prompt you set before your edits applied: '
+export const HANDOFF_RESUME_FRAME = 'context-editor: the resume prompt you set before the handoff: '
 export const MAX_QUEUE_BYTES = 3 * 1024 * 1024
 export const MAX_DOCUMENT = 60_000
 // [SP_CTX_01_12] tools whose result is the person's message (an answer to the agent's question)
@@ -84,6 +90,13 @@ export function keepOtherSteps(q: Queue | undefined): Queue {
     optimizePrompted: q.optimizePrompted,
     ...(q.handoff ? { handoff: q.handoff } : {}),
   }
+}
+
+// [SP_CTX_02_06] [SP_CTX_02_21] [SP_CTX_DEC_17] The continuation as the mod
+// submits it: the agent's own text under `frame`, which names its author; the
+// default is the mod's own text and says so with the mod's prefix.
+export function resumeText(prompt: string, frame: string = RESUME_FRAME): string {
+  return prompt === DEFAULT_RESUME ? `context-editor: ${DEFAULT_RESUME}` : `${frame}${prompt}`
 }
 
 // [SP_CTX_01_04] A report added after any report not yet delivered; `id`

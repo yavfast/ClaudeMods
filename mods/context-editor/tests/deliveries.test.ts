@@ -1,6 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import {
+  cutDelivery,
   deliveryKind,
   deliveryWords,
   DELIVERY_FRAMES,
@@ -244,6 +245,68 @@ test('InsertDeliveries — рядок з handle, що піде: a row kept with 
   expect(kept.counts.inserted).toBe(0)
   const goes = insertDeliveries(before, before, [item('d1', ['z'])], new Map(), false, r => (r.toolResults ?? []).some(t => t.tool_use_id === 'z'))
   expect(goes.rows[3]!.text).toBe(PERSON_TEXT)
+})
+
+// ---- [SP_CTX_02_35] the cut keeps the frame (audit PL_AUD_CTX_P5, CF-9)
+
+test('RecordDelivery — обрізання в рамці: a long framed delivery is cut inside its body; the closing tag comes back; the length bound holds', async () => {
+  const words = 'w'.repeat(50_000)
+  const full = PERSON_TEXT.replace('Remember PELICAN', words)
+  const mem = newAnchorMemory()
+  observeAppend(mem, resultEvent('a'), 1)
+  const got = observeAppend(mem, deliveryEvent(full), 1)!
+  expect(got.kind).toBe('person')
+  expect(got.text).toStartWith('<system-reminder>\nThe user sent a new message while you were working:\nwww')
+  // the body is cut, not the tag: one closing tag, the last thing of the text
+  expect(got.text).toEndWith(`… [context-editor: ${got.cut} chars cut]\n</system-reminder>`)
+  expect(got.text.split('</system-reminder>').length).toBe(2)
+  expect(got.cut).toBe(full.length - (MAX_DELIVERY_TEXT - '\n</system-reminder>'.length))
+  expect(got.text.length).toBeLessThanOrEqual(MAX_DELIVERY_TEXT + `… [context-editor: ${got.cut} chars cut]`.length)
+  expect(parseDeliveries(JSON.stringify({ items: [got] })).state).toBe('ok')
+  // the person's words of the cut delivery: the kept part with the mark
+  expect(deliveryWords(got.text)!).toEndWith(`… [context-editor: ${got.cut} chars cut]`)
+})
+
+test('cutDelivery — вкладені теги: the innermost tag closes first; a tag the body never closes adds nothing; a tag cut in half still closes', async () => {
+  const report = AGENT_TEXT.replace('The color is TEAL.', `<br> Array<string> ${'r'.repeat(200)}`)
+  const out = cutDelivery(report, 260)
+  expect(out.text).toEndWith(' chars cut]\n</agent-message>\n</system-reminder>')
+  expect(out.text).toContain('<br> Array<string> rrr')
+  expect(out.text).not.toContain('</br>')
+  expect(out.text).not.toContain('</string>')
+  expect(out.text.length).toBeLessThanOrEqual(260 + `… [context-editor: ${out.cut} chars cut]`.length)
+  // the cut falls inside the closing tag: the head makes room, the tag closes whole once
+  const full = `<system-reminder>\n${'b'.repeat(30)}\n</system-reminder>`
+  const half = cutDelivery(full, 55)
+  expect(half.text).toBe(`<system-reminder>\n${'b'.repeat(18)}… [context-editor: 31 chars cut]\n</system-reminder>`)
+  // no frame: a plain cut, as before; within the bound: the text as it is
+  expect(cutDelivery('y'.repeat(100), 60)).toEqual({ text: `${'y'.repeat(60)}… [context-editor: 40 chars cut]`, cut: 40 })
+  expect(cutDelivery(PERSON_TEXT)).toEqual({ text: PERSON_TEXT, cut: 0 })
+})
+
+test('cutDelivery — закривальний тег з атрибутом: a pasted text in the terminal host closes as </pasted_content id="…">; both closing tags come back as written, innermost first, within the bound', async () => {
+  const pasted = `<system-reminder>\n${DELIVERY_FRAMES.person}\n<pasted_content id="7dd3">\n${'p'.repeat(300)}\n</pasted_content id="7dd3">\n\nThis is how Claude Code surfaces messages the user sends mid-turn.\n</system-reminder>`
+  const out = cutDelivery(pasted, 200)
+  expect(out.text).toStartWith(`<system-reminder>\n${DELIVERY_FRAMES.person}\n<pasted_content id="7dd3">\nppp`)
+  expect(out.text).toEndWith(' chars cut]\n</pasted_content id="7dd3">\n</system-reminder>')
+  expect(out.text.split('</pasted_content id="7dd3">').length).toBe(2)
+  expect(out.text.split('</system-reminder>').length).toBe(2)
+  expect(out.text.length).toBeLessThanOrEqual(200 + `… [context-editor: ${out.cut} chars cut]`.length)
+  expect(deliveryKind(out.text)).toBe('person')
+})
+
+test('cutDelivery — голова скорочується за тег: the first head opens <agent-message> and needs both closing tags; the shorter head stops before it and needs only </system-reminder>', async () => {
+  // max 140: the first head ends past `<agent-message from="aeb75">`; making
+  // room for two closing tags moves the head back into that opening tag
+  const out = cutDelivery(AGENT_TEXT, 140)
+  expect(out.text).toStartWith('<system-reminder id="f4473d66c2ae9d44">\nAnother Claude session sent a message while you were working:\n')
+  expect(out.text).toEndWith(' chars cut]\n</system-reminder>')
+  expect(out.text).not.toContain('</agent-message>')
+  expect(out.text.split('</system-reminder>').length).toBe(2)
+  const mark = `… [context-editor: ${out.cut} chars cut]`
+  expect(out.text.length).toBeLessThanOrEqual(140 + mark.length)
+  // the over-cut: the head is shorter than the room the one closing tag needs
+  expect(AGENT_TEXT.length - out.cut).toBeLessThanOrEqual(140 - '\n</system-reminder>'.length - 1)
 })
 
 test('PersonDelivered — паралельні результати: a drop of one of two results in the anchor row leaves the delivery; a drop of all of them does not', async () => {

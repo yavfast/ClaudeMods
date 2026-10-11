@@ -14,6 +14,8 @@ import type { SessionMessage } from 'claude-code'
 // rendered as a reminder) or a host row of that kind.
 // `<system-reminder` without `>`: a subagent's report is `<system-reminder id="…">` (phase 20).
 export const REMINDER_PREFIX = '<system-reminder'
+// [SP_CTX_01_12] The closing tag of that frame ([SP_CTX_02_35]: a cut delivery keeps it).
+export const REMINDER_CLOSE = '</system-reminder>'
 export const PROMPT_DECORATIONS: readonly string[] = [REMINDER_PREFIX, '<local-command-caveat>', '[Image: source: ']
 // [SP_CTX_02_10] Rows of a slash command and of its output: never a media owner.
 const COMMAND_ROWS: readonly string[] = ['<command-name>', '<local-command-stdout>']

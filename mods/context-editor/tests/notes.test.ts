@@ -209,7 +209,7 @@ test('NoteReminders — доставка один раз: remindAt 9; turn 8 not
   expect(await noteReminders(early.io)).toEqual([])
   expect(early.log.writes).toBe(0)
   const due = harness(start(9))
-  expect(await noteReminders(due.io)).toEqual(['[context-editor] reminder n1 (set 2 turn(s) ago): check the fix'])
+  expect(await noteReminders(due.io)).toEqual(['[context-editor] reminder from your note n1 (set 2 turn(s) ago): check the fix'])
   expect(due.log.tags.notes[0]!.remindAt).toBeUndefined()
   expect(due.log.tags.notes[0]!.text).toBe('check the fix')
   expect(await noteReminders(due.io)).toEqual([])
@@ -242,7 +242,7 @@ test('NoteReminders — збій запису: no line; remindAt stays; the next
 
 test('Кілька нагадувань одночасно (05_04): two notes with the same remindAt: both lines, the oldest first', async () => {
   const out = dueReminders(reg({ turn: 5, notes: [note('n2', { tool_use_id: 'a' }, { createdTurn: 1, remindAt: 5 }), note('n7', { tool_use_id: 'b' }, { createdTurn: 3, remindAt: 5 })], nextNote: 8 }))!
-  expect(out.lines.map(l => l.split(' ')[2])).toEqual(['n2', 'n7'])
+  expect(out.lines.map(l => l.split(' ')[5])).toEqual(['n2', 'n7'])
   expect(out.registry.notes.every(n => n.remindAt === undefined)).toBe(true)
 })
 

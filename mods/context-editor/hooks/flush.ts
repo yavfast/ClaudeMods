@@ -4,7 +4,7 @@
 // `$.command.run('compact')` reaches its own handlers. Free of the host:
 // register.ts binds FlushIO to `$`.
 import { MARKER } from './compaction'
-import { DEFAULT_RESUME, type Queue, type Read } from './queue'
+import { DEFAULT_RESUME, resumeText, type Queue, type Read } from './queue'
 import { optimizeText } from './stages'
 import type { TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
@@ -169,10 +169,11 @@ async function resume(io: FlushIO, state: FlushState, q: Queue, turns0: number):
     return 'person-active'
   }
   // [SP_CTX_DEC_04] D: the report rides in the prompt's own text, since the
-  // host skips the mod's prompt.submit hooks for a prompt the mod submits
+  // host skips the mod's prompt.submit hooks for a prompt the mod submits;
+  // [SP_CTX_DEC_17] the agent's resume prompt goes under its author's frame
   const text = q.report
   try {
-    await io.submit(`${text}\n\n${q.reportPrompt || DEFAULT_RESUME}`)
+    await io.submit(`${text}\n\n${resumeText(q.reportPrompt || DEFAULT_RESUME)}`)
   } catch {
     // RESUME_FAILED: the report stays queued for the person's next prompt
     io.status('context-editor: could not resume the session; send any prompt to continue')

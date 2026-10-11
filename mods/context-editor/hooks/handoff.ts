@@ -26,7 +26,7 @@ import {
   type MediaRef,
   type QueuedEdit,
 } from './edits'
-import { appendReport, DEFAULT_RESUME, keepOtherSteps, MAX_DOCUMENT, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
+import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
@@ -42,6 +42,10 @@ export const HANDOFF_DELAY_MS = 1_000
 export const HANDOFF_STALE_MS = 120_000
 export const HANDOFF_PROMPT =
   "Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Do not call any tools: answer with the document text only. Plain text, no preamble."
+// [SP_CTX_01_12] [SP_CTX_DEC_17] The first line of the document prompt: the
+// document is the model's own text (the agent's `document` or a fork of the
+// model), submitted as a `user` prompt (audit PL_AUD_CTX, CF-8).
+export const DOCUMENT_FRAME = "context-editor: your handoff document from the previous session follows; it is your own text, not the person's."
 export const SEED_ROOM = 16
 export const SEED_PROBE = 80
 export const SEED_WAIT_MS = 2_000
@@ -639,6 +643,12 @@ function notice(run: Run, s: HandoffSeed | undefined, reasons: string[]): string
   return `context-editor: the handoff from ${run.old} failed after the session was cleared (${reasons.join('; ')}). The previous session ${run.old} is unchanged.${s ? ` The assembled conversation is in ${s.file}.` : ''}`
 }
 
+// [SP_CTX_02_21] The document prompt: the author's frame, the document, then
+// the mod's line about the session it continues. Pure.
+export function documentText(doc: string, tail: string): string {
+  return `${DOCUMENT_FRAME}\n\n${doc}\n\n${tail}`
+}
+
 // [SP_CTX_02_21] Deliver: every text after /clear. When the resume is off or
 // the person has begun a turn, the text waits in the current session's queue
 // for DeliverReport; otherwise it goes as a prompt. A refused prompt is a toast.
@@ -654,7 +664,8 @@ async function deliver(run: Run, text: string, resumePrompt: string | undefined,
     return
   }
   try {
-    await io.submit(resumePrompt ? `${text}\n\n${resumePrompt}` : text)
+    // [SP_CTX_DEC_17] the resume prompt under its author's frame
+    await io.submit(resumePrompt ? `${text}\n\n${resumeText(resumePrompt, HANDOFF_RESUME_FRAME)}` : text)
   } catch (err) {
     io.toast(`context-editor: the handoff prompt was refused: ${errorText(err)}`)
   }
@@ -923,7 +934,7 @@ async function afterClear(run: Run, s: HandoffSeed, reason: string, turnsClear: 
       await step('deliver', () =>
         deliver(
           run,
-          `${doc}\n\ncontext-editor: this session continues ${run.old} (document). The transcript way failed (${reasons.join('; ')}).${dropped(run)}`,
+          documentText(doc, `context-editor: this session continues ${run.old} (document). The transcript way failed (${reasons.join('; ')}).${dropped(run)}`),
           h.resumePrompt,
           turnsClear,
           !h.resume,
@@ -977,7 +988,7 @@ async function documentWay(run: Run): Promise<HandoffOutcome> {
   if (io.turns.turns !== run.turns0) why += ` A turn ran before /clear; it stays in ${run.old} and is not in this document.`
   // the old queue first, then the prompt
   await handedOff(run, created, 'document')
-  await deliver(run, `${doc}\n\ncontext-editor: this session continues ${run.old} (document).${why}${dropped(run)}`, h.resumePrompt, run.turnsClear, !h.resume)
+  await deliver(run, documentText(doc, `context-editor: this session continues ${run.old} (document).${why}${dropped(run)}`), h.resumePrompt, run.turnsClear, !h.resume)
   return 'document'
 }
 

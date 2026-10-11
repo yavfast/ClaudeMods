@@ -190,7 +190,7 @@ Processing logic (pseudocode):
         now = session id
         IF h.document present:
             step handed: HandedOff(now, document)
-            step deliver: Deliver(h.document + "\n\ncontext-editor: this session continues <old> (document). The transcript way failed (" + reasons + ")." + dropped, h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
+            step deliver: Deliver(DocumentText(h.document, "context-editor: this session continues <old> (document). The transcript way failed (" + reasons + ")." + dropped), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
             RETURN document
         step fail: FailAfterClear(s, reasons)
         step deliver: Deliver(notice(s, reasons), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
@@ -202,7 +202,9 @@ Processing logic (pseudocode):
     FUNCTION Deliver(text, resumePrompt?, turnsClear, queueOnly = false):   # кожна відправка після /clear
         IF queueOnly OR MovedSince(turnsClear):                             # продовження вимкнено (h.resume = false) або людина активна
             Queue of the current session: report += text, reportId = now, reportResume = false   # DeliverReport віддасть з наступним промптом
-        ELSE: submit prompt (text + (resumePrompt ? "\n\n" + resumePrompt : ""))
+        ELSE: submit prompt (text + (resumePrompt ? "\n\n" + ResumeText(resumePrompt, HANDOFF_RESUME_FRAME) : ""))   # SP_CTX_02_06; текст продовження — з рамкою автора
+
+    DocumentText(doc, tail) = DOCUMENT_FRAME + "\n\n" + doc + "\n\n" + tail   # документ — текст моделі (агента або форку), рамка називає автора
 
     FUNCTION PinSummary(dir, row):                                          # у реєстрі тегів нової сесії, на його послідовному ланцюжку
         reg = TagRegistry of dir; IF missing: reg = { tags: [], turn: 0, firstPromptPinned: false, introduced: false }
@@ -221,7 +223,7 @@ Processing logic (pseudocode):
         why = reasons not empty ? " The transcript way failed (" + reasons + ")." : ""
         IF turns ≠ turns0: why += " A turn ran before /clear; it stays in <old> and is not in this document."   # /clear чекав кінця ходу
         new = session id; HandedOff(new, document)                         # стара черга — до промпту
-        Deliver(doc + "\n\ncontext-editor: this session continues <old> (document)." + why + dropped, h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
+        Deliver(DocumentText(doc, "context-editor: this session continues <old> (document)." + why + dropped), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
         RETURN document
 
     FUNCTION HandedOff(to, mode): old Queue: KeepOtherSteps (edits = [], resume, resumePrompt, resumeSet, tagsOnly, keepCache — за замовчуванням), handoff absent, AppendReport("this session was handed off to <to> (<mode>)", reportId = now, reportResume = false); terminal = true   # SP_CTX_01_04: вибори пакета скидаються з пакетом, інакше пакет старої сесії після --resume успадкував би keep_cache (аудит PL_AUD_CTX, CF-6)
@@ -229,6 +231,8 @@ Processing logic (pseudocode):
     FUNCTION Fail(reasons): old Queue: handoff absent, report += "handoff failed: <reasons>; the session was not changed", reportId = now, reportResume = false; terminal = true; toast
     FUNCTION FailAfterClear(s?, reasons): old Queue: handoff absent, report += "handoff failed after the session was cleared: <reasons>; this session was not changed" + (s present ? "; the assembled conversation is in <s.file>" : ""), reportId = now, reportResume = false; terminal = true; toast
     # terminal ставиться лише після вдалого запису; у межах одного запуску жоден з трьох записів не робиться двічі
+
+Автор тексту в промпті нової сесії ([SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17), аудит PL_AUD_CTX, CF-8). Документ передачі написала модель — агент у `document` або форк моделі з HANDOFF_PROMPT, а `resume_prompt` — агент; мод надсилає їх з роллю `user` у сесію, де виклику `context_handoff` уже немає, тож без рамки вони виглядали б словами людини. Документ відкриває рядок DOCUMENT_FRAME: `context-editor: your handoff document from the previous session follows; it is your own text, not the person's.`; текст продовження агента йде за рамкою HANDOFF_RESUME_FRAME: `context-editor: the resume prompt you set before the handoff: <text>`, а DEFAULT_RESUME (зокрема для `/handoff` людини, яка тексту продовження не задає) — з префіксом мода, як у Flush ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)). Рамка — частина самого тексту, тож вона лишається і тоді, коли Deliver кладе текст у звіт черги для DeliverReport. У черзі (`handoff.document`, `handoff.resumePrompt`) тексти зберігаються без рамки.
 
 `dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`.
 
@@ -432,3 +436,4 @@ Errors:
 |------|--------|
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_19–02_26 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.handoff.sp.md](./context_editor.handoff.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фази 3–4 (CF-5, CF-6): блок-нагадування в першому повідомленні API-подання — за префіксом `<system-reminder` (REMINDER_PREFIX), зокрема з атрибутами (02_22); HandedOff скидає вибори пакета старої черги через KeepOtherSteps, звіт — AppendReport (02_21) |
+| 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): документ передачі відкриває DOCUMENT_FRAME (DocumentText), текст продовження агента — за рамкою HANDOFF_RESUME_FRAME, DEFAULT_RESUME — з префіксом мода (Deliver, DocumentWay, AfterClear у 02_21; SP_CTX_DEC_17) |

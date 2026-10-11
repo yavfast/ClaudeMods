@@ -304,9 +304,11 @@ Processing logic (pseudocode):
         due = notes of reg with remindAt present AND remindAt ≤ reg.turn, oldest first
         IF due empty: RETURN []
         remove remindAt from each of due; write TagRegistry; IF the write fails: RETURN []   # без запису нагадування повторилось би
-        RETURN ["[context-editor] reminder <id> (set <reg.turn − createdTurn> turn(s) ago): <text>" FOR n IN due]
+        RETURN ["[context-editor] reminder from your note <id> (set <reg.turn − createdTurn> turn(s) ago): <text>" FOR n IN due]   # SP_CTX_DEC_17: рядок називає автора нотатки
 
 Ходи рахує `TagRegistry.turn` (завершені ходи основної розмови, [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12)), тож нагадування переживає перезавантаження модуля і не рахує власних команд мода. Нагадування приходить з результатом першого виклику інструменту основної розмови (будь-якого, зокрема інструменту мода; не субагента, не відхиленого), що завершився, коли `turn ≥ remindAt`; без викликів воно чекає. Прогін на копії реальної сесії показав, що агент, який у ході викликає лише інструменти мода (перегляд, правки), нагадування не отримував ([C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)). Інструмент мода додає нагадування після власного тексту і лише тоді, коли сам виклик не відхилено (`deny`) — так само, як загальний хук пропускає відхилені виклики. Винятки — `context_edit` і `context_handoff`: їхні виклики DropOwnCalls прибирає саме тим застосуванням чи засівом, які вони запускають, тож доставлене з ними нагадування зникло б непрочитаним; `remindAt` лишається для наступного виклику (рев'ю 39). `context_list` рахує в телеметрії нагадування так, ніби належні вже доставлено, а доставляє їх (знімає `remindAt`) лише після того, як перелік побудовано: збій переліку нагадувань не губить (рев'ю 40). Доставлене нагадування не повторюється, а нотатка лишається (агент знімає її сам). Ціна — читання реєстру тегів на кожен такий виклик; хук його вже чекає заради псевдоніма лише для великих виводів, тож тут читання додається до кожного виклику (файл малий, читання — мілісекунди); інструменти мода реєстр тегів здебільшого вже читають. Нагадування — запит агента самому собі, а не нагадування за розміром ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15)).
+
+Автор нагадування ([SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17), аудит PL_AUD_CTX, CF-8). Текст нотатки написав агент, а виклик `context_note`, що його поставив, DropOwnCalls прибирає при застосуванні, тож рядок нагадування каже, чия це нотатка: `reminder from your note <id>`. Промптом нагадування не стає ніколи: воно йде додатковим контекстом після результату інструмента або рядком у власному результаті інструмента мода, тож окремої рамки промпту, як для тексту продовження ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)) чи документа передачі ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), йому не треба; префікс `[context-editor]` — той самий, що в рядку псевдоніма.
 
 Errors: відмов немає; реєстр `unreadable` або збій запису — нагадувань цього виклику немає, `remindAt` лишається, і спроба повториться з наступним викликом.
 
@@ -346,14 +348,25 @@ Processing logic (pseudocode):
             text = the text blocks of message.content joined with "\n"; media = count of the other blocks
             IF lastAnchor empty OR text blank after trim: RETURN      # не спостерігалось (35 з 35 — за рядком з tool_result); не записується
             item = { uuid: event uuid, anchor: lastAnchor, kind: DeliveryKind(text), origin: origin.kind or "?",
-                     text: text cut to MAX_DELIVERY_TEXT (tail "… [context-editor: <n> chars cut]"), cut: n, media, at: now }
+                     text: CutDelivery(text).text, cut: CutDelivery(text).cut, media, at: now }
             in the background, on the deliveries chain, IF storage ready:
                 read QueuedDeliveries; unreadable → move the file aside to deliveries.json.bad-<ms> and start empty
                 IF some item has text = item.text AND shares an id with item.anchor: RETURN   # копія після компактизації (stream-json)
                 append item; drop the oldest items while there are more than MAX_DELIVERIES or the file would exceed MAX_QUEUE_BYTES; write
         # інші двері (note, tool-message, attachment інших назв) lastAnchor не змінюють: ланцюжок доставок за одним результатом ділить якір
 
+    FUNCTION CutDelivery(full, max = MAX_DELIVERY_TEXT) → { text, cut }:  # аудит PL_AUD_CTX, CF-9
+        IF len(full) ≤ max: RETURN { text: full, cut: 0 }
+        framed = trimmed start of full starts with REMINDER_PREFIX           # рамка хоста <system-reminder…>
+        Closing(head) = framed ? for each tag head opens and does not close, innermost first, for which full has a closing tag "</name" + (">" or whitespace … ">") ending after the cut (a tag split by the cut counts): "\n" + the first such tag exactly as full writes it (with its attributes) : ""
+        head = full[0 : max]
+        WHILE len(head) + len(Closing(head)) > max: head = full[0 : max − len(Closing(head))]   # кожен прохід коротшає голову
+        cut = len(full) − len(head)
+        RETURN { text: head + "… [context-editor: <cut> chars cut]" + Closing(head), cut }
+
 Хости. Термінал: копії рядків після компактизації (і вкладення за рядками з `handle`) оминають `session.append` (пункт 24), тож копій доставок немає. Stream-json: копія рядка-якоря приходить дверима `tool-result`, за нею копія доставки — дверима `delivery`; запис відсікає перевірка пари (`text`, `anchor`). Рядок, який вставив InsertDeliveries, у stream-json приходить дверима `prompt` з походженням плагіна: він скидає `lastAnchor` і доставкою не є. Подія субагента (`agentId`) не чіпає ні пам'яті, ні файлу.
+
+Обрізання в рамці (аудит PL_AUD_CTX, CF-9). Застосування повертає доставку рядком `user` ([SP_CTX_02_36](#SP_CTX_02_36)), і модель відрізняє її від слів людини лише за рамкою хоста. Тому довга доставка обрізається всередині тіла, а не з кінця тексту: після позначки обрізання йдуть закривальні теги, які обрізання забрало (`</system-reminder>`, для звіту субагента спершу `</agent-message>`), найглибший першим. Тег іде назад лише тоді, коли повний текст справді закриває його після місця обрізання, тож `<br>` чи `Array<string>` у тексті людини зайвих тегів не дають, а тег, розрізаний навпіл, закривається один раз цілим. Закривальний тег — `</name`, за яким `>` або пробільний символ і далі до `>`, і назад він іде дослівно, як у повному тексті: термінал загортає вставлений людиною текст у `<pasted_content id="…">…</pasted_content id="…">`, з атрибутом і на закривальному тезі (живий прогін фази 5). Голова звільняє місце для тегів, тож текст не довший за MAX_DELIVERY_TEXT разом із позначкою (у межах запасу 100 символів, який допускає розбір файлу, [SP_CTX_01_22](./context_editor.structures.sp.md#SP_CTX_01_22)); `cut` рахує всі символи після голови, разом із закривальним тегом оригіналу. Текст без рамки (не починається з REMINDER_PREFIX) обрізається, як раніше: голова в MAX_DELIVERY_TEXT і позначка.
 
 Межі. Гаряче перезавантаження модуля скидає `lastAnchor`: доставка до наступного рядка `tool-result` не записується (вікно — один виклик інструмента). `/clear` і `/resume`: сховище переходить до нової сесії (PrepareStorage, [SP_CTX_02_15](./context_editor.tags.sp.md#SP_CTX_02_15)), а `lastAnchor` скидає перший рядок промпту. `--resume` новим процесом: файл сесії лишається, пам'ять нова. Доставка, що прийшла, коли сесія вільна, починає новий хід звичайним промптом-рядком (`door: prompt`) і не губиться — запису не потребує (спайк, Entry 2).
 
@@ -536,3 +549,4 @@ Errors: відмов немає (чисті функції).
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_27–02_38 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.stages.sp.md](./context_editor.stages.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фаза 3 (CF-3): 02_32 — правило «рядок лише з thinking не ціль за індексом» спільне з тегами і правками `rewrite`/`collapse` (посилання) |
 | 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: 02_32 — правило стосується лише рядка асистента з одним thinking; підказка людини лише з медіа лишається ціллю тегів, `context_note` її, як і раніше, не приймає |
+| 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8, CF-9): рядок нагадування називає автора — `reminder from your note <id>`, промптом нагадування не стає (02_33); CutDelivery обрізає доставку в рамці всередині тіла і повертає закривальні теги, які забрало обрізання, у межах MAX_DELIVERY_TEXT (02_35) |

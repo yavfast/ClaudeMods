@@ -11,6 +11,7 @@
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
 import { rowChars } from './edits'
+import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import type { Read } from './queue'
 
 // [SP_CTX_01_12]
@@ -75,7 +76,7 @@ export function deliveryWords(text: string): string | undefined {
   if (kind !== 'person') return undefined
   const t = text.trimStart()
   const body = t.slice(t.indexOf(DELIVERY_FRAMES.person) + DELIVERY_FRAMES.person.length)
-  const ends = [body.indexOf(`\n${PERSON_TAIL}`), body.indexOf('</system-reminder>')].filter(k => k >= 0)
+  const ends = [body.indexOf(`\n${PERSON_TAIL}`), body.indexOf(REMINDER_CLOSE)].filter(k => k >= 0)
   return (ends.length ? body.slice(0, Math.min(...ends)) : body).trim()
 }
 
@@ -173,8 +174,7 @@ export function observeAppend(mem: AnchorMemory, e: DeliveryEvent, now: number):
   const full = blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
   // not observed (35 of 35 behind a tool_result row): not recorded
   if (!mem.ids.length || !full.trim()) return undefined
-  const cut = Math.max(0, full.length - MAX_DELIVERY_TEXT)
-  const text = cut ? `${full.slice(0, MAX_DELIVERY_TEXT)}… [context-editor: ${cut} chars cut]` : full
+  const { text, cut } = cutDelivery(full)
   return {
     uuid: e.uuid,
     anchor: [...mem.ids],
@@ -185,6 +185,56 @@ export function observeAppend(mem: AnchorMemory, e: DeliveryEvent, now: number):
     media: blocks.filter(b => b.type !== 'text').length,
     at: now,
   }
+}
+
+const TAG = /<(\/?)([A-Za-z][\w-]*)(?:\s[^<>]*)?>/g
+
+// The first closing tag of `name` in `full` that ends after `from`, exactly as
+// written: the terminal host closes a pasted text as `</pasted_content id="…">`,
+// with the attribute on the closing tag too.
+function closeAfter(full: string, name: string, from: number): string | undefined {
+  for (const m of full.matchAll(new RegExp(`</${name}(?:\\s[^<>]*)?>`, 'g'))) if ((m.index ?? 0) + m[0].length > from) return m[0]
+  return undefined
+}
+
+// The closing tags a cut after `head` takes away: the tags `head` opens and
+// does not close, innermost first, each only when the full text closes it
+// after the cut (a tag the cut splits counts; a `<br>` or `Array<string>` in
+// the body opens nothing), each as the full text writes it. Pure.
+function closingTags(full: string, head: string): string {
+  const open: string[] = []
+  for (const m of head.matchAll(TAG)) {
+    const k = open.lastIndexOf(m[2]!)
+    if (!m[1]) open.push(m[2]!)
+    else if (k >= 0) open.length = k
+  }
+  return open
+    .reverse()
+    .flatMap(name => {
+      const close = closeAfter(full, name, head.length)
+      return close ? [`\n${close}`] : []
+    })
+    .join('')
+}
+
+// [SP_CTX_02_35] A delivery longer than `max` is cut inside its body. In the
+// host's frame (the text starts with REMINDER_PREFIX) the closing tags the cut
+// took come back after the cut mark, so the row an apply inserts stays a
+// well-formed system reminder and never reads as the person's own text (audit
+// PL_AUD_CTX, CF-9). The head makes room for them: the text is at most `max`
+// plus the mark. Contract: `full` is the host's original delivery text. The
+// function is not idempotent (cutting a cut text changes it again), so a cut
+// text is never recorded or cut a second time.
+export function cutDelivery(full: string, max = MAX_DELIVERY_TEXT): { text: string; cut: number } {
+  if (full.length <= max) return { text: full, cut: 0 }
+  const framed = full.trimStart().startsWith(REMINDER_PREFIX)
+  const tail = (head: string) => (framed ? closingTags(full, head) : '')
+  let head = full.slice(0, max)
+  // each pass shortens the head, so the loop ends; a shorter head may close
+  // fewer tags than the room it left, so it can over-cut a little (harmless)
+  for (let t = tail(head); head.length + t.length > max; t = tail(head)) head = full.slice(0, Math.max(0, max - t.length))
+  const cut = full.length - head.length
+  return { text: `${head}… [context-editor: ${cut} chars cut]${tail(head)}`, cut }
 }
 
 // [SP_CTX_01_22] The list with `item`, or undefined: a copy the stream-json

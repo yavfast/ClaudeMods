@@ -400,7 +400,8 @@ export function dueReminders(reg: TagRegistry): { registry: TagRegistry; lines: 
     const { remindAt: _r, ...rest } = n
     return rest
   })
-  const lines = due.map(n => `[context-editor] reminder ${n.id} (set ${reg.turn - n.createdTurn} turn(s) ago): ${n.text}`)
+  // [SP_CTX_DEC_17] the line names the note's author: the agent itself
+  const lines = due.map(n => `[context-editor] reminder from your note ${n.id} (set ${reg.turn - n.createdTurn} turn(s) ago): ${n.text}`)
   return { registry: { ...reg, notes }, lines }
 }
 
