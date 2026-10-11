@@ -470,7 +470,8 @@ test('hostId — ще не прочитано: a compaction handler writes the b
   // a peek starts nothing on a memo never started
   const fresh = newHostIdMemo()
   expect(peekHostId(fresh)).toBeUndefined()
-  expect(fresh.promise).toBeUndefined()
+  expect(fresh.current).toBeUndefined()
+  expect(fresh.reads).toBe(0)
 })
 
 // ---- [SP_CTX_01_04] [SP_CTX_02_07] the optimization request survives every write of the handler

@@ -53,7 +53,9 @@ Purpose: команда людини `/handoff [document|cancel]` — те са�
 
 Processing logic (pseudocode):
     ON command handoff (args):
-        IF args trimmed = "cancel": drop a queued request, or a running one while handoffInFlight = false (SP_CTX_04_04); RETURN text "handoff cancelled" or "no handoff waiting"
+        IF args trimmed = "cancel":
+            IF handoffInFlight AND the current session's request is running: RETURN text "a handoff is running; it cannot be cancelled"   # SP_CTX_04_04: цей екземпляр його веде
+            drop a queued request, or a running one while handoffInFlight = false (SP_CTX_04_04), with the report "context-editor: handoff cancelled (cancelled by the person)."; RETURN text "handoff cancelled" or "no handoff waiting"
         mode = args trimmed = "document" ? document : transcript
         write Queue.handoff = { mode, resume: true, resumePrompt: DEFAULT_RESUME, by: person, state: queued, at: now }   # помилки — як у 02_19, зокрема DENIED_RUNNING
         Schedule()                                  # SP_CTX_02_21: знімок turns0 і HANDOFF_DELAY; no-op, поки handoffInFlight
@@ -455,3 +457,4 @@ Errors:
 | 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): після `/clear` HandedOff і Deliver документа — кроки HandDocument, спільного для DocumentWay і AfterClear: збій кроку — спливне повідомлення, наступний крок іде далі, результат `document`; збій Deliver пише копію тексту в `<old storage>/<id>/document.txt` і називає її; крок `handed` AfterClear перейменовано на HandedOff; помилки DOCUMENT_NOT_DELIVERED, HANDED_OFF_FAILED (02_21) |
 | 2026-10-11 | PL_AUD_CTX фаза 6a, рев'ю: KeepDocument — окрема функція; відхилений хостом промпт документа теж пише копію і називає її (Deliver `refused`); AfterClear з ходом у новій сесії (TURN_IN_NEW) копіює документ агента і називає копію в повідомленні про збій; DOCUMENT_NOT_DELIVERED розширено (02_21) |
 | 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19): 02_21 — розбір переліку тек засіву (лише назви з цифр) — ParseSeedNames (`hooks/handoff.ts`) з тестом; опис `context_handoff` і команди `/handoff` — у `hooks/tools.ts` (CF-20). Без зміни поведінки |
+| 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): 02_20 — третій текст `/handoff cancel`: `a handoff is running; it cannot be cancelled`, коли цей екземпляр веде запит поточної сесії; звіт зняття `handoff cancelled (cancelled by the person).` |

@@ -31,13 +31,18 @@ export const SUMMARY_OTHER = { share: 0.25, min: 150 } as const
 // token over a cache read, by the model's family, from the published list
 // prices (claude-api skill, shared/models.md and prompt-caching.md: a 1h
 // write is 2× input; reads 0.05× on Opus 5.5, 0.025× on Fable / Mythos 5.1,
-// 0.1× elsewhere). An unknown model gets the highest known ratios: the
-// verdict then says "worth it" less often, never more.
+// 0.1× elsewhere). Opus counts only as Opus 5.5 (`opus` then 5.5 in the id,
+// e.g. claude-opus-5-5, claude-opus-5-5[1m]), the only Opus the table lists,
+// and the bare alias `opus` / `opus[1m]`, which points to Opus 5.5 today
+// (revisit when the alias moves); another Opus is an unknown model. An
+// unknown model gets the highest known ratios: the verdict then says
+// "worth it" less often, never more.
 export type CostRatios = { write: number; out: number }
 export const COST_RATIOS: readonly { match: RegExp; ratios: CostRatios }[] = [
   { match: /(fable|mythos)[^0-9]*5[.-]1/i, ratios: { write: 80, out: 200 } },
   { match: /fable|mythos/i, ratios: { write: 20, out: 50 } },
-  { match: /opus/i, ratios: { write: 40, out: 100 } },
+  { match: /opus[^0-9]*5[.-]5(?![0-9])/i, ratios: { write: 40, out: 100 } },
+  { match: /^opus(\[1m\])?$/i, ratios: { write: 40, out: 100 } },
   { match: /sonnet|haiku/i, ratios: { write: 20, out: 50 } },
 ]
 export const DEFAULT_RATIOS: CostRatios = { write: 80, out: 200 }

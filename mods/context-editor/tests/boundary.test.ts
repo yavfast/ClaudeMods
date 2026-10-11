@@ -17,6 +17,8 @@ import {
   sessionSwitched,
   STALE_INDEXES,
   startHostId,
+  HOST_ID_READS,
+  kickHostId,
   afterPrepare,
   type AfterPrepareIO,
   type BoundaryMemory,
@@ -375,10 +377,75 @@ test('CurrentRows — перша підготовка після заванта�
   expect((await readView(viewIO(transcript, file, known(ID)))).rows[0]).toBe(returned[0])
 })
 
+test('hostId — тайм-аут не запам\'ятовується: the first reader times out after HOST_ID_WAIT_MS while the read goes on; a later reader, after the read resolves, gets the identity, and so does a peek', async () => {
+  const memo = newHostIdMemo()
+  let finish: (v: string) => void = () => undefined
+  let expire: () => void = () => undefined
+  let reads = 0
+  const read = () => {
+    reads++
+    return new Promise<string>(resolve => (finish = resolve))
+  }
+  const timer = () => new Promise<void>(resolve => (expire = resolve))
+  const first = startHostId(memo, read, timer)
+  expire()
+  expect(await first).toBeUndefined()
+  expect(peekHostId(memo)).toBeUndefined()
+  // a reader after the timeout, while the read still runs, does not wait
+  expect(await startHostId(memo, read, timer)).toBeUndefined()
+  finish(ID)
+  // the read ends: from then on every reader and peek has the identity
+  await memo.current!.read
+  expect(await startHostId(memo, read, timer)).toBe(ID)
+  expect(peekHostId(memo)).toBe(ID)
+  expect(reads).toBe(1)
+})
+
+test('hostId — повтор після збою: a read that ends without the identity is dropped; the next reader starts another, up to HOST_ID_READS reads', async () => {
+  const memo = newHostIdMemo()
+  let reads = 0
+  const failing = async () => {
+    reads++
+    return parseHostId('tok', 'sh: not found')
+  }
+  for (let i = 0; i < HOST_ID_READS + 2; i++) expect(await startHostId(memo, failing)).toBeUndefined()
+  expect(reads).toBe(HOST_ID_READS)
+  const retried = newHostIdMemo()
+  expect(await startHostId(retried, async () => Promise.reject(new Error('env.set refused')))).toBeUndefined()
+  expect(await startHostId(retried, async () => parseHostId('tok', '42\n'))).toBe('tok:42')
+  expect(peekHostId(retried)).toBe('tok:42')
+})
+
+test('hostId — обробник компактизації: kickHostId starts the first read only, never a retry, and never waits; a timer that throws ends the wait, not the caller', async () => {
+  const memo = newHostIdMemo()
+  let reads = 0
+  const failing = async () => {
+    reads++
+    return undefined
+  }
+  kickHostId(memo, failing)
+  await memo.current?.read
+  expect(reads).toBe(1)
+  // the first read ended without the identity: a compaction handler starts no retry
+  kickHostId(memo, failing)
+  expect(reads).toBe(1)
+  expect(memo.current).toBeUndefined()
+  // a reader outside a compaction does
+  expect(await startHostId(memo, failing)).toBeUndefined()
+  expect(reads).toBe(2)
+  const throwing = newHostIdMemo()
+  const out = startHostId(throwing, () => new Promise<string>(() => undefined), () => {
+    throw new Error('sleep refused')
+  })
+  expect(await out).toBeUndefined()
+})
+
 test('CurrentRows — ідентичність не прочиталась: echo $PPID failed or printed no number, or $.env.set failed: hostId absent; the boundary has no host; only the own boundary is trusted', async () => {
   const failed = newHostIdMemo()
   expect(await startHostId(failed, async () => Promise.reject(new Error('env.set refused')))).toBeUndefined()
-  expect(failed.settled).toBe(true)
+  // the failed read is not kept: the next reader may start another
+  expect(failed.current).toBeUndefined()
+  expect(peekHostId(failed)).toBeUndefined()
   const noPid = newHostIdMemo()
   expect(await startHostId(noPid, async () => parseHostId('tok', 'sh: not found'))).toBeUndefined()
   const { returned, transcript } = compactedSession()

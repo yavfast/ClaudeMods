@@ -5,6 +5,7 @@ import {
   afterPrepare,
   collectMedia,
   HOST_ID_WAIT_MS,
+  kickHostId,
   newHostIdMemo,
   newHostToken,
   NO_REFS,
@@ -168,23 +169,23 @@ async function readHostIdOnce($: EngineInterface): Promise<string | undefined> {
   return ran.exitCode === 0 ? parseHostId(token, ran.stdout) : undefined
 }
 
-// [SP_CTX_01_14] Readers await the identity, so its read is bounded: after
-// HOST_ID_WAIT_MS it counts as not read (absent) and no path waits longer.
-async function readHostId($: EngineInterface): Promise<string | undefined> {
-  return Promise.race([readHostIdOnce($), $.clock.sleep(HOST_ID_WAIT_MS).then(() => undefined)])
-}
-
-// [SP_CTX_02_07] The request size before an apply: the plain usage, bounded
-// like the identity's read, since a compaction handler never waits long.
+// [SP_CTX_02_07] The request size before an apply: the plain usage, bounded,
+// since a compaction handler never waits long.
 const USAGE_WAIT_MS = 500
 
 async function requestTokens($: EngineInterface): Promise<number | undefined> {
   return Promise.race([$.session.usage().then(u => u.context.tokens), $.clock.sleep(USAGE_WAIT_MS).then(() => undefined)])
 }
 
-// [SP_CTX_01_14] The one read of this module instance, started on first use.
+// [SP_CTX_01_14] The read of this module instance, started on first use;
+// a reader waits at most HOST_ID_WAIT_MS from the read's start, while the read
+// goes on and a later reader gets its identity ([SP_CTX_DEC_24]).
 function hostIdOf($: EngineInterface): Promise<string | undefined> {
-  return startHostId(hostId, () => readHostId($))
+  return startHostId(
+    hostId,
+    () => readHostIdOnce($),
+    () => $.clock.sleep(HOST_ID_WAIT_MS),
+  )
 }
 
 async function readBoundaryText($: EngineInterface, dir: string): Promise<string | undefined> {
@@ -273,8 +274,10 @@ function prepareIO($: EngineInterface, inCompaction: boolean): PrepareIO {
     urgent: inCompaction,
     sessionId: () => $.session.id(),
     home: () => {
-      // [SP_CTX_01_14] started here or in session.start, whichever comes first; not awaited
-      void hostIdOf($)
+      // [SP_CTX_01_14] started here or in session.start, whichever comes first; not
+      // awaited. A compaction handler starts only the first read, never a retry.
+      if (inCompaction) kickHostId(hostId, () => readHostIdOnce($), () => $.clock.sleep(HOST_ID_WAIT_MS))
+      else void hostIdOf($)
       return $.env.get('HOME')
     },
     mkdir: (dir, base) => $.process.run(['sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$2" "$1"', 'sh', dir, base]),

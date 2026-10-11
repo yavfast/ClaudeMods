@@ -111,6 +111,8 @@ state: current
 
 57. **Хост обгортає кожен промпт, який надсилає плагін** (2.1.296, термінал, живий прогін PL_AUD_CTX_P5, `.dev_flow/cache/live-test/audit-p5-results.md`). Рядок `user` у транскрипті й у запиті має вигляд `The <plugin> plugin sent a message:\n<текст>\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.` Плагін цієї рамки не контролює, а її хвіст «in the user's place» штовхає модель називати вміст «your message»: текст моделі, який плагін повертає промптом, мусить сам казати свого автора всередині рамки (SP_CTX_DEC_17, CF-8). Хост так само закриває вставлений людиною текст тегом з атрибутом: `<pasted_content id="7dd3">…</pasted_content id="7dd3">` — розбір закривальних тегів не може шукати лише `</name>`.
 
+58. **`$.process.run`, схоже, обривається хостом за ~30 с** (2.1.296, термінал, живий прогін PL_AUD_CTX_P12, `.dev_flow/cache/live-test/audit-p12-results.md`; не підтверджено документацією, точну межу не виміряно). Обгортка `sh`, що спала 30 с, закінчила сон і зробила `exec`, але рядка `sh exited` у журналі `--debug` не з'явилося, а виклик мода завершився без виводу; з затримкою 12 с — звичайний вивід. Тож довгий процес не тримає мод вічно, але й результату не дає: розраховувати на його завершення, а не на вивід. Лічильники викликів у журналі фільтрувати за `(context-editor)` — інші плагіни (`cc-plugin-telemetry`) теж запускають `sh` з двома аргументами.
+
 ## References
 
 - Типи хоста: `.claude-plugin/types/claude-code/index.d.ts` у теці мода (або bundled-копія навички `plugin-authoring`).

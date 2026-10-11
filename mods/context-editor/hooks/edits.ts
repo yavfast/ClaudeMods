@@ -69,8 +69,8 @@ export const MAX_QUEUE_EDITS = 200
 export const HEAD_ROWS = 8
 // The most rows a read of the conversation gives, and the most messages of its API form.
 export const ROW_WINDOW = 4096
-// [SP_CTX_01_14] The longest the identity's read may take before it counts as
-// not read (absent); bounds every reader that awaits it.
+// [SP_CTX_01_14] How long after a read of the identity starts its readers
+// wait for it; after that a reader takes it as absent (the read goes on).
 export const HOST_ID_WAIT_MS = 2000
 // The longest tool description the host passes to the model; it cuts the rest.
 export const MAX_DESCRIPTION = 2048
@@ -227,39 +227,77 @@ export function newHostToken(): string {
   return token
 }
 
-// [SP_CTX_01_14] The identity of the host process: one read per module
-// instance, started by session.start or the first PrepareStorage, whichever
-// comes first. Readers outside a compaction await it; compaction handlers
-// only peek.
-export type HostIdMemo = { promise?: Promise<string | undefined>; settled: boolean; value?: string }
+// [SP_CTX_01_14] The identity of the host process: one read at a time per
+// module instance, started by session.start or the first PrepareStorage,
+// whichever comes first. Readers outside a compaction await it, each at most
+// until HOST_ID_WAIT_MS after the read started; compaction handlers only peek.
+// A timeout is not memoized: the read goes on, and once it ends with the
+// identity every later reader and peek gets it. A read that ends without one
+// (failed, or no number printed) is dropped, so the next reader starts
+// another, up to HOST_ID_READS reads per instance; a read that never ends
+// keeps its slot, so there is no retry then ([SP_CTX_DEC_24]).
+export type HostIdMemo = {
+  // reads started so far
+  reads: number
+  // the read in flight or last ended, and the end of its readers' wait
+  current?: { read: Promise<string | undefined>; expired: Promise<undefined> }
+  // the identity once a read ended with it
+  value?: string
+}
+
+// [SP_CTX_01_14] How many reads of the identity one module instance starts at
+// most; a read that ended without the identity lets the next reader retry.
+export const HOST_ID_READS = 3
 
 export function newHostIdMemo(): HostIdMemo {
-  return { settled: false }
+  return { reads: 0 }
 }
 
-// [SP_CTX_01_14] Starts the read once and returns its one promise; a failed
-// read (the env call or the command) is no identity.
-export function startHostId(memo: HostIdMemo, read: () => Promise<string | undefined>): Promise<string | undefined> {
-  if (!memo.promise) {
-    memo.promise = read().then(
-      value => {
-        memo.settled = true
-        memo.value = value
+// [SP_CTX_01_14] The identity for a reader that may wait: starts a read when
+// none is in flight (and the instance has reads left), then waits for it until
+// `expire()` of that read settles, which is absent. A failed read (the env
+// call or the command) is no identity. `expire` defaults to never.
+export function startHostId(
+  memo: HostIdMemo,
+  read: () => Promise<string | undefined>,
+  expire: () => Promise<unknown> = () => new Promise(() => undefined),
+): Promise<string | undefined> {
+  if (memo.value !== undefined) return Promise.resolve(memo.value)
+  if (!memo.current && memo.reads < HOST_ID_READS) {
+    memo.reads++
+    const attempt: NonNullable<HostIdMemo['current']> = {
+      read: new Promise<string | undefined>(resolve => resolve(read())).then(
+        value => value,
+        () => undefined,
+      ).then(value => {
+        if (value !== undefined) memo.value = value
+        else if (memo.current === attempt) memo.current = undefined
         return value
-      },
-      () => {
-        memo.settled = true
-        return undefined
-      },
-    )
+      }),
+      // a timer that throws at once ends the wait at once, never the caller
+      expired: new Promise<unknown>(resolve => resolve(expire())).then(
+        () => undefined,
+        () => undefined,
+      ),
+    }
+    memo.current = attempt
   }
-  return memo.promise
+  const now = memo.current
+  // the read first: when both have ended, the identity wins
+  return now ? Promise.race([now.read, now.expired]) : Promise.resolve(undefined)
 }
 
-// [SP_CTX_01_14] For compaction handlers: the identity once its read has
-// ended, else absent. Never waits and never starts a read.
+// [SP_CTX_01_14] For a compaction handler's PrepareStorage: starts the
+// instance's first read if none was ever started, never a retry, and never
+// waits for it.
+export function kickHostId(memo: HostIdMemo, read: () => Promise<string | undefined>, expire?: () => Promise<unknown>): void {
+  if (memo.reads === 0) void startHostId(memo, read, expire)
+}
+
+// [SP_CTX_01_14] For compaction handlers: the identity once a read has ended
+// with it, else absent. Never waits and never starts a read.
 export function peekHostId(memo: HostIdMemo): string | undefined {
-  return memo.settled ? memo.value : undefined
+  return memo.value
 }
 
 // [SP_CTX_02_18] ownBoundary: the text of the boundary this module instance
@@ -464,8 +502,10 @@ export const LIST_LEGEND =
 // its target is not found) and its line for the `Notes:` block.
 export type PageNote = { id: string; row?: number; line: string }
 
-// [SP_CTX_02_01] How many notes off the page the header names; as MAX_BLOCK_INDEXES.
-const NOTES_ELSEWHERE = 20
+// [SP_CTX_01_12] How many indexes one line names before "+<n> more": the
+// candidates of one reason in a stage close report ([SP_CTX_02_29]) and the
+// notes off the page in the listing's header ([SP_CTX_02_01]).
+export const MAX_BLOCK_INDEXES = 20
 // [SP_CTX_01_12]
 export const MAX_FULL_ROW = 20_000
 
@@ -560,8 +600,8 @@ function notesElsewhere(notes: readonly PageNote[], start: number, stop: number)
   const off = notes.filter(n => !onPage(n, start, stop))
   if (!off.length) return ''
   off.sort((x, y) => (x.row ?? Infinity) - (y.row ?? Infinity))
-  const named = off.slice(0, NOTES_ELSEWHERE).map(n => (n.row === undefined ? `${n.id} (row not found)` : `${n.id} #${n.row}`))
-  return `Notes elsewhere: ${named.join(', ')}${off.length > NOTES_ELSEWHERE ? `, +${off.length - NOTES_ELSEWHERE} more` : ''}`
+  const named = off.slice(0, MAX_BLOCK_INDEXES).map(n => (n.row === undefined ? `${n.id} (row not found)` : `${n.id} #${n.row}`))
+  return `Notes elsewhere: ${named.join(', ')}${off.length > MAX_BLOCK_INDEXES ? `, +${off.length - MAX_BLOCK_INDEXES} more` : ''}`
 }
 
 // [SP_CTX_02_01] context_list with `index` and `full`: one row whole, cut to
@@ -1529,9 +1569,10 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   const parts = [baseReport(r, archive, kind, ratio)]
   // [SP_CTX_01_05] after any form: the notes whose rows went
   if (r.notesDropped.length) parts.push(`Notes dropped (their rows were removed): ${r.notesDropped.join(', ')}.`)
+  // [SP_CTX_01_05] a describe drops the prompt's host attachments
+  if (r.applied.some(a => a.startsWith('describe '))) parts.push(DESCRIBE_DROPS)
   // [SP_CTX_01_05] P13: the agent's own context_* calls left the conversation
   // when the returned list replaces it (a compaction with an applied edit; a seed always)
-  if (r.applied.some(a => a.startsWith('describe '))) parts.push(DESCRIBE_DROPS)
   if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length))
     parts.push(`Your own context-editor calls (${r.ownCallsRemoved}) were removed; tags and notes stay — see context_list.`)
   // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation

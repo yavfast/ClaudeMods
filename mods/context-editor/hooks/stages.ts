@@ -19,6 +19,7 @@ import {
   listMode,
   listRows,
   locate,
+  MAX_BLOCK_INDEXES,
   ownerKey,
   REPRO_FLAG,
   REPRODUCIBLE_TOOLS,
@@ -44,7 +45,6 @@ export const OPTIMIZE_MARK = '[context-editor: optimize]'
 // (plugin-hooks pitfall 37); found by name, as it has no `kind` of its own
 export const MESSAGES_ROW = 'Messages'
 export const MAX_STAGE_NAME = 80
-export const MAX_BLOCK_INDEXES = 20
 export const SKILL = 'context-stages'
 // [SP_CTX_02_34] the bounds of chars per token, and the least conversation
 // size in tokens a calibration is trusted at

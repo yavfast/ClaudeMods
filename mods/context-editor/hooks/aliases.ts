@@ -195,7 +195,8 @@ export async function markAlias(io: AliasIO, f: CallFacts): Promise<string | und
 }
 
 // [SP_CTX_02_16] The alias line to add after the call's result, or undefined;
-// a soft hint replaces it with a line that starts with the same id ([SP_CTX_02_37]).
+// the size channel's suggestion, if any, is a line of its own after it
+// (CallLines in hints.ts, [SP_CTX_02_37]).
 export async function markCall(io: AliasIO, f: CallFacts): Promise<string | undefined> {
   const alias = await markAlias(io, f)
   return alias ? aliasLine(alias) : undefined

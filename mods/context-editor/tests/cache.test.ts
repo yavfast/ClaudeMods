@@ -170,6 +170,7 @@ test('Telemetry — рядок Cache: the first row within the lookback and what
 
 test('CostRatios — ціни: by the model family from the published prices; an unknown model gets the highest ratios', async () => {
   expect(costRatios('claude-opus-5-5')).toEqual({ write: 40, out: 100 })
+  expect(costRatios('claude-opus-5-5[1m]')).toEqual({ write: 40, out: 100 })
   expect(costRatios('opus[1m]')).toEqual({ write: 40, out: 100 })
   expect(costRatios('claude-sonnet-5-5')).toEqual({ write: 20, out: 50 })
   expect(costRatios('claude-haiku-5-5')).toEqual({ write: 20, out: 50 })
@@ -177,6 +178,13 @@ test('CostRatios — ціни: by the model family from the published prices; an
   expect(costRatios('claude-mythos-5')).toEqual({ write: 20, out: 50 })
   expect(costRatios(undefined)).toEqual(DEFAULT_RATIOS)
   expect(costRatios('new-model')).toEqual({ write: 80, out: 200 })
+})
+
+test('CostRatios — лише Opus 5.5: the Opus 5.5 ratios go to Opus 5.5 ids and the bare alias opus / opus[1m]; another Opus gets the default ratios', async () => {
+  for (const id of ['claude-opus-5-5', 'claude-opus-5.5', 'claude-opus-5-5-20260901', 'us.anthropic.claude-opus-5-5-v1:0']) expect(costRatios(id)).toEqual({ write: 40, out: 100 })
+  for (const id of ['claude-opus-4-1', 'claude-opus-5', 'claude-opus-5-55', 'opus-4', 'my-opus']) expect(costRatios(id)).toEqual(DEFAULT_RATIOS)
+  // the bare alias follows the current Opus (5.5 today)
+  for (const id of ['opus', 'opus[1m]', 'Opus']) expect(costRatios(id)).toEqual({ write: 40, out: 100 })
 })
 
 test('CacheCost — запас кінця ходу: positions now plus the margin decide; Infinity is deep in any case', async () => {

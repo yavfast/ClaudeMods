@@ -266,18 +266,20 @@ Output: `Added <ids>; removed <ids>; <n> note(s) in the registry.`, рядок `
 Errors (рівень виклику позначено *, решта — рівень запиту):
 | Code | Condition | Guidance |
 |------|-----------|----------|
-| DENIED_SUBAGENT* | виклик із субагента | — |
-| DENIED_EMPTY* | `notes` відсутній, порожній або не список | — |
-| DENIED_STORAGE* | сховище `unavailable` | — |
-| DENIED_REGISTRY_READ* | TagRegistry `unreadable` | реєстр не перезаписується |
-| DENIED_REGISTRY_WRITE* | реєстр не записався | нотатки цього виклику не додано і не знято |
-| BAD_OP | `op` не `add`/`remove` | — |
-| NOTE_TEXT_REQUIRED | `add` без коректного `text` | 1..MAX_NOTE символів |
+| DENIED_SUBAGENT* | виклик із субагента | `a subagent's context cannot be noted; only the main conversation's.` |
+| DENIED_EMPTY* | `notes` відсутній, порожній, не список або довший за MAX_NOTES | `"notes" must be a list of 1..<MAX_NOTES> requests.` |
+| DENIED_STORAGE* | сховище `unavailable` | `storage unavailable: <reason>` |
+| DENIED_REGISTRY_READ* | TagRegistry `unreadable` | `the tag registry cannot be read (<reason>); it is left as it is.`; реєстр не перезаписується |
+| DENIED_REGISTRY_WRITE* | реєстр не записався | `could not save the tag registry: <error>`; нотатки цього виклику не додано і не знято |
+| BAD_OP | `op` не `add`/`remove` | `op must be "add" or "remove"` |
+| NOTE_TEXT_REQUIRED | `add` без коректного `text` | `a note needs "text" of 1..<MAX_NOTE> chars` |
 | TARGET_REQUIRED, UNKNOWN_REF, TARGET_NOT_FOUND, INDEXES_STALE | як у context_tag ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); крім того, TARGET_NOT_FOUND — `index` або `to` на рядку без тексту і без викликів чи результатів (рядок лише з thinking, відбиток `assistant||`): Locate не знаходить такого рядка однозначно, і перше ж застосування видалило б нотатку (рев'ю 37, W2); для рядка асистента лише з thinking те саме правило діє для тегів за індексом ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)) і для цілі `rewrite` та кінця `collapse` (промпт людини з самих медіа там, на відміну від нотаток, ціллю бути може) ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) (аудит PL_AUD_CTX, CF-3) | для рядка без тексту — `this row cannot be tracked (no text, no tool call); note a neighbouring row` |
-| BAD_RANGE | `to` без `index` чи з `remove`; `to ≤ index` або поза межами | — |
-| BAD_REMIND | `remind_in_turns` не ціле в 1..MAX_REMIND або з `remove` | — |
-| NOTES_FULL | MAX_NOTES нотаток у реєстрі або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні нотатки |
-| NO_NOTE | `remove` з `id`, якого немає | — |
+| BAD_RANGE | `to` без `index` чи з `remove`; `to ≤ index` або поза межами | `"to" needs "index", the first row of the range` / `"to" belongs to op "add"` / `"to" is the last row of the range: an integer in <index + 1>..<len − 1>` |
+| BAD_REMIND | `remind_in_turns` не ціле в 1..MAX_REMIND або з `remove` | `remind_in_turns is an integer in 1..<MAX_REMIND>` / `"remind_in_turns" belongs to op "add"` |
+| NOTES_FULL | MAX_NOTES нотаток у реєстрі або файл реєстру став би більшим за MAX_REGISTRY_BYTES (= MAX_QUEUE_BYTES) | `the registry is full (<MAX_NOTES> notes or <MAX_REGISTRY_BYTES> bytes with the tags); remove notes you no longer need` |
+| NO_NOTE | `remove` з `id`, якого немає | `no note <id>; give the "id" of a note` |
+
+Тексти відмов рівня виклику мод подає з префіксом PREFIX; причина відхиленого запиту в результаті — `note <n>: <text> (<code>)`, усі разом у рядку `Rejected: <reasons joined by "; ">.`. Для TARGET_REQUIRED, TARGET_NOT_FOUND, INDEXES_STALE тексти: `give exactly one of tool_use_id (a string), index (an integer) or ref (an alias or "last")`, `no completed tool call with id <id>; refresh context_list`, `index out of range (0..<len − 1>); refresh context_list`, `row #<i> cannot be tracked (no text, no tool call); note a neighbouring row`, STALE_INDEXES ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)); UNKNOWN_REF — причина резолвера ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)).
 
 Processing logic (pseudocode):
     FUNCTION context_note(notes, callId):                             # на ланцюжку реєстру тегів; callId — власний tool_use_id з події tool.call (фаза 21: для ResolveLast)
@@ -536,7 +538,7 @@ Processing logic (pseudocode):
         RETURN { start, positions, within, rewrite: max(0, (within ? tail : conversation) − freed) }
     Requests(rows, api) = max(1, number of assistant rows i with Responses(rows, api).start[i] = i)   # R̂: запити розмови досі; копернікова оцінка — попереду стільки ж
     Summary(t, reproducible) = min(t, max(min, share · t)), SUMMARY_REPRO for a reproducible output, SUMMARY_OTHER otherwise
-    CostRatios(model) = the first family of the CostRatios table (01_12) whose name the model id holds; none → DEFAULT_RATIOS
+    CostRatios(model) = the first row of the CostRatios table (01_12) whose pattern the model id matches (Fable/Mythos 5.1, Fable/Mythos, Opus 5.5 ids and the bare alias opus / opus[1m], Sonnet/Haiku); none → DEFAULT_RATIOS   # інший Opus — DEFAULT_RATIOS; псевдонім іде за поточним Opus (5.5), переглянути, коли він зміниться (CF-26)
     BreakEven(rewrite, freed, summary, request, r) = ((r.write − 1) · rewrite + r.out · summary + request) / freed   # freed ≤ 0 → ∞
     Verdict(rStar, rHat) = rStar ≤ rHat ? worth : rStar > VERDICT_MARGIN · rHat ? not-yet : borderline
 
@@ -556,3 +558,5 @@ Errors: відмов немає (чисті функції).
 | 2026-10-11 | PL_AUD_CTX фаза 8 (аудит коду, CF-16): 02_38 — Responses, ResponseStart і предикат промпту беруться з [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04) (одне джерело з FrozenPrefix); ResponseStartRows прибрано, CacheCost бере `start` з ResponseStart (без API-подання — початок відрізка, як застосування); CacheShape — відповіді й позиції один раз на пропозицію |
 | 2026-10-11 | PL_AUD_CTX фаза 8, рев'ю: 02_38 — Kinds не рахує порожнього рядка `user`, що не промпт; LookbackStart бере ResponseStart кожного рядка (лише рядки, що самі свій початок), рядок `Cache` телеметрії читає API-подання (`context_list`, звіт закриття етапу) |
 | 2026-10-11 | PL_AUD_CTX фаза 11 (аудит коду, CF-22): 02_33 — ворота в пам'яті: відомий з кешу реєстр без жодного `remindAt` — без ланцюжка реєстру й читання; 02_37 — реєстри тегів і псевдонімів на гарячому шляху читаються з кешу модуля; порядок воріт не змінено (крок «запит зменшився» потребує `hint` з реєстру) |
+| 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25, CF-26): 02_32 — тексти відмов `context_note` дослівно (DENIED_EMPTY і для списку, довшого за MAX_NOTES; MAX_REGISTRY_BYTES); 02_38 — CostRatios: Opus 5.5 лише за ідентифікатором з 5.5, інший Opus і псевдонім без версії — DEFAULT_RATIOS |
+| 2026-10-11 | PL_AUD_CTX фаза 12, рев'ю: 02_38 — голий псевдонім `opus` / `opus[1m]` теж має співвідношення Opus 5.5 (псевдонім іде за поточним Opus; переглянути, коли він зміниться) |

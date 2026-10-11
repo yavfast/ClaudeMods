@@ -73,15 +73,17 @@ Output: `Queued <n> edit(s); <m> pending in total.`, рядок `"last" = <CallL
 Errors:
 | Code | Condition | Guidance |
 |------|-----------|----------|
-| DENIED_SUBAGENT | виклик із субагента | — |
-| DENIED_EMPTY | `edits` відсутній, порожній або не список | передати 1..MAX_QUEUE_EDITS правок |
-| DENIED_PROMPT_TOO_LONG | `resume_prompt` довший за MAX_TEXT | скоротити |
-| DENIED_STORAGE | сховище `unavailable` | причина в повідомленні; мод нічого не пише |
-| QUEUE_QUARANTINED | Queue `unreadable` | файл переноситься в `pending.json.bad-<ms>` командою хоста; виклик продовжується з порожньою чергою, результат повідомляє шлях і причину; правки з перенесеного файлу не застосовуються |
-| DENIED_QUEUE_READ | Queue `unreadable` і перенести файл не вдалося | повідомлення містить шлях і причину; файл треба виправити або видалити |
-| DENIED_QUEUE_FULL | після додавання правок стало б більше MAX_QUEUE_EDITS або файл більший за MAX_QUEUE_BYTES | дочекатися застосування поточного пакета |
-| DENIED_QUEUE_WRITE | файл черги не записався | причина в повідомленні |
-| DENIED_FAILURE | інший збій обробника | причина в повідомленні |
+| DENIED_SUBAGENT | виклик із субагента | `a subagent's context cannot be edited; only the main conversation's.` |
+| DENIED_EMPTY | `edits` відсутній, порожній, не список або довший за MAX_QUEUE_EDITS | `"edits" must be a list of 1..<MAX_QUEUE_EDITS> edits.` |
+| DENIED_PROMPT_TOO_LONG | `resume_prompt` довший за MAX_TEXT | `resume_prompt is too long (max <MAX_TEXT> chars).` |
+| DENIED_STORAGE | сховище `unavailable` | `storage unavailable: <reason>`; мод нічого не пише |
+| QUEUE_QUARANTINED | Queue `unreadable` | файл переноситься в `pending.json.bad-<ms>` командою хоста; виклик продовжується з порожньою чергою, результат починається рядком `The unreadable queue (<reason>) was moved to <path>; its edits are not applied.`; правки з перенесеного файлу не застосовуються |
+| DENIED_QUEUE_READ | Queue `unreadable` і перенести файл не вдалося | `the queue file <path> cannot be read (<reason>) nor moved aside; fix or delete it.` |
+| DENIED_QUEUE_FULL | після додавання правок стало б більше MAX_QUEUE_EDITS або файл більший за MAX_QUEUE_BYTES | `the queue would exceed <MAX_QUEUE_EDITS> edits; end the turn so the current batch applies.` / `the queue would exceed <MAX_QUEUE_BYTES> bytes; end the turn so the current batch applies.` |
+| DENIED_QUEUE_WRITE | файл черги не записався | `could not save the queue: <error>` |
+| DENIED_FAILURE | інший збій обробника | `queueing failed: <error kind>` |
+
+Тексти відмов мод подає з префіксом PREFIX (`context-editor: <text>`).
 
 Processing logic (pseudocode):
     FUNCTION context_edit(edits, resume?, resume_prompt?, callId):   # callId — власний tool_use_id виклику з події tool.call, як у context_tag
@@ -142,10 +144,10 @@ Purpose: перевірити правки на поточній розмові 
 
 | Правка | Приймається, якщо | Інакше (причина) |
 |--------|-------------------|------------------|
-| будь-яка | `op` — один з п'яти; обов'язкові поля варіанта присутні і мають свій тип; текстові поля непорожні і ≤ MAX_TEXT | `unknown op` / `<field> is required` / `<field> is too long` |
-| summarize, drop з `ref` | `ref` розв'язується ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)) | `unknown ref <ref>` / `ref and tool_use_id are exclusive`; для `last` — причина ResolveLast: LAST_NONE / LAST_PENDING / LAST_ORPHAN (LAST_TEXTS, фаза 21) |
+| будь-яка | `op` — один з п'яти; обов'язкові поля варіанта присутні і мають свій тип; текстові поля непорожні і ≤ MAX_TEXT | `edit must be an object` / `unknown op <op as JSON>` / `<field> is required` / `<field> is too long (max <MAX_TEXT> chars)` |
+| summarize, drop з `ref` | `ref` розв'язується ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)) | `unknown ref <ref> (<REF_HINT>)` ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)) / `ref and tool_use_id are exclusive`; для `last` — причина ResolveLast: LAST_NONE / LAST_PENDING / LAST_ORPHAN (LAST_TEXTS, фаза 21) |
 | summarize, drop | існують і виклик, і результат з `tool_use_id` | `no completed tool call with that id` |
-| collapse | `0 ≤ from ≤ to < len`; рядок `to` не є рядком асистента лише з thinking (без тексту і викликів: його відбиток `assistant||` — якір діапазону, LocateSpan, — нічого не розрізняє; промпт людини з самих медіа кінцем бути може, як і раніше: жоден сусідній рядок його не замінить); діапазон містить кожен виклик разом з його результатом | `indexes out of range` / `row #<to> holds only thinking and cannot end a range; end it at a row with text or a tool call` / `range splits a tool call from its result` |
+| collapse | `0 ≤ from ≤ to < len`; рядок `to` не є рядком асистента лише з thinking (без тексту і викликів: його відбиток `assistant||` — якір діапазону, LocateSpan, — нічого не розрізняє; промпт людини з самих медіа кінцем бути може, як і раніше: жоден сусідній рядок його не замінить); діапазон містить кожен виклик разом з його результатом | `indexes out of range (0..<len − 1>)` / `row #<to> holds only thinking and cannot end a range; end it at a row with text or a tool call` / `range #<from>..#<to> splits a tool call from its result (<ids>); widen or narrow it` |
 | rewrite | рядок `index` існує, має роль `assistant`, не має викликів і не є рядком лише з thinking (відбиток `assistant||` Locate не відрізняє від інших таких рядків) | `index out of range` / `only an assistant text row can be rewritten; use collapse` / `row #<i> cannot be tracked (no text, no tool call); use a neighbouring row` (аудит PL_AUD_CTX, CF-3) |
 | describe | рядок `index` існує, має роль `user`, не має результатів, має медіа за [SP_CTX_02_10](#SP_CTX_02_10) | `index out of range` / `describe applies to a user prompt row; use summarize for tool results` / `no media found in that row` |
 | collapse, rewrite, describe | межа поточної розмови не змінилась від останнього `context_list` з рядками чи звіту закриття етапу у цьому процесі ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) | `the conversation was compacted since your last context_list; call context_list with a page of rows (count > 0) for current indexes — count 0 and "full" do not renew them` (STALE_INDEXES; перегляд одного рядка `full` теж `listedKey` не оновлює; той самий текст — у відмові INDEXES_STALE `context_tag` і `context_note`; фаза 18: до неї текст радив лише «call context_list again», і haiku в живому прогоні фази 15 після `/compact` викликала `context_list` з `count: 0` і далі отримувала відмову) |
@@ -155,9 +157,9 @@ Purpose: перевірити правки на поточній розмові 
 Закріплені цілі й рядок слоту стану для `context_edit` дає PinsFrom (`pinsFrom` у `hooks/tags.ts`) з прочитаного реєстру тегів: нечитабельний реєстр — без закріплень (перевірка `pin` і `state` тоді не відхиляє нічого, а HandleCompaction відхилить кожну правку, ScreenPinned нижче). Рядок з тегом `state` змінює лише `rewrite` саме цього рядка; `collapse`, що його захоплює, відхиляється так само, як для `pin`. Обидві перевірки (`pin` і `state`) повторюються при застосуванні ([SP_CTX_02_07](#SP_CTX_02_07)) і в засіві ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) на тодішньому реєстрі одним кроком:
 
     FUNCTION ScreenPinned(rows, edits, reg) → (edits, refused):         # спільний для HandleCompaction і BuildSeed
-        IF reg unreadable: RETURN ([], every edit "tag registry unreadable")
-        FOR e IN edits: target of e (as in the table above) has a pin → refused "target is pinned"
-                        ELSE e is not a rewrite of the state row AND its target holds the state row → refused "target holds the state slot"
+        IF reg unreadable: RETURN ([], every edit "<edit>: tag registry unreadable")
+        FOR e IN edits: target of e (as in the table above) has a pin → refused "<edit>: " + PINNED
+                        ELSE e is not a rewrite of the state row AND its target holds the state row → refused "<edit>: " + STATE_SLOT   # тексти — як у таблиці вище
                         ELSE keep e
 
 Перевірка `state` живе всередині ScreenPinned, а не окремим кроком викликача: так застосування і засів не розходяться (код фаз 3–17 — `screenPinned` у `hooks/compaction.ts`, його викликають обробник і BuildSeed). Рядок перевірки межі поточної розмови (`listedKey`) діє лише для правок агента з `context_edit`; заміни з тегів (QueueTagReplacements, [SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13)) проходять PrepareEdits без нього (`checkListedKey = false`).
@@ -189,27 +191,29 @@ Processing logic (pseudocode):
         note = archive ? " (original: " + archive + ", open with Read)" : ""   # заміна сама каже, як повернути оригінал (C_CTX_DEC_18)
         plan = []
         FOR edit IN edits:                                # позиції — на НЕЗМІНЕНОМУ списку
-            resolve touched rows or report.failed += reason:
+            resolve touched rows or report.failed += "<edit>: " + reason:     # <edit> — DescribeEdit
                 summarize, drop: {useAt, resAt} by tool_use_id; pair = tool_use_id
+                    IF the call or the result is not found: failed "call or result not found"
                     IF the result row holds another pair whose owner is in mediaOwners AND that pair is not
                        summarized or dropped in this batch with its media archived:
                        failed "row also holds media of <id>; summarize it in the same batch"
                     IF the result row holds a result whose id is not in knownResults:
                        failed "outside the API window; media unknown"
-                collapse: {from..to} via anchors (LocateSpan); recheck pairing
+                collapse: {from..to} via anchors (LocateSpan); IF not found: failed "the rows it named are no longer there"
+                    recheck pairing: failed "range #<from>..#<to> splits a tool call from its result (<ids>); widen or narrow it" (як у PrepareEdits)
                     IF the span holds a result whose id is not in knownResults,
                        or (apiTruncated AND the span holds a user row without toolResults before the first row whose result is in knownResults):
                        failed "outside the API window; media unknown"     # без обрізання подання промпт перед першим результатом — звичайний
                     IF unmatchedPromptMedia > 0 AND the span holds a user row without toolResults:
-                       failed "span may hold prompt media that cannot be archived"
-                rewrite, describe: {at} via anchor
+                       failed "span may hold prompt media that cannot be archived; collapse a span without prompt rows"
+                rewrite, describe: {at} via anchor; IF not found: failed "the row it named is no longer there"
                     IF describe AND media has no paths for {row: at}: failed ("media could not be archived" IF {row: at} in mediaOwners OR media has the key ELSE NO_MEDIA_NOW)   # медіа цього рядка знайдено (PromptMatch на рядках застосування) і заархівовано саме цим застосуванням; інакше рядок не змінюється
             IF edit replaces media of an owner in mediaOwners AND media has no paths for it: failed "media could not be archived"
             plan += (edit, touched, pair?, hi = max(touched))
         SORT plan BY hi DESC; anyRow = {}; exclusiveRow = {}; pairs = {}
         FOR step IN plan:
             conflict = step.pair ? (step.pair ∈ pairs OR step.touched ∩ exclusiveRow ≠ ∅) : step.touched ∩ anyRow ≠ ∅
-            IF conflict: report.failed += "overlaps another edit"; CONTINUE
+            IF conflict: report.failed += "<edit>: overlaps another edit"; CONTINUE
             run step; report.applied += step; anyRow ∪= step.touched; IF step replaces rows: step.last = its last produced row (a reference, kept on the row through later rebuilds)
             IF step.pair: pairs += step.pair ELSE exclusiveRow ∪= step.touched
         first = min over applied steps of min(step.touched)   # кожен крок міняє і вирізає рядки лише від своїх, тож рядки до first стоять на своїх індексах
@@ -396,6 +400,8 @@ Purpose: обробник події компактизації в моді: з�
 
 Input: подія компактизації з `trigger`, `instructions`, `messages: list<Row>`, `agentId?`. Збіг — за `instructions` і відсутністю `agentId`, за будь-якого `trigger`, крім `precompute` (попереднє обчислення нічого не встановлює, як і в спостерігача [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)): команда компактизації, яку запускає мод, приходить з `trigger: 'manual'` ([SP_CTX_02_06](#SP_CTX_02_06)).
 
+Тексти `skip` нижче мод подає з префіксом PREFIX (`context-editor: <text>`, ModText, [SP_CTX_01_12](./context_editor.structures.sp.md#SP_CTX_01_12)).
+
 Processing logic (pseudocode):
     ON compaction (any trigger):
         IF agentId present OR trigger = precompute OR instructions NOT IN (MARKER, HANDOFF_MARKER): pass to next handler
@@ -418,35 +424,35 @@ Processing logic (pseudocode):
         (rows, report, renamed, prefix) = ApplyEdits(messages, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated, freeze = q.keepCache ? { api } : none)   # SP_CTX_02_04 FrozenPrefix лише на вибір агента (SP_CTX_DEC_22); типово prefix = 0, як до фази 23
         frozen = messages[0..prefix)                                   # ті самі рядки; кеш промпту тримається до них
         IF report.originals not empty AND writing archive (compact JSON, through a host command) fails:
-            IF the dispatch was abandoned: RETURN skip "compaction abandoned"
+            IF the dispatch was abandoned: RETURN skip "compaction abandoned; the batch stays queued"
             write Queue with every edit failed "originals could not be archived" (report and kept fields as below)
             RETURN skip "originals could not be archived"                 # оригінали не зникають без архіву
         deliveries = read QueuedDeliveries on the deliveries chain (unreadable → none; report.deliveries.unreadable = reason)   # SP_CTX_01_22, фаза 20
         (rows, report.deliveries, done, added) = InsertDeliveries(messages, rows, deliveries, renamed, allRebuilt = false, goes = r ∉ frozen AND r holds only own results)   # SP_CTX_02_36: до DropOwnCalls; done — uuid записів, що більше не потрібні; added — розмір вставлених рядків; рядок префікса не «піде»: DropOwnCalls його не чіпає
         (rows, report.ownCallsRemoved) = DropOwnCalls(rows, mediaOwners, knownResults, frozen); report.charsAfter = Σ size(rows) − added   # повернений список уже пройшов KeepResponsesWhole; лічильник — для речення P13 (SP_CTX_01_05); доставки — не звільнене місце
         report.produced = Produced(rows, applied steps)                # SP_CTX_02_04: індекси в кінцевому списку
-        IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned"   # пакет лишається в черзі
+        IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned; the batch stays queued"   # пакет лишається в черзі
         entry = JournalEntry(id, report, archive, messages, edits); boundary = Boundary(rows)   # усе, що потрібне після точки фіксації, — до неї: після запису черги ніщо не кидає
         COMMIT, holding the registry's chain, then the alias registry's (inside the queue's: порядок queue → tags → aliases):
             reg = read TagRegistry; aliases = read AliasRegistry          # як вони є тепер, коли очікування ланцюжків скінчилось
             (reg', dropped) = RebindTags(reg, rows, report)               # SP_CTX_02_14: теги, межі етапів, слот стану, нотатки; lastApply — нижче
             aliases' = PruneAliases(aliases, rows)
-            IF the dispatch was abandoned: RETURN skip "compaction abandoned"   # нічого не записано
+            IF the dispatch was abandoned: RETURN skip "compaction abandoned; the batch stays queued"   # нічого не записано
             IF reg readable: write reg' (failure → registry as it was, report names no dropped notes); IF written: report.notesDropped = dropped
             IF aliases readable AND aliases' ≠ aliases AND NOT abandoned: write aliases' (failure → as it was)
-            IF the dispatch was abandoned: put back the registries written (reg, aliases as read); RETURN skip "compaction abandoned"
+            IF the dispatch was abandoned: put back the registries written (reg, aliases as read); RETURN skip "compaction abandoned; the batch stays queued"
             text = FormatReport(report, archive, compaction)               # SP_CTX_01_05: без правок — «not changed», без рядка розміру
             write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
                           report: (q.report ? q.report + "\n" : "") + text, reportId: id,
                           reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt,
                           optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04); точка фіксації
             IF that write fails: put back the registries written; the failure goes to the failure branch
-            IF the dispatch was abandoned during that write: write q back as read; put back the registries written; RETURN skip "compaction abandoned"
+            IF the dispatch was abandoned during that write: write q back as read; put back the registries written; RETURN skip "compaction abandoned; the batch stays queued"
         after the handler returned, IF the dispatch was not abandoned: lastReported = id; applyDir = <storage>   # пам'ять екземпляра для гілки збою; на ланцюжку черги, до запису гілки збою за ним
         toast first 200 chars of text
         IF report.applied empty: RETURN skip "no edit could be applied"
         in the background (not awaited): RecordBoundary(boundary)          # SP_CTX_02_18; після точки фіксації обробник нічого не чекає
-        lastApply: the request size read before the apply (plain $.session.usage().context.tokens, 1–3 ms, no breakdown, bounded by a short timeout like hostId — the handler never waits longer; absent or late → nothing) goes into TagRegistry.lastApply = { at: id, tokensBefore } with RebindTags   # SP_CTX_02_28: виміряна зміна
+        lastApply: the request size read before the apply (plain $.session.usage().context.tokens, 1–3 ms, no breakdown, bounded by USAGE_WAIT_MS (SP_CTX_01_12) — the handler never waits longer; absent or late → nothing) goes into TagRegistry.lastApply = { at: id, tokensBefore } with RebindTags   # SP_CTX_02_28: виміряна зміна
         IF NOT abandoned, in the background, on the deliveries chain, IF done not empty: re-read QueuedDeliveries; IF not unreadable: remove the items whose uuid is in done; write   # SP_CTX_02_36: вставлені, згорнуті й зниклі записи йдуть, записані тим часом лишаються; збій запису — повторну вставку відсікає перевірка «уже рядок»
         IF NOT abandoned, in the background, on the journal chain: JournalApply(entry)   # SP_CTX_02_31; не затримує відповіді
         RETURN { messages: rows }
@@ -458,7 +464,7 @@ Processing logic (pseudocode):
             IF q readable AND q.edits empty AND q.reportId = lastReported: write nothing   # застосування дійшло до точки фіксації: пакета вже немає, його звіт стоїть — без пари «applied» + «failed»
             ELSE write
             Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
-                    report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed",
+                    report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed and the batch was dropped.",
                     reportId: now, reportResume: false, reportPrompt: DEFAULT_RESUME,
                     optimize, optimizePrompted, handoff: as read from the queue file on that chain }
 
@@ -597,3 +603,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 9 (аудит коду, CF-17, CF-18): 02_02 — PersonText відкидає текст, що починається з PREFIX (`context-editor:`; той самий літерал, тепер константа з тестом виробників); 02_04 — PromptRow, EmptyRow і пошук пари мають один дім `hooks/rows.ts`, варіант PromptRowStrict для ResolveLast названо. Без зміни поведінки |
 | 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19, CF-20): 02_01 — логіка `context_list` — ContextList за портом ListIO (`hooks/stages.ts`), мітки — ListLabels, псевдоніми — ListAliases; правило «`count: 0` і `full` не оновлюють `listedKey`» має тести; опис і схема — у `hooks/tools.ts`; 02_06 — порядок кінця ходу — AfterTurn за портом TurnEndIO (`hooks/flush.ts`); 02_07 — гілка збою обробника — CompactionFailed за портом FailureIO. Без зміни поведінки |
 | 2026-10-11 | PL_AUD_CTX фаза 10, рев'ю: 02_03 — звідки PrepareEdits бере закріплення: PinsFrom (`hooks/tags.ts`) з прочитаного реєстру тегів, нечитабельний — без закріплень. Без зміни поведінки |
+| 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): тексти коду дослівно — 02_02 відмови `context_edit` (DENIED_EMPTY і для списку, довшого за MAX_QUEUE_EDITS), 02_03 відмови PrepareEdits і ScreenPinned, 02_04 причини `failed` ApplyEdits, 02_07 `compaction abandoned; the batch stays queued`, звіт збою `… and the batch was dropped.`, префікс PREFIX у текстах `skip`, `lastApply` обмежено USAGE_WAIT_MS |

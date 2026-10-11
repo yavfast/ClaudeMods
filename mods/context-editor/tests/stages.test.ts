@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare, producedRows, readView, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
+import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import type { AliasRegistry } from '../hooks/aliases'
@@ -22,7 +22,6 @@ import {
   markClose,
   markIndex,
   markLabels,
-  MAX_BLOCK_INDEXES,
   MESSAGES_ROW,
   OPTIMIZE_MARK,
   optimizeText,
