@@ -23,6 +23,7 @@ import {
 } from './edits'
 import { distinctive, survivors } from './stages'
 import { MAX_REGISTRY_BYTES, type TagDeny, type TagIO, type TagRegistry } from './tags'
+import { storageRefusal } from './store'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -280,7 +281,7 @@ export async function contextNote(
   if (args.agentId) return { code: 'DENIED_SUBAGENT', deny: "a subagent's context cannot be noted; only the main conversation's." }
   if (!Array.isArray(args.notes) || args.notes.length === 0 || args.notes.length > MAX_NOTES)
     return { code: 'DENIED_EMPTY', deny: `"notes" must be a list of 1..${MAX_NOTES} requests.` }
-  if (storageDown !== undefined) return { code: 'DENIED_STORAGE', deny: `storage unavailable: ${storageDown}` }
+  if (storageDown !== undefined) return { code: 'DENIED_STORAGE', deny: storageRefusal(storageDown) }
   const raws = args.notes
   const onRegistry = io.onRegistry ?? (<T>(work: () => Promise<T>) => work())
   return onRegistry(async () => {

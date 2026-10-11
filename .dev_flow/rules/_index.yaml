@@ -1,0 +1,11 @@
+# Derived router — regenerated from the rule files.
+categories:
+  - name: concurrency
+    file: concurrency.md
+    summary: Storage folder and commit order in hook work that spans awaits, session switches and abandoned handlers.
+    applies_to:
+      paths: ["mods/*/hooks/**"]
+      phases: [implement, fix, review]
+    rules:
+      - { id: CONC-01, severity: should, directive: Take the storage folder once per operation }
+      - { id: CONC-02, severity: should, directive: Commit side effects only after the last abort check }

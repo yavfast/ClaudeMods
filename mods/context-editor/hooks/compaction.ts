@@ -96,12 +96,18 @@ export type CompactionIO = {
   isAborted: () => boolean
   toast: (text: string) => void
   readTags: () => Promise<Read<TagRegistry>>
-  // [SP_CTX_02_14] runs `change` on the registry as it is then, on the
-  // registry's serial chain; leaves an unreadable registry alone
-  updateTags: (change: (reg: TagRegistry) => TagRegistry) => Promise<void>
-  // [SP_CTX_02_14] the same for the alias registry, on its own serial chain
-  updateAliases: (change: (reg: AliasRegistry) => AliasRegistry) => Promise<void>
-  // [SP_CTX_02_18] best effort: a failed write leaves the previous boundary
+  writeTags: (reg: TagRegistry) => Promise<void>
+  readAliases: () => Promise<Read<AliasRegistry>>
+  writeAliases: (reg: AliasRegistry) => Promise<void>
+  // [SP_CTX_02_07] [SP_CTX_02_14] runs the commit holding the registry's
+  // serial chain, then the alias registry's (inside the queue's, which the
+  // whole handler holds); absent: runs it as it is
+  onRegistries?: <T>(work: () => Promise<T>) => Promise<T>
+  // [SP_CTX_02_07] the report of this apply is in the queue and the dispatch
+  // was not abandoned when it was written: its id. The caller counts it only
+  // once the handler returned without an abandon.
+  reported?: (reportId: number) => void
+  // [SP_CTX_02_18] best effort, never awaited: a failed write leaves the previous boundary
   writeBoundary: (b: Boundary) => Promise<void>
   // [SP_CTX_01_14] hostId if its read has ended, else absent: a compaction
   // handler never waits for it nor starts a process
@@ -121,6 +127,9 @@ export type CompactionIO = {
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
+
+// [SP_CTX_02_07] SKIP_ABANDONED: the host went on without the handler.
+const ABANDONED: CompactionOutcome = { skip: 'context-editor: compaction abandoned; the batch stays queued' }
 
 // [SP_CTX_02_07] Applies the queued batch to the compaction's rows. The
 // caller runs it on the queue's serial chain.
@@ -154,7 +163,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   applied.report.failed.unshift(...refused)
   // [C_CTX_01_01] Originals never vanish: without their archive nothing applies.
   if (applied.report.originals.length && !(await io.writeArchive(archive, archiveText(applied.report.originals, media)))) {
-    if (io.isAborted()) return { skip: 'context-editor: compaction abandoned; the batch stays queued' }
+    if (io.isAborted()) return ABANDONED
     const text = formatReport(
       {
         ...applied.report,
@@ -168,6 +177,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
       'compaction',
     )
     await io.writeQueue(reported(q, text, id))
+    io.reported?.(id)
     io.toast(text.slice(0, 200))
     return { skip: 'context-editor: originals could not be archived' }
   }
@@ -192,7 +202,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
 
   // An abandoned dispatch changes nothing: the batch stays queued for the
   // next turn, and the files written so far are only orphans in the archive.
-  if (io.isAborted()) return { skip: 'context-editor: compaction abandoned; the batch stays queued' }
+  if (io.isAborted()) return ABANDONED
 
   // [SP_CTX_02_14] Best effort: a stale tag only names a target that is gone.
   // With nothing applied the conversation stays as it was. The stage marks
@@ -201,39 +211,81 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const done = edits.filter(e => names.has(describeEdit(e)))
   const after = done.length ? rows : messages
   const produced = applied.report.produced
-  // [SP_CTX_02_14] RelocateNote: notes on removed rows go and the report
-  // names them, only once the registry is written
-  let dropped: string[] = []
-  await io
-    .updateTags(reg => {
-      const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits, produced), messages, after, done, produced), messages, after, done, produced)
-      dropped = out.dropped
-      // [SP_CTX_02_28] the telemetry measures what this apply freed
-      return done.length && tokensBefore !== undefined ? { ...out.registry, lastApply: { at: id, tokensBefore } } : out.registry
-    })
-    .then(() => void (applied.report.notesDropped = dropped))
-    .catch(() => undefined)
-  // An alias of a changed or vanished pair has done its job: it no longer resolves.
-  await io.updateAliases(reg => pruneAliases(reg, messages, after, done)).catch(() => undefined)
-
-  // [SP_CTX_01_05] without an applied edit: "not changed", no size line
-  const text = formatReport(applied.report, archived, 'compaction', ratio)
-  await io.writeQueue(reported(q, text, id))
+  // [SP_CTX_02_31] [SP_CTX_02_18] what the steps after the commit need, made
+  // before it: nothing after the queue's write can throw
+  const entry = applyEntry(id, applied.report, archived, messages, edits)
+  const boundary = boundaryOf(rows, io.hostId())
+  const rebind = (reg: TagRegistry) => {
+    const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits, produced), messages, after, done, produced), messages, after, done, produced)
+    // [SP_CTX_02_28] the telemetry measures what this apply freed
+    return { registry: done.length && tokensBefore !== undefined ? { ...out.registry, lastApply: { at: id, tokensBefore } } : out.registry, dropped: out.dropped }
+  }
+  // [SP_CTX_02_07] Commit: the waits for the registries' chains are over, so
+  // every change is made from the registries as they are now, and nothing is
+  // written once the host abandoned the dispatch. The registries go first,
+  // the queue last: its write is the commit point. If it fails, or the
+  // dispatch was abandoned before it, the registries are put back as read.
+  const onRegistries = io.onRegistries ?? (<T>(work: () => Promise<T>) => work())
+  const text = await onRegistries(async (): Promise<string | undefined> => {
+    const tagsNow = await io.readTags().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: String(err) }))
+    const aliasesNow = await io.readAliases().catch((err): Read<AliasRegistry> => ({ state: 'unreadable', reason: String(err) }))
+    const tags = tagsNow.state === 'unreadable' ? undefined : { before: tagsNow.value, ...rebind(tagsNow.value) }
+    // An alias of a changed or vanished pair has done its job: it no longer resolves.
+    const pruned = aliasesNow.state === 'unreadable' ? undefined : pruneAliases(aliasesNow.value, messages, after, done)
+    const aliases = aliasesNow.state !== 'unreadable' && pruned !== undefined && pruned !== aliasesNow.value ? { before: aliasesNow.value, next: pruned } : undefined
+    if (io.isAborted()) return undefined
+    // [SP_CTX_02_14] RelocateNote: notes on removed rows go and the report
+    // names them, only once the registry is written
+    const tagsWritten = tags ? await io.writeTags(tags.registry).then(() => true, () => false) : false
+    if (tags && tagsWritten) applied.report.notesDropped = tags.dropped
+    const aliasesWritten = aliases && !io.isAborted() ? await io.writeAliases(aliases.next).then(() => true, () => false) : false
+    const putBack = async () => {
+      if (tags && tagsWritten) await io.writeTags(tags.before).catch(() => undefined)
+      if (aliases && aliasesWritten) await io.writeAliases(aliases.before).catch(() => undefined)
+    }
+    if (io.isAborted()) {
+      await putBack()
+      return undefined
+    }
+    // [SP_CTX_01_05] without an applied edit: "not changed", no size line
+    const report = formatReport(applied.report, archived, 'compaction', ratio)
+    try {
+      await io.writeQueue(reported(q, report, id))
+    } catch (err) {
+      await putBack()
+      throw err
+    }
+    // abandoned during the queue's write: the batch goes back as read
+    if (io.isAborted()) {
+      await io.writeQueue(q).catch(() => undefined)
+      await putBack()
+      return undefined
+    }
+    io.reported?.(id)
+    return report
+  })
+  if (text === undefined) return ABANDONED
+  // After the commit point nothing throws and nothing is awaited: the
+  // handler answers right away.
   io.toast(text.slice(0, 200))
   if (applied.report.applied.length === 0) return { skip: 'context-editor: no edit could be applied' }
-  // [SP_CTX_02_18] RecordBoundary: with `host` only when hostId is already read
-  const boundary = boundaryOf(rows, io.hostId())
-  if (boundary) await io.writeBoundary(boundary).catch(() => undefined)
-  // [SP_CTX_02_31] what this application compressed; never delays the answer
+  // [SP_CTX_02_18] RecordBoundary in the background: with `host` only when hostId is already read
+  if (boundary) {
+    try {
+      void io.writeBoundary(boundary).catch(() => undefined)
+    } catch {
+      // a failed write leaves the previous boundary
+    }
+  }
   // [SP_CTX_02_07] the deliveries this apply put back, or that went with their anchor
-  if (put.done.size && io.pruneDeliveries)
+  if (put.done.size && io.pruneDeliveries && !io.isAborted())
     try {
       io.pruneDeliveries(put.done)
     } catch {
       // a later apply skips a delivery that is already a row
     }
-  const entry = applyEntry(id, applied.report, archived, messages, edits)
-  if (entry && io.journal)
+  // [SP_CTX_02_31] what this application compressed; never delays the answer
+  if (entry && io.journal && !io.isAborted())
     try {
       io.journal(entry)
     } catch {
@@ -355,6 +407,19 @@ function reported(q: Queue, text: string, id: number): Queue {
     optimizePrompted: q.optimizePrompted,
     ...(q.handoff ? { handoff: q.handoff } : {}),
   }
+}
+
+// [SP_CTX_02_07] The failure branch's write of the queue it read on the
+// queue's chain, or undefined: nothing to write. The apply that failed may
+// have reached its commit point first (`lastReported`, the id of the last
+// report an apply of this module instance wrote and returned without an
+// abandon): when the queue holds no batch and carries that report, the batch
+// is gone and its report stands, so no failure report goes beside it. An
+// apply the host gave up on never counts, so its failure is always recorded.
+export function failureRecord(read: Read<Queue>, lastReported: number | undefined, reason: string, now: number): Queue | undefined {
+  const q = read.state === 'unreadable' ? undefined : read.value
+  if (q && !q.edits.length && lastReported !== undefined && q.reportId === lastReported) return undefined
+  return failedQueue(q, reason, now)
 }
 
 // [SP_CTX_02_07] The queue after the handler failed: batch dropped, a report

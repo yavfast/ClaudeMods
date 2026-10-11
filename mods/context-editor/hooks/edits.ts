@@ -264,6 +264,9 @@ export type AfterPrepareIO = {
   now?: string
   // called from a compaction handler: never wait for hostId
   inCompaction: boolean
+  // [SP_CTX_01_14] settles once a compaction handler joined this preparation:
+  // the wait ends there with hostId if already read
+  hurried?: Promise<void>
   // awaits the one hostId promise
   wait: () => Promise<string | undefined>
   // hostId if its read has ended, else absent
@@ -279,13 +282,14 @@ export type AfterPrepareIO = {
 // session switch in this process (not the first prepare after load) the read
 // is the loaded chain (/resume), so the new session's boundary that this
 // process wrote loses its `host`. Outside a compaction hostId is awaited;
-// inside one it is the value if read, else absent. A failed rewrite removes
+// inside one, or once a compaction handler joined the preparation
+// (`hurried`), it is the value if read, else absent. A failed rewrite removes
 // the file (without a boundary the whole transcript, which after /resume is
 // right); if that fails too, a toast. Never throws; true when untrusted.
 export async function afterPrepare(io: AfterPrepareIO): Promise<boolean> {
   if (!sessionSwitched(io.prev, io.now)) return false
   try {
-    const id = io.inCompaction ? io.peek() : await io.wait()
+    const id = io.inCompaction ? io.peek() : await (io.hurried ? Promise.race([io.wait(), io.hurried.then(() => io.peek())]) : io.wait())
     const next = withoutHost(await io.read(), id)
     if (next === undefined) return false
     try {

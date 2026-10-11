@@ -165,7 +165,7 @@ Processing logic (pseudocode):
 
 Purpose: тримати реєстр узгодженим з розмовою після застосування: теги, псевдоніми, межі етапів і слот стану.
 
-Logic: у [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07) після ApplyEdits, а також у реєстрах, скопійованих у сховище нової сесії після засіву ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21), крок `registries`; рядки «до» — ті, до яких BuildSeed застосував правки, «після» — засіяні), видалити псевдоніми змінених і зниклих пар з AliasRegistry, а також теги, чиї цілі змінено застосованими правками (пари `summarize`/`drop` разом з їхніми рядками, пари й рядки діапазонів `collapse`, рядки `rewrite`/`describe`; для тегу-діапазону — будь-який рядок діапазону), теги `disposable`, чия заміна (ключ [SP_CTX_02_13](#SP_CTX_02_13)) була в пакеті — застосована чи відхилена ([SP_CTX_04_03](./context_editor.states.sp.md#SP_CTX_04_03)), і теги, чиї цілі не знайдено в новому списку рядків (за `tool_use_id` або Locate; для діапазону — обидва кінці); новий список: у компактизації — повернені рядки, а якщо не застосовано жодної правки — рядки події; для засіву — засіяні рядки `s.rows`, а «до» — `s.visible`, пакет — `s.edits` (до перевірки `pin`), застосовані — правки з `s.edits`, чий опис є в `s.report.applied`. Тег рядка, що лишився, отримує новий індекс як `hint` (діапазон — і `toHint`). Збій запису реєстру не скасовує застосування.
+Logic: у [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07) після ApplyEdits, а також у реєстрах, скопійованих у сховище нової сесії після засіву ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21), крок `registries`; рядки «до» — ті, до яких BuildSeed застосував правки, «після» — засіяні), видалити псевдоніми змінених і зниклих пар з AliasRegistry, а також теги, чиї цілі змінено застосованими правками (пари `summarize`/`drop` разом з їхніми рядками, пари й рядки діапазонів `collapse`, рядки `rewrite`/`describe`; для тегу-діапазону — будь-який рядок діапазону), теги `disposable`, чия заміна (ключ [SP_CTX_02_13](#SP_CTX_02_13)) була в пакеті — застосована чи відхилена ([SP_CTX_04_03](./context_editor.states.sp.md#SP_CTX_04_03)), і теги, чиї цілі не знайдено в новому списку рядків (за `tool_use_id` або Locate; для діапазону — обидва кінці); новий список: у компактизації — повернені рядки, а якщо не застосовано жодної правки — рядки події; для засіву — засіяні рядки `s.rows`, а «до» — `s.visible`, пакет — `s.edits` (до перевірки `pin`), застосовані — правки з `s.edits`, чий опис є в `s.report.applied`. Тег рядка, що лишився, отримує новий індекс як `hint` (діапазон — і `toHint`). Збій запису реєстру не скасовує застосування. У компактизації RebindTags рахує з реєстрів, прочитаних у кроці фіксації (ланцюжки реєстру і псевдонімів тримаються до запису черги), і нічого не пише, якщо хост покинув диспетчеризацію; записані реєстри повертаються такими, як прочитано, коли запис черги не вдався або диспетчеризацію покинуто до нього ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)).
 
 Слот стану ([C_CTX_DEC_19](./context_editor.concept.md#C_CTX_DEC_19)). Тег `state` переживає застосовану `rewrite` власного рядка: тег переходить на переписаний рядок — `anchor` = відбиток рядка нового списку, текст якого дорівнює тексту, який ApplyEdits записав для цієї правки (`MARK + " rewritten" + note + ": " + text`), `hint` — його індекс; кілька таких рядків — найближчий до старого `hint`. Будь-яка інша втрата рядка (згортання діапазону з ним неможливе за PrepareEdits, але ціль може зникнути з вікна, засів може лишити рядок до підсумку) видаляє тег, як інші.
 
@@ -218,15 +218,29 @@ Logic: у [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07) після A
 Purpose: створити сховище, доступне лише власникові, для поточної сесії.
 
 Processing logic (pseudocode):
-    ON session start, and before any operation whose session_id differs from the stored one:
-        stored session_id = current
-        IF HOME absent: storage = unavailable "HOME is not set"; RETURN
-        run host command: create <storage> with parents
-        run host command: set permissions owner-only (700) on <HOME>/.claude/context-editor and on <storage>
-        IF any command fails or exits non-zero: storage = unavailable "<command>: <stderr>"; status line warning; RETURN
-        storage = ready
+    FUNCTION EnsureStorage():                                  # перед кожною операцією
+        id = current session_id
+        IF published session_id = id AND no PrepareStorage(id) runs: RETURN published storage
+        RETURN PrepareStorage(id)
 
-Ідентичність процесу хоста (`hostId`, [SP_CTX_01_14](./context_editor.structures.sp.md#SP_CTX_01_14)) від сховища не залежить: модуль запускає її читання один раз за свій час життя (у `session.start` або першому PrepareStorage — що раніше), і зміна сесії в тому самому процесі її не змінює. Підготовка сховища після перемикання сесії в тому самому процесі знімає з межі нової сесії `host` цього процесу ([SP_CTX_02_18](#SP_CTX_02_18)). Періодичного запису немає: зміну сесії (`/clear`, `/resume`, зокрема ті, що запускає RunHandoff) мод помічає перед наступною операцією. Медіа-файли пишуться командою хоста, що декодує base64 з потоку вводу у файл; файли лежать у каталозі сховища, доступному лише власникові.
+    FUNCTION PrepareStorage(id):                               # on session start (з поточним id), і з EnsureStorage
+        IF PrepareStorage(id) already runs: IF the caller is a compaction handler: hurry it; RETURN its result      # одна підготовка на id; AfterPrepare — один раз; підігнана підготовка бере hostId лише якщо його вже прочитано (SP_CTX_01_14)
+        prev = published session_id
+        IF HOME absent: state = unavailable "HOME is not set"
+        ELSE IF HOME is not absolute: state = unavailable "HOME is not an absolute path (…)"
+        ELSE IF id does not match SESSION_ID: state = unavailable "the session id cannot name a folder (…)"   # SP_CTX_01_12
+        ELSE:
+            run one host command: create <storage> with parents, permissions owner-only (700) on <HOME>/.claude/context-editor and on <storage>
+            IF it fails or exits non-zero: state = unavailable "cannot make <base> owner-only: <stderr | exit N>"
+            ELSE: state = ready <storage>; AfterPrepare(prev, id)    # SP_CTX_02_18: зняти `host` з межі після перемикання
+        IF state unavailable: status line warning
+        IF current session_id = id:                              # сесію не покинуто під час підготовки
+            publish (session_id = id, state) in one step; own boundary and listedKey of the previous session go
+        RETURN (id, state)                                       # викликачі цієї підготовки працюють у її каталозі
+
+    Each operation calls EnsureStorage once, keeps the folder it got and passes it to every read and write it makes (`<storage>` of SP_CTX_01_07); a step that needs the storage and has none refuses with "storage unavailable: <reason>".
+
+Ідентичність процесу хоста (`hostId`, [SP_CTX_01_14](./context_editor.structures.sp.md#SP_CTX_01_14)) від сховища не залежить: модуль запускає її читання один раз за свій час життя (у `session.start` або першому PrepareStorage — що раніше), і зміна сесії в тому самому процесі її не змінює. Підготовка сховища після перемикання сесії в тому самому процесі знімає з межі нової сесії `host` цього процесу ([SP_CTX_02_18](#SP_CTX_02_18)). Опубліковане сховище не скидається на час підготовки: поки вона йде, діє попередня пара, а виклики з новим id чекають її результату ([SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07)). Підготовка для сесії, яку покинули, поки вона йшла, нічого не публікує: її викликачі закінчують роботу в її каталозі. Періодичного запису немає: зміну сесії (`/clear`, `/resume`, зокрема ті, що запускає RunHandoff) мод помічає перед наступною операцією. Медіа-файли пишуться командою хоста, що декодує base64 з потоку вводу у файл; файли лежать у каталозі сховища, доступному лише власникові.
 
 ### 02_16. MarkCall  {#SP_CTX_02_16}
 
@@ -296,7 +310,7 @@ Processing logic (pseudocode):
         write text; IF written: ownBoundary = text  # пам'ять екземпляра; збій запису не зупиняє компактизацію: межа лишається попередньою
 
     ON storage prepared (SP_CTX_02_15):
-        listedKey = none; ownBoundary = none
+        listedKey = none; ownBoundary = none          # коли підготовка публікує пару (id, стан)
         start the hostId promise if it is not started
         IF this instance already had another session_id (a switch in the same process — /clear, /resume; not the first prepare after load):
             id = await hostId (outside a compaction handler; inside one, the value if resolved, else absent)
@@ -340,3 +354,6 @@ Processing logic (pseudocode):
 | Date | Change |
 |------|--------|
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_11–02_18 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.tags.sp.md](./context_editor.tags.sp.md), якорі без змін |
+| 2026-10-11 | PL_AUD_CTX фаза 1 (CF-1): PrepareStorage — одна підготовка на `session_id`, перевірка `HOME` і SESSION_ID перед побудовою шляху, публікація пари (id, стан) наприкінці і лише для поточної сесії; EnsureStorage дає операції каталог, який вона тримає до кінця (02_15, 02_18) |
+| 2026-10-11 | PL_AUD_CTX фаза 2 (CF-2): RebindTags і очищення псевдонімів у компактизації — з реєстрів кроку фіксації, без запису після покинутої диспетчеризації, з поверненням реєстрів, коли запис черги не вдався (02_14) |
+| 2026-10-11 | PL_AUD_CTX фаза 1, рев'ю: обробник компактизації, що приєднався до підготовки, підганяє її крок межі — без очікування `hostId` (02_15) |

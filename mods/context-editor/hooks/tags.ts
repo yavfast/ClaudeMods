@@ -41,6 +41,7 @@ import {
   type Stage,
 } from './stages'
 import { badNoteFields, type Note } from './notes'
+import { storageRefusal } from './store'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
@@ -529,7 +530,7 @@ export async function contextTag(
   if (args.agentId) return { code: 'DENIED_SUBAGENT', deny: "a subagent's context cannot be tagged; only the main conversation's." }
   if (!Array.isArray(args.tags) || args.tags.length === 0 || args.tags.length > MAX_TAGS)
     return { code: 'DENIED_EMPTY', deny: `"tags" must be a list of 1..${MAX_TAGS} requests.` }
-  if (storageDown !== undefined) return { code: 'DENIED_STORAGE', deny: `storage unavailable: ${storageDown}` }
+  if (storageDown !== undefined) return { code: 'DENIED_STORAGE', deny: storageRefusal(storageDown) }
   const raws = args.tags
   const onRegistry = io.onRegistry ?? (<T>(work: () => Promise<T>) => work())
   const step = await onRegistry(async (): Promise<TagOutcome | { deny: string; code: TagDeny }> => {

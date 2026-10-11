@@ -412,24 +412,37 @@ Processing logic (pseudocode):
         (rows, report.ownCallsRemoved) = DropOwnCalls(rows, mediaOwners, knownResults, frozen); report.charsAfter = Σ size(rows) − added   # повернений список уже пройшов KeepResponsesWhole; лічильник — для речення P13 (SP_CTX_01_05); доставки — не звільнене місце
         report.produced = Produced(rows, applied steps)                # SP_CTX_02_04: індекси в кінцевому списку
         IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned"   # пакет лишається в черзі
-        RebindTags(rows, report)                                       # SP_CTX_02_14: теги, псевдоніми, межі етапів, слот стану
-        text = FormatReport(report, archive, compaction)               # SP_CTX_01_05: без правок — «not changed», без рядка розміру
-        write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
-                      report: (q.report ? q.report + "\n" : "") + text, reportId: id,
-                      reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt,
-                      optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04)
+        entry = JournalEntry(id, report, archive, messages, edits); boundary = Boundary(rows)   # усе, що потрібне після точки фіксації, — до неї: після запису черги ніщо не кидає
+        COMMIT, holding the registry's chain, then the alias registry's (inside the queue's: порядок queue → tags → aliases):
+            reg = read TagRegistry; aliases = read AliasRegistry          # як вони є тепер, коли очікування ланцюжків скінчилось
+            (reg', dropped) = RebindTags(reg, rows, report)               # SP_CTX_02_14: теги, межі етапів, слот стану, нотатки; lastApply — нижче
+            aliases' = PruneAliases(aliases, rows)
+            IF the dispatch was abandoned: RETURN skip "compaction abandoned"   # нічого не записано
+            IF reg readable: write reg' (failure → registry as it was, report names no dropped notes); IF written: report.notesDropped = dropped
+            IF aliases readable AND aliases' ≠ aliases AND NOT abandoned: write aliases' (failure → as it was)
+            IF the dispatch was abandoned: put back the registries written (reg, aliases as read); RETURN skip "compaction abandoned"
+            text = FormatReport(report, archive, compaction)               # SP_CTX_01_05: без правок — «not changed», без рядка розміру
+            write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
+                          report: (q.report ? q.report + "\n" : "") + text, reportId: id,
+                          reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt,
+                          optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04); точка фіксації
+            IF that write fails: put back the registries written; the failure goes to the failure branch
+            IF the dispatch was abandoned during that write: write q back as read; put back the registries written; RETURN skip "compaction abandoned"
+        after the handler returned, IF the dispatch was not abandoned: lastReported = id; applyDir = <storage>   # пам'ять екземпляра для гілки збою; на ланцюжку черги, до запису гілки збою за ним
         toast first 200 chars of text
         IF report.applied empty: RETURN skip "no edit could be applied"
-        RecordBoundary(rows)                                           # SP_CTX_02_18
+        in the background (not awaited): RecordBoundary(boundary)          # SP_CTX_02_18; після точки фіксації обробник нічого не чекає
         lastApply: the request size read before the apply (plain $.session.usage().context.tokens, 1–3 ms, no breakdown, bounded by a short timeout like hostId — the handler never waits longer; absent or late → nothing) goes into TagRegistry.lastApply = { at: id, tokensBefore } with RebindTags   # SP_CTX_02_28: виміряна зміна
-        in the background, on the journal chain: JournalApply(id, report, archive, messages, edits)   # SP_CTX_02_31; не затримує відповіді
-        in the background, on the deliveries chain, IF done not empty: re-read QueuedDeliveries; IF not unreadable: remove the items whose uuid is in done; write   # SP_CTX_02_36: вставлені, згорнуті й зниклі записи йдуть, записані тим часом лишаються; збій запису — повторну вставку відсікає перевірка «уже рядок»
+        IF NOT abandoned, in the background, on the deliveries chain, IF done not empty: re-read QueuedDeliveries; IF not unreadable: remove the items whose uuid is in done; write   # SP_CTX_02_36: вставлені, згорнуті й зниклі записи йдуть, записані тим часом лишаються; збій запису — повторну вставку відсікає перевірка «уже рядок»
+        IF NOT abandoned, in the background, on the journal chain: JournalApply(entry)   # SP_CTX_02_31; не затримує відповіді
         RETURN { messages: rows }
 
     ON handler failure:
         IF agentId present OR trigger = precompute OR instructions NOT IN (MARKER, HANDOFF_MARKER): pass to next handler
         IF instructions = HANDOFF_MARKER: RETURN skip "seeding failed" at once         # RunHandoff побачить, що засів не взято
-        RETURN skip "applying the edits failed" at once; in the background, on the queue's serial chain, write
+        RETURN skip "applying the edits failed" at once; in the background, on the queue's serial chain (after the failed handler, which holds it), read Queue q in the folder of the apply (applyDir; else the current storage);
+            IF q readable AND q.edits empty AND q.reportId = lastReported: write nothing   # застосування дійшло до точки фіксації: пакета вже немає, його звіт стоїть — без пари «applied» + «failed»
+            ELSE write
             Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
                     report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed",
                     reportId: now, reportResume: false, reportPrompt: DEFAULT_RESUME,
@@ -443,11 +456,11 @@ Errors:
 | SKIP_EMPTY | черга порожня | розмова не змінюється |
 | SKIP_HANDOFF | у черзі запит передачі | розмова і черга не змінюються; правки застосує передача |
 | SKIP_NONE_APPLIED | жодна правка не застосувалась | звіт пояснює причини |
-| SKIP_FAILED | обробник впав | розмова не змінюється; черга очищена; звіт про збій чекає наступного промпту |
-| SKIP_ABANDONED | хост покинув диспетчеризацію до повернення | розмова і черга не змінюються; медіа-файли й архів, уже записані, лишаються без посилань |
+| SKIP_FAILED | обробник впав | розмова не змінюється; черга очищена; звіт про збій чекає наступного промпту; якщо застосування вже записало свій звіт (точка фіксації), черга не змінюється |
+| SKIP_ABANDONED | хост покинув диспетчеризацію до повернення | розмова і черга не змінюються; реєстр, псевдоніми, межа, доставки й журнал — теж (записані в кроці фіксації реєстри повернуто); медіа-файли й архів, уже записані, лишаються без посилань |
 | SKIP_NOT_ARCHIVED | файл оригіналів не записався | жодна правка не застосовується; пакет очищено; звіт називає кожну правку |
 
-Справжнє підсумовування для компактизації з MARKER або HANDOFF_MARKER не запускається за жодної гілки обробника: кожна гілка відповідає або списком рядків, або `skip`, а гілка збою відповідає `skip` одразу, не чекаючи запису черги. На цьому стоїть [C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09): команду з міткою запускає лише код того самого модуля, тож обробник завантажений, коли вона приходить. Якщо хост відкидає повернений список (збій хука після відповіді), спрацьовує гілка збою: звіт про збій дописується після вже записаного звіту і повідомляє, що розмову не змінено. Обробник не відправляє промпт і не чекає на нього ([SP_CTX_DEC_04](./context_editor.sp.md#SP_CTX_DEC_04)). Компактизація з іншими інструкціями (зокрема `/compact` людини) іде далі без змін; її межу записує спостерігач [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18). Людина, що введе `/compact` з текстом MARKER, отримає те саме, що й запуск мода.
+Справжнє підсумовування для компактизації з MARKER або HANDOFF_MARKER не запускається за жодної гілки обробника: кожна гілка відповідає або списком рядків, або `skip`, а гілка збою відповідає `skip` одразу, не чекаючи запису черги. На цьому стоїть [C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09): команду з міткою запускає лише код того самого модуля, тож обробник завантажений, коли вона приходить. Порядок фіксації: усе, що може чекати довго (ланцюжки реєстру й псевдонімів, читання доставок, запис архіву), іде до неї; потім — реєстр, псевдоніми, черга (точка фіксації), і перед кожним записом обробник перевіряє, чи хост не покинув диспетчеризацію. Покинута до точки фіксації або під час запису черги (Esc, бюджет хука ~10 с, що рахує й очікування ланцюжка) — нічого не зафіксовано: черга повертається такою, як прочитано, реєстри, уже записані в кроці фіксації, — такими, як прочитано, пакет лишається в черзі (гілка збою, яку хост викличе по бюджету, потім очищує його одним звітом про збій). Після точки фіксації обробник нічого не чекає: межу він пише у фоні, доставки й журнал — на своїх ланцюжках, і відповідає одразу. Звіт застосування вважається записаним (lastReported) лише коли обробник повернувся без покинутої диспетчеризації; тоді гілка збою, якщо хост відкине повернений список, нічого не пише: пакета вже немає, звіт застосування лишається, пари «applied» + «failed» немає. Застосування, яке хост покинув, гілка збою завжди записує звітом про збій.
 
 Кожен запис черги цього обробника (застосування, відмова архіву, гілка збою) змінює лише пакет і поля звіту, а `optimize` і `optimizePrompted` переносить без змін ([SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04)): у ході з міткою і непорожньою чергою Flush читає чергу після команди і мусить побачити `optimize`, інакше хід оптимізації не запустився б.
 
@@ -559,3 +572,5 @@ Processing logic (pseudocode):
 | Date | Change |
 |------|--------|
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_01–02_10 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.edits.sp.md](./context_editor.edits.sp.md), якорі без змін |
+| 2026-10-11 | PL_AUD_CTX фаза 2 (CF-2): HandleCompaction — крок фіксації під ланцюжками реєстру й псевдонімів, перевірка покинутої диспетчеризації перед кожним записом, черга — точка фіксації, повернення реєстрів, коли її запис не вдався; гілка збою нічого не пише, якщо черга вже має звіт цього застосування (02_07) |
+| 2026-10-11 | PL_AUD_CTX фаза 2, рев'ю: покинуто під час запису черги — черга й реєстри повертаються; межа у фоні, обробник після точки фіксації нічого не чекає; lastReported — лише після повернення без покинутої диспетчеризації; гілка збою пише в каталог застосування (02_07) |

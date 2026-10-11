@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { handleCompaction, type CompactionIO } from '../hooks/compaction'
 import { applyEdits, collectMedia, DESCRIBE_DROPS, formatReport, listRows, MARK, NO_MEDIA_NOW, ownerKey, prepare, replacedOwners } from '../hooks/edits'
 import { matchPrompts } from '../hooks/media'
+import { EMPTY_ALIASES } from '../hooks/aliases'
 import { buildSeed, SUMMARY_OPENER } from '../hooks/handoff'
 import { EMPTY_QUEUE, hasMediaFrom, needsApi, queueEdits, type Queue } from '../hooks/queue'
 import { EMPTY_REGISTRY } from '../hooks/tags'
@@ -216,8 +217,9 @@ test('HandleCompaction — describe: the prompt media is archived from the API f
     isAborted: () => false,
     toast: () => undefined,
     readTags: async () => ({ state: 'missing', value: { ...EMPTY_REGISTRY } }),
-    updateTags: async () => undefined,
-    updateAliases: async () => undefined,
+    writeTags: async () => undefined,
+    readAliases: async () => ({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }),
+    writeAliases: async () => undefined,
     writeBoundary: async () => undefined,
     hostId: () => undefined,
   }
@@ -277,8 +279,9 @@ function compactionIO(api: unknown[], q: Queue, media: string[], saved: Queue[] 
     isAborted: () => false,
     toast: () => undefined,
     readTags: async () => ({ state: 'missing', value: { ...EMPTY_REGISTRY } }),
-    updateTags: async () => undefined,
-    updateAliases: async () => undefined,
+    writeTags: async () => undefined,
+    readAliases: async () => ({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }),
+    writeAliases: async () => undefined,
     writeBoundary: async () => undefined,
     hostId: () => undefined,
   }

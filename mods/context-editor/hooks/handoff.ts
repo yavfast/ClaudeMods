@@ -32,6 +32,7 @@ import { insertDeliveries, type Deliveries } from './deliveries'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
+import { storageRefusal, type StorageState } from './store'
 
 export { ROW_WINDOW }
 
@@ -506,7 +507,7 @@ export type HandoffIO = {
   sleep: (ms: number) => Promise<void>
   sessionId: () => Promise<string>
   // [SP_CTX_02_15] the storage of the current session, prepared for it
-  storage: () => Promise<{ dir: string } | { reason: string }>
+  storage: () => Promise<StorageState>
   readQueue: (dir: string) => Promise<Read<Queue>>
   // a read-modify-write of the queue in `dir`: `change` gets the queue as it
   // is then; undefined writes nothing; a failed write rejects
@@ -514,9 +515,10 @@ export type HandoffIO = {
   // [SP_CTX_02_18] the whole transcript and CurrentRows, a suffix of it
   view: () => Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[] }>
   readApi: () => Promise<readonly unknown[]>
-  readTags: () => Promise<Read<TagRegistry>>
-  // [SP_CTX_01_22] the deliveries recorded in the current session; absent: none
-  readDeliveries?: () => Promise<Read<Deliveries>>
+  // [SP_CTX_02_15] the tag registry in `dir`
+  readTags: (dir: string) => Promise<Read<TagRegistry>>
+  // [SP_CTX_01_22] the deliveries recorded in `dir`, on their chain; absent: none
+  readDeliveries?: (dir: string) => Promise<Read<Deliveries>>
   // the same for the tag registry in `dir`
   updateTagsAt: (dir: string, change: (read: Read<TagRegistry>) => TagRegistry | undefined) => Promise<void>
   // ids of the folders `<dir>/<id>` that hold a seed.json
@@ -672,8 +674,8 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
   try {
     const { transcript, rows } = await io.view()
     const api = await io.readApi()
-    const tags = await io.readTags()
-    const deliveries = io.readDeliveries ? await io.readDeliveries().catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
+    const tags = await io.readTags(run.oldDir)
+    const deliveries = io.readDeliveries ? await io.readDeliveries(run.oldDir).catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
     const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia, deliveries })
     if ('refuse' in built) {
       await clean(false)
@@ -1157,7 +1159,7 @@ export async function requestHandoff(
 ): Promise<{ mode: HandoffRequest['mode'] } | { deny: string; code: HandoffDeny }> {
   if (args.agentId) return { code: 'DENIED_SUBAGENT', deny: 'only the main conversation can be handed off.' }
   const st = await io.storage()
-  if ('reason' in st) return { code: 'DENIED_STORAGE', deny: `storage unavailable: ${st.reason}` }
+  if ('reason' in st) return { code: 'DENIED_STORAGE', deny: storageRefusal(st.reason) }
   let out: { mode: HandoffRequest['mode'] } | { deny: string; code: HandoffDeny } = { code: 'DENIED_QUEUE', deny: 'the queue was not written.' }
   try {
     await io.updateQueue(st.dir, read => {

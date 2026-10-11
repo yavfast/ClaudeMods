@@ -21,8 +21,9 @@ import {
   type AliasRegistry,
   type CallFacts,
 } from '../hooks/aliases'
-import { handleCompaction, type CompactionIO } from '../hooks/compaction'
-import { callLabel, listRows, prepare } from '../hooks/edits'
+import { handleCompaction } from '../hooks/compaction'
+import { boundaryOf, callLabel, listRows, prepare } from '../hooks/edits'
+import { harness } from './compaction-fixtures'
 import { EMPTY_QUEUE, queueEdits, type Queue, type Read } from '../hooks/queue'
 import { contextTag, EMPTY_REGISTRY, type TagIO, type TagRegistry } from '../hooks/tags'
 
@@ -382,6 +383,16 @@ test('pruneAliases drops aliases of edited and vanished pairs, keeps the rest', 
   expect(pruneAliases(kept, before, before, [])).toBe(kept)
 })
 
+// [SP_CTX_02_07] The API form of rows(): no media.
+const API = [
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: BIG }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: 'match list' }] },
+]
+
+function queuedOn(conv: SessionMessage[], edits: unknown[]): Read<Queue> {
+  return { state: 'ok', value: { ...EMPTY_QUEUE, edits: prepare(conv, edits).queued } }
+}
+
 test('after an apply the tag and alias of the changed pair go; those of the untouched pair stay', async () => {
   const conv = rows()
   const tags: TagRegistry = {
@@ -391,62 +402,38 @@ test('after an apply the tag and alias of the changed pair go; those of the unto
       { kind: 'review', target: { tool_use_id: 'b' }, created_turn: 0 },
     ],
   }
-  const written: { tags?: TagRegistry; aliases?: AliasRegistry; queue?: Queue } = {}
-  const start = aliases({ c1: 'a', c2: 'b' })
-  const io: CompactionIO = {
-    dir: '/s',
-    now: () => 1000,
-    readQueue: async () => ({ state: 'ok', value: { ...EMPTY_QUEUE, edits: prepare(conv, [{ op: 'summarize', tool_use_id: 'a', summary: 'file A' }]).queued } }),
-    writeQueue: async q => {
-      written.queue = q
-    },
-    readApi: async () => [
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: BIG }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: 'match list' }] },
-    ],
-    writeMedia: async () => true,
-    writeArchive: async () => true,
-    isAborted: () => false,
-    toast: () => undefined,
-    readTags: async () => ({ state: 'ok', value: tags }),
-    updateTags: async change => {
-      written.tags = change(tags)
-    },
-    updateAliases: async change => {
-      written.aliases = change(start)
-    },
-    writeBoundary: async () => undefined,
-    hostId: () => undefined,
-  }
+  const { io, written } = harness(
+    queuedOn(conv, [{ op: 'summarize', tool_use_id: 'a', summary: 'file A' }]),
+    { readApi: async () => API },
+    { state: 'ok', value: tags },
+    ok(aliases({ c1: 'a', c2: 'b' })),
+  )
   const out = await handleCompaction(io, conv)
   if (!('messages' in out)) throw new Error(out.skip)
   expect(written.tags!.tags.map(t => ('tool_use_id' in t.target ? t.target.tool_use_id : '?'))).toEqual(['b'])
   expect(written.aliases!.map).toEqual({ c2: 'b' })
 })
 
-test('a failed alias update does not undo the apply', async () => {
+// [SP_CTX_02_07] [SP_CTX_02_14] TST-9
+test('a failed alias update does not undo the apply: the batch is cleared, its report written, the boundary recorded', async () => {
   const conv = rows()
-  const io: CompactionIO = {
-    dir: '/s',
-    now: () => 1000,
-    readQueue: async () => ({ state: 'ok', value: { ...EMPTY_QUEUE, edits: prepare(conv, [{ op: 'drop', tool_use_id: 'b' }]).queued } }),
-    writeQueue: async () => undefined,
-    readApi: async () => [
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: BIG }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'b', content: 'match list' }] },
-    ],
-    writeMedia: async () => true,
-    writeArchive: async () => true,
-    isAborted: () => false,
-    toast: () => undefined,
-    readTags: async () => ({ state: 'missing', value: { ...EMPTY_REGISTRY } }),
-    updateTags: async () => undefined,
-    updateAliases: async () => {
-      throw new Error('disk full')
+  const { io, written } = harness(
+    queuedOn(conv, [{ op: 'drop', tool_use_id: 'b' }]),
+    {
+      readApi: async () => API,
+      writeAliases: async () => {
+        throw new Error('disk full')
+      },
     },
-    writeBoundary: async () => undefined,
-    hostId: () => undefined,
-  }
+    undefined,
+    ok(aliases({ c1: 'a', c2: 'b' })),
+  )
   const out = await handleCompaction(io, conv)
-  expect('messages' in out).toBe(true)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.queue!.edits).toEqual([])
+  expect(written.queue!.reportId).toBe(1000)
+  expect(written.queue!.report).toContain('applied 1 edit(s): drop b')
+  expect(written.reported).toBe(1000)
+  expect(written.boundary).toEqual(boundaryOf(out.messages))
+  expect(written.aliases).toBeUndefined()
 })

@@ -39,15 +39,15 @@
 ## Де живе стан
 
 - **Диск, на сесію:** `$HOME/.claude/context-editor/<session_id>/` (700): `pending.json` (черга), `tags.json` (реєстр: теги, етапи, нотатки, підказка, `lastApply` — один файл за [C_CTX_DEC_07](./context_editor.concept.md#C_CTX_DEC_07), [C_CTX_DEC_20](./context_editor.concept.md#C_CTX_DEC_20)), `aliases.json`, `boundary.json` (довіра — [SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)), `journal.json`, `deliveries.json`, архіви замінених оригіналів і медіа, файли засіву. Структури — [SP_CTX_01](./context_editor.structures.sp.md).
-- **Пам'ять інстансу модуля** (`register.ts`): поточна сесія і тека сховища, ідентичність хост-процесу, власна межа, ключ останнього перегляду, лічильник ходів, стан Flush і передачі, скопійовані id результатів, якір доставки, мемо підказки, ланцюги `serial` на файл.
-- **Порядок RMW:** один ланцюг `serial` на файл; вкладення лише queue → tags / aliases / deliveries.
+- **Пам'ять інстансу модуля** (`register.ts`): опублікована пара сесія + тека сховища і підготовки в польоті (`store.ts`), id останнього звіту застосування, ідентичність хост-процесу, власна межа, ключ останнього перегляду, лічильник ходів, стан Flush і передачі, скопійовані id результатів, якір доставки, мемо підказки, ланцюги `serial` на файл.
+- **Порядок RMW:** один ланцюг `serial` на файл; вкладення лише queue → tags → aliases (крок фіксації компактизації), queue → deliveries, tags → deliveries.
 
 ## Кандидати абстракцій (з аудиту)
 
 | Абстракція | Стан | Що дає | CF |
 |------------|------|--------|----|
-| Тека сховища на операцію (`dir` з `ensureStorage`, одна підготовка в польоті) | заплановано (Ф1) | жодного читання глобальної теки після `await` | CF-1 |
-| `hooks/store.ts`: `Read<T>`, `jsonFile`, `Store<T>.update`, типізовані ранжовані ланцюги `serial` | заплановано (Ф7) | один контракт RMW замість ~17 копій; `serial` з тестами | CF-15 |
+| Тека сховища на операцію (`dir` з `ensureStorage`, одна підготовка в польоті) | зроблено (Ф1): `hooks/store.ts` — `StorageState`, PrepareStorage/EnsureStorage, SESSION_ID | жодного читання глобальної теки після `await` | CF-1 |
+| `hooks/store.ts` (доповнити): `Read<T>`, `jsonFile`, `Store<T>.update`, типізовані ранжовані ланцюги `serial` | заплановано (Ф7) | один контракт RMW замість ~17 копій; `serial` з тестами | CF-15 |
 | Одне джерело `responses()` / ResponseStart | заплановано (Ф8) | FrozenPrefix і ціна кешу бачать ту саму відповідь | CF-16 |
 | `hooks/rows.ts`: предикати рядків, пошук пари, `charsOf`, `sameText`, `worthEditing`; `PREFIX`/`modText()` | заплановано (Ф9) | одне визначення на поняття | CF-17, CF-18 |
 | `contextList` / `afterTurn` / `observeCompaction` у портах; `hooks/tools.ts` | заплановано (Ф10) | `register.ts` — лише зв'язування | CF-19, CF-20 |

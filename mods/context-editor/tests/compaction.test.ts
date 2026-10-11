@@ -5,6 +5,7 @@ import {
   compactionFailure,
   compactionRoute,
   failedQueue,
+  failureRecord,
   handleCompaction,
   HANDOFF_MARKER,
   MARKER,
@@ -28,6 +29,8 @@ import {
 } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
+import { harness } from './compaction-fixtures'
+import type { AliasRegistry } from '../hooks/aliases'
 import type { Deliveries, QueuedDelivery } from '../hooks/deliveries'
 
 const BIG = 'x'.repeat(5000)
@@ -41,44 +44,6 @@ function conversation(): SessionMessage[] {
     { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }], handle: 'h3' },
     { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: BIG, isError: false }], handle: 'h4' },
   ]
-}
-
-function harness(queue: Read<Queue>, over: Partial<CompactionIO> = {}, tags: Read<TagRegistry> = { state: 'missing', value: { ...EMPTY_REGISTRY } }) {
-  const written: { queue?: Queue; media: string[]; archive?: string; archiveText?: string; toasts: string[]; tags?: TagRegistry; boundary?: Boundary } = { media: [], toasts: [] }
-  const io: CompactionIO = {
-    dir: '/s',
-    now: () => 1000,
-    readQueue: async () => queue,
-    writeQueue: async q => {
-      written.queue = q
-    },
-    readApi: async () => [
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }] }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'z', content: 'listing' }] },
-    ],
-    writeMedia: async path => {
-      written.media.push(path)
-      return true
-    },
-    writeArchive: async (path, text) => {
-      written.archive = path
-      written.archiveText = text
-      return true
-    },
-    isAborted: () => false,
-    toast: t => void written.toasts.push(t),
-    readTags: async () => tags,
-    updateTags: async change => {
-      if (tags.state !== 'unreadable') written.tags = change(tags.value)
-    },
-    updateAliases: async () => undefined,
-    writeBoundary: async b => {
-      written.boundary = b
-    },
-    hostId: () => undefined,
-    ...over,
-  }
-  return { io, written }
 }
 
 function queued(edits: unknown[], extra: Partial<Queue> = {}): Read<Queue> {
@@ -142,6 +107,164 @@ test('media that cannot be written blocks the edit and keeps the media row', asy
   const out = await handleCompaction(io, conversation())
   expect('skip' in out).toBe(true)
   expect(written.queue!.report).toContain('media could not be archived')
+})
+
+// ---- [SP_CTX_02_07] the commit: nothing written after an abandon, the queue last
+
+function taggedRegistry(): Read<TagRegistry> {
+  return { state: 'ok', value: { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }] } }
+}
+
+const ALIASES: Read<AliasRegistry> = { state: 'ok', value: { next: 3, map: { c1: 'a', c2: 'z' } } }
+
+const DELIVERY: QueuedDelivery = { uuid: 'd1', anchor: ['a'], kind: 'person', origin: 'unclassified', text: 'mid-turn', cut: 0, media: 0, at: 1 }
+
+test('HandleCompaction — commit: the registries, the queue, then the boundary, the deliveries and the journal', async () => {
+  const { io, written } = harness(
+    queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]),
+    { readDeliveries: async () => ({ state: 'ok', value: { items: [DELIVERY] } }) },
+    taggedRegistry(),
+    ALIASES,
+  )
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.order).toEqual(['tags', 'aliases', 'queue', 'boundary', 'deliveries', 'journal'])
+  expect(written.reported).toBe(1000)
+})
+
+test('HandleCompaction — покинуто під час очікування реєстру: registry, aliases, boundary, deliveries and journal unchanged; the batch stays queued', async () => {
+  let aborted = false
+  const { io, written } = harness(
+    queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]),
+    {
+      isAborted: () => aborted,
+      // the host abandons the dispatch while the handler waits for the registries' chains
+      onRegistries: async work => {
+        aborted = true
+        return work()
+      },
+      readDeliveries: async () => ({ state: 'ok', value: { items: [DELIVERY] } }),
+    },
+    taggedRegistry(),
+    ALIASES,
+  )
+  const out = await handleCompaction(io, conversation())
+  expect('skip' in out && out.skip).toContain('abandoned')
+  expect(written.order).toEqual([])
+  expect(written.queue).toBeUndefined()
+  expect(written.reported).toBeUndefined()
+  // the failure branch that follows drops the batch with one report of the failure
+  const failed = failureRecord(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), written.reported, 'timeout', 5)!
+  expect(failed.edits).toEqual([])
+  expect(failed.report).toContain('applying the edits failed (timeout)')
+})
+
+test('HandleCompaction — покинуто між записами: the registries already written are put back as read; the queue is not written', async () => {
+  let aborted = false
+  const tags = taggedRegistry()
+  const { io, written } = harness(
+    queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]),
+    {
+      isAborted: () => aborted,
+      writeTags: async reg => {
+        written.tags = reg
+        written.order.push('tags')
+        aborted = true
+      },
+    },
+    tags,
+    ALIASES,
+  )
+  const out = await handleCompaction(io, conversation())
+  expect('skip' in out && out.skip).toContain('abandoned')
+  expect(written.order).toEqual(['tags', 'tags'])
+  expect(written.tags).toEqual(tags.state === 'ok' ? tags.value : undefined)
+  expect(written.queue).toBeUndefined()
+})
+
+test('HandleCompaction — запис черги кидає: the registries are put back, nothing after the queue runs, the failure reaches the failure branch', async () => {
+  const tags = taggedRegistry()
+  const { io, written } = harness(
+    queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]),
+    {
+      writeQueue: async () => {
+        throw new Error('disk full')
+      },
+    },
+    tags,
+    ALIASES,
+  )
+  let error = ''
+  await handleCompaction(io, conversation()).catch(err => void (error = String(err)))
+  expect(error).toContain('disk full')
+  // rebound, then put back: the registry is as it was read
+  expect(written.tags).toEqual(tags.state === 'ok' ? tags.value : undefined)
+  expect(written.aliases).toEqual(ALIASES.state === 'ok' ? ALIASES.value : undefined)
+  expect(written.order).toEqual(['tags', 'aliases', 'tags', 'aliases'])
+  expect(written.boundary).toBeUndefined()
+  expect(written.journal).toEqual([])
+  expect(written.reported).toBeUndefined()
+})
+
+test('failureRecord — без пари «applied» + «failed»: once the apply wrote its report, the failure branch writes nothing; an earlier report keeps the failure recorded', async () => {
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]))
+  await handleCompaction(io, conversation())
+  const after: Read<Queue> = { state: 'ok', value: written.queue! }
+  expect(written.queue!.report).toContain('applied')
+  expect(failureRecord(after, written.reported, 'throw', 5)).toBeUndefined()
+  // an apply that failed before its commit: the batch is still there beside an older report
+  const batch = queued([{ op: 'drop', tool_use_id: 'a' }])
+  const older: Read<Queue> = { state: 'ok', value: { ...written.queue!, edits: batch.state === 'ok' ? batch.value.edits : [] } }
+  const failed = failureRecord(older, written.reported, 'throw', 5)!
+  expect(failed.edits).toEqual([])
+  expect(failed.report!.split('\n').length).toBe(2)
+  expect(failed.report).toContain('applying the edits failed (throw)')
+  // nothing applied by this instance yet, or an unreadable queue: the failure is recorded
+  expect(failureRecord(after, undefined, 'throw', 5)).toBeDefined()
+  expect(failureRecord({ state: 'unreadable', reason: 'x' }, 1000, 'throw', 5)!.report).toContain('applying the edits failed')
+})
+
+test('HandleCompaction — покинуто під час запису черги: the batch goes back as read, the registries are put back; no boundary, deliveries or journal; the report does not count', async () => {
+  let aborted = false
+  const tags = taggedRegistry()
+  const batch = queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }])
+  const queues: Queue[] = []
+  const { io, written } = harness(
+    batch,
+    {
+      isAborted: () => aborted,
+      writeQueue: async q => {
+        queues.push(q)
+        written.order.push('queue')
+        aborted = true
+      },
+      readDeliveries: async () => ({ state: 'ok', value: { items: [DELIVERY] } }),
+    },
+    tags,
+    ALIASES,
+  )
+  const out = await handleCompaction(io, conversation())
+  expect('skip' in out && out.skip).toContain('abandoned')
+  expect(queues.length).toBe(2)
+  expect(queues[0]!.report).toContain('applied')
+  expect(queues[1]).toEqual(batch.state === 'ok' ? batch.value : undefined)
+  expect(written.order).toEqual(['tags', 'aliases', 'queue', 'queue', 'tags', 'aliases'])
+  expect(written.tags).toEqual(tags.state === 'ok' ? tags.value : undefined)
+  expect(written.boundary).toBeUndefined()
+  expect(written.pruned).toBeUndefined()
+  expect(written.journal).toEqual([])
+  expect(written.reported).toBeUndefined()
+  expect(written.toasts).toEqual([])
+})
+
+// [SP_CTX_02_07] TST-21 (b)
+test('HandleCompaction — архів не записано і диспетчеризацію покинуто: the first abort check skips before any write', async () => {
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { writeArchive: async () => false, isAborted: () => true })
+  const out = await handleCompaction(io, conversation())
+  expect('skip' in out && out.skip).toContain('abandoned')
+  expect(written.queue).toBeUndefined()
+  expect(written.order).toEqual([])
+  expect(written.toasts).toEqual([])
 })
 
 test('an abandoned dispatch keeps the batch queued and writes nothing to the queue', async () => {
@@ -396,7 +519,7 @@ test('HandleCompaction — notes: a note on a summarized pair moves; the report 
   expect(written.tags!.notes[0]!.target).toEqual({ anchor: fingerprint(out.messages[2]!), hint: 2 })
   expect(written.queue!.report).toContain('Notes dropped (their rows were removed): n2.')
   const failing = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
-    updateTags: async () => {
+    writeTags: async () => {
       throw new Error('disk full')
     },
   }, tags)

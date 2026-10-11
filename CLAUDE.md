@@ -47,6 +47,7 @@ Faking the whole host `$` is expensive, so the logic sits in pure modules behind
 - `hooks/compaction.ts` (`CompactionIO`): the markers, which branch a compaction takes, applying queued edits inside `session.compact`, and the boundary observer.
 - `hooks/flush.ts` (`FlushIO`): running the compaction command after a turn and the resume prompt.
 - `hooks/turns.ts`: the turn counter Flush, AutoTag and the handoff share.
+- `hooks/store.ts` (`PrepareIO`): the storage of the current session: its one readiness form `{dir} | {reason}`, PrepareStorage (one run per session id, the session id and folder published together, SESSION_ID check) and EnsureStorage; every operation keeps the folder it got.
 - `hooks/handoff.ts` (`HandoffIO`, `SeedIO`): the handoff request, BuildSeed, CheckSeed, CheckSeeded, RunHandoff and HandleSeed.
 - `hooks/tags.ts` (`TagIO`), `hooks/aliases.ts` (`AliasIO`): tags, auto-tagging rules, `context_tag` (incl. stage open/close), and the `cN` call aliases.
 - `hooks/stages.ts`: stages and their row marks, the close report, the optimization mark and turn texts, telemetry and calibrated size estimates.

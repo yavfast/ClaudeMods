@@ -11,7 +11,7 @@ import {
   type AliasIO,
   type AliasRegistry,
 } from './aliases'
-import { compactionFailure, compactionRoute, failedQueue, handleCompaction, observedBoundary } from './compaction'
+import { compactionFailure, compactionRoute, failureRecord, handleCompaction, observedBoundary } from './compaction'
 import {
   afterPrepare,
   collectMedia,
@@ -84,6 +84,7 @@ import {
 } from './stages'
 import { contextNote, MAX_NOTE, MAX_NOTES, MAX_REMIND, noteLabels, noteLines, noteReminders, remindable, afterReminders, remindsAfter, rowNotes, withReminderLines, type NoteArgs } from './notes'
 import { newTurns, turnCompleted, turnStarted } from './turns'
+import { dirOf, ensureStorage as ensureIn, newStorageMemory, prepareStorage as prepareFor, publishedDir, storageRefusal, type PrepareIO, type SessionStorage, type StorageState } from './store'
 import {
   newAnchorMemory,
   observeAppend,
@@ -298,8 +299,14 @@ const TAG_SCHEMA = {
   required: ['tags'],
 }
 
-// [SP_CTX_01_07] The session's storage, set up at session start.
-const storage: { dir?: string; sessionId?: string; reason: string } = { reason: 'not prepared yet' }
+// [SP_CTX_01_07] [SP_CTX_02_15] The storage of the session: published once
+// its preparation ends, one preparation per session id at a time. Every
+// operation takes the folder EnsureStorage gives it once and keeps it.
+const storage = newStorageMemory()
+// [SP_CTX_02_07] The id of the last report an apply of this instance wrote
+// and answered without an abandon, and the folder of the apply running now
+// (the failure branch writes there).
+const applies: { reported?: number; dir?: string } = {}
 // [SP_CTX_01_14] The identity of the host process, read once per module
 // instance. [SP_CTX_02_18] [SP_CTX_DEC_10] A boundary counts when this host
 // process wrote it, or this instance in this session (ownBoundary): one left
@@ -382,8 +389,8 @@ function view($: EngineInterface): Promise<{ transcript: readonly SessionMessage
     hostId: () => hostIdOf($),
     messages: () => $.session.messages(),
     storage: async () => {
-      const dir = await ensureStorage($)
-      return { sessionId: storage.sessionId, dir }
+      const st = await ensureStorage($)
+      return { sessionId: st.sessionId, dir: dirOf(st) }
     },
     readBoundary: dir => readBoundaryText($, dir),
     own: () => ownBoundary.own,
@@ -399,23 +406,12 @@ async function staleIndexes($: EngineInterface): Promise<boolean> {
   return listed.key !== (await view($)).key
 }
 
-// [SP_CTX_02_18] RecordBoundary's write; once written it is the own boundary.
-async function writeBoundary($: EngineInterface, b: Boundary): Promise<void> {
-  const dir = storage.dir
-  if (!dir) return
-  await recordBoundary(ownBoundary, text => $.fs.write(`${dir}/boundary.json`, text), b)
-}
-
-function queuePath(): string {
-  return `${storage.dir}/pending.json`
-}
-
-function tagsPath(): string {
-  return `${storage.dir}/tags.json`
-}
-
-function aliasesPath(): string {
-  return `${storage.dir}/aliases.json`
+// [SP_CTX_02_18] RecordBoundary's write into the storage `dir`; once written
+// it is the own boundary, when `dir` is the current session's.
+async function writeBoundaryAt($: EngineInterface, dir: string, b: Boundary): Promise<void> {
+  const write = (text: string) => $.fs.write(`${dir}/boundary.json`, text)
+  if (dir === publishedDir(storage)) await recordBoundary(ownBoundary, write, b)
+  else await write(JSON.stringify(b))
 }
 
 // [SP_CTX_01_13]
@@ -429,32 +425,17 @@ async function readAliasesAt($: EngineInterface, dir: string): Promise<Read<Alia
   }
 }
 
-function readAliases($: EngineInterface): Promise<Read<AliasRegistry>> {
-  return readAliasesAt($, storage.dir!)
-}
-
-async function writeAliases($: EngineInterface, reg: AliasRegistry): Promise<void> {
-  await $.fs.write(aliasesPath(), JSON.stringify(reg))
-}
-
-// [SP_CTX_02_14] A read-modify-write of the alias registry on its own chain;
-// nothing is written when the change keeps it as it is.
-function updateAliases($: EngineInterface, change: (reg: AliasRegistry) => AliasRegistry): Promise<void> {
-  return serial('aliases', async () => {
-    const read = await readAliases($)
-    if (read.state === 'unreadable') return
-    const next = change(read.value)
-    if (next !== read.value) await writeAliases($, next)
-  })
+async function writeAliasesAt($: EngineInterface, dir: string, reg: AliasRegistry): Promise<void> {
+  await $.fs.write(`${dir}/aliases.json`, JSON.stringify(reg))
 }
 
 // [SP_CTX_02_17] Resolves refs for the context_* call `callId`: aliases
 // against the registry as it is now (none without storage or from an
 // unreadable registry), "last" on the rows the caller reads.
-async function resolver($: EngineInterface, callId: unknown): Promise<RefResolver> {
+async function resolver($: EngineInterface, dir: string | undefined, callId: unknown): Promise<RefResolver> {
   const id = typeof callId === 'string' && callId ? callId : undefined
-  if (!storage.dir) return refResolver({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }, id)
-  return refResolver(await readAliases($), id)
+  if (!dir) return refResolver({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }, id)
+  return refResolver(await readAliasesAt($, dir), id)
 }
 
 // [SP_CTX_01_10]
@@ -468,28 +449,16 @@ async function readTagsAt($: EngineInterface, dir: string): Promise<Read<TagRegi
   }
 }
 
-function readTags($: EngineInterface): Promise<Read<TagRegistry>> {
-  return readTagsAt($, storage.dir!)
+async function writeTagsAt($: EngineInterface, dir: string, reg: TagRegistry): Promise<void> {
+  await $.fs.write(`${dir}/tags.json`, JSON.stringify(reg))
 }
 
-async function writeTags($: EngineInterface, reg: TagRegistry): Promise<void> {
-  await $.fs.write(tagsPath(), JSON.stringify(reg))
-}
-
-// [SP_CTX_02_14] A read-modify-write of the registry on its serial chain.
-function updateTags($: EngineInterface, change: (reg: TagRegistry) => TagRegistry): Promise<void> {
+// [SP_CTX_02_14] A read-modify-write of the registry in `dir` on its serial
+// chain, from the read state: undefined writes nothing; a failed write rejects.
+function changeTagsAt($: EngineInterface, dir: string, change: (read: Read<TagRegistry>) => TagRegistry | undefined): Promise<void> {
   return serial('tags', async () => {
-    const read = await readTags($)
-    if (read.state !== 'unreadable') await writeTags($, change(read.value))
-  })
-}
-
-// The same from the read state: undefined writes nothing; a failed write rejects.
-function changeTags($: EngineInterface, change: (read: Read<TagRegistry>) => TagRegistry | undefined): Promise<void> {
-  return serial('tags', async () => {
-    if (!(await ensureStorage($))) return
-    const next = change(await readTags($))
-    if (next) await writeTags($, next)
+    const next = change(await readTagsAt($, dir))
+    if (next) await writeTagsAt($, dir, next)
   })
 }
 
@@ -503,24 +472,16 @@ async function readQueueAt($: EngineInterface, dir: string): Promise<Read<Queue>
   }
 }
 
-function readQueue($: EngineInterface): Promise<Read<Queue>> {
-  return readQueueAt($, storage.dir!)
-}
-
 // The queue of the session whose storage is `dir`; the status line follows
 // the current session's queue only.
 async function writeQueueAt($: EngineInterface, dir: string, q: Queue): Promise<void> {
   await $.fs.write(`${dir}/pending.json`, JSON.stringify(q))
-  if (dir === storage.dir) $.ui.status(q.edits.length ? `${q.edits.length} context edit(s) queued` : undefined)
+  if (dir === publishedDir(storage)) $.ui.status(q.edits.length ? `${q.edits.length} context edit(s) queued` : undefined)
 }
 
-function writeQueue($: EngineInterface, q: Queue): Promise<void> {
-  return writeQueueAt($, storage.dir!, q)
-}
-
-// [SP_CTX_01_19] The journal of effect of the current session.
-async function readJournal($: EngineInterface): Promise<Read<Journal>> {
-  const path = `${storage.dir}/journal.json`
+// [SP_CTX_01_19] The journal of effect of the session whose storage is `dir`.
+async function readJournalAt($: EngineInterface, dir: string): Promise<Read<Journal>> {
+  const path = `${dir}/journal.json`
   if (!(await $.fs.exists(path))) return { state: 'missing', value: { ...EMPTY_JOURNAL, entries: [] } }
   try {
     return parseJournal(await $.fs.read(path))
@@ -529,21 +490,29 @@ async function readJournal($: EngineInterface): Promise<Read<Journal>> {
   }
 }
 
-// [SP_CTX_02_31] Each change on the journal's own chain, in the session whose
-// storage is set when it runs.
-function journalIO($: EngineInterface): JournalIO {
+// [SP_CTX_02_31] The journal's port in the session whose storage is `dir`.
+function journalIO($: EngineInterface, dir: string): JournalIO {
   return {
-    read: () => readJournal($),
+    read: () => readJournalAt($, dir),
     write: async j => {
-      await $.fs.write(`${storage.dir}/journal.json`, JSON.stringify(j))
+      await $.fs.write(`${dir}/journal.json`, JSON.stringify(j))
     },
   }
 }
 
-function onJournal($: EngineInterface, work: (io: JournalIO) => Promise<void>): void {
+// [SP_CTX_02_31] Each change on the journal's own chain, in the background,
+// in the storage `at`: the folder of the session the event came in, taken
+// when it came, not when the chain's turn comes.
+function onJournal($: EngineInterface, work: (io: JournalIO, dir: string) => Promise<void>, at: string | Promise<string | undefined>): void {
   void serial('journal', async () => {
-    if (await ensureStorage($)) await work(journalIO($))
+    const dir = await at
+    if (dir) await work(journalIO($, dir), dir)
   }).catch(() => undefined)
+}
+
+// [SP_CTX_01_07] The folder of the current session, asked for now; a failure gives none.
+function storageNow($: EngineInterface): Promise<string | undefined> {
+  return storageDir($).catch(() => undefined)
 }
 
 // [SP_CTX_02_35] RecordDelivery's step in event order; a failure records nothing.
@@ -583,66 +552,65 @@ function deliveryIO($: EngineInterface, dir: string): DeliveryIO {
 
 // [SP_CTX_02_02] [SP_CTX_02_11] The deliveries not yet rows, for the person
 // warnings only: none when the file is missing or unreadable.
-async function deliveredNow($: EngineInterface): Promise<readonly QueuedDelivery[]> {
-  const dir = await ensureStorage($)
-  if (!dir) return []
+async function deliveredNow($: EngineInterface, dir: string): Promise<readonly QueuedDelivery[]> {
   const read = await serial('deliveries', () => readDeliveriesAt($, dir)).catch((): Read<Deliveries> => ({ state: 'unreadable', reason: 'read failed' }))
   return read.state === 'ok' ? read.value.items : []
 }
 
 // [SP_CTX_02_28] The journal's part of the telemetry; a failed read says why.
-async function journalNow($: EngineInterface): Promise<JournalSummary | undefined> {
-  if (!(await ensureStorage($))) return undefined
-  return journalSummary(await readJournal($).catch((err): Read<Journal> => ({ state: 'unreadable', reason: String(err) })))
+async function journalNow($: EngineInterface, dir: string | undefined): Promise<JournalSummary | undefined> {
+  if (!dir) return undefined
+  return journalSummary(await readJournalAt($, dir).catch((err): Read<Journal> => ({ state: 'unreadable', reason: String(err) })))
 }
 
 // [SP_CTX_02_02] An unreadable queue is moved aside so the session can go on.
-async function quarantineQueue($: EngineInterface): Promise<string | undefined> {
-  const moved = `${queuePath()}.bad-${Date.now()}`
-  const ran = await $.process.run(['mv', queuePath(), moved]).catch(() => ({ exitCode: -1 }))
+async function quarantineQueueAt($: EngineInterface, dir: string): Promise<string | undefined> {
+  const path = `${dir}/pending.json`
+  const moved = `${path}.bad-${Date.now()}`
+  const ran = await $.process.run(['mv', path, moved]).catch(() => ({ exitCode: -1 }))
   return ran.exitCode === 0 ? moved : undefined
 }
 
-// [SP_CTX_02_15] Owner-only storage for the current session. No ready file:
-// the module that runs the compaction command also handles it ([C_CTX_DEC_09]).
+// [SP_CTX_02_15] PrepareStorage bound to the host. No ready file: the module
+// that runs the compaction command also handles it ([C_CTX_DEC_09]).
 // `inCompaction`: called from a compaction handler, which never waits for hostId.
-async function prepareStorage($: EngineInterface, inCompaction = false): Promise<void> {
-  // [SP_CTX_01_14] started here or in session.start, whichever comes first; not awaited
-  void hostIdOf($)
-  const prev = storage.sessionId
-  storage.dir = undefined
-  storage.sessionId = await $.session.id()
-  ownBoundary.own = undefined
-  listed.key = undefined
-  const home = await $.env.get('HOME')
-  if (!home) {
-    storage.reason = 'HOME is not set'
-    return
+function prepareIO($: EngineInterface, inCompaction: boolean): PrepareIO {
+  return {
+    urgent: inCompaction,
+    sessionId: () => $.session.id(),
+    home: () => {
+      // [SP_CTX_01_14] started here or in session.start, whichever comes first; not awaited
+      void hostIdOf($)
+      return $.env.get('HOME')
+    },
+    mkdir: (dir, base) => $.process.run(['sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$2" "$1"', 'sh', dir, base]),
+    // [SP_CTX_02_18] a switch in this process (/clear, /resume): the new
+    // session's boundary this process wrote no longer names the rows read here
+    after: (prev, now, dir, hurried) =>
+      afterPrepare({
+        prev,
+        now,
+        inCompaction,
+        hurried,
+        wait: () => hostIdOf($),
+        peek: () => peekHostId(hostId),
+        read: () => readBoundaryText($, dir),
+        write: text => $.fs.write(`${dir}/boundary.json`, text),
+        remove: () => removeFile($, `${dir}/boundary.json`),
+        toast: text => $.ui.toast(text),
+      }),
+    published: () => {
+      ownBoundary.own = undefined
+      listed.key = undefined
+    },
+    status: text => $.ui.status(text),
   }
-  const base = `${home}/.claude/${PLUGIN}`
-  const dir = `${base}/${storage.sessionId}`
-  const ran = await $.process
-    .run(['sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$2" "$1"', 'sh', dir, base])
-    .catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
-  if (ran.exitCode !== 0) {
-    storage.reason = `cannot make ${base} owner-only: ${ran.stderr.trim() || `exit ${ran.exitCode}`}`
-    $.ui.status(`${PLUGIN}: storage unavailable`)
-    return
-  }
-  storage.dir = dir
-  // [SP_CTX_02_18] a switch in this process (/clear, /resume): the new
-  // session's boundary this process wrote no longer names the rows read here
-  await afterPrepare({
-    prev,
-    now: storage.sessionId,
-    inCompaction,
-    wait: () => hostIdOf($),
-    peek: () => peekHostId(hostId),
-    read: () => readBoundaryText($, dir),
-    write: text => $.fs.write(`${dir}/boundary.json`, text),
-    remove: () => removeFile($, `${dir}/boundary.json`),
-    toast: text => $.ui.toast(text),
-  })
+}
+
+// [SP_CTX_02_15] A preparation for the session current now, even when it has
+// its storage already (the session start).
+async function prepareStorage($: EngineInterface): Promise<SessionStorage> {
+  return prepareFor(storage, prepareIO($, false), await $.session.id())
 }
 
 async function removeFile($: EngineInterface, path: string): Promise<void> {
@@ -651,10 +619,15 @@ async function removeFile($: EngineInterface, path: string): Promise<void> {
 }
 
 // [SP_CTX_01_07] /clear or /resume in the same process change the session
-// without a session start: the storage follows the current session.
-async function ensureStorage($: EngineInterface, inCompaction = false): Promise<string | undefined> {
-  if (storage.sessionId !== (await $.session.id())) await prepareStorage($, inCompaction)
-  return storage.dir
+// without a session start: the storage follows the current session. The
+// folder or why there is none, and the session they belong to.
+function ensureStorage($: EngineInterface, inCompaction = false): Promise<SessionStorage> {
+  return ensureIn(storage, prepareIO($, inCompaction))
+}
+
+// The folder of the current session's storage, or undefined.
+async function storageDir($: EngineInterface, inCompaction = false): Promise<string | undefined> {
+  return dirOf(await ensureStorage($, inCompaction))
 }
 
 // Writes an owner-only text file through the host shell, its folder made: no
@@ -678,39 +651,59 @@ async function apiMessages($: EngineInterface): Promise<readonly unknown[]> {
   return (await $.session.messages({ as: 'api' })) as unknown as readonly unknown[]
 }
 
-function queueIO($: EngineInterface): QueueIO {
+// The folder a port without storage never reaches: its caller refuses first.
+function need(dir: string | undefined): string {
+  if (!dir) throw new Error(storageRefusal('no folder for this step'))
+  return dir
+}
+
+// The read state of a port whose storage is unavailable.
+function unavailable<T>(st: StorageState): Read<T> {
+  return { state: 'unreadable', reason: storageRefusal('reason' in st ? st.reason : 'no folder') }
+}
+
+function queueIO($: EngineInterface, dir: string): QueueIO {
   return {
-    readQueue: () => readQueue($),
-    writeQueue: q => writeQueue($, q),
-    quarantine: () => quarantineQueue($),
-    queuePath: queuePath(),
+    readQueue: () => readQueueAt($, dir),
+    writeQueue: q => writeQueueAt($, dir, q),
+    quarantine: () => quarantineQueueAt($, dir),
+    queuePath: `${dir}/pending.json`,
   }
 }
 
-function aliasIO($: EngineInterface): AliasIO {
+// [SP_CTX_02_16] `dir` undefined: no storage, MarkAlias marks nothing.
+function aliasIO($: EngineInterface, dir: string | undefined): AliasIO {
   return {
-    ready: async () => !!(await ensureStorage($)),
-    readAliases: () => readAliases($),
-    writeAliases: reg => writeAliases($, reg),
+    ready: async () => dir !== undefined,
+    readAliases: () => readAliasesAt($, need(dir)),
+    writeAliases: reg => writeAliasesAt($, need(dir), reg),
   }
 }
 
 // [SP_CTX_02_06] Flush bound to the host. Its timer comes from the
-// turn.complete hook that calls `flushAfterTurn`.
+// turn.complete hook that calls `flushAfterTurn`. Each step takes the storage
+// of the session current when it runs.
 function flushIO($: EngineInterface): FlushIO {
   return {
-    readQueue: async () => ((await ensureStorage($)) ? readQueue($) : { state: 'unreadable', reason: `storage unavailable: ${storage.reason}` }),
+    readQueue: async () => {
+      const st = await ensureStorage($)
+      return 'dir' in st ? readQueueAt($, st.dir) : unavailable(st)
+    },
     updateQueue: change =>
       serial('queue', async () => {
-        if (!(await ensureStorage($))) return false
-        const read = await readQueue($)
+        const dir = await storageDir($)
+        if (!dir) return false
+        const read = await readQueueAt($, dir)
         if (read.state === 'unreadable') return false
         const next = change(read.value)
         if (!next) return false
-        await writeQueue($, next)
+        await writeQueueAt($, dir, next)
         return true
       }),
-    readTags: async () => ((await ensureStorage($)) ? readTags($) : { state: 'unreadable', reason: `storage unavailable: ${storage.reason}` }),
+    readTags: async () => {
+      const st = await ensureStorage($)
+      return 'dir' in st ? readTagsAt($, st.dir) : unavailable(st)
+    },
     // one attempt; a refusal rejects with the host's text
     compact: async args => {
       await $.command.run({ command: 'compact', args })
@@ -728,21 +721,22 @@ function flushIO($: EngineInterface): FlushIO {
 // session's queue, on its serial chain; Flush's after its own prompt.
 function removeDelivered($: EngineInterface, delivered: string): Promise<void> {
   return serial('queue', async () => {
-    if (!(await ensureStorage($))) return
-    const now = await readQueue($)
-    if (now.state === 'ok') await writeQueue($, withoutReport(now.value, delivered))
+    const dir = await storageDir($)
+    if (!dir) return
+    const now = await readQueueAt($, dir)
+    if (now.state === 'ok') await writeQueueAt($, dir, withoutReport(now.value, delivered))
   })
 }
 
 // [SP_CTX_02_08] DeliverReport's write once the person's prompt entered: the
-// report, the optimization request and the loop guard, on the queue's chain.
-function settle($: EngineInterface, s: Settle): Promise<void> {
+// report, the optimization request and the loop guard, on the queue's chain,
+// in the storage the prompt's delivery read.
+function settle($: EngineInterface, dir: string, s: Settle): Promise<void> {
   return serial('queue', async () => {
-    if (!(await ensureStorage($))) return
-    const now = await readQueue($)
+    const now = await readQueueAt($, dir)
     if (now.state !== 'ok') return
     const next = settledQueue(now.value, s)
-    if (next !== now.value) await writeQueue($, next)
+    if (next !== now.value) await writeQueueAt($, dir, next)
   })
 }
 
@@ -753,9 +747,10 @@ function usageInfo($: EngineInterface): Promise<UsageInfo> {
 
 // [SP_CTX_02_29] BlockReport bound to the host.
 // [SP_CTX_02_34] [SP_CTX_02_28] A change of the telemetry (a new calibration,
-// the measured apply consumed) into the registry, on its chain; a failure has no effect.
-function updateRegistry($: EngineInterface, change: (reg: TagRegistry) => TagRegistry): Promise<void> {
-  return changeTags($, read => (read.state === 'unreadable' ? undefined : change(read.value)))
+// the measured apply consumed) into the registry in `dir`, on its chain; a
+// failure has no effect.
+function updateRegistry($: EngineInterface, dir: string, change: (reg: TagRegistry) => TagRegistry): Promise<void> {
+  return changeTagsAt($, dir, read => (read.state === 'unreadable' ? undefined : change(read.value)))
 }
 
 // [SP_CTX_02_33] The due reminders after one of the mod's own tools, on the
@@ -763,8 +758,9 @@ function updateRegistry($: EngineInterface, change: (reg: TagRegistry) => TagReg
 // for a subagent or a refused call, nor after context_edit and
 // context_handoff (remindsAfter).
 async function dueLines($: EngineInterface): Promise<string[]> {
-  if (!(await ensureStorage($).catch(() => undefined))) return []
-  return serial('tags', () => noteReminders(tagIO($))).catch((): string[] => [])
+  const dir = await storageDir($).catch(() => undefined)
+  if (!dir) return []
+  return serial('tags', () => noteReminders(tagIO($, dir))).catch((): string[] => [])
 }
 
 async function remindAfter<T extends object>($: EngineInterface, tool: string, agentId: unknown, out: T): Promise<T> {
@@ -772,14 +768,14 @@ async function remindAfter<T extends object>($: EngineInterface, tool: string, a
   return withReminderLines(out, await dueLines($))
 }
 
-// [SP_CTX_02_37] SoftHint bound to the host: the plain usage first, the
-// breakdown only for the size trigger, the calibration in the background, the
-// hint state on the registry's chain (true when written).
-function hintIO($: EngineInterface): HintIO {
+// [SP_CTX_02_37] SoftHint bound to the host in the storage `dir`: the plain
+// usage first, the breakdown only for the size trigger, the calibration in
+// the background, the hint state on the registry's chain (true when written).
+function hintIO($: EngineInterface, dir: string): HintIO {
   return {
-    readTags: () => readTags($),
-    readAliases: () => serial('aliases', () => readAliases($)),
-    readQueue: () => readQueue($),
+    readTags: () => readTagsAt($, dir),
+    readAliases: () => serial('aliases', () => readAliasesAt($, dir)),
+    readQueue: () => readQueueAt($, dir),
     rows: () => conversation($),
     request: async () => {
       const u = await $.session.usage()
@@ -790,15 +786,14 @@ function hintIO($: EngineInterface): HintIO {
     api: () => apiMessages($),
     model: () => $.session.model(),
     updateRegistry: change => {
-      void updateRegistry($, change).catch(() => undefined)
+      void updateRegistry($, dir, change).catch(() => undefined)
       return Promise.resolve()
     },
     updateTags: change =>
       serial('tags', async () => {
-        if (!(await ensureStorage($))) return false
-        const next = change(await readTags($))
+        const next = change(await readTagsAt($, dir))
         if (!next) return false
-        await writeTags($, next)
+        await writeTagsAt($, dir, next)
         return true
       }),
   }
@@ -807,53 +802,54 @@ function hintIO($: EngineInterface): HintIO {
 // [SP_CTX_02_37] The size channel's suggestion after a marked output. Never
 // longer than HINT_WAIT_MS.
 async function hintFor($: EngineInterface): Promise<string | undefined> {
-  if (!(await ensureStorage($).catch(() => undefined))) return undefined
+  const dir = await storageDir($).catch(() => undefined)
+  if (!dir) return undefined
   return bounded(
-    d => softHint(hintIO($), hintMemo, d).then(o => o.line),
+    d => softHint(hintIO($, dir), hintMemo, d).then(o => o.line),
     () => $.clock.sleep(HINT_WAIT_MS),
   )
 }
 
 // [SP_CTX_02_37] The turn channel's suggestion for the person's prompt
 // between turns. Never longer than HINT_WAIT_MS.
-function suggestionFor($: EngineInterface): Promise<string | undefined> {
+function suggestionFor($: EngineInterface, dir: string): Promise<string | undefined> {
   return bounded(
-    d => turnSuggestion(hintIO($), hintMemo, d).then(o => o.line),
+    d => turnSuggestion(hintIO($, dir), hintMemo, d).then(o => o.line),
     () => $.clock.sleep(HINT_WAIT_MS),
   )
 }
 
-function blockIO($: EngineInterface): BlockIO {
+function blockIO($: EngineInterface, dir: string): BlockIO {
   return {
     key: async () => (await view($)).key,
     rows: () => conversation($),
-    readTags: () => readTags($),
-    updateRegistry: change => updateRegistry($, change),
+    readTags: () => readTagsAt($, dir),
+    updateRegistry: change => updateRegistry($, dir, change),
     media: async () => collectMedia(await apiMessages($), await conversation($)).found,
     usage: () => usageInfo($),
-    journal: async () => (await journalNow($)) ?? { applications: 0, rereads: 0, archiveRereads: 0 },
+    journal: async () => (await journalNow($, dir)) ?? { applications: 0, rereads: 0, archiveRereads: 0 },
     setListed: key => {
       listed.key = key
     },
   }
 }
 
-// [SP_CTX_02_30] DetectOptimize bound to the host: each queue change on the
-// queue's chain, each registry change on the registry's, never one inside
-// the other.
-function detectIO($: EngineInterface): DetectIO {
+// [SP_CTX_02_30] DetectOptimize bound to the host in the storage `dir`
+// (undefined: none, the mark is ignored): each queue change on the queue's
+// chain, each registry change on the registry's, never one inside the other.
+function detectIO($: EngineInterface, dir: string | undefined): DetectIO {
   return {
-    ready: async () => !!(await ensureStorage($)),
-    readQueue: () => readQueue($),
+    ready: async () => dir !== undefined,
+    readQueue: () => readQueueAt($, need(dir)),
     updateQueue: change =>
       serial('queue', async () => {
-        if (!(await ensureStorage($))) return
-        const next = change(await readQueue($))
-        if (next) await writeQueue($, next)
+        const at = need(dir)
+        const next = change(await readQueueAt($, at))
+        if (next) await writeQueueAt($, at, next)
       }),
-    updateTags: change => changeTags($, change),
+    updateTags: change => changeTagsAt($, need(dir), change),
     rows: () => conversation($),
-    replace: () => serial('queue', () => queueTagReplacements(tagIO($))),
+    replace: () => serial('queue', () => queueTagReplacements(tagIO($, need(dir)))),
     status: text => $.ui.status(text),
   }
 }
@@ -867,7 +863,10 @@ function handoffIO($: EngineInterface): HandoffIO {
     after: (ms, fn) => void $.clock.after(ms, fn),
     sleep: ms => $.clock.sleep(ms),
     sessionId: () => $.session.id(),
-    storage: async () => ((await ensureStorage($)) ? { dir: storage.dir! } : { reason: storage.reason }),
+    storage: async () => {
+      const st = await ensureStorage($)
+      return 'dir' in st ? { dir: st.dir } : { reason: st.reason }
+    },
     readQueue: dir => readQueueAt($, dir),
     updateQueue: (dir, change) =>
       serial('queue', async () => {
@@ -876,18 +875,10 @@ function handoffIO($: EngineInterface): HandoffIO {
       }),
     view: () => view($),
     readApi: () => apiMessages($),
-    readTags: () => readTags($),
+    readTags: dir => readTagsAt($, dir),
     // [SP_CTX_02_22] the deliveries go into the seed as rows
-    readDeliveries: () =>
-      serial('deliveries', async (): Promise<Read<Deliveries>> => {
-        const dir = await ensureStorage($)
-        return dir ? readDeliveriesAt($, dir) : { state: 'unreadable', reason: storage.reason }
-      }),
-    updateTagsAt: (dir, change) =>
-      serial('tags', async () => {
-        const next = change(await readTagsAt($, dir))
-        if (next) await $.fs.write(`${dir}/tags.json`, JSON.stringify(next))
-      }),
+    readDeliveries: dir => serial('deliveries', () => readDeliveriesAt($, dir)),
+    updateTagsAt: (dir, change) => changeTagsAt($, dir, change),
     listSeeds: async dir => {
       const ran = await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])
       return ran.stdout
@@ -907,7 +898,7 @@ function handoffIO($: EngineInterface): HandoffIO {
         const read = await readTagsAt($, from)
         if (read.state === 'missing') return 'missing'
         if (read.state === 'unreadable') throw new Error(`the tag registry of the old session cannot be read (${read.reason})`)
-        await $.fs.write(`${to}/tags.json`, JSON.stringify(change(read.value)))
+        await writeTagsAt($, to, change(read.value))
         return 'carried'
       }),
     carryAliases: (from, to, change) =>
@@ -915,7 +906,7 @@ function handoffIO($: EngineInterface): HandoffIO {
         const read = await readAliasesAt($, from)
         if (read.state === 'missing') return 'missing'
         if (read.state === 'unreadable') throw new Error(`the alias registry of the old session cannot be read (${read.reason})`)
-        await $.fs.write(`${to}/aliases.json`, JSON.stringify(change(read.value)))
+        await writeAliasesAt($, to, change(read.value))
         return 'carried'
       }),
     // [C_CTX_DEC_13] one attempt; the host's refusal is never swallowed: it rejects with its text
@@ -940,35 +931,38 @@ function seedIO($: EngineInterface): SeedIO {
   return {
     sessionId: () => $.session.id(),
     recordBoundary: async b => {
-      if (await ensureStorage($, true)) await writeBoundary($, b)
+      const dir = await storageDir($, true)
+      if (dir) await writeBoundaryAt($, dir, b)
     },
     hostId: () => peekHostId(hostId),
   }
 }
 
-function tagIO($: EngineInterface): TagIO {
+// [SP_CTX_02_11] The registry's port in the storage `dir`; undefined: none,
+// and the caller refuses before it reads.
+function tagIO($: EngineInterface, dir: string | undefined): TagIO {
   return {
     rows: () => conversation($),
-    readTags: () => readTags($),
-    writeTags: reg => writeTags($, reg),
-    readQueue: () => readQueue($),
-    writeQueue: q => writeQueue($, q),
+    readTags: () => readTagsAt($, need(dir)),
+    writeTags: reg => writeTagsAt($, need(dir), reg),
+    readQueue: () => readQueueAt($, need(dir)),
+    writeQueue: q => writeQueueAt($, need(dir), q),
   }
 }
 
 // [SP_CTX_02_03] The pinned targets on `rows`; none while the registry is
 // unreadable, which HandleCompaction then reports for every edit.
-async function pins($: EngineInterface, rows: readonly SessionMessage[]) {
-  const read = await readTags($)
+async function pins($: EngineInterface, dir: string, rows: readonly SessionMessage[]) {
+  const read = await readTagsAt($, dir)
   return read.state === 'unreadable' ? NO_PINS : pinnedTargets(rows, read.value)
 }
 
 // [SP_CTX_02_01] Stage marks, then tag labels, for the listing, if the
 // storage and registry allow; the registry read for the telemetry.
-async function labels($: EngineInterface, rows: readonly SessionMessage[]) {
+async function labels($: EngineInterface, dir: string | undefined, rows: readonly SessionMessage[]) {
   const none = new Map<number, string[]>()
-  if (!(await ensureStorage($))) return { labels: none, note: '', reg: undefined, notes: [] }
-  const read = await readTags($)
+  if (!dir) return { labels: none, note: '', reg: undefined, notes: [] }
+  const read = await readTagsAt($, dir)
   if (read.state === 'unreadable') return { labels: none, note: `\n(tags, stages and notes not shown: the tag registry cannot be read: ${read.reason})`, reg: undefined, notes: [] }
   const merged = markLabels(rows, read.value)
   for (const [i, list] of tagLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
@@ -978,9 +972,9 @@ async function labels($: EngineInterface, rows: readonly SessionMessage[]) {
 }
 
 // [SP_CTX_02_01] Aliases for the listing, if the storage and registry allow.
-async function aliasNames($: EngineInterface) {
-  if (!storage.dir) return { aliases: new Map<string, string>(), note: '' }
-  const read = await readAliases($)
+async function aliasNames($: EngineInterface, dir: string | undefined) {
+  if (!dir) return { aliases: new Map<string, string>(), note: '' }
+  const read = await readAliasesAt($, dir)
   if (read.state === 'unreadable') return { aliases: new Map<string, string>(), note: `\n(aliases not shown: the alias registry cannot be read: ${read.reason})` }
   return { aliases: aliasesById(read.value), note: '' }
 }
@@ -992,12 +986,15 @@ async function aliasNames($: EngineInterface) {
 function afterCall($: EngineInterface, tool: string, input: Record<string, unknown>, id: string, isError: boolean): void {
   const next = callFollowUp(tool, input, isError)
   if (!next) return
+  // the folder of the session the call ran in, taken now
+  const at = storageNow($)
   if ('write' in next) {
     void serial('tags', async () => {
-      if (await ensureStorage($)) await staleReads(tagIO($), next.write, id)
+      const dir = await at
+      if (dir) await staleReads(tagIO($, dir), next.write, id)
     }).catch(() => undefined)
-    onJournal($, io => journalChanged(io, next.write, Date.now()))
-  } else onJournal($, io => journalReread(io, next.read, id, storage.dir!, Date.now()))
+    onJournal($, io => journalChanged(io, next.write, Date.now()), at)
+  } else onJournal($, (io, dir) => journalReread(io, next.read, id, dir, Date.now()), at)
 }
 
 function deny(reason: string) {
@@ -1039,14 +1036,15 @@ export const register: Register = on => {
     const mode = listMode(args, rows.length)
     if ('bad' in mode) return deny(mode.bad)
     const { found } = collectMedia(await apiMessages($), rows)
-    const tagged = await labels($, rows)
+    const dir = await storageDir($)
+    const tagged = await labels($, dir, rows)
     // [SP_CTX_02_01] one row whole: no telemetry, no new listedKey
     if ('full' in mode) {
       const own = tagged.reg ? rowNotes(rows, tagged.reg, mode.full) : []
       const result = fullRow(rows, mode.full, found, tagged.labels.get(mode.full) ?? [], own) + tagged.note
       return withReminderLines({ result }, await dueLines($))
     }
-    const named = await aliasNames($)
+    const named = await aliasNames($, dir)
     const { from, count } = mode.page
     // [SP_CTX_02_28] a failed telemetry never fails the listing; [SP_CTX_02_34] it calibrates the estimates
     let tele: string
@@ -1054,7 +1052,8 @@ export const register: Register = on => {
     try {
       // [SP_CTX_02_33] counted as if this call's due reminders were delivered;
       // they are delivered only once the listing is built (a failure keeps them)
-      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), change => updateRegistry($, change), await journalNow($))
+      const update = (change: (reg: TagRegistry) => TagRegistry) => (dir ? updateRegistry($, dir, change) : Promise.resolve())
+      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), update, await journalNow($, dir))
       tele = telemetryText(t)
       size = headerSize(t, totalChars(rows))
     } catch (err) {
@@ -1069,13 +1068,15 @@ export const register: Register = on => {
   // [SP_CTX_02_02]
   on('tool.call', { tool: 'mcp__context-editor__context_edit' }, async ($, e) => {
     if (e.agentId) return deny("a subagent's context cannot be edited; only the main conversation's.")
-    if (!(await ensureStorage($))) return deny(`storage unavailable: ${storage.reason}`)
+    const st = await ensureStorage($)
+    if ('reason' in st) return deny(storageRefusal(st.reason))
+    const { dir } = st
     const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
     const out = await serial('queue', async () => {
       const { rows, key } = await view($)
       // [SP_CTX_02_10] the API form is read only for a describe
       const found = needsApi(args) ? collectMedia(await apiMessages($), rows).found : undefined
-      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($))
+      return contextEdit(queueIO($, dir), rows, args, await pins($, dir, rows), await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir))
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out
@@ -1084,22 +1085,23 @@ export const register: Register = on => {
   // [SP_CTX_02_11]
   on('tool.call', { tool: 'mcp__context-editor__context_tag' }, async ($, e) => {
     const args = e as unknown as TagArgs
-    const ready = e.agentId ? true : !!(await ensureStorage($))
+    const st = e.agentId ? undefined : await ensureStorage($)
+    const dir = st && dirOf(st)
     // the registry's read-modify-write on its chain; the replacements on the
     // queue's afterwards, never one chain inside the other
     const io: TagIO = {
-      ...tagIO($),
+      ...tagIO($, dir),
       onRegistry: work => serial('tags', work),
-      replace: () => serial('queue', () => queueTagReplacements(tagIO($))),
-      report: (block, replaced) => blockReport(blockIO($), block, replaced),
-      deliveries: () => deliveredNow($),
+      replace: () => serial('queue', () => queueTagReplacements(tagIO($, dir))),
+      report: (block, replaced) => blockReport(blockIO($, need(dir)), block, replaced),
+      deliveries: () => deliveredNow($, need(dir)),
     }
     const out = await contextTag(
       io,
       { agentId: e.agentId, tags: args.tags },
-      ready ? undefined : storage.reason,
-      e.agentId ? NO_REFS : await resolver($, e.tool_use_id),
-      !e.agentId && ready && (await staleIndexes($)),
+      st && 'reason' in st ? st.reason : undefined,
+      e.agentId ? NO_REFS : await resolver($, dir, e.tool_use_id),
+      !!dir && (await staleIndexes($)),
       typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
     )
     return 'deny' in out ? deny(out.deny) : remindAfter($, TAG, e.agentId, { result: out.result })
@@ -1110,13 +1112,14 @@ export const register: Register = on => {
   // a session has loaded it.
   on('tool.call', { tool: /^mcp__context-editor__context_note$/ }, async ($, e) => {
     const args = e as unknown as NoteArgs
-    const ready = e.agentId ? true : !!(await ensureStorage($))
+    const st = e.agentId ? undefined : await ensureStorage($)
+    const dir = st && dirOf(st)
     const out = await contextNote(
-      { ...tagIO($), onRegistry: work => serial('tags', work) },
+      { ...tagIO($, dir), onRegistry: work => serial('tags', work) },
       { agentId: e.agentId, notes: args.notes },
-      ready ? undefined : storage.reason,
-      e.agentId ? NO_REFS : await resolver($, e.tool_use_id),
-      !e.agentId && ready && (await staleIndexes($)),
+      st && 'reason' in st ? st.reason : undefined,
+      e.agentId ? NO_REFS : await resolver($, dir, e.tool_use_id),
+      !!dir && (await staleIndexes($)),
     )
     return 'deny' in out ? deny(out.deny) : remindAfter($, NOTE, e.agentId, { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`noting failed: ${next.error.kind}`)))
@@ -1154,22 +1157,26 @@ export const register: Register = on => {
     // two appends in flight cannot swap it. observeAppend is sync and reads
     // pinned fields only; a refused row (only a plugin's `note` can be) records nothing.
     const item = observeOrNone(e)
+    const rules = !e.agentId && (e.door === 'prompt' || e.door === 'tool-result')
+    // [SP_CTX_01_07] the folder of the session the row comes in, asked for at the event
+    const at = item || rules ? storageNow($) : undefined
     const stored = await next(e)
     try {
       // [SP_CTX_02_35] RecordDelivery in the background
       if (stored.deny === undefined) {
         if (item)
           void serial('deliveries', async () => {
-            const dir = await ensureStorage($)
+            const dir = await at
             if (dir) await recordDelivery(deliveryIO($, dir), item, MAX_QUEUE_BYTES)
           }).catch(() => undefined)
       }
-      if (!e.agentId && stored.deny === undefined && (e.door === 'prompt' || e.door === 'tool-result')) {
+      if (rules && stored.deny === undefined) {
         const facts = appendFacts(e)
         // decided now: the next compaction or turn start changes the set
         const copy = isCompactionCopy(facts, copied)
         void serial('tags', async () => {
-          if (await ensureStorage($)) await autoTag(tagIO($), facts, copy)
+          const dir = await at
+          if (dir) await autoTag(tagIO($, dir), facts, copy)
         }).catch(() => undefined)
       }
     } catch {
@@ -1191,11 +1198,10 @@ export const register: Register = on => {
     if (e.agentId) return done
     const answer = typeof e.answer === 'string' ? e.answer : ''
     void (async () => {
-      await detectOptimize(detectIO($), { aborted: e.isAborted, answer }).catch(() => undefined)
-      if (!e.isAborted)
-        await serial('tags', async () => {
-          if (await ensureStorage($)) await countTurn(tagIO($))
-        }).catch(() => undefined)
+      // [SP_CTX_02_30] the storage of the session whose turn ended, for the mark and the count
+      const dir = await storageDir($).catch(() => undefined)
+      await detectOptimize(detectIO($, dir), { aborted: e.isAborted, answer }).catch(() => undefined)
+      if (!e.isAborted && dir) await serial('tags', () => countTurn(tagIO($, dir))).catch(() => undefined)
       await flushAfterTurn(flushIO($), flushState, e.isAborted).catch(() => undefined)
     })()
     void handoffAfterTurn(handoffIO($), handoff, e.isAborted).catch(() => undefined)
@@ -1216,10 +1222,11 @@ export const register: Register = on => {
       try {
         // [SP_CTX_01_14] a compaction handler never waits for hostId
         const b = observedBoundary(e, done, peekHostId(hostId))
-        if (b && (await ensureStorage($, true))) {
-          await writeBoundary($, b)
+        const dir = b && (await storageDir($, true))
+        if (b && dir) {
+          await writeBoundaryAt($, dir, b)
           // [SP_CTX_01_10] another compaction is no apply of the mod: nothing of it to measure
-          void changeTags($, read => (read.state !== 'unreadable' && read.value.lastApply ? dropLastApply(read.value) : undefined)).catch(() => undefined)
+          void changeTagsAt($, dir, read => (read.state !== 'unreadable' && read.value.lastApply ? dropLastApply(read.value) : undefined)).catch(() => undefined)
         }
       } catch {
         // a failed write leaves the previous boundary; the compaction stands
@@ -1231,36 +1238,49 @@ export const register: Register = on => {
       if ('messages' in seeded) noteCopies(seeded.messages)
       return seeded
     }
-    const dir = await ensureStorage($, true)
+    applies.dir = undefined
+    const dir = await storageDir($, true)
     if (!dir) return { skip: `${PLUGIN}: storage unavailable` }
-    const outcome = await serial('queue', () =>
-      handleCompaction(
+    applies.dir = dir
+    // [SP_CTX_02_07] the report counts as the apply's only once the handler
+    // returned without an abandon; set on the queue's chain, before the
+    // failure branch's write queued behind it reads it
+    let wrote: number | undefined
+    const outcome = await serial('queue', async () => {
+      const done = await handleCompaction(
         {
           dir,
           now: () => Date.now(),
-          readQueue: () => readQueue($),
-          writeQueue: q => writeQueue($, q),
+          readQueue: () => readQueueAt($, dir),
+          writeQueue: q => writeQueueAt($, dir, q),
           readApi: () => apiMessages($),
           writeMedia: (path, data) => writeMedia($, path, data),
           writeArchive: (path, text) => writeText($, path, text),
           isAborted: () => next.signal.aborted,
           toast: text => $.ui.toast(text),
-          readTags: () => readTags($),
-          updateTags: change => updateTags($, change),
-          updateAliases: change => updateAliases($, change),
-          writeBoundary: b => writeBoundary($, b),
+          readTags: () => readTagsAt($, dir),
+          writeTags: reg => writeTagsAt($, dir, reg),
+          readAliases: () => readAliasesAt($, dir),
+          writeAliases: reg => writeAliasesAt($, dir, reg),
+          // [SP_CTX_02_07] the commit holds the registry's chain, then the
+          // alias registry's, inside the queue's: the order queue → tags → aliases
+          onRegistries: work => serial('tags', () => serial('aliases', work)),
+          reported: id => void (wrote = id),
+          writeBoundary: b => writeBoundaryAt($, dir, b),
           hostId: () => peekHostId(hostId),
           // [SP_CTX_02_07] the plain usage: no breakdown, no API request
           requestTokens: () => requestTokens($),
           // [SP_CTX_02_31] on the journal's chain, never awaited here
-          journal: entry => onJournal($, io => journalApply(io, entry)),
+          journal: entry => onJournal($, io => journalApply(io, entry), dir),
           // [SP_CTX_02_07] [SP_CTX_02_36] on the deliveries' chain
           readDeliveries: () => serial('deliveries', () => readDeliveriesAt($, dir)),
           pruneDeliveries: done => void serial('deliveries', () => pruneDeliveries(deliveryIO($, dir), done)).catch(() => undefined),
         },
         e.messages,
-      ),
-    )
+      )
+      if (wrote !== undefined && !next.signal.aborted) applies.reported = wrote
+      return done
+    })
     if ('messages' in outcome) noteCopies(outcome.messages)
     return outcome
   }).catch(($, e, next) => {
@@ -1268,10 +1288,13 @@ export const register: Register = on => {
     // answer at once, and record a failed batch in the background.
     const out = compactionFailure(e)
     if ('pass' in out) return next(e)
-    if (out.recordFailure && storage.dir)
+    // [SP_CTX_02_07] in the apply's folder; nothing when the apply reached its
+    // commit point first and was not abandoned
+    const dir = applies.dir ?? publishedDir(storage)
+    if (out.recordFailure && dir)
       void serial('queue', async () => {
-        const read = await readQueue($)
-        await writeQueue($, failedQueue(read.state === 'unreadable' ? undefined : read.value, next.error.kind, Date.now()))
+        const failed = failureRecord(await readQueueAt($, dir), applies.reported, next.error.kind, Date.now())
+        if (failed) await writeQueueAt($, dir, failed)
       }).catch(() => undefined)
     return { skip: out.skip }
   })
@@ -1289,10 +1312,10 @@ export const register: Register = on => {
     if (!remindable(facts)) return done
     const lines: string[] = []
     const marked = wantsMark(facts)
-    const alias = marked ? await serial('aliases', () => markAlias(aliasIO($), facts)).catch(() => undefined) : undefined
+    const alias = marked ? await serial('aliases', async () => markAlias(aliasIO($, await storageDir($)), facts)).catch(() => undefined) : undefined
     const hint = marked ? await hintFor($).catch(() => undefined) : undefined
     lines.push(...callLines(marked, alias, hint))
-    if (await ensureStorage($).catch(() => undefined)) lines.push(...(await serial('tags', () => noteReminders(tagIO($))).catch((): string[] => [])))
+    lines.push(...(await dueLines($)))
     // [SP_CTX_02_16] R4 and the journal in the background, queued only once the
     // lines are built: the result waits for neither (the reminders above share
     // the registry's chain with R4)
@@ -1305,17 +1328,18 @@ export const register: Register = on => {
   // unserved optimization request; each leaves only once that prompt has
   // entered. The host skips this hook for prompts the mod submits itself.
   on('prompt.submit', async ($, e, next) => {
-    if (!(await ensureStorage($))) return next(e)
+    const dir = await storageDir($)
+    if (!dir) return next(e)
     return deliverReport({
-      readQueue: () => readQueue($),
-      intro: async () => introFor(await readTags($)),
-      advice: async () => adviceFor(await readTags($)),
+      readQueue: () => readQueueAt($, dir),
+      intro: async () => introFor(await readTagsAt($, dir)),
+      advice: async () => adviceFor(await readTagsAt($, dir)),
       inTurn: () => turns.inTurn,
       enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),
-      markIntroduced: () => changeTags($, withIntroduced),
-      settle: s => settle($, s),
+      markIntroduced: () => changeTagsAt($, dir, withIntroduced),
+      settle: s => settle($, dir, s),
       // [SP_CTX_02_37] the turn channel, between turns only
-      suggestion: () => suggestionFor($),
+      suggestion: () => suggestionFor($, dir),
     })
   }).catch(($, e, next) => next(e))
 }
