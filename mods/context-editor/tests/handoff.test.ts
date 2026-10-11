@@ -47,6 +47,7 @@ import {
   type HandoffIO,
   type HandoffSeed,
   type SeedInput,
+  parseSeedNames,
   type SeedIO,
 } from '../hooks/handoff'
 import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue } from '../hooks/queue'
@@ -2113,4 +2114,10 @@ test('RunHandoff — lastApply of the old session does not reach the new one', a
   s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [], lastApply: { at: 3, tokensBefore: 500_000 } })
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
   expect(s.tags.get('/s/new')!.lastApply).toBeUndefined()
+})
+
+// [SP_CTX_02_21] ParseSeedNames: the listing of seed folders ([PL_AUD_CTX_P10], CF-19)
+test('ParseSeedNames — only all-digit folder names count, spaces trimmed, in listing order', async () => {
+  expect(parseSeedNames('3\n 12 \n\nabc\n4x\n-1\n7\n')).toEqual([3, 12, 7])
+  expect(parseSeedNames('')).toEqual([])
 })

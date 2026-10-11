@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MARKER } from '../hooks/compaction'
-import { enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, newFlushState, swapOptimize, type FlushIO } from '../hooks/flush'
+import { afterTurn, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_RESUME_FRAME, queueEdits, RESUME_FRAME, resumeText, withoutReport, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
@@ -447,4 +447,95 @@ test('swapOptimize — перенесений пакет: a queued batch loses r
   expect(empty.resume).toBe(true)
   expect(empty.resumeSet).toBe(false)
   expect(swapOptimize({ ...EMPTY_QUEUE })).toBeUndefined()
+})
+
+// ---- [SP_CTX_02] AfterTurn: the order of the end of a turn ([PL_AUD_CTX_P10], CF-19)
+
+function turnEnd(over: Partial<TurnEndIO> = {}) {
+  const calls: string[] = []
+  const io: TurnEndIO = {
+    storage: async () => (calls.push('storage'), '/s'),
+    detect: async (dir, e) => void calls.push(`detect ${dir} ${e.aborted} "${e.answer}"`),
+    countTurn: async dir => void calls.push(`count ${dir}`),
+    flush: async aborted => void calls.push(`flush ${aborted}`),
+    handoff: async aborted => void calls.push(`handoff ${aborted}`),
+    ...over,
+  }
+  return { io, calls }
+}
+
+const steps = (calls: string[]) => calls.filter(c => !c.startsWith('handoff'))
+
+test('AfterTurn — порядок: DetectOptimize, then the turn count, then Flush, in the storage of the turn; the handoff besides', async () => {
+  const { io, calls } = turnEnd()
+  const done = afterTurn(io, { aborted: false, answer: 'done' })
+  // CONC-01: the folder is asked for at the event, before any await
+  expect(calls[0]).toBe('storage')
+  await done
+  expect(steps(calls)).toEqual(['storage', 'detect /s false "done"', 'count /s', 'flush false'])
+  expect(calls.filter(c => c.startsWith('handoff'))).toEqual(['handoff false'])
+})
+
+test('AfterTurn — перерваний хід: no turn count; DetectOptimize and Flush still run and see the abort; an answer that is no string is empty', async () => {
+  const { io, calls } = turnEnd()
+  await afterTurn(io, { aborted: true, answer: 42 })
+  expect(steps(calls)).toEqual(['storage', 'detect /s true ""', 'flush true'])
+  expect(calls).toContain('handoff true')
+})
+
+test('AfterTurn — без сховища: DetectOptimize gets no folder, nothing is counted, Flush still runs', async () => {
+  for (const storage of [async () => undefined, async () => Promise.reject(new Error('down'))]) {
+    const { io, calls } = turnEnd({ storage })
+    await afterTurn(io, { aborted: false, answer: '' })
+    expect(steps(calls)).toEqual(['detect undefined false ""', 'flush false'])
+  }
+})
+
+test('AfterTurn — a failed step never stops the next one', async () => {
+  const { io, calls } = turnEnd({
+    detect: async () => Promise.reject(new Error('detect')),
+    countTurn: async () => Promise.reject(new Error('count')),
+    handoff: async () => Promise.reject(new Error('handoff')),
+  })
+  await afterTurn(io, { aborted: false, answer: '' })
+  expect(steps(calls)).toEqual(['storage', 'flush false'])
+})
+
+test('AfterTurn — a step that throws at once, not a rejection, never stops the next one', async () => {
+  const boom = () => {
+    throw new Error('sync')
+  }
+  const { io, calls } = turnEnd({ storage: boom, detect: boom, countTurn: boom, handoff: boom })
+  await afterTurn(io, { aborted: false, answer: '' })
+  expect(steps(calls)).toEqual(['flush false'])
+  const counted = turnEnd({ detect: boom, flush: boom })
+  await afterTurn(counted.io, { aborted: false, answer: '' })
+  expect(steps(counted.calls)).toEqual(['storage', 'count /s'])
+})
+
+test('AfterTurn — the count waits for DetectOptimize, and Flush for the count', async () => {
+  let open!: () => void
+  const gate = new Promise<void>(r => (open = r))
+  const { io, calls } = turnEnd({ detect: async () => (await gate, void calls.push('detect')) })
+  const done = afterTurn(io, { aborted: false, answer: '' })
+  await Promise.resolve()
+  await Promise.resolve()
+  expect(steps(calls)).toEqual(['storage'])
+  // the handoff runs alongside: it does not wait for the steps
+  expect(calls).toContain('handoff false')
+  open()
+  await done
+  expect(steps(calls)).toEqual(['storage', 'detect', 'count /s', 'flush false'])
+})
+
+test('AfterTurn — Flush sees what DetectOptimize queued: the replacements of the mark plan the flush of this very turn', async () => {
+  const { io: fio, log, state } = harness(ok({}))
+  const { io } = turnEnd({
+    // DetectOptimize queues the replacements of the disposable tags
+    detect: async () => void (log.queue = ok({ edits: EDITS, optimize: true })),
+    flush: aborted => flushAfterTurn(fio, state, aborted),
+  })
+  await afterTurn(io, { aborted: false, answer: '' })
+  expect(state.scheduled).toBe(true)
+  expect(log.timers.length).toBe(1)
 })

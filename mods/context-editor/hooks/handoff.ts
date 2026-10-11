@@ -490,6 +490,16 @@ export function pinSummary(read: Read<TagRegistry>, row: SessionMessage): { regi
 
 // ---- [SP_CTX_02_21] RunHandoff
 
+// [SP_CTX_02_21] The ids of the seed folders in a listing of
+// `<dir>/*/seed.json` folder names, one per line: only all-digit names count.
+export function parseSeedNames(listing: string): number[] {
+  return listing
+    .split('\n')
+    .map(s => s.trim())
+    .filter(s => /^\d+$/.test(s))
+    .map(Number)
+}
+
 // What the handoff needs from the host; register.ts binds it to `$`. Queue
 // and registry changes run on their serial chains; none is held across a
 // host command or a prompt ([SP_CTX_DEC_04]).

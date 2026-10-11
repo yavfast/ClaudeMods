@@ -24,7 +24,7 @@ import {
 } from '../hooks/edits'
 import { applyTagRequests, EMPTY_REGISTRY } from '../hooks/tags'
 import { applyNoteRequests } from '../hooks/notes'
-import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/register'
+import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/tools'
 
 function row(role: 'user' | 'assistant', text: string): SessionMessage {
   return { role, text, toolUses: [] }

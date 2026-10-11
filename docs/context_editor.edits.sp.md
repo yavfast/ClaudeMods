@@ -29,6 +29,8 @@
 
 Purpose: інструмент агента; показує рядки основної розмови ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) від найстарішого, сторінками.
 
+Логіка — чиста функція ContextList (`contextList` у `hooks/stages.ts`) за портом ListIO: CurrentRows і їхній ключ, API-подання, тека сховища (взята один раз), читання реєстру тегів і реєстру псевдонімів у цій теці, використання контексту, порт Update реєстру (калібрування), журнал, належні нагадування, запис `listedKey`; мітки рядків — ListLabels (позначки етапів, потім теги, потім нотатки; нечитабельний реєстр — рядок з причиною), псевдоніми — ListAliases; зв'язування з хостом — у реєстрації мода (аудит PL_AUD_CTX, фаза 10, CF-19). Тексти опису й схема інструмента — у `hooks/tools.ts` (ліміти MAX_LIST_COUNT, MAX_FULL_ROW, ROW_WINDOW підставлено з констант, CF-20).
+
 Input:
 | Parameter | Type | Required | Constraints |
 |-----------|------|----------|-------------|
@@ -150,7 +152,7 @@ Purpose: перевірити правки на поточній розмові 
 | будь-яка | ціль (пара разом з обома її рядками, рядок, будь-який рядок або пара діапазону `collapse`) не має тегу `pin` | `target is pinned; remove the pin with context_tag first` |
 | будь-яка, крім `rewrite` рядка з тегом `state` | ціль (як у рядку вище) не містить рядка з тегом `state` ([C_CTX_DEC_19](./context_editor.concept.md#C_CTX_DEC_19)) | `target holds the state slot; change it only by rewrite of that row, or remove its state tag first` |
 
-Рядок з тегом `state` змінює лише `rewrite` саме цього рядка; `collapse`, що його захоплює, відхиляється так само, як для `pin`. Обидві перевірки (`pin` і `state`) повторюються при застосуванні ([SP_CTX_02_07](#SP_CTX_02_07)) і в засіві ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) на тодішньому реєстрі одним кроком:
+Закріплені цілі й рядок слоту стану для `context_edit` дає PinsFrom (`pinsFrom` у `hooks/tags.ts`) з прочитаного реєстру тегів: нечитабельний реєстр — без закріплень (перевірка `pin` і `state` тоді не відхиляє нічого, а HandleCompaction відхилить кожну правку, ScreenPinned нижче). Рядок з тегом `state` змінює лише `rewrite` саме цього рядка; `collapse`, що його захоплює, відхиляється так само, як для `pin`. Обидві перевірки (`pin` і `state`) повторюються при застосуванні ([SP_CTX_02_07](#SP_CTX_02_07)) і в засіві ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) на тодішньому реєстрі одним кроком:
 
     FUNCTION ScreenPinned(rows, edits, reg) → (edits, refused):         # спільний для HandleCompaction і BuildSeed
         IF reg unreadable: RETURN ([], every edit "tag registry unreadable")
@@ -301,7 +303,7 @@ Output: рядки і `removed` — кількість прибраних слу
 
 Purpose: після ходу основної розмови запустити застосування черги вбудованою командою компактизації і продовжити сесію ([C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02), C), а коли агент поставив мітку оптимізації — запустити хід оптимізації ([C_CTX_DEC_17](./context_editor.concept.md#C_CTX_DEC_17), A) замість промпту продовження. Працює однаково в інтерактивному терміналі і в неінтерактивному хості з потоковим входом (stream-json: розширення VS Code, SDK streaming). До 2026-10-09 цей контракт виконувало окреме розширення `context-editor-trigger` (TriggerCompaction).
 
-Логіка — чиста функція за портом FlushIO: читання й запис черги, читання реєстру тегів (лише назва блоку для промпту ходу оптимізації), запуск команди хоста, пауза, відправка промпту, рядок стану; зв'язування з хостом — у реєстрації мода.
+Логіка — чиста функція за портом FlushIO: читання й запис черги, читання реєстру тегів (лише назва блоку для промпту ходу оптимізації), запуск команди хоста, пауза, відправка промпту, рядок стану; зв'язування з хостом — у реєстрації мода. Порядок кінця ходу (преамбула 02: DetectOptimize → лічильник ходів реєстру → планування Flush; передача поруч) — чиста функція AfterTurn (`afterTurn` у `hooks/flush.ts`) за портом TurnEndIO, кожен крок якого — порт; збій кроку не зупиняє наступного (аудит PL_AUD_CTX, фаза 10, CF-19).
 
 Input: подія завершення ходу (`agentId?`, `isAborted`). Стан у пам'яті модуля: `scheduled: bool` (false), `lastSubmittedReportId: int` (0), лічильник ходів (`turns`, `inTurn`, `lastTurnAborted`) з преамбули розділу 02; перезавантаження модуля скидає їх.
 
@@ -449,7 +451,7 @@ Processing logic (pseudocode):
         IF NOT abandoned, in the background, on the journal chain: JournalApply(entry)   # SP_CTX_02_31; не затримує відповіді
         RETURN { messages: rows }
 
-    ON handler failure:
+    ON handler failure:                                                  # CompactionFailed (`compactionFailed` у hooks/compaction.ts) за портом FailureIO
         IF agentId present OR trigger = precompute OR instructions NOT IN (MARKER, HANDOFF_MARKER): pass to next handler
         IF instructions = HANDOFF_MARKER: RETURN skip "seeding failed" at once         # RunHandoff побачить, що засів не взято
         RETURN skip "applying the edits failed" at once; in the background, on the queue's serial chain (after the failed handler, which holds it), read Queue q in the folder of the apply (applyDir; else the current storage);
@@ -593,3 +595,5 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 8 (аудит коду, CF-16): 02_04 — PromptRow (один предикат промпту) і Responses (відповіді рядків одним проходом зі `start`, `known`, `floor`); ResponseStart — похідна від Responses, з тією самою запасною межею відрізка; його бере і CacheCost ([SP_CTX_02_38](./context_editor.stages.sp.md#SP_CTX_02_38)). Зміна поведінки: текст, який API показує в повідомленні раніших викликів, приєднує свою відповідь і тоді, коли наступна відповідь іде одразу за ним (раніше межу давало лише найпізніше повідомлення прогону, і відповідь викликів ділилась між префіксом і перезібраним рядком) |
 | 2026-10-11 | PL_AUD_CTX фаза 8, рев'ю: 02_04 Responses — порожній рядок `user` без `handle`, який не притягнула жодна відповідь, невідомий (ResponseStart — початок відрізка, і без API-подання, і коли повідомлення відповіді поза вікном); притягнутий — відомий, як відповідь, що його притягнула |
 | 2026-10-11 | PL_AUD_CTX фаза 9 (аудит коду, CF-17, CF-18): 02_02 — PersonText відкидає текст, що починається з PREFIX (`context-editor:`; той самий літерал, тепер константа з тестом виробників); 02_04 — PromptRow, EmptyRow і пошук пари мають один дім `hooks/rows.ts`, варіант PromptRowStrict для ResolveLast названо. Без зміни поведінки |
+| 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19, CF-20): 02_01 — логіка `context_list` — ContextList за портом ListIO (`hooks/stages.ts`), мітки — ListLabels, псевдоніми — ListAliases; правило «`count: 0` і `full` не оновлюють `listedKey`» має тести; опис і схема — у `hooks/tools.ts`; 02_06 — порядок кінця ходу — AfterTurn за портом TurnEndIO (`hooks/flush.ts`); 02_07 — гілка збою обробника — CompactionFailed за портом FailureIO. Без зміни поведінки |
+| 2026-10-11 | PL_AUD_CTX фаза 10, рев'ю: 02_03 — звідки PrepareEdits бере закріплення: PinsFrom (`hooks/tags.ts`) з прочитаного реєстру тегів, нечитабельний — без закріплень. Без зміни поведінки |

@@ -2,6 +2,7 @@ import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import {
   archiveText,
+  compactionFailed,
   compactionFailure,
   compactionRoute,
   failedQueue,
@@ -10,9 +11,12 @@ import {
   HANDOFF_MARKER,
   MARKER,
   MEDIA_DATA,
+  observeCompaction,
   observedBoundary,
   screenPinned,
   type CompactionIO,
+  type FailureIO,
+  type ObserveIO,
 } from '../hooks/compaction'
 import {
   boundaryOf,
@@ -830,4 +834,102 @@ test('HandleCompaction — без keep_cache (типово): the API form at han
   expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed')
   // the queue after the batch: keepCache back to false
   expect(written.queue!.keepCache).toBe(false)
+})
+
+// ---- [SP_CTX_02_18] ObserveCompaction: the `pass` branch ([PL_AUD_CTX_P10], CF-19)
+
+function observer(start: TagRegistry, over: Partial<ObserveIO> = {}) {
+  const log = { copies: [] as (readonly SessionMessage[] | undefined)[], boundaries: [] as { dir: string; b: Boundary }[], tags: start, updates: 0 }
+  const io: ObserveIO = {
+    copies: rows => void log.copies.push(rows),
+    hostId: () => 'H',
+    storage: async () => '/s',
+    writeBoundary: async (dir, b) => void log.boundaries.push({ dir, b }),
+    updateTags: () => async change => {
+      log.updates++
+      const next = change(log.tags)
+      if (!next) return false
+      log.tags = next
+      return true
+    },
+    ...over,
+  }
+  return { io, log }
+}
+
+const MEASURED: TagRegistry = { ...EMPTY_REGISTRY, lastApply: { at: 1, tokensBefore: 90_000 } }
+
+test('ObserveCompaction — чужа компактизація: its rows are Copied, it records the boundary with hostId and drops lastApply', async () => {
+  const rows = conversation()
+  const { io, log } = observer(MEASURED)
+  await observeCompaction(io, { trigger: 'auto' }, { messages: rows })
+  expect(log.copies).toEqual([rows])
+  expect(log.boundaries).toEqual([{ dir: '/s', b: boundaryOf(rows, 'H') }])
+  expect(log.tags.lastApply).toBeUndefined()
+  // without lastApply nothing is written
+  const plain = observer(EMPTY_REGISTRY)
+  await observeCompaction(plain.io, { trigger: 'manual' }, { messages: rows })
+  expect(plain.log.tags).toBe(EMPTY_REGISTRY)
+})
+
+test('ObserveCompaction — no boundary, lastApply kept: a subagent, precompute, the mod\'s own markers, a skip, no storage, a failed write', async () => {
+  const rows = conversation()
+  const sub = observer(MEASURED)
+  await observeCompaction(sub.io, { trigger: 'auto', agentId: 'x' }, { messages: rows })
+  expect(sub.log.copies).toEqual([])
+  for (const e of [{ trigger: 'precompute' }, { trigger: 'manual', instructions: MARKER }, { trigger: 'manual', instructions: HANDOFF_MARKER }]) {
+    const h = observer(MEASURED)
+    await observeCompaction(h.io, e, { messages: rows })
+    // the copies are noted whatever the trigger, once nothing skipped it
+    expect(h.log.copies).toEqual([rows])
+    expect(h.log.boundaries).toEqual([])
+    expect(h.log.tags.lastApply).toBeDefined()
+  }
+  const skipped = observer(MEASURED)
+  await observeCompaction(skipped.io, { trigger: 'manual' }, { skip: 'no' })
+  expect(skipped.log.copies).toEqual([])
+  expect(skipped.log.boundaries).toEqual([])
+  const none = observer(MEASURED, { storage: async () => undefined })
+  await observeCompaction(none.io, { trigger: 'auto' }, { messages: rows })
+  expect(none.log.updates).toBe(0)
+  const failed = observer(MEASURED, { writeBoundary: async () => Promise.reject(new Error('disk')) })
+  await observeCompaction(failed.io, { trigger: 'auto' }, { messages: rows })
+  expect(failed.log.tags.lastApply).toBeDefined()
+})
+
+// ---- [SP_CTX_02_07] CompactionFailed: the handler's `.catch`
+
+function failing(dir: string | undefined, queue: Read<Queue>, reported?: number) {
+  const log = { queue, changes: [] as string[] }
+  const io: FailureIO = {
+    dir,
+    reported,
+    now: () => 9,
+    changeQueue: async (d, change) => {
+      log.changes.push(d)
+      const next = await change(log.queue)
+      if (next) log.queue = okRead(next)
+      return !!next
+    },
+  }
+  return { io, log }
+}
+
+test('CompactionFailed — a compaction not the mod\'s passes; the seed skips without a record; the apply skips and records the failure in its folder', async () => {
+  const batch = okRead<Queue>({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  const pass = failing('/s', batch)
+  expect(compactionFailed(pass.io, { trigger: 'manual' }, 'throw')).toEqual({ pass: true })
+  const seed = failing('/s', batch)
+  expect(compactionFailed(seed.io, { trigger: 'manual', instructions: HANDOFF_MARKER }, 'throw')).toEqual({ skip: 'context-editor: seeding failed' })
+  expect(seed.log.changes).toEqual([])
+  const apply = failing('/s', batch)
+  expect(compactionFailed(apply.io, { trigger: 'manual', instructions: MARKER }, 'timeout')).toEqual({ skip: 'context-editor: applying the edits failed' })
+  await Promise.resolve()
+  expect(apply.log.changes).toEqual(['/s'])
+  const q = apply.log.queue.state === 'ok' ? apply.log.queue.value : undefined
+  expect(q!.edits).toEqual([])
+  expect(q!.report).toContain('applying the edits failed (timeout)')
+  const nowhere = failing(undefined, batch)
+  expect('skip' in compactionFailed(nowhere.io, { trigger: 'manual', instructions: MARKER }, 'x')).toBe(true)
+  expect(nowhere.log.changes).toEqual([])
 })

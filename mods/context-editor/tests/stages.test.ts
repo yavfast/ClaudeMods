@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare, producedRows, type QueuedEdit } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
+import type { AliasRegistry } from '../hooks/aliases'
 import {
   blockReport,
   calibrate,
@@ -33,8 +34,12 @@ import {
   startOf,
   telemetry,
   telemetryText,
+  contextList,
+  listAliases,
+  listLabels,
   type BlockIO,
   type ClosedBlock,
+  type ListIO,
   type DetectIO,
   type RowMark,
   type UsageInfo,
@@ -982,4 +987,115 @@ test('BlockReport — кандидати блоку за причинами: rea
   // the telemetry of the report carries the journal when the port gives one
   const withJournal = await blockReport({ ...blockIO(r, reg({ tags })), journal: async () => ({ applications: 1, rereads: 0, archiveRereads: 0 }) }, { name: 'A', after: null, end: mark(r, 11), turn: 0 })
   expect(withJournal).toContain('Effect: 1 application(s); 0 reread(s) of compressed content (0 of archives)')
+})
+
+// ---- [SP_CTX_02_01] contextList ([PL_AUD_CTX_P10], CF-19)
+
+// A host for context_list: the registry and the alias registry as read, the
+// listed key and the IO calls in order.
+function listHarness(over: Partial<ListIO> = {}, list: SessionMessage[] = rows(), tags: Read<TagRegistry> = okRead(reg()), aliases: Read<AliasRegistry> = okRead({ next: 2, map: { c1: 'a' } })) {
+  const log = { listed: undefined as string | undefined, calls: [] as string[], updates: 0 }
+  const io: ListIO = {
+    view: async () => (log.calls.push('view'), { rows: list, key: 'K1' }),
+    api: async () => (log.calls.push('api'), []),
+    storage: async () => (log.calls.push('storage'), '/s'),
+    readTags: async dir => (log.calls.push(`tags ${dir}`), tags),
+    readAliases: async dir => (log.calls.push(`aliases ${dir}`), aliases),
+    usage: async () => USAGE,
+    updateTags: () => async () => void log.updates++,
+    journal: async dir => (log.calls.push(`journal ${dir}`), undefined),
+    dueLines: async () => (log.calls.push('due'), ['DUE']),
+    setListed: key => void (log.listed = key),
+    ...over,
+  }
+  return { io, log }
+}
+
+test('contextList — a page with rows renews listedKey; its aliases, labels and the due reminders go with it', async () => {
+  const { io, log } = listHarness({}, rows(), okRead(reg({ tags: [{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }] })))
+  const out = await contextList(io, { count: 20 })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(log.listed).toBe('K1')
+  expect(out.result).toContain('id=a (c1)')
+  expect(out.result).toContain('[pin]')
+  expect(out.result.endsWith('\nDUE')).toBe(true)
+  // the telemetry reads the API form again for its Cache line ([SP_CTX_02_38])
+  expect(log.calls).toEqual(['view', 'api', 'storage', 'tags /s', 'aliases /s', 'journal /s', 'api', 'due'])
+})
+
+test('contextList — "count": 0 gives the header alone and does not renew listedKey', async () => {
+  const { io, log } = listHarness()
+  const out = await contextList(io, { count: 0 })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(log.listed).toBe(undefined)
+  expect(out.result).not.toContain('#0 ')
+  expect(out.result).toContain('Context')
+})
+
+test('contextList — "full" shows one row whole: no telemetry, no new listedKey, the reminders still go', async () => {
+  const { io, log } = listHarness()
+  const out = await contextList(io, { full: true, index: 3 })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(out.result.startsWith('Row #3 assistant')).toBe(true)
+  expect(log.listed).toBe(undefined)
+  expect(log.calls).toEqual(['view', 'api', 'storage', 'tags /s', 'due'])
+  expect(out.result.endsWith('\nDUE')).toBe(true)
+})
+
+test('contextList — a subagent and a bad "full" are refused before any read of the storage', async () => {
+  const sub = listHarness()
+  expect(await contextList(sub.io, { agentId: 'x', count: 5 })).toEqual({ deny: 'only the main conversation can be listed and edited.' })
+  expect(sub.log.calls).toEqual([])
+  const bad = listHarness()
+  const out = await contextList(bad.io, { full: true })
+  expect('deny' in out && out.deny.includes('BAD_FULL')).toBe(true)
+  expect(bad.log.calls).toEqual(['view'])
+  expect(bad.log.listed).toBe(undefined)
+})
+
+test('contextList — no storage: no labels, aliases or journal, and the page still renews listedKey', async () => {
+  const { io, log } = listHarness({ storage: async () => undefined })
+  const out = await contextList(io, { count: 5 })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(log.calls.some(c => c.startsWith('tags') || c.startsWith('aliases') || c.startsWith('journal'))).toBe(false)
+  expect(log.updates).toBe(0)
+  expect(log.listed).toBe('K1')
+})
+
+test('contextList — a failed telemetry never fails the listing', async () => {
+  const { io, log } = listHarness({
+    usage: async () => {
+      throw new Error('no usage')
+    },
+    journal: async () => {
+      throw new Error('journal down')
+    },
+  })
+  const out = await contextList(io, { count: 5 })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(out.result).toContain('Context: size unavailable (journal down)')
+  expect(log.listed).toBe('K1')
+})
+
+test('listLabels / listAliases — none without storage; an unreadable registry says why', async () => {
+  const list = rows()
+  expect(listLabels(list, undefined)).toEqual({ labels: new Map(), note: '', reg: undefined, notes: [] })
+  const bad = listLabels(list, unreadableRead('bad json'))
+  expect(bad.note).toBe('\n(tags, stages and notes not shown: the tag registry cannot be read: bad json)')
+  expect(bad.reg).toBe(undefined)
+  // stage marks first, then tags, then notes on the same row
+  const r = reg({
+    stage: { name: 'S', after: null, openedTurn: 0 },
+    tags: [{ kind: 'pin', target: { anchor: fingerprint(list[0]!), hint: 0 }, created_turn: 0 }],
+    notes: [{ id: 'n1', target: { anchor: fingerprint(list[0]!), hint: 0 }, text: 'remember', createdTurn: 0 }],
+  })
+  const ok = listLabels(list, okRead(r))
+  expect(ok.labels.get(0)).toEqual([...markLabels(list, r).get(0)!, ...tagLabels(list, r).get(0)!, '[n1]'])
+  expect(ok.notes.length).toBe(1)
+  expect(listAliases(undefined)).toEqual({ aliases: new Map(), note: '' })
+  expect(listAliases(unreadableRead('gone')).note).toBe('\n(aliases not shown: the alias registry cannot be read: gone)')
+  expect([...listAliases(okRead({ next: 3, map: { c1: 'a', c2: 'b' } })).aliases]).toEqual([
+    ['a', 'c1'],
+    ['b', 'c2'],
+  ])
 })

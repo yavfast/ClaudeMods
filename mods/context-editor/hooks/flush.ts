@@ -86,6 +86,51 @@ export function dropOptimize(q: Queue): Queue | undefined {
   return q.optimize ? { ...q, optimize: false } : undefined
 }
 
+// [SP_CTX_02] The steps of the end of a main-conversation turn after `next`;
+// register.ts binds each to `$`. A failed step, rejected or thrown at once,
+// never stops the next one.
+export type TurnEndIO = {
+  // [SP_CTX_02_30] the storage of the session whose turn ended; undefined: none
+  storage: () => Promise<string | undefined>
+  // [SP_CTX_02_30] DetectOptimize in `dir` (undefined: the mark is ignored)
+  detect: (dir: string | undefined, e: { aborted: boolean; answer: string }) => Promise<unknown>
+  // [SP_CTX_02_12] TagRegistry.turn += 1 on the registry's chain in `dir`
+  countTurn: (dir: string) => Promise<unknown>
+  // [SP_CTX_02_06] FlushAfterTurn
+  flush: (aborted: boolean) => Promise<unknown>
+  // [SP_CTX_02_21] the handoff's step of the end of the turn
+  handoff: (aborted: boolean) => Promise<unknown>
+}
+
+// [SP_CTX_02] AfterTurn: in this order, one after the other, DetectOptimize,
+// the registry's turn count (the mark compares with the count not yet
+// raised; an aborted turn does not count) and Flush (once the mark's
+// replacements and request are queued); the handoff besides. The deferred
+// actions these plan come from the turn.complete hook, an origin the host
+// queues commands from.
+export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: unknown }): Promise<void> {
+  const answer = typeof e.answer === 'string' ? e.answer : ''
+  const steps = (async () => {
+    // [SP_CTX_01_07] CONC-01: the folder is asked for at once, before any await
+    const dir = await step(() => io.storage())
+    await step(() => io.detect(dir, { aborted: e.aborted, answer }))
+    if (!e.aborted && dir) await step(() => io.countTurn(dir))
+    await step(() => io.flush(e.aborted))
+  })()
+  const handoff = step(() => io.handoff(e.aborted))
+  await Promise.all([steps, handoff])
+}
+
+// One step of AfterTurn, started at once: a rejection or a synchronous throw
+// gives undefined.
+async function step<T>(run: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await run()
+  } catch {
+    return undefined
+  }
+}
+
 // [SP_CTX_02_06] ON turn completed (main loop, not aborted), after
 // DetectOptimize: plan one Flush when the queue holds edits or an
 // optimization request, and no handoff. True when a Flush was planned.

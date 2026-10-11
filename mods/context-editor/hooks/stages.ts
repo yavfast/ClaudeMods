@@ -7,14 +7,32 @@
 // tag functions from tags.ts: the cycle holds functions only, no top-level
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
-import { describeEdit, distinctive, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import { aliasesById, type AliasRegistry } from './aliases'
+import {
+  collectMedia,
+  describeEdit,
+  distinctive,
+  estimate,
+  fingerprint,
+  fullRow,
+  listMode,
+  listRows,
+  locate,
+  ownerKey,
+  REPRO_FLAG,
+  REPRODUCIBLE_TOOLS,
+  touchedBy,
+  type MediaSizes,
+  type Produced,
+  type QueuedEdit,
+} from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart } from './cache'
 import { charsOf, errorText, findToolResult, findToolUse, modText, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
-import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, type ReviewGroup, type Tag, type TagRegistry } from './tags'
-import { blockNotes, notesHint } from './notes'
+import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, type ReviewGroup, type Tag, type TagRegistry } from './tags'
+import { afterReminders, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -479,6 +497,95 @@ export function telemetryText(t: Telemetry): string {
   if (t.measuredFreed !== undefined)
     lines.push(`Last apply: ~${tokensText(t.measuredFreed)} tokens freed (measured: request before it − request now; net of the rows added since)`)
   return lines.join('\n')
+}
+
+// ---- [SP_CTX_02_01] context_list
+
+// What context_list reads; register.ts binds it to `$`. Each port that takes
+// `dir` works in the storage the listing took once ([SP_CTX_01_07]).
+export type ListIO = {
+  // [SP_CTX_02_18] CurrentRows and the key of their start
+  view: () => Promise<{ rows: readonly SessionMessage[]; key: string }>
+  // the API form: media sizes ([SP_CTX_02_10]) and the Cache line ([SP_CTX_02_38])
+  api: () => Promise<readonly unknown[]>
+  // the folder of the current session's storage; undefined: none
+  storage: () => Promise<string | undefined>
+  readTags: (dir: string) => Promise<Read<TagRegistry>>
+  readAliases: (dir: string) => Promise<Read<AliasRegistry>>
+  usage: () => Promise<UsageInfo>
+  // [SP_CTX_02_34] [SP_CTX_02_28] the registry's Update port in `dir`
+  updateTags: (dir: string) => RegistryUpdate
+  // [SP_CTX_02_31] the journal's summary in `dir`
+  journal: (dir: string) => Promise<JournalSummary | undefined>
+  // [SP_CTX_02_33] the due reminders, delivered with the listing
+  dueLines: () => Promise<string[]>
+  // [SP_CTX_02_18] listedKey = key
+  setListed: (key: string) => void
+}
+
+export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown }
+
+// [SP_CTX_02_01] The listing's labels: stage marks, then tag labels, then
+// note marks; the note lines under the page. None without storage; an
+// unreadable registry says why. `reg`: the registry read, for the telemetry.
+export type ListLabels = { labels: Map<number, string[]>; note: string; reg?: TagRegistry; notes: NoteLine[] }
+
+export function listLabels(rows: readonly SessionMessage[], read: Read<TagRegistry> | undefined): ListLabels {
+  const none = new Map<number, string[]>()
+  if (!read) return { labels: none, note: '', reg: undefined, notes: [] }
+  if (read.state === 'unreadable') return { labels: none, note: `\n(tags, stages and notes not shown: the tag registry cannot be read: ${read.reason})`, reg: undefined, notes: [] }
+  const merged = markLabels(rows, read.value)
+  for (const [i, list] of tagLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
+  // [SP_CTX_02_01] the notes after the tags; their full text under the page
+  for (const [i, list] of noteLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
+  return { labels: merged, note: '', reg: read.value, notes: noteLines(rows, read.value) }
+}
+
+// [SP_CTX_02_01] The call aliases by tool_use_id for the listing; none
+// without storage; an unreadable alias registry says why.
+export function listAliases(read: Read<AliasRegistry> | undefined): { aliases: Map<string, string>; note: string } {
+  if (!read) return { aliases: new Map<string, string>(), note: '' }
+  if (read.state === 'unreadable') return { aliases: new Map<string, string>(), note: `\n(aliases not shown: the alias registry cannot be read: ${read.reason})` }
+  return { aliases: aliasesById(read.value), note: '' }
+}
+
+// [SP_CTX_02_01] context_list: a page of rows with the header and the
+// telemetry, or one row whole. [SP_CTX_02_18] Only a page with rows renews
+// listedKey: `count: 0` and `full` do not. The due reminders go with the
+// result once it is built ([SP_CTX_02_33]).
+export async function contextList(io: ListIO, args: ListArgs): Promise<{ result: string } | { deny: string }> {
+  if (args.agentId) return { deny: 'only the main conversation can be listed and edited.' }
+  const { rows, key } = await io.view()
+  const mode = listMode(args, rows.length)
+  if ('bad' in mode) return { deny: mode.bad }
+  const { found } = collectMedia(await io.api(), rows)
+  const dir = await io.storage()
+  const tagged = listLabels(rows, dir ? await io.readTags(dir) : undefined)
+  // [SP_CTX_02_01] one row whole: no telemetry, no new listedKey
+  if ('full' in mode) {
+    const own = tagged.reg ? rowNotes(rows, tagged.reg, mode.full) : []
+    const result = fullRow(rows, mode.full, found, tagged.labels.get(mode.full) ?? [], own) + tagged.note
+    return withReminderLines({ result }, await io.dueLines())
+  }
+  const named = listAliases(dir ? await io.readAliases(dir) : undefined)
+  const { from, count } = mode.page
+  // [SP_CTX_02_28] a failed telemetry never fails the listing; [SP_CTX_02_34] it calibrates the estimates
+  let tele: string
+  let size: string | undefined
+  try {
+    // [SP_CTX_02_33] counted as if this call's due reminders were delivered;
+    // they are delivered only once the listing is built (a failure keeps them)
+    const update = dir ? io.updateTags(dir) : undefined
+    const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), io.usage, update, dir ? await io.journal(dir) : undefined, io.api)
+    tele = telemetryText(t)
+    size = headerSize(t, totalChars(rows))
+  } catch (err) {
+    tele = `Context: size unavailable (${errorText(err)})`
+  }
+  const text = listRows(rows, from, count, found, tagged.labels, named.aliases, tele, tagged.notes, size)
+  // [SP_CTX_02_18] only a listing with rows the agent receives renews its indexes
+  if (count >= 1) io.setListed(key)
+  return withReminderLines({ result: text + tagged.note + named.note }, await io.dueLines())
 }
 
 // ---- [SP_CTX_02_29] StageBlock

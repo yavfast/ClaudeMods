@@ -95,7 +95,7 @@ Processing logic (pseudocode):
         IF Moved(): RETURN deferred                                         # запит лишається queued
         old = session id; oldDir = storage of old (prepared)
         claim: on the queue chain, IF Due(q) ignoring handoffInFlight:
-            IF state = running AND some <oldDir>/<id>/seed.json with id ≥ at exists:   # покинутий запуск дійшов до засіву і міг дійти до /clear
+            IF state = running AND some <oldDir>/<id>/seed.json with id ≥ at exists:   # покинутий запуск дійшов до засіву і міг дійти до /clear; id — лише назва теки з цифр (ParseSeedNames, `parseSeedNames` у hooks/handoff.ts)
                 handoff absent, report += "a previous handoff stopped after building <that file>; it is not re-run; ask again with /handoff or context_handoff"
                 RETURN nothing
             state = running, at = now, owner = instance
@@ -454,3 +454,4 @@ Errors:
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): документ передачі відкриває DOCUMENT_FRAME (DocumentText), текст продовження агента — за рамкою HANDOFF_RESUME_FRAME, DEFAULT_RESUME — з префіксом мода (Deliver, DocumentWay, AfterClear у 02_21; SP_CTX_DEC_17) |
 | 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): після `/clear` HandedOff і Deliver документа — кроки HandDocument, спільного для DocumentWay і AfterClear: збій кроку — спливне повідомлення, наступний крок іде далі, результат `document`; збій Deliver пише копію тексту в `<old storage>/<id>/document.txt` і називає її; крок `handed` AfterClear перейменовано на HandedOff; помилки DOCUMENT_NOT_DELIVERED, HANDED_OFF_FAILED (02_21) |
 | 2026-10-11 | PL_AUD_CTX фаза 6a, рев'ю: KeepDocument — окрема функція; відхилений хостом промпт документа теж пише копію і називає її (Deliver `refused`); AfterClear з ходом у новій сесії (TURN_IN_NEW) копіює документ агента і називає копію в повідомленні про збій; DOCUMENT_NOT_DELIVERED розширено (02_21) |
+| 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19): 02_21 — розбір переліку тек засіву (лише назви з цифр) — ParseSeedNames (`hooks/handoff.ts`) з тестом; опис `context_handoff` і команди `/handoff` — у `hooks/tools.ts` (CF-20). Без зміни поведінки |

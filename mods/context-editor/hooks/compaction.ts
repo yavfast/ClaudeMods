@@ -24,10 +24,10 @@ import { insertDeliveries, type Deliveries } from './deliveries'
 import { applyEntry, type JournalEntry } from './journal'
 import { appendReport, HANDOFF_MARKER, keepOtherSteps, MARKER, type Queue } from './queue'
 import { modText, resultsOf, totalChars } from './rows'
-import type { Read } from './store'
+import type { ChangeFn, Read, Update } from './store'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
-import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
+import { dropLastApply, pinnedTargets, rebindTags, type TagRegistry } from './tags'
 
 const EXT: Record<string, string> = {
   'image/png': 'png',
@@ -82,6 +82,29 @@ export function compactionFailure(e: CompactionEvent): { pass: true } | { skip: 
     case 'apply':
       return { skip: modText('applying the edits failed'), recordFailure: true }
   }
+}
+
+// [SP_CTX_02_07] What the handler's failure branch needs; register.ts binds it.
+export type FailureIO = {
+  // the folder of the apply that ran, else the current session's; undefined: none
+  dir: string | undefined
+  // the id of the last report an apply of this instance wrote and answered without an abandon
+  reported: number | undefined
+  now: () => number
+  // the queue's Change port in `dir`, never awaited
+  changeQueue: (dir: string, change: ChangeFn<Queue>) => Promise<unknown>
+}
+
+// [SP_CTX_02_07] ON handler failure (the hook's `.catch`): a compaction not
+// the mod's goes on (`pass`); for the mod's instructions the answer is a skip
+// at once, never a real, summarizing compaction, and a failed apply is
+// recorded in the queue in the background. `reason`: the kind of the failure.
+export function compactionFailed(io: FailureIO, e: CompactionEvent, reason: string): { pass: true } | { skip: string } {
+  const out = compactionFailure(e)
+  if ('pass' in out) return out
+  // [SP_CTX_02_07] nothing when the apply reached its commit point first and was not abandoned
+  if (out.recordFailure && io.dir) void io.changeQueue(io.dir, read => failureRecord(read, io.reported, reason, io.now())).catch(() => undefined)
+  return { skip: out.skip }
 }
 
 // What HandleCompaction needs from the host; register.ts binds it to `$`.
@@ -316,6 +339,40 @@ export function observedBoundary(
   if (e.agentId || e.trigger === 'precompute' || isOwnInstruction(e.instructions)) return undefined
   if (done.skip !== undefined || !done.messages) return undefined
   return boundaryOf(done.messages, host)
+}
+
+// [SP_CTX_02_18] What the observer of another compaction needs; register.ts binds it.
+export type ObserveIO = {
+  // [SP_CTX_02_12] Copied = the result ids of these rows
+  copies: (rows: readonly SessionMessage[] | undefined) => void
+  // [SP_CTX_01_14] hostId if its read has ended: a compaction handler never waits for it
+  hostId: () => string | undefined
+  // the folder of the current session's storage; undefined: none
+  storage: () => Promise<string | undefined>
+  // [SP_CTX_02_18] RecordBoundary into `dir`
+  writeBoundary: (dir: string, b: Boundary) => Promise<void>
+  // [SP_CTX_01_10] the registry's Update port in `dir`, never awaited
+  updateTags: (dir: string) => Update<TagRegistry>
+}
+
+// [SP_CTX_02_18] [SP_CTX_02_12] [SP_CTX_01_10] ON compaction that is not the
+// mod's (the `pass` branch), once `next` answered: the rows it returned are
+// Copied (they may pass session.append again); when it stands, it moves the
+// conversation's start (RecordBoundary) and, being no apply of the mod,
+// leaves nothing to measure: TagRegistry.lastApply goes. A failed write
+// leaves the previous boundary; the compaction stands.
+export async function observeCompaction(io: ObserveIO, e: CompactionEvent, done: { skip?: string; messages?: readonly SessionMessage[] }): Promise<void> {
+  if (!e.agentId && done.skip === undefined) io.copies(done.messages)
+  try {
+    const b = observedBoundary(e, done, io.hostId())
+    const dir = b && (await io.storage())
+    if (b && dir) {
+      await io.writeBoundary(dir, b)
+      void io.updateTags(dir)(reg => (reg.lastApply ? dropLastApply(reg) : undefined)).catch(() => undefined)
+    }
+  } catch {
+    // the previous boundary stays
+  }
 }
 
 // [SP_CTX_01_06] The archive's JSON. A pair whose media went to files of its

@@ -1,30 +1,12 @@
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
-import {
-  aliasesById,
-  callFacts,
-  EMPTY_ALIASES,
-  markAlias,
-  parseAliases,
-  refResolver,
-  wantsMark,
-  withContext,
-  type AliasIO,
-  type AliasRegistry,
-} from './aliases'
-import { compactionFailure, compactionRoute, failureRecord, handleCompaction, observedBoundary } from './compaction'
+import { callFacts, EMPTY_ALIASES, markAlias, parseAliases, refResolver, wantsMark, withContext, type AliasIO, type AliasRegistry } from './aliases'
+import { compactionFailed, compactionRoute, handleCompaction, observeCompaction } from './compaction'
 import {
   afterPrepare,
   collectMedia,
   HOST_ID_WAIT_MS,
-  fullRow,
-  listMode,
-  listRows,
-  LIST_COUNT,
-  MAX_QUEUE_EDITS,
-  MAX_TEXT,
   newHostIdMemo,
   newHostToken,
-  NO_PINS,
   NO_REFS,
   OWN_TOOLS,
   parseHostId,
@@ -36,51 +18,14 @@ import {
   type BoundaryMemory,
   type RefResolver,
 } from './edits'
-import { enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
+import { afterTurn, enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
 import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion, type HintIO } from './hints'
-import {
-  contextHandoff,
-  handleSeed,
-  handoffAfterTurn,
-  handoffCommand,
-  newHandoffMemory,
-  type HandoffArgs,
-  type HandoffIO,
-  type SeedIO,
-} from './handoff'
-import {
-  contextEdit,
-  hasMediaFrom,
-  needsApi,
-  DEFAULT_RESUME,
-  deliverReport,
-  EMPTY_QUEUE,
-  MAX_DOCUMENT,
-  MAX_QUEUE_BYTES,
-  parseQueue,
-  settledQueue,
-  withoutReport,
-  type Queue,
-  type QueueIO,
-} from './queue'
-import {
-  adviceFor,
-  blockReport,
-  detectOptimize,
-  introFor,
-  markLabels,
-  MAX_STAGE_NAME,
-  SKILL,
-  telemetry,
-  telemetryText,
-  headerSize,
-  withIntroduced,
-  type BlockIO,
-  type DetectIO,
-  type UsageInfo,
-} from './stages'
-import { contextNote, MAX_NOTE, MAX_NOTES, MAX_REMIND, noteLabels, noteLines, noteReminders, remindable, afterReminders, remindsAfter, rowNotes, withReminderLines, type NoteArgs } from './notes'
-import { errorText, MARK, totalChars } from './rows'
+import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
+import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
+import { adviceFor, blockReport, contextList, detectOptimize, introFor, withIntroduced, type BlockIO, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { contextNote, noteReminders, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
+import { modText } from './rows'
+import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
 import {
   carry,
@@ -104,218 +49,24 @@ import {
   type StorageState,
   type Store,
 } from './store'
-import {
-  newAnchorMemory,
-  observeAppend,
-  parseDeliveries,
-  pruneDeliveries,
-  recordDelivery,
-  type Deliveries,
-  type QueuedDelivery,
-} from './deliveries'
+import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
 import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
-  appendFacts,
+  appendRow,
   autoTag,
+  callFollowUp,
   contextTag,
   countTurn,
-  dropLastApply,
   EMPTY_REGISTRY,
-  MAX_TAGS,
   parseRegistry,
-  pinnedTargets,
+  pinsFrom,
   queueTagReplacements,
-  callFollowUp,
-  isCompactionCopy,
   resultIds,
   staleReads,
-  tagLabels,
   type TagArgs,
   type TagIO,
   type TagRegistry,
 } from './tags'
-
-const PLUGIN = 'context-editor'
-const LIST = 'context_list'
-const EDIT = 'context_edit'
-const TAG = 'context_tag'
-const HANDOFF = 'context_handoff'
-const NOTE = 'context_note'
-
-// [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
-export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
-
-The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, the cleanup candidates by reason with their rows, and, when there is something to show, the effect of applications and your state slot. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest 4096 rows are visible.`
-
-// [SP_CTX_02_02] At most MAX_DESCRIPTION chars, by the priorities of the spec.
-export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have processed (screenshots and documents too), dead-end steps and wrong conclusions with summaries.
-
-Edits apply when your turn ends: after this call, end your turn with a one-line status. The session then resumes by itself with "resume_prompt" (default: "${DEFAULT_RESUME}") unless "resume" is false; in an optimization turn only on "resume": true or "resume_prompt".
-
-Ops (items of "edits"; every field shown is required):
-- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
-- {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
-- {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
-- {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
-- {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
-
-Calls worth editing carry a line "${MARK} id cN" after their result: "ref":"cN" targets that call and "ref":"last" your latest call, without ${LIST}. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
-
-Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
-
-Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
-
-// [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
-const REF = { type: 'string', description: `Instead of tool_use_id: a call alias "cN" from a "${MARK} id cN" line, or "last" for your latest call (context_* calls do not count).` }
-
-const EDIT_SCHEMA = {
-  type: 'object',
-  properties: {
-    edits: {
-      type: 'array',
-      minItems: 1,
-      maxItems: MAX_QUEUE_EDITS,
-      items: {
-        oneOf: [
-          { type: 'object', properties: { op: { const: 'summarize' }, tool_use_id: { type: 'string' }, summary: { type: 'string' } }, required: ['op', 'tool_use_id', 'summary'] },
-          { type: 'object', properties: { op: { const: 'summarize' }, ref: REF, summary: { type: 'string' } }, required: ['op', 'ref', 'summary'] },
-          { type: 'object', properties: { op: { const: 'drop' }, tool_use_id: { type: 'string' } }, required: ['op', 'tool_use_id'] },
-          { type: 'object', properties: { op: { const: 'drop' }, ref: REF }, required: ['op', 'ref'] },
-          { type: 'object', properties: { op: { const: 'collapse' }, from_index: { type: 'integer' }, to_index: { type: 'integer' }, summary: { type: 'string' } }, required: ['op', 'from_index', 'to_index', 'summary'] },
-          { type: 'object', properties: { op: { const: 'rewrite' }, index: { type: 'integer' }, text: { type: 'string' } }, required: ['op', 'index', 'text'] },
-          { type: 'object', properties: { op: { const: 'describe' }, index: { type: 'integer' }, description: { type: 'string' } }, required: ['op', 'index', 'description'] },
-        ],
-      },
-    },
-    resume: { type: 'boolean', description: 'Resume the session after this batch applies (default true).' },
-    resume_prompt: { type: 'string', description: 'What the resumed turn is told.' },
-    keep_cache: {
-      type: 'boolean',
-      description:
-        'Keep the prompt cache up to the first edit (default false): cheaper when the earliest edit is within your last few calls and you end the turn soon; but if this session is later resumed (--resume, reopening it), earlier answers may show twice.',
-    },
-  },
-  required: ['edits'],
-}
-
-// [SP_CTX_02_11] At most MAX_DESCRIPTION chars, by the priorities of the spec.
-export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation and mark the stages of your work, at no token cost: tags and stages live outside the conversation and show in ${LIST}. Call it with {"tags":[...]}; the requests apply in order.
-
-Targets of add and remove: exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias "cN" or "last") or "index" (a row in ${LIST}); a disposable range: "index" and "to", its last row.
-
-Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, cleanup candidates, context telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
-
-Kinds (op "add"):
-- "pin": nothing may edit the target, neither you nor the replacements of disposable tags. The person's first prompt is pinned for you.
-- "disposable" + "note": once you close a stage or end a turn with the optimization mark, the target is replaced by your note (a tool result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
-- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (the file changed since), duplicate.
-- "state": your one state slot (task state, plan), an assistant text row by "index"; change it only by a rewrite of that row, never append a new one. A new state tag moves the slot.
-
-A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PLUGIN}:${SKILL}.`
-
-const TAG_TARGET = {
-  tool_use_id: { type: 'string', description: 'Target: a tool call and its result.' },
-  ref: { type: 'string', description: `Target: a tool call by its alias "cN" (from a "${MARK} id cN" line) or "last", your latest call (context_* calls do not count).` },
-  index: { type: 'integer', description: `Target: a row index from ${LIST}.` },
-}
-
-// [SP_CTX_02_32] At most MAX_DESCRIPTION chars.
-export const NOTE_DESCRIPTION = `Add and remove your own service notes on rows, row ranges and tool calls of this conversation, at no token cost: notes live outside the conversation and change or protect nothing; a target may have several. Call it with {"notes":[...]}; the requests apply in order.
-
-Add: {"op":"add","text":"..."} with a target as in ${TAG} (exactly one of "tool_use_id", "ref" or "index"; a range: "index" and "to"), and optionally "remind_in_turns": N for one reminder after N completed turns, delivered with the result of your next tool call (any tool but context_edit and context_handoff). Remove: {"op":"remove","id":"n3"}.
-
-Notes show in ${LIST} ([n3] on their rows, the full text below the page) and in the result of a stage close. A note moves to the row that replaced its row and goes with a removed row. Use them to mark what to drop or compress later and how, to remind yourself to come back to an output, or to link rows.`
-
-const NOTE_SCHEMA = {
-  type: 'object',
-  properties: {
-    notes: {
-      type: 'array',
-      minItems: 1,
-      maxItems: MAX_NOTES,
-      items: {
-        oneOf: [
-          {
-            type: 'object',
-            properties: {
-              op: { const: 'add' },
-              text: { type: 'string', maxLength: MAX_NOTE, description: 'The note.' },
-              ...TAG_TARGET,
-              to: { type: 'integer', description: 'With "index": the last row of a range, included.' },
-              remind_in_turns: { type: 'integer', minimum: 1, maximum: MAX_REMIND, description: 'One reminder after this many completed turns.' },
-            },
-            required: ['op', 'text'],
-          },
-          { type: 'object', properties: { op: { const: 'remove' }, id: { type: 'string', description: 'The id of the note, e.g. "n3".' } }, required: ['op', 'id'] },
-        ],
-      },
-    },
-  },
-  required: ['notes'],
-}
-
-// [SP_CTX_02_19]
-export const HANDOFF_DESCRIPTION = `Move this conversation into a new session and continue there, so a cleaned context survives --resume.
-
-mode "transcript" (default): this session is cleared and the new one is seeded with the conversation as you see it now, with the edits you queued with ${EDIT} applied, tool calls and results kept; images and documents come along as files named in their results (open them with Read). On any failure the "document" way is used.
-mode "document": the new session starts from "document", your handoff text (the person's task and constraints verbatim, decisions in force, facts, numbers, paths, open questions, the next step), sent as its first prompt; without it the mod asks the model for one. Give "document" with "transcript" too, as the fallback.
-
-It runs when your turn ends: after this call, end your turn at once with a one-line status. Unless "resume" is false, the new session goes on with "resume_prompt" (default: "${DEFAULT_RESUME}").`
-
-const HANDOFF_SCHEMA = {
-  type: 'object',
-  properties: {
-    mode: { type: 'string', enum: ['transcript', 'document'], description: 'How to build the new session (default "transcript").' },
-    document: { type: 'string', maxLength: MAX_DOCUMENT, description: 'Your handoff document: the start of a "document" session, the fallback of a "transcript" one.' },
-    resume: { type: 'boolean', description: 'Continue in the new session at once (default true).' },
-    resume_prompt: { type: 'string', maxLength: MAX_TEXT, description: 'What the new session is told to continue with.' },
-  },
-}
-
-const TAG_SCHEMA = {
-  type: 'object',
-  properties: {
-    tags: {
-      type: 'array',
-      minItems: 1,
-      maxItems: MAX_TAGS,
-      items: {
-        oneOf: [
-          { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'pin' }, ...TAG_TARGET }, required: ['op', 'kind'] },
-          {
-            type: 'object',
-            properties: {
-              op: { const: 'add' },
-              kind: { const: 'disposable' },
-              ...TAG_TARGET,
-              to: { type: 'integer', description: 'With "index": the last row of a range, included; the range holds every tool call with its result.' },
-              note: { type: 'string', maxLength: MAX_TEXT },
-            },
-            required: ['op', 'kind', 'note'],
-          },
-          { type: 'object', properties: { op: { const: 'add' }, kind: { const: 'review' }, ...TAG_TARGET, ttl_turns: { type: 'integer', minimum: 1 } }, required: ['op', 'kind'] },
-          {
-            type: 'object',
-            properties: { op: { const: 'add' }, kind: { const: 'state' }, index: { type: 'integer', description: `Your assistant text row from ${LIST} that holds the state.` } },
-            required: ['op', 'kind', 'index'],
-          },
-          { type: 'object', properties: { op: { const: 'remove' }, ...TAG_TARGET }, required: ['op'] },
-          {
-            type: 'object',
-            properties: {
-              op: { const: 'open' },
-              stage: { type: 'string', maxLength: MAX_STAGE_NAME, description: 'The name of the stage.' },
-              index: { type: 'integer', description: `The first row of its block, from ${LIST}; default: the response that opens it.` },
-            },
-            required: ['op', 'stage'],
-          },
-          { type: 'object', properties: { op: { const: 'close' } }, required: ['op'] },
-        ],
-      },
-    },
-  },
-  required: ['tags'],
-}
 
 // [SP_CTX_01_07] [SP_CTX_02_15] The storage of the session: published once
 // its preparation ends, one preparation per session id at a time. Every
@@ -487,15 +238,6 @@ function onJournal($: EngineInterface, work: (io: JournalIO, dir: string) => Pro
 // [SP_CTX_01_07] The folder of the current session, asked for now; a failure gives none.
 function storageNow($: EngineInterface): Promise<string | undefined> {
   return storageDir($).catch(() => undefined)
-}
-
-// [SP_CTX_02_35] RecordDelivery's step in event order; a failure records nothing.
-function observeOrNone(e: Parameters<typeof observeAppend>[1]): QueuedDelivery | undefined {
-  try {
-    return observeAppend(anchorMem, e, Date.now())
-  } catch {
-    return undefined
-  }
 }
 
 // [SP_CTX_02_02] [SP_CTX_02_11] The deliveries not yet rows, for the person
@@ -781,14 +523,8 @@ function handoffIO($: EngineInterface): HandoffIO {
       return d.onChain(() => d.read())
     },
     changeTags: (dir, change) => changeOf(stores($, dir).tags)(change),
-    listSeeds: async dir => {
-      const ran = await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])
-      return ran.stdout
-        .split('\n')
-        .map(s => s.trim())
-        .filter(s => /^\d+$/.test(s))
-        .map(Number)
-    },
+    listSeeds: async dir =>
+      parseSeedNames((await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])).stdout),
     writeMedia: (path, data) => writeMedia($, path, data),
     writeText: (path, text) => writeText($, path, text),
     remove: async path => {
@@ -839,35 +575,6 @@ function tagIO($: EngineInterface, dir: string | undefined): TagIO {
   }
 }
 
-// [SP_CTX_02_03] The pinned targets on `rows`; none while the registry is
-// unreadable, which HandleCompaction then reports for every edit.
-async function pins($: EngineInterface, dir: string, rows: readonly SessionMessage[]) {
-  const read = await stores($, dir).tags.read()
-  return read.state === 'unreadable' ? NO_PINS : pinnedTargets(rows, read.value)
-}
-
-// [SP_CTX_02_01] Stage marks, then tag labels, for the listing, if the
-// storage and registry allow; the registry read for the telemetry.
-async function labels($: EngineInterface, dir: string | undefined, rows: readonly SessionMessage[]) {
-  const none = new Map<number, string[]>()
-  if (!dir) return { labels: none, note: '', reg: undefined, notes: [] }
-  const read = await stores($, dir).tags.read()
-  if (read.state === 'unreadable') return { labels: none, note: `\n(tags, stages and notes not shown: the tag registry cannot be read: ${read.reason})`, reg: undefined, notes: [] }
-  const merged = markLabels(rows, read.value)
-  for (const [i, list] of tagLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
-  // [SP_CTX_02_01] the notes after the tags; their full text under the page
-  for (const [i, list] of noteLabels(rows, read.value)) merged.set(i, [...(merged.get(i) ?? []), ...list])
-  return { labels: merged, note: '', reg: read.value, notes: noteLines(rows, read.value) }
-}
-
-// [SP_CTX_02_01] Aliases for the listing, if the storage and registry allow.
-async function aliasNames($: EngineInterface, dir: string | undefined) {
-  if (!dir) return { aliases: new Map<string, string>(), note: '' }
-  const read = await stores($, dir).aliases.read()
-  if (read.state === 'unreadable') return { aliases: new Map<string, string>(), note: `\n(aliases not shown: the alias registry cannot be read: ${read.reason})` }
-  return { aliases: aliasesById(read.value), note: '' }
-}
-
 // [SP_CTX_02_16] [SP_CTX_02_31] After a call without error: a write tool
 // marks the earlier reads of its path stale (R4) and journals the change of a
 // compressed path; a Read journals a reread of compressed content or of an
@@ -887,71 +594,52 @@ function afterCall($: EngineInterface, tool: string, input: Record<string, unkno
 }
 
 function deny(reason: string) {
-  return { deny: `${PLUGIN}: ${reason}` }
+  return { deny: modText(reason) }
+}
+
+// [SP_CTX_02_01] context_list bound to the host.
+function listIO($: EngineInterface): ListIO {
+  return {
+    view: () => view($),
+    api: () => apiMessages($),
+    storage: () => storageDir($),
+    readTags: dir => stores($, dir).tags.read(),
+    readAliases: dir => stores($, dir).aliases.read(),
+    usage: () => usageInfo($),
+    updateTags: dir => updateOf(stores($, dir).tags),
+    journal: dir => journalNow($, dir),
+    dueLines: () => dueLines($),
+    setListed: key => {
+      listed.key = key
+    },
+  }
+}
+
+// [SP_CTX_02_11] [SP_CTX_02_32] What context_tag and context_note take from
+// the host first, in this order: the storage (none for a subagent), the ref
+// resolver and whether the listed indexes are stale.
+async function registryCall($: EngineInterface, e: { agentId?: string; tool_use_id?: unknown }) {
+  const st = e.agentId ? undefined : await ensureStorage($)
+  const dir = st && dirOf(st)
+  const down = st && 'reason' in st ? st.reason : undefined
+  const refs = e.agentId ? NO_REFS : await resolver($, dir, e.tool_use_id)
+  return { dir, down, refs, stale: !!dir && (await staleIndexes($)) }
 }
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     // [SP_CTX_01_14] the identity's one read starts here or in the first PrepareStorage
     void hostIdOf($)
-    await $.tool.register({
-      name: LIST,
-      description: LIST_DESCRIPTION,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          from: { type: 'integer', description: 'Index of the first row to list (default 0, the oldest).' },
-          count: { type: 'integer', description: `How many rows to list (default ${LIST_COUNT}, at most 200); 0 gives the header with the context telemetry alone.` },
-          index: { type: 'integer', description: 'With "full": true, the row to show whole.' },
-          full: { type: 'boolean', description: 'Show the row "index" whole (up to 20000 chars), e.g. to check a summary before reading an archive; from and count are ignored.' },
-        },
-      },
-      isDeferred: false,
-    })
-    await $.tool.register({ name: EDIT, description: EDIT_DESCRIPTION, inputSchema: EDIT_SCHEMA, isDeferred: false })
-    await $.tool.register({ name: TAG, description: TAG_DESCRIPTION, inputSchema: TAG_SCHEMA, isDeferred: false })
-    await $.tool.register({ name: HANDOFF, description: HANDOFF_DESCRIPTION, inputSchema: HANDOFF_SCHEMA, isDeferred: false })
-    await $.tool.register({ name: NOTE, description: NOTE_DESCRIPTION, inputSchema: NOTE_SCHEMA, isDeferred: false })
-    await $.command.register({ name: 'handoff', description: 'Move this conversation into a new session: cleaned transcript, or a handoff document', argumentHint: '[document|cancel]' })
+    for (const tool of TOOLS) await $.tool.register(tool)
+    await $.command.register(HANDOFF_COMMAND)
     await prepareStorage($)
     return next(e)
   })
 
   // [SP_CTX_02_01]
   on('tool.call', { tool: 'mcp__context-editor__context_list' }, async ($, e) => {
-    if (e.agentId) return deny('only the main conversation can be listed and edited.')
-    const args = e as unknown as { from?: unknown; count?: unknown; index?: unknown; full?: unknown }
-    const { rows, key } = await view($)
-    const mode = listMode(args, rows.length)
-    if ('bad' in mode) return deny(mode.bad)
-    const { found } = collectMedia(await apiMessages($), rows)
-    const dir = await storageDir($)
-    const tagged = await labels($, dir, rows)
-    // [SP_CTX_02_01] one row whole: no telemetry, no new listedKey
-    if ('full' in mode) {
-      const own = tagged.reg ? rowNotes(rows, tagged.reg, mode.full) : []
-      const result = fullRow(rows, mode.full, found, tagged.labels.get(mode.full) ?? [], own) + tagged.note
-      return withReminderLines({ result }, await dueLines($))
-    }
-    const named = await aliasNames($, dir)
-    const { from, count } = mode.page
-    // [SP_CTX_02_28] a failed telemetry never fails the listing; [SP_CTX_02_34] it calibrates the estimates
-    let tele: string
-    let size: string | undefined
-    try {
-      // [SP_CTX_02_33] counted as if this call's due reminders were delivered;
-      // they are delivered only once the listing is built (a failure keeps them)
-      const update = dir ? updateOf(stores($, dir).tags) : undefined
-      const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), () => usageInfo($), update, await journalNow($, dir), () => apiMessages($))
-      tele = telemetryText(t)
-      size = headerSize(t, totalChars(rows))
-    } catch (err) {
-      tele = `Context: size unavailable (${errorText(err)})`
-    }
-    const text = listRows(rows, from, count, found, tagged.labels, named.aliases, tele, tagged.notes, size)
-    // [SP_CTX_02_18] only a listing with rows the agent receives renews its indexes
-    if (count >= 1) listed.key = key
-    return withReminderLines({ result: text + tagged.note + named.note }, await dueLines($))
+    const out = await contextList(listIO($), { ...(e as unknown as ListArgs), agentId: e.agentId })
+    return 'deny' in out ? deny(out.deny) : out
   }).catch(($, e, next) => (next.called ? next(e) : deny(`listing failed: ${next.error.kind}`)))
 
   // [SP_CTX_02_02]
@@ -965,7 +653,8 @@ export const register: Register = on => {
       const { rows, key } = await view($)
       // [SP_CTX_02_10] the API form is read only for a describe
       const found = needsApi(args) ? collectMedia(await apiMessages($), rows).found : undefined
-      return contextEdit(queueIO($, dir), rows, args, await pins($, dir, rows), await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
+      const pins = pinsFrom(await stores($, dir).tags.read(), rows)
+      return contextEdit(queueIO($, dir), rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out
@@ -974,8 +663,7 @@ export const register: Register = on => {
   // [SP_CTX_02_11]
   on('tool.call', { tool: 'mcp__context-editor__context_tag' }, async ($, e) => {
     const args = e as unknown as TagArgs
-    const st = e.agentId ? undefined : await ensureStorage($)
-    const dir = st && dirOf(st)
+    const { dir, down, refs, stale } = await registryCall($, e)
     // the registry's read-modify-write on its chain; the replacements on the
     // queue's afterwards, never one chain inside the other; the deliveries
     // read inside the registry's chain (tags → deliveries)
@@ -991,14 +679,7 @@ export const register: Register = on => {
       report: (block, replaced) => blockReport(blockIO($, need(dir)), block, replaced),
       deliveries: () => deliveredNow($, need(dir), held),
     }
-    const out = await contextTag(
-      io,
-      { agentId: e.agentId, tags: args.tags },
-      st && 'reason' in st ? st.reason : undefined,
-      e.agentId ? NO_REFS : await resolver($, dir, e.tool_use_id),
-      !!dir && (await staleIndexes($)),
-      typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
-    )
+    const out = await contextTag(io, { agentId: e.agentId, tags: args.tags }, down, refs, stale, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
     return 'deny' in out ? deny(out.deny) : remindAfter($, TAG, e.agentId, { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`tagging failed: ${next.error.kind}`)))
 
@@ -1007,15 +688,8 @@ export const register: Register = on => {
   // a session has loaded it.
   on('tool.call', { tool: /^mcp__context-editor__context_note$/ }, async ($, e) => {
     const args = e as unknown as NoteArgs
-    const st = e.agentId ? undefined : await ensureStorage($)
-    const dir = st && dirOf(st)
-    const out = await contextNote(
-      { ...tagIO($, dir), onRegistry: work => chainOf($, 'tags')(work) },
-      { agentId: e.agentId, notes: args.notes },
-      st && 'reason' in st ? st.reason : undefined,
-      e.agentId ? NO_REFS : await resolver($, dir, e.tool_use_id),
-      !!dir && (await staleIndexes($)),
-    )
+    const { dir, down, refs, stale } = await registryCall($, e)
+    const out = await contextNote({ ...tagIO($, dir), onRegistry: work => chainOf($, 'tags')(work) }, { agentId: e.agentId, notes: args.notes }, down, refs, stale)
     return 'deny' in out ? deny(out.deny) : remindAfter($, NOTE, e.agentId, { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`noting failed: ${next.error.kind}`)))
 
@@ -1043,66 +717,51 @@ export const register: Register = on => {
     next.called ? next(e) : { text: `handoff failed: ${next.error.kind}` },
   )
 
-  // [SP_CTX_02_12] The row is stored first and returned unchanged; the rules
-  // run after it, on the registry's chain, and never hold the row back. A row
-  // of plugin origin (a compaction's copy, a plugin's note) is no new row, nor
-  // a result row the last compaction returned (it comes with its tool's origin).
-  on('session.append', async ($, e, next) => {
-    // [SP_CTX_02_35] The anchor moves in event order, before `next` awaits:
-    // two appends in flight cannot swap it. observeAppend is sync and reads
-    // pinned fields only; a refused row (only a plugin's `note` can be) records nothing.
-    const item = observeOrNone(e)
-    const rules = !e.agentId && (e.door === 'prompt' || e.door === 'tool-result')
-    // [SP_CTX_01_07] the folder of the session the row comes in, asked for at the event
-    const at = item || rules ? storageNow($) : undefined
-    const stored = await next(e)
-    try {
-      // [SP_CTX_02_35] RecordDelivery in the background
-      if (stored.deny === undefined) {
-        if (item)
+  // [SP_CTX_02_12] [SP_CTX_02_35] AppendRow: the row is stored first and
+  // returned unchanged; RecordDelivery and the rules run after it, in the
+  // background, each on its chain in the folder asked for at the event.
+  on('session.append', async ($, e, next) =>
+    appendRow(
+      {
+        // observeAppend is sync and reads pinned fields only
+        observe: () => observeAppend(anchorMem, e, Date.now()),
+        storage: () => storageNow($),
+        record: (at, item) =>
           void chainOf($, 'deliveries')(async () => {
             const dir = await at
             if (dir) await recordDelivery(stores($, dir).deliveries, item, MAX_QUEUE_BYTES)
-          }).catch(() => undefined)
-      }
-      if (rules && stored.deny === undefined) {
-        const facts = appendFacts(e)
-        // decided now: the next compaction or turn start changes the set
-        const copy = isCompactionCopy(facts, copied)
-        void chainOf($, 'tags')(async () => {
-          const dir = await at
-          if (dir) await autoTag(tagIO($, dir), facts, copy)
-        }).catch(() => undefined)
-      }
-    } catch {
-      // the stored row stands whatever the rules did
-    }
-    return stored
-  }).catch(($, e, next) => next(e))
+          }).catch(() => undefined),
+        autoTag: (at, facts, copy) =>
+          void chainOf($, 'tags')(async () => {
+            const dir = await at
+            if (dir) await autoTag(tagIO($, dir), facts, copy)
+          }).catch(() => undefined),
+        copied,
+      },
+      e,
+      () => next(e),
+    ),
+  ).catch(($, e, next) => next(e))
 
   // [SP_CTX_02] [SP_CTX_02_30] [SP_CTX_02_12] [SP_CTX_02_06] [SP_CTX_02_21]
   // The end of a turn of the main conversation: the counter first; then, in
-  // the background and in this order, DetectOptimize, the registry's turn
-  // count (the mark compares with the count not yet raised) and Flush (once
-  // the mark's replacements and request are queued); the handoff besides. The
-  // deferred actions planned here have an origin the host queues commands from.
+  // the background, AfterTurn (DetectOptimize, the turn count, Flush; the
+  // handoff besides).
   on('turn.complete', async ($, e, next) => {
     // nothing starts while the turn ends: the counter moves whatever `next` does
     if (!e.agentId) turnCompleted(turns, e.isAborted)
     const done = await next(e)
     if (e.agentId) return done
-    const answer = typeof e.answer === 'string' ? e.answer : ''
-    void (async () => {
-      // [SP_CTX_02_30] the storage of the session whose turn ended, for the mark and the count
-      const dir = await storageDir($).catch(() => undefined)
-      await detectOptimize(detectIO($, dir), { aborted: e.isAborted, answer }).catch(() => undefined)
-      if (!e.isAborted && dir)
-        await stores($, dir)
-          .tags.onChain(() => countTurn(tagIO($, dir)))
-          .catch(() => undefined)
-      await flushAfterTurn(flushIO($), flushState, e.isAborted).catch(() => undefined)
-    })()
-    void handoffAfterTurn(handoffIO($), handoff, e.isAborted).catch(() => undefined)
+    void afterTurn(
+      {
+        storage: () => storageDir($),
+        detect: (dir, end) => detectOptimize(detectIO($, dir), end),
+        countTurn: dir => stores($, dir).tags.onChain(() => countTurn(tagIO($, dir))),
+        flush: aborted => flushAfterTurn(flushIO($), flushState, aborted),
+        handoff: aborted => handoffAfterTurn(handoffIO($), handoff, aborted),
+      },
+      { aborted: e.isAborted, answer: e.answer },
+    ).catch(() => undefined)
     return done
   }).catch(($, e, next) => next(e))
 
@@ -1115,20 +774,17 @@ export const register: Register = on => {
     const route = compactionRoute(e)
     if (route === 'pass') {
       const done = await next(e)
-      // [SP_CTX_02_12] its returned result rows may pass session.append again
-      if (!e.agentId && done.skip === undefined) noteCopies(done.messages)
-      try {
-        // [SP_CTX_01_14] a compaction handler never waits for hostId
-        const b = observedBoundary(e, done, peekHostId(hostId))
-        const dir = b && (await storageDir($, true))
-        if (b && dir) {
-          await writeBoundaryAt($, dir, b)
-          // [SP_CTX_01_10] another compaction is no apply of the mod: nothing of it to measure
-          void updateOf(stores($, dir).tags)(reg => (reg.lastApply ? dropLastApply(reg) : undefined)).catch(() => undefined)
-        }
-      } catch {
-        // a failed write leaves the previous boundary; the compaction stands
-      }
+      await observeCompaction(
+        {
+          copies: noteCopies,
+          hostId: () => peekHostId(hostId),
+          storage: () => storageDir($, true),
+          writeBoundary: (dir, b) => writeBoundaryAt($, dir, b),
+          updateTags: dir => updateOf(stores($, dir).tags),
+        },
+        e,
+        done,
+      )
       return done
     }
     if (route === 'seed') {
@@ -1138,7 +794,7 @@ export const register: Register = on => {
     }
     applies.dir = undefined
     const dir = await storageDir($, true)
-    if (!dir) return { skip: `${PLUGIN}: storage unavailable` }
+    if (!dir) return { skip: modText('storage unavailable') }
     applies.dir = dir
     // [SP_CTX_02_07] the report counts as the apply's only once the handler
     // returned without an abandon; set on the queue's chain, before the
@@ -1184,14 +840,19 @@ export const register: Register = on => {
     return outcome
   }).catch(($, e, next) => {
     // Never let a failure fall through to a real, summarizing compaction:
-    // answer at once, and record a failed batch in the background.
-    const out = compactionFailure(e)
-    if ('pass' in out) return next(e)
-    // [SP_CTX_02_07] in the apply's folder; nothing when the apply reached its
-    // commit point first and was not abandoned
-    const dir = applies.dir ?? publishedDir(storage)
-    if (out.recordFailure && dir) void changeOf(stores($, dir).queue)(read => failureRecord(read, applies.reported, next.error.kind, Date.now())).catch(() => undefined)
-    return { skip: out.skip }
+    // answer at once, and record a failed batch in the background, in the
+    // apply's folder.
+    const out = compactionFailed(
+      {
+        dir: applies.dir ?? publishedDir(storage),
+        reported: applies.reported,
+        now: () => Date.now(),
+        changeQueue: (dir, change) => changeOf(stores($, dir).queue)(change),
+      },
+      e,
+      next.error.kind,
+    )
+    return 'pass' in out ? next(e) : out
   })
 
   // [SP_CTX_02_16] After any other tool call of the main loop: the alias line

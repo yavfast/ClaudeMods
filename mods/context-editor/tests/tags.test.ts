@@ -30,11 +30,16 @@ import {
   staleReads,
   stateRow,
   tagLabels,
+  appendRow,
+  pinsFrom,
   type AppendFacts,
+  type AppendIO,
   type Tag,
   type TagIO,
   type TagRegistry,
 } from '../hooks/tags'
+import type { QueuedDelivery } from '../hooks/deliveries'
+import { NO_PINS } from '../hooks/edits'
 import { prompt, reply, result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
@@ -1048,4 +1053,82 @@ test('context_tag — промпт людини з самих медіа: a pin 
   expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'pin', index: 1 }]).added).toBe(1)
   expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 0, to: 1, note: 'n' }]).added).toBe(1)
   expect(prepare(list, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).errors).toEqual([])
+})
+
+// ---- [SP_CTX_02_12] [SP_CTX_02_35] AppendRow: the session.append hook's body ([PL_AUD_CTX_P10], CF-19)
+
+const ITEM: QueuedDelivery = { uuid: 'u1', anchor: ['a'], kind: 'person', origin: 'human', text: 'hi', cut: 0, media: 0, at: 1 }
+
+function appender(over: Partial<AppendIO> = {}, item?: QueuedDelivery) {
+  const calls: string[] = []
+  const tagged: { facts: AppendFacts; copy: boolean }[] = []
+  const io: AppendIO = {
+    observe: () => (calls.push('observe'), item),
+    storage: async () => (calls.push('storage'), '/s'),
+    record: (at, i) => void calls.push(`record ${i.uuid}`),
+    autoTag: (at, facts, copy) => void (calls.push('autoTag'), tagged.push({ facts, copy })),
+    copied: new Set(),
+    ...over,
+  }
+  const store = async () => (calls.push('store'), {})
+  return { io, calls, tagged, store }
+}
+
+const resultRow = (ids: string[]) => ({
+  door: 'tool-result',
+  origin: { kind: 'tool', tool: 'Read' },
+  message: { content: ids.map(id => ({ type: 'tool_result', tool_use_id: id, content: 'x' })) },
+})
+
+test('AppendRow — порядок: the anchor step and the folder come at the event, before the row is stored; the rules and the record after it', async () => {
+  const h = appender({}, ITEM)
+  const stored = await appendRow(h.io, resultRow(['a']), h.store)
+  expect(stored).toEqual({})
+  expect(h.calls).toEqual(['observe', 'storage', 'store', 'record u1', 'autoTag'])
+  expect(h.tagged[0]!.copy).toBe(false)
+  expect(h.tagged[0]!.facts.ids).toEqual(['a'])
+})
+
+test('AppendRow — a refused row records nothing and runs no rules', async () => {
+  const h = appender({}, ITEM)
+  const out = await appendRow(h.io, resultRow(['a']), async () => (h.calls.push('store'), { deny: 'no' }))
+  expect(out).toEqual({ deny: 'no' })
+  expect(h.calls).toEqual(['observe', 'storage', 'store'])
+})
+
+test('AppendRow — the rules see the doors prompt and tool-result of the main conversation only; nothing to do asks for no folder', async () => {
+  const sub = appender()
+  await appendRow(sub.io, { ...resultRow(['a']), agentId: 'x' }, sub.store)
+  expect(sub.calls).toEqual(['observe', 'store'])
+  const other = appender()
+  await appendRow(other.io, { door: 'response', origin: { kind: 'model' }, message: { content: [] } }, other.store)
+  expect(other.calls).toEqual(['observe', 'store'])
+  // a delivery behind an anchor is recorded though no rule runs
+  const delivery = appender({}, ITEM)
+  await appendRow(delivery.io, { door: 'delivery', origin: { kind: 'host' }, message: { content: [] } }, delivery.store)
+  expect(delivery.calls).toEqual(['observe', 'storage', 'store', 'record u1'])
+})
+
+test('AppendRow — a compaction copy: every result id in Copied; a failed anchor step records nothing and the row still stands', async () => {
+  const copy = appender({ copied: new Set(['a', 'b']) })
+  await appendRow(copy.io, resultRow(['a', 'b']), copy.store)
+  expect(copy.tagged[0]!.copy).toBe(true)
+  const fresh = appender({ copied: new Set(['a']) })
+  await appendRow(fresh.io, resultRow(['a', 'c']), fresh.store)
+  expect(fresh.tagged[0]!.copy).toBe(false)
+  const broken = appender({
+    observe: () => {
+      throw new Error('bad event')
+    },
+  })
+  expect(await appendRow(broken.io, resultRow(['a']), broken.store)).toEqual({})
+  expect(broken.calls).toEqual(['storage', 'store', 'autoTag'])
+})
+
+test('PinsFrom — an unreadable registry gives no pins; a readable one its pinned targets', async () => {
+  const rows = [prompt('p'), use('a'), result('a')]
+  expect(pinsFrom(unreadableRead('x'), rows)).toBe(NO_PINS)
+  const r = reg([{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }])
+  expect(pinsFrom(okRead(r), rows)).toEqual(pinnedTargets(rows, r))
+  expect([...pinsFrom(okRead(r), rows).ids]).toEqual(['a'])
 })

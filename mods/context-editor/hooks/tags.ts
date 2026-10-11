@@ -7,6 +7,7 @@ import {
   MAX_QUEUE_EDITS,
   MAX_TEXT,
   mergedCallRow,
+  NO_PINS,
   NO_REFS,
   oneLine,
   OWN_TOOLS,
@@ -233,6 +234,13 @@ export function pinnedTargets(rows: readonly SessionMessage[], reg: TagRegistry)
   }
   const state = stateRow(rows, reg)
   return state !== undefined && state >= 0 ? { ids, rows: at, state } : { ids, rows: at }
+}
+
+// [SP_CTX_02_03] The pinned targets on `rows` as the registry read gives
+// them; none while it is unreadable, which HandleCompaction then reports
+// for every edit.
+export function pinsFrom(read: Read<TagRegistry>, rows: readonly SessionMessage[]): Pinned {
+  return read.state === 'unreadable' ? NO_PINS : pinnedTargets(rows, read.value)
 }
 
 // [SP_CTX_02_01] One tag's label: `[pin]`, `[state]`, `[disposable: "<40>"]`,
@@ -773,6 +781,55 @@ export function isCompactionCopy(f: AppendFacts, copied: ReadonlySet<string>): b
 // [SP_CTX_02_12] The result ids of the rows a compaction returned.
 export function resultIds(rows: readonly SessionMessage[]): string[] {
   return rows.flatMap(r => resultsOf(r).map(t => t.tool_use_id))
+}
+
+// [SP_CTX_02_12] [SP_CTX_02_35] What a row's append needs from the host;
+// register.ts binds it to `$`.
+export type AppendIO = {
+  // [SP_CTX_02_35] RecordDelivery's step in event order (ObserveAppend): sync,
+  // before the row is stored
+  observe: () => QueuedDelivery | undefined
+  // [SP_CTX_01_07] the folder of the session the row comes in, asked for at the event
+  storage: () => Promise<string | undefined>
+  // [SP_CTX_02_35] RecordDelivery in the background, on the deliveries' chain
+  record: (at: Promise<string | undefined>, item: QueuedDelivery) => void
+  // [SP_CTX_02_12] AutoTag in the background, on the registry's chain
+  autoTag: (at: Promise<string | undefined>, facts: AppendFacts, copy: boolean) => void
+  // [SP_CTX_02_12] Copied: the result ids of the rows the last compaction returned
+  copied: ReadonlySet<string>
+}
+
+// [SP_CTX_02_12] [SP_CTX_02_35] ON row appended: the anchor moves in event
+// order, before `store` awaits, so two appends in flight cannot swap it (a
+// failure of that step records nothing); the folder is asked for at the
+// event. The row is stored first and returned unchanged; RecordDelivery and
+// the rules run after it, in the background, and never hold it back. A
+// refused row (only a plugin's `note` can be) records nothing. The rules see
+// the doors `prompt` and `tool-result` of the main conversation only; whether
+// the row is a compaction's copy is decided now, since the next compaction
+// or turn start changes Copied.
+export async function appendRow<S extends { deny?: unknown }>(io: AppendIO, e: AppendEvent & { agentId?: unknown }, store: () => Promise<S>): Promise<S> {
+  let item: QueuedDelivery | undefined
+  try {
+    item = io.observe()
+  } catch {
+    item = undefined
+  }
+  const rules = !e.agentId && (e.door === 'prompt' || e.door === 'tool-result')
+  const at = item || rules ? io.storage() : undefined
+  const stored = await store()
+  try {
+    if (at && stored.deny === undefined) {
+      if (item) io.record(at, item)
+      if (rules) {
+        const facts = appendFacts(e)
+        io.autoTag(at, facts, isCompactionCopy(facts, io.copied))
+      }
+    }
+  } catch {
+    // the stored row stands whatever the rules did
+  }
+  return stored
 }
 
 // [SP_CTX_02_12] After the row is stored; the caller runs it on the
