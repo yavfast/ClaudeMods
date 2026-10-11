@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCalls, fingerprint, formatReport, listRows, mergeCallRows, prepare, producedRows, type QueuedEdit } from '../hooks/edits'
+import { applyEdits, describeEdit, dropOwnCalls, fingerprint, formatReport, listRows, mergeCallRows, NO_REFS, prepare, producedRows, type QueuedEdit, type RefResolver } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import {
   afterReminders,
@@ -63,7 +63,7 @@ function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Part
   return { io, log }
 }
 
-async function call(io: TagIO, notes: unknown[], resolve = (ref: string) => (ref === 'last' ? 'a' : undefined), stale = false) {
+async function call(io: TagIO, notes: unknown[], resolve: RefResolver = ref => (ref === 'last' ? { id: 'a', line: '"last" = Read id=a' } : { error: `unknown ref ${ref}` }), stale = false) {
   const out = await contextNote(io, { notes }, undefined, resolve, stale)
   if ('deny' in out) throw new Error(out.deny)
   return out.result
@@ -81,6 +81,8 @@ test('context_note — додати і зняти: n1..n4 on a pair by ref, row 
     { op: 'add', tool_use_id: 'a', text: 'second note on a' },
   ])
   expect(text).toContain('Added n1, n2, n3, n4; removed none; 4 note(s) in the registry.')
+  // [SP_CTX_02_32] the line naming the call "last" resolved to, once
+  expect(text.split('\n')[1]).toBe('"last" = Read id=a')
   expect(log.tags.nextNote).toBe(5)
   expect(log.tags.notes.map(n => n.target)).toEqual([{ tool_use_id: 'a' }, at(r, 5), { ...at(r, 4), toAnchor: fingerprint(r[7]!), toHint: 7 }, { tool_use_id: 'a' }])
   expect(log.tags.notes[0]!.createdTurn).toBe(3)
@@ -128,7 +130,7 @@ test('context_note — помилки: each code of the Errors table; the rest o
     [{ op: 'remove', id: 'n77' }, 'NO_NOTE'],
   ]
   for (const [request, code, start, stale] of cases) {
-    const out = applyNoteRequests(start ?? reg(), r, [request, { op: 'add', index: 0, text: 'still added' }], () => undefined, stale)
+    const out = applyNoteRequests(start ?? reg(), r, [request, { op: 'add', index: 0, text: 'still added' }], NO_REFS, stale)
     expect(out.rejected[0]?.reason ?? '').toContain(`(${code})`)
     expect(out.rejected[0]!.reason.startsWith('note 1:')).toBe(true)
     // the second request still applies (not into a full registry; with stale indexes it is refused too)

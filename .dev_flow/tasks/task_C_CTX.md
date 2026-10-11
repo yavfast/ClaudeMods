@@ -27,6 +27,23 @@
 
 ## Subtasks
 
+### Subtask: `ref: "last"` бере старіший виклик (backlog, живий прогін фази 20)
+> Author: `claude-session-d5614704` — Created: 2026-10-11 — Last updated: 2026-10-11 — Status: `done`
+
+Розробник: «Продовжуй роботу над проблемою з "ref: "last""» (2026-10-11). Знахідка: у живому прогоні фази 20 (s5) `summarize ref:"last"` замінив результат `big.log` замість щойно виконаного малого `cat c.log` — малий виклик не має аліаса, `last` бере останній позначений.
+
+- [x] Розбір (субагент): аліас лише для результатів ≥ BIG_ROW або SEARCH_TOOLS (aliases.ts:127-130); `last` = останній позначений (aliases.ts:68-73), реєстр на диску — переживає `--resume` і передачу; агент цілі не бачить. Проєкт: SP_CTX_DEC_20 `proposed` — A (`last` з поточних рядків: останній виклик перед цим `context_*`, без власних; виклик тієї ж відповіді без результату — відмова LAST_PENDING) + C (назва цілі в результаті) — рекомендація; A2, B, C окремо, D відкинуто; спец 01_12, 01_13, 02_02, 02_03, 02_11, 02_16, 02_17, 02_32, 05_01, 05_03, 05_04; концепт §3.5; план PL_CTX_P21
+- [x] SP_CTX_DEC_20 — розробник: «A + C» (2026-10-11)
+- [x] DEC_20 resolved; код фази 21 (субагент): `resolveLast`/`callLabel`/`refResolver` в aliases.ts, рядок `"last" = …` у результатах context_edit/tag/note, `AliasRegistry.last` прибрано; 463 → 473 тести, validate, tsc — перевірено головною сесією; EDIT_DESCRIPTION 2035/2048
+- [x] Рев'ю раунд 50 — PASS; prefer: опис `ref` «latest finished call» ↔ LAST_PENDING; осиротілий виклик без результату після `--resume` → вічний LAST_PENDING; CallLabel дубльовано з переліком; екранування в 05_01; ризик фази 21 — посилання на phase14-results (рядок-носій видно в обох хостах)
+- [x] Живий прогін фази 21 (stream-json, haiku, 2.1.296): між процесами (`--resume`, відтворення s5) і в одному процесі — pass; замінено результат c.log, big.log не зачеплено; рядок `"last" = …` у edit/tag/note (`.dev_flow/cache/live-test/phase21-results.md`)
+- [x] Prefer-виправлення раунду 50 (субагент): опис `ref` без «finished», LAST_ORPHAN для осиротілого виклику, `callLabel` спільний з переліком, екранування в 05_01/05_03, ризик фази 21, 05_03 pass; 474 тести, validate, tsc — перевірено головною сесією; раунд 51 — confirm (main)
+- [x] Commit sign-off — «Ок»; фаза 21 закомічена
+- [ ] Код, тест, рев'ю, живий прогін, commit sign-off
+
+**Activity:**
+- 2026-10-11 — розробник обрав `ref: "last"`
+
 ### Subtask: backlog — F1 (власні підсумки), вкладення `queued_command`, P16 (читання через Bash)
 > Author: `claude-session-d5614704` — Created: 2026-10-11 — Last updated: 2026-10-11 — Status: `done`
 

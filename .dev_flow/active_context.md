@@ -4,7 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
-- `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog плану (`ref: "last"`, `/compact` мода приписують людині, R2 доставок, спайк «підсумок рядком асистента», I, K); фази 19–20 закомічені — branch `feat/context-editor` — 2026-10-11
+- `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog плану (`/compact` мода приписують людині, R2 доставок, спайк «підсумок рядком асистента», I, K); фаза 21 закомічена — branch `feat/context-editor` — 2026-10-11
 - `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: практика — розробник веде реальну задачу з модом, потім розбір сесії → P14+ — branch `feat/context-editor`, фаза 15 закомічена (9bf2255) — 2026-10-10
 
 ## Active Tasks

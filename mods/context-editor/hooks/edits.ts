@@ -319,6 +319,13 @@ export function boundaryAt(transcript: readonly SessionMessage[], head: readonly
   return undefined
 }
 
+// [SP_CTX_01_12] CallLabel: a call as the listing shows it ([SP_CTX_02_01])
+// and as the "last" line names it ([SP_CTX_02_17]); `mark` is the listing's
+// REPRO_FLAG.
+export function callLabel(use: { tool: string; tool_use_id: string; input?: unknown }, alias?: string, mark = ''): string {
+  return `${use.tool}${mark} id=${use.tool_use_id}${alias ? ` (${alias})` : ''} input="${oneLine(JSON.stringify(use.input ?? {}), 70)}"`
+}
+
 export function oneLine(s: string, max: number): string {
   const flat = s.replace(/\s+/g, ' ').trim()
   return flat.length > max ? flat.slice(0, max) + '…' : flat
@@ -400,7 +407,7 @@ export function listRows(
     const parts: string[] = []
     if (row.text) parts.push(`text "${oneLine(row.text, 90)}"`)
     for (const u of row.toolUses)
-      parts.push(`tool_use ${u.tool}${repro(u.tool)} id=${u.tool_use_id}${aliases.has(u.tool_use_id) ? ` (${aliases.get(u.tool_use_id)})` : ''} input="${oneLine(JSON.stringify(u.input ?? {}), 70)}"`)
+      parts.push(`tool_use ${callLabel(u, aliases.get(u.tool_use_id), repro(u.tool))}`)
     for (const r of row.toolResults ?? [])
       parts.push(`tool_result${repro(toolOf.get(r.tool_use_id))} id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
     const own = rowMedia(row, i, media)
@@ -575,9 +582,13 @@ function isIndex(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value)
 }
 
-// [SP_CTX_02_17] Resolves a call alias (or "last") to its tool_use_id.
-export type RefResolver = (ref: string) => string | undefined
-export const NO_REFS: RefResolver = () => undefined
+// [SP_CTX_02_17] What a ref resolves to: the tool_use_id, with the line that
+// names the call for "last" (LAST_TEXTS), or why it does not resolve.
+export type Resolved = { id: string; line?: string } | { error: string }
+
+// [SP_CTX_02_17] Resolves a call alias (or "last") on the rows as they are now.
+export type RefResolver = (ref: string, rows: readonly SessionMessage[]) => Resolved
+export const NO_REFS: RefResolver = ref => ({ error: unknownRef(ref) })
 
 // [SP_CTX_02_18] [SP_CTX_02_03] Why an index from an earlier listing is
 // refused; a listing with count 0 or one row in full renews nothing, so the
@@ -587,25 +598,40 @@ export const STALE_INDEXES =
 
 export const REF_HINT = 'marked calls carry a "[context-editor] id cN" line after their result'
 
+export function unknownRef(ref: string): string {
+  return `unknown ref ${ref} (${REF_HINT})`
+}
+
+// [SP_CTX_02_17] Why the `ref` of a raw edit did not resolve, kept on the raw
+// edit for checkShape (a symbol: never a field the agent can send).
+const REF_FAILURE = Symbol('refFailure')
+
 // [SP_CTX_02_03] A `ref` left on a summarize/drop edit: either beside a
 // tool_use_id, or one that did not resolve ([SP_CTX_02_17]).
 function refError(e: Record<string, unknown>): string | undefined {
   if (e.ref === undefined) return undefined
   if (e.tool_use_id !== undefined) return 'ref and tool_use_id are exclusive'
-  return `unknown ref ${typeof e.ref === 'string' ? e.ref : JSON.stringify(e.ref)} (${REF_HINT})`
+  const failure = (e as { [REF_FAILURE]?: unknown })[REF_FAILURE]
+  if (typeof failure === 'string') return failure
+  return unknownRef(typeof e.ref === 'string' ? e.ref : JSON.stringify(e.ref))
 }
 
 // [SP_CTX_01_02] [SP_CTX_02_17] Raw edits with each resolvable `ref` of a
 // summarize/drop replaced by its tool_use_id, so the queue keeps ids only;
-// any other `ref` stays for checkShape to reject. Pure.
-export function resolveEditRefs(raws: readonly unknown[], resolve: RefResolver): unknown[] {
-  return raws.map(raw => {
+// any other `ref` stays for checkShape to reject, with the resolver's reason.
+// `lines`: the line naming the call "last" resolved to, once. Pure.
+export function resolveEditRefs(raws: readonly unknown[], resolve: RefResolver, rows: readonly SessionMessage[] = []): { edits: unknown[]; lines: string[] } {
+  const lines = new Set<string>()
+  const edits = raws.map(raw => {
     if (typeof raw !== 'object' || raw === null) return raw
     const { ref, ...rest } = raw as Record<string, unknown>
     if ((rest.op !== 'summarize' && rest.op !== 'drop') || typeof ref !== 'string' || rest.tool_use_id !== undefined) return raw
-    const id = resolve(ref)
-    return id === undefined ? raw : { ...rest, tool_use_id: id }
+    const got = resolve(ref, rows)
+    if ('error' in got) return { ...(raw as Record<string, unknown>), [REF_FAILURE]: got.error }
+    if (got.line) lines.add(got.line)
+    return { ...rest, tool_use_id: got.id }
   })
+  return { edits, lines: [...lines] }
 }
 
 // [SP_CTX_02_03] Shape check of one raw edit; returns the edit or the reason.

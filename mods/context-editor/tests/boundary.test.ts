@@ -94,6 +94,13 @@ test('every tool description reaches the model whole (the five tools)', async ()
   for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION, NOTE_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
 })
 
+// [SP_CTX_02_02] [SP_CTX_DEC_20] phase 21: "last" is the latest call, marked or not
+test('EDIT_DESCRIPTION — last (phase 21)', async () => {
+  expect(EDIT_DESCRIPTION.length <= MAX_DESCRIPTION).toBe(true)
+  expect(EDIT_DESCRIPTION).toContain('"ref":"last" your latest call, without context_list.')
+  expect(EDIT_DESCRIPTION).not.toContain('latest marked')
+})
+
 // [SP_CTX_02_01] [SP_CTX_02_02] [SP_CTX_02_11] the content phase 15 adds
 test('опис інструмента (phase 15): the state slot, the range, the review reasons and the ~ flag are named', async () => {
   expect(EDIT_DESCRIPTION).toContain('A row tagged [state] changes only by a rewrite of that row.')

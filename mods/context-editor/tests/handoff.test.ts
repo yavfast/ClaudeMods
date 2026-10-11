@@ -1304,7 +1304,7 @@ test('RunHandoff — псевдонім зміненої пари: c3 → a, sum
   expect(reg.map).toEqual({ c4: 'b' })
   const read = parseAliases(JSON.stringify(reg))
   const seeded = s.sessions.get('new')!
-  const out = prepare(seeded, resolveEditRefs([{ op: 'summarize', ref: 'c3', summary: 'x' }], refResolver(read)))
+  const out = prepare(seeded, resolveEditRefs([{ op: 'summarize', ref: 'c3', summary: 'x' }], refResolver(read), seeded).edits)
   expect(out.queued).toEqual([])
   expect(out.errors[0]).toContain('unknown ref c3')
 })
@@ -1350,7 +1350,7 @@ test('RunHandoff — незмінена пара: c4 and a pin on pair b, no edi
   s.tags.set('/s/old', { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { tool_use_id: 'b' }, created_turn: 0 }] })
   s.aliases.set('/s/old', aliasesOf({ c4: 'b' }))
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
-  expect(refResolver(parseAliases(JSON.stringify(s.aliases.get('/s/new')!)))('c4')).toBe('b')
+  expect(refResolver(parseAliases(JSON.stringify(s.aliases.get('/s/new')!)))('c4', s.sessions.get('new')!)).toEqual({ id: 'b' })
   expect(s.tags.get('/s/new')!.tags).toEqual([{ kind: 'pin', target: { tool_use_id: 'b' }, created_turn: 0 }])
 })
 

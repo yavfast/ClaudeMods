@@ -14,7 +14,6 @@ import {
   locate,
   NO_REFS,
   OWN_TOOLS,
-  REF_HINT,
   STALE_INDEXES,
   touchedBy,
   type PageNote,
@@ -178,7 +177,8 @@ export type NoteError =
 
 const UNTRACKABLE = (i: number) => `row #${i} cannot be tracked (no text, no tool call); note a neighbouring row`
 
-export type NoteOutcome = { registry: TagRegistry; added: string[]; removed: string[]; rejected: { code: NoteError; reason: string }[] }
+// `lines`: the line naming the call "last" resolved to ([SP_CTX_02_17]).
+export type NoteOutcome = { registry: TagRegistry; added: string[]; removed: string[]; rejected: { code: NoteError; reason: string }[]; lines: string[] }
 
 function bytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).length
@@ -197,7 +197,7 @@ export function applyNoteRequests(
 ): NoteOutcome {
   let notes = [...reg.notes]
   let nextNote = reg.nextNote
-  const out: NoteOutcome = { registry: reg, added: [], removed: [], rejected: [] }
+  const out: NoteOutcome = { registry: reg, added: [], removed: [], rejected: [], lines: [] }
   raws.forEach((raw, k) => {
     const reject = (code: NoteError, why: string) => void out.rejected.push({ code, reason: `note ${k + 1}: ${why} (${code})` })
     const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
@@ -227,8 +227,14 @@ export function applyNoteRequests(
     if (r.to !== undefined && !hasIndex) return reject('BAD_RANGE', '"to" needs "index", the first row of the range')
     let target: NoteTarget
     if (hasId || hasRef) {
-      const id = hasRef ? resolve(r.ref as string) : (r.tool_use_id as string)
-      if (id === undefined) return reject('UNKNOWN_REF', `unknown ref ${r.ref} (${REF_HINT})`)
+      let id = r.tool_use_id as string
+      if (hasRef) {
+        // [SP_CTX_02_17] "last" resolves on these rows and names its call
+        const got = resolve(r.ref as string, rows)
+        if ('error' in got) return reject('UNKNOWN_REF', got.error)
+        if (got.line && !out.lines.includes(got.line)) out.lines.push(got.line)
+        id = got.id
+      }
       target = { tool_use_id: id }
       if (!noteRows(rows, target)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
     } else {
@@ -294,6 +300,7 @@ export async function contextNote(
     return {
       result: [
         `Added ${list(out.added)}; removed ${list(out.removed)}; ${out.registry.notes.length} note(s) in the registry.`,
+        ...out.lines,
         out.rejected.length ? `Rejected: ${out.rejected.map(x => x.reason).join('; ')}.` : '',
       ]
         .filter(Boolean)

@@ -11,7 +11,6 @@ import {
   oneLine,
   OWN_TOOLS,
   prepare,
-  REF_HINT,
   rowChars,
   STALE_INDEXES,
   touchedBy,
@@ -411,8 +410,14 @@ export function applyTagRequests(
     let target: TagTarget
     let row: SessionMessage | undefined
     if (hasId || hasRef) {
-      const id = hasRef ? resolve(r.ref as string) : (r.tool_use_id as string)
-      if (id === undefined) return reject('UNKNOWN_REF', `unknown ref ${r.ref} (${REF_HINT})`)
+      let id = r.tool_use_id as string
+      if (hasRef) {
+        // [SP_CTX_02_17] "last" resolves on these rows and names its call
+        const got = resolve(r.ref as string, rows)
+        if ('error' in got) return reject('UNKNOWN_REF', got.error)
+        if (got.line && !out.lines.includes(got.line)) out.lines.push(got.line)
+        id = got.id
+      }
       target = { tool_use_id: id }
       if (!resolveTarget(rows, target)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
     } else {

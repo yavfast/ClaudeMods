@@ -139,14 +139,14 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a wrong conclusion.
 - {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
 
-Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" the latest marked one, with no ${LIST} call. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
+Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" your latest call, without ${LIST}. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
 Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
 Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call. Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
-const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for the most recently marked call.' }
+const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for your latest call (context_* calls do not count).' }
 
 const EDIT_SCHEMA = {
   type: 'object',
@@ -190,7 +190,7 @@ A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PL
 
 const TAG_TARGET = {
   tool_use_id: { type: 'string', description: 'Target: a tool call and its result.' },
-  ref: { type: 'string', description: 'Target: a tool call by its alias "cN" (from a "[context-editor] id cN" line) or "last", the most recently marked call.' },
+  ref: { type: 'string', description: 'Target: a tool call by its alias "cN" (from a "[context-editor] id cN" line) or "last", your latest call (context_* calls do not count).' },
   index: { type: 'integer', description: `Target: a row index from ${LIST}.` },
 }
 
@@ -440,11 +440,13 @@ function updateAliases($: EngineInterface, change: (reg: AliasRegistry) => Alias
   })
 }
 
-// [SP_CTX_02_17] Resolves refs against the alias registry as it is now;
-// nothing resolves without storage or from an unreadable registry.
-async function resolver($: EngineInterface): Promise<RefResolver> {
-  if (!storage.dir) return NO_REFS
-  return refResolver(await readAliases($))
+// [SP_CTX_02_17] Resolves refs for the context_* call `callId`: aliases
+// against the registry as it is now (none without storage or from an
+// unreadable registry), "last" on the rows the caller reads.
+async function resolver($: EngineInterface, callId: unknown): Promise<RefResolver> {
+  const id = typeof callId === 'string' && callId ? callId : undefined
+  if (!storage.dir) return refResolver({ state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }, id)
+  return refResolver(await readAliases($), id)
 }
 
 // [SP_CTX_01_10]
@@ -1014,7 +1016,7 @@ export const register: Register = on => {
       const { rows, key } = await view($)
       // [SP_CTX_02_10] the API form is read only for a describe
       const found = needsApi(args) ? collectMedia(await apiMessages($), rows).found : undefined
-      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($), listed.key !== key, hasMediaFrom(found), await deliveredNow($))
+      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($))
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out
@@ -1037,7 +1039,7 @@ export const register: Register = on => {
       io,
       { agentId: e.agentId, tags: args.tags },
       ready ? undefined : storage.reason,
-      e.agentId ? NO_REFS : await resolver($),
+      e.agentId ? NO_REFS : await resolver($, e.tool_use_id),
       !e.agentId && ready && (await staleIndexes($)),
       typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined,
     )
@@ -1054,7 +1056,7 @@ export const register: Register = on => {
       { ...tagIO($), onRegistry: work => serial('tags', work) },
       { agentId: e.agentId, notes: args.notes },
       ready ? undefined : storage.reason,
-      e.agentId ? NO_REFS : await resolver($),
+      e.agentId ? NO_REFS : await resolver($, e.tool_use_id),
       !e.agentId && ready && (await staleIndexes($)),
     )
     return 'deny' in out ? deny(out.deny) : remindAfter($, NOTE, e.agentId, { result: out.result })

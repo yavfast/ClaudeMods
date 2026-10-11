@@ -254,12 +254,14 @@ export function queueEdits(
   hasMedia: (owner: MediaOwner) => boolean = () => false,
   // [SP_CTX_01_22] the host's deliveries not yet rows, for PersonWarnings only
   delivered: readonly QueuedDelivery[] = [],
-): { queue: Queue; queued: number; errors: string[]; warnings: string[] } | { deny: string } {
+): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.length > MAX_TEXT)
     return { deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` }
-  const { queued, errors } = prepare(rows, resolveEditRefs(args.edits, resolve), hasMedia, pinned, staleIndexes)
+  // [SP_CTX_02_17] refs resolve on these rows; "last" names its call
+  const refs = resolveEditRefs(args.edits, resolve, rows)
+  const { queued, errors } = prepare(rows, refs.edits, hasMedia, pinned, staleIndexes)
   if (q.edits.length + queued.length > MAX_QUEUE_EDITS)
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
@@ -277,12 +279,14 @@ export function queueEdits(
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
   const warnings = personWarnings(rows, queued, delivered)
   if (queued.some(e => e.op === 'describe')) warnings.push(DESCRIBE_DROPS)
-  return { queue: next, queued: queued.length, errors, warnings }
+  return { queue: next, queued: queued.length, errors, warnings, refLines: refs.lines }
 }
 
-export function queuedText(q: Queue, queued: number, errors: readonly string[], warnings: readonly string[] = []): string {
+// [SP_CTX_02_02] `refLines`: the line naming the call "last" resolved to.
+export function queuedText(q: Queue, queued: number, errors: readonly string[], warnings: readonly string[] = [], refLines: readonly string[] = []): string {
   return [
     `Queued ${queued} edit(s); ${q.edits.length} pending in total.`,
+    ...refLines,
     errors.length ? `Rejected: ${errors.join('; ')}.` : '',
     ...warnings,
     q.edits.length
@@ -348,7 +352,7 @@ export async function contextEdit(
   } catch (err) {
     return { deny: `could not save the queue: ${String(err)}` }
   }
-  return { result: notice + queuedText(out.queue, out.queued, out.errors, out.warnings) }
+  return { result: notice + queuedText(out.queue, out.queued, out.errors, out.warnings, out.refLines) }
 }
 
 // [SP_CTX_02_08] What changes in the queue once a person's prompt entered:

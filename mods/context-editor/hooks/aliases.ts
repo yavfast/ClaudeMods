@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import { BIG_ROW, MARK, OWN_TOOLS, touchedBy, type QueuedEdit, type RefResolver } from './edits'
+import { BIG_ROW, callLabel, MARK, OWN_TOOLS, touchedBy, unknownRef, type QueuedEdit, type RefResolver, type Resolved } from './edits'
 import type { Read } from './queue'
 import { SEARCH_TOOLS } from './tags'
 
@@ -7,8 +7,9 @@ import { SEARCH_TOOLS } from './tags'
 export const ALIAS_PREFIX = 'c'
 export const MAX_ALIASES = 2000
 
-// [SP_CTX_01_13] alias -> tool_use_id; `last` is the alias given last.
-export type AliasRegistry = { next: number; last?: string; map: Record<string, string> }
+// [SP_CTX_01_13] alias -> tool_use_id. A `last` field of a file from before
+// phase 21 is ignored: "last" resolves on the rows ([SP_CTX_02_17]).
+export type AliasRegistry = { next: number; map: Record<string, string> }
 
 export const EMPTY_ALIASES: AliasRegistry = { next: 1, map: {} }
 
@@ -47,8 +48,7 @@ export function parseAliases(text: string): Read<AliasRegistry> {
     return n === undefined || n >= reg.next || typeof id !== 'string' || id === ''
   })
   if (badEntry) return { state: 'unreadable', reason: `bad alias ${JSON.stringify(badEntry[0])}` }
-  if (reg.last !== undefined && (typeof reg.last !== 'string' || !owns(reg.map, reg.last))) return { state: 'unreadable', reason: 'bad field(s): last' }
-  return { state: 'ok', value: { next: reg.next, map: { ...reg.map }, ...(reg.last !== undefined ? { last: reg.last } : {}) } }
+  return { state: 'ok', value: { next: reg.next, map: { ...reg.map } } }
 }
 
 // [SP_CTX_02_16] A new alias for `toolUseId`; the oldest go past MAX_ALIASES. Pure.
@@ -60,20 +60,64 @@ export function addAlias(reg: AliasRegistry, toolUseId: string): { registry: Ali
     keys.sort((a, b) => aliasNumber(a)! - aliasNumber(b)!)
     for (const old of keys.slice(0, keys.length - MAX_ALIASES)) delete map[old]
   }
-  return { registry: { next: reg.next + 1, last: alias, map }, alias }
+  return { registry: { next: reg.next + 1, map }, alias }
 }
 
-// [SP_CTX_02_17] The tool_use_id a ref names, or undefined: `last` is the call
-// marked last, `c<n>` its own entry; an unreadable registry resolves nothing.
-export function resolveRef(read: Read<AliasRegistry>, ref: string): string | undefined {
-  if (read.state === 'unreadable') return undefined
-  const reg = read.value
-  if (ref === 'last') return reg.last !== undefined ? reg.map[reg.last] : undefined
-  return aliasNumber(ref) !== undefined && owns(reg.map, ref) ? reg.map[ref] : undefined
+// [SP_CTX_01_12] LAST_TEXTS
+export const LAST_NONE = '"last" names no call: no finished call of yours before this one (context_* calls do not count)'
+export function lastPending(label: string): string {
+  return `"last" is ${label}, which has no result yet; use "last" once its result is in, or name another target`
+}
+export function lastOrphan(label: string): string {
+  return `"last" is ${label}, a call of an earlier turn that never got a result, so it cannot be a target; name the call you mean by its "tool_use_id" or alias`
+}
+export function lastLine(label: string): string {
+  return `"last" = ${label}`
 }
 
-export function refResolver(read: Read<AliasRegistry>): RefResolver {
-  return ref => resolveRef(read, ref)
+// [SP_CTX_02_17] ResolveLast: the latest call of the conversation written
+// before this one (`callId`), marked or not, the mod's own tools aside; one
+// of the same response without a result yet is refused, never swapped for an
+// older one. The row of this call is already in the rows mid-turn (plugin-hooks
+// item 52); without it every row counts. Parallel calls are rows in the order
+// they were written (item 40): the one written last wins. A call left without
+// a result by an earlier turn is refused by its own text. Pure.
+// A row that starts a turn: a user row without results, not empty.
+function isPromptRow(row: SessionMessage): boolean {
+  return row.role === 'user' && !(row.toolResults ?? []).length && (row.text.trim() !== '' || row.handle !== undefined)
+}
+
+export function resolveLast(rows: readonly SessionMessage[], callId?: string, aliases: ReadonlyMap<string, string> = new Map()): Resolved {
+  const found = callId ? rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === callId)) : -1
+  const carrier = found < 0 ? rows.length : found
+  for (let i = Math.min(carrier, rows.length - 1); i >= 0; i--) {
+    const uses = rows[i]!.toolUses
+    const end = i === carrier ? uses.findIndex(u => u.tool_use_id === callId) : uses.length
+    for (let k = end - 1; k >= 0; k--) {
+      const use = uses[k]!
+      if (use.tool.startsWith(OWN_TOOLS)) continue
+      const label = callLabel(use, aliases.get(use.tool_use_id))
+      const later = rows.slice(i + 1, Math.max(carrier, i + 1))
+      if (rows.slice(i + 1).some(r => (r.toolResults ?? []).some(t => t.tool_use_id === use.tool_use_id))) return { id: use.tool_use_id, line: lastLine(label) }
+      // a prompt row between the call and this one: the call's turn ended
+      // without a result (a process killed mid-tool, then --resume; the host
+      // repairs the pair only in the API view, plugin-hooks item 40)
+      return { error: later.some(isPromptRow) ? lastOrphan(label) : lastPending(label) }
+    }
+  }
+  return { error: LAST_NONE }
+}
+
+// [SP_CTX_02_17] ResolveRef: `c<n>` by the registry, "last" by the rows (it
+// resolves even when the registry cannot be read); `callId` is the tool_use_id
+// of the context_* call that resolves it.
+export function refResolver(read: Read<AliasRegistry>, callId?: string): RefResolver {
+  const reg = read.state === 'unreadable' ? undefined : read.value
+  return (ref, rows) => {
+    if (ref === 'last') return resolveLast(rows, callId, reg ? aliasesById(reg) : new Map())
+    if (reg && aliasNumber(ref) !== undefined && owns(reg.map, ref)) return { id: reg.map[ref]! }
+    return { error: unknownRef(ref) }
+  }
 }
 
 // [SP_CTX_02_01] The alias of each tool_use_id, for the listing.
@@ -103,8 +147,7 @@ export function pruneAliases(
     else map[alias] = id
   }
   if (!removed) return reg
-  const { last, ...rest } = reg
-  return last !== undefined && owns(map, last) ? { ...rest, last, map } : { ...rest, map }
+  return { ...reg, map }
 }
 
 // [SP_CTX_02_16] What MarkCall reads from one finished tool call.
