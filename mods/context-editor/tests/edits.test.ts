@@ -18,6 +18,7 @@ import {
   prepare,
   producedRows,
   replacedOwners,
+  responseStart,
   ROW_WINDOW,
   SUMMARIZED,
 } from '../hooks/edits'
@@ -781,4 +782,131 @@ test('ApplyEdits — хто написав заміну: each replacement says t
   // the listing still flags every replaced row by the MARK prefix
   const page = listRows(out.rows, 0, 20)
   for (const i of [1, 3, 5]) expect(page).toContain(`#${i}*`)
+})
+
+// ---- [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix and ResponseStart (phase 23)
+
+const think = (h: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [], handle: h })
+const say = (text: string, h: string): SessionMessage => ({ role: 'assistant', text, toolUses: [], handle: h })
+const own = (id: string, h: string): SessionMessage => use(id, 'mcp__context-editor__context_list', h)
+// one assistant message of the API form per response: its call ids and texts
+const reply = (ids: string[], texts: string[] = []) => ({
+  role: 'assistant',
+  content: [{ type: 'thinking', thinking: '', signature: 's' }, ...texts.map(text => ({ type: 'text', text })), ...ids.map(id => ({ type: 'tool_use', id, name: 'Bash', input: {} }))],
+})
+
+// a turn of four responses: R1 (thinking, Read a), R2 (thinking, own context_list l),
+// R3 (thinking, Bash b), R4 (thinking, Bash c), then the final text
+function turn(): { rows: SessionMessage[]; api: unknown[] } {
+  const rows = [
+    { role: 'user' as const, text: 'task', toolUses: [], handle: 'p' },
+    think('t1'),
+    use('a', 'Read', 'ua'),
+    result('a', BIG, 'ra'),
+    think('t2'),
+    own('l', 'ul'),
+    result('l', 'listing', 'rl'),
+    think('t3'),
+    use('b', 'Bash', 'ub'),
+    result('b', BIG, 'rb'),
+    think('t4'),
+    use('c', 'Bash', 'uc'),
+    result('c', BIG, 'rc'),
+    say('done', 'f'),
+  ]
+  return { rows, api: [{ role: 'user', content: 'task' }, reply(['a']), reply(['l']), reply(['b']), reply(['c']), reply([], ['done'])] }
+}
+
+test('ResponseStart — відповідь: the first row of the response that holds a row; a result row counts from its call; a prompt row is its own', async () => {
+  const { rows, api } = turn()
+  expect(responseStart(rows, 11, api)).toBe(10)
+  expect(responseStart(rows, 12, api)).toBe(10)
+  expect(responseStart(rows, 13, api)).toBe(13)
+  expect(responseStart(rows, 0, api)).toBe(0)
+  expect(responseStart(rows, rows.length, api)).toBe(rows.length)
+})
+
+test('ResponseStart — паралельні виклики «виклик, результат, виклик»: the API message joins the calls, so the start is the first call\'s response', async () => {
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'p' },
+    say('earlier', 'e'),
+    think('t'),
+    use('a', 'Read', 'ua'),
+    result('a', 'A', 'ra'),
+    use('b', 'Read', 'ub'),
+    result('b', 'B', 'rb'),
+  ]
+  const api = [{ role: 'user', content: 'task' }, reply([], ['earlier']), reply(['a', 'b'])]
+  // "earlier" is a response of its own only by the API: by the rows it runs into the thinking row
+  expect(responseStart(rows, 5, [{ role: 'user', content: 'task' }, reply(['a', 'b'])])).toBe(1)
+  expect(responseStart(rows, 5, api)).toBe(1)
+  // without a matching API message: the start of the stretch, after the prompt
+  expect(responseStart(rows, 5, [])).toBe(1)
+  // a text row that the API shows in an earlier response's message
+  const late: SessionMessage[] = [{ role: 'user', text: 'task', toolUses: [], handle: 'p' }, use('a', 'Read', 'ua'), result('a', 'A', 'ra'), say('and so', 's')]
+  expect(responseStart(late, 3, [reply(['a'], ['and so'])])).toBe(1)
+  expect(responseStart(late, 3, [reply(['a']), reply([], ['and so'])])).toBe(3)
+})
+
+test('FrozenPrefix — неглибока правка: rows before the response of the first change come back as they came, thinking, own calls and result rows with their handle', async () => {
+  const { rows, api } = turn()
+  const queued = prepare(rows, [{ op: 'summarize', tool_use_id: 'c', summary: 'c ok' }]).queued
+  const out = applyEdits(rows, queued, '/s/1.json', new Map(), new Set(), { freeze: { api } })
+  expect(out.prefix).toBe(10)
+  // the same objects, handle and all: the bytes of the prompt cache
+  for (let i = 0; i < 10; i++) expect(out.rows[i]).toBe(rows[i]!)
+  // the response of the edit is rebuilt: its thinking row went, the pair has the fresh id
+  expect(out.rows[10]!.handle).toBeUndefined()
+  expect(out.rows[10]!.toolUses[0]!.tool_use_id.startsWith('c_ce')).toBe(true)
+  expect(out.rows[11]!.toolResults![0]!.text.startsWith(MARK)).toBe(true)
+  expect(out.rows[12]!.handle).toBeUndefined()
+  expect(out.rows.length).toBe(13)
+  // DropOwnCalls keeps the own pair of the frozen prefix
+  const frozen = new Set(rows.slice(0, out.prefix))
+  const dropped = dropOwnCallsCounted(out.rows, new Set(), undefined, frozen)
+  expect(dropped.removed).toBe(0)
+  expect(dropped.rows.slice(0, 10)).toEqual(rows.slice(0, 10))
+  expect(dropped.rows[5]).toBe(rows[5]!)
+})
+
+test('FrozenPrefix — без заморожування: without freeze (a seed, the callers outside a compaction) the stretch is rebuilt as before', async () => {
+  const { rows } = turn()
+  const queued = prepare(rows, [{ op: 'summarize', tool_use_id: 'c', summary: 'c ok' }]).queued
+  const out = applyEdits(rows, queued, '/s/1.json')
+  expect(out.prefix).toBe(0)
+  // the thinking rows of the turn went, every assistant row of the stretch is rebuilt
+  expect(out.rows.filter(r => r.role === 'assistant').every(r => r.handle === undefined)).toBe(true)
+  expect(out.rows.length).toBe(10)
+  expect(dropOwnCallsCounted(out.rows).removed).toBe(1)
+})
+
+test('FrozenPrefix — глибока правка і кілька правок: the earliest applied edit sets the prefix; a failed one does not', async () => {
+  const { rows, api } = turn()
+  const queued = prepare(rows, [
+    { op: 'summarize', tool_use_id: 'c', summary: 'c' },
+    { op: 'summarize', tool_use_id: 'a', summary: 'a' },
+  ]).queued
+  const both = applyEdits(rows, queued, '', new Map(), new Set(), { freeze: { api } })
+  expect(both.prefix).toBe(1)
+  expect(both.rows[0]).toBe(rows[0]!)
+  // the summarize of a fails (its media is not archived): only c counts
+  const failedA = applyEdits(rows, queued, '', new Map(), new Set([ownerKey({ tool_use_id: 'a' })]), { freeze: { api } })
+  expect(failedA.report.failed.length).toBe(1)
+  expect(failedA.prefix).toBe(10)
+  // nothing applied: every row stays
+  const none = applyEdits(rows, [], '', new Map(), new Set(), { freeze: { api } })
+  expect(none.prefix).toBe(rows.length)
+  expect(none.rows).toEqual(rows)
+})
+
+test('FrozenPrefix — collapse і rewrite: the first row of a collapse span, the row of a rewrite set the first change', async () => {
+  const { rows, api } = turn()
+  const collapse = prepare(rows, [{ op: 'collapse', from_index: 7, to_index: 9, summary: 'b done' }]).queued
+  const c = applyEdits(rows, collapse, '', new Map(), new Set(), { freeze: { api } })
+  expect(c.prefix).toBe(7)
+  for (let i = 0; i < 7; i++) expect(c.rows[i]).toBe(rows[i]!)
+  const rewrite = prepare(rows, [{ op: 'rewrite', index: 13, text: 'finished' }]).queued
+  const r = applyEdits(rows, rewrite, '', new Map(), new Set(), { freeze: { api } })
+  expect(r.prefix).toBe(13)
+  for (let i = 0; i < 13; i++) expect(r.rows[i]).toBe(rows[i]!)
 })

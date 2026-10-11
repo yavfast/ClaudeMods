@@ -583,3 +583,98 @@ test('HandleCompaction — нечитабельний файл доставок:
   expect(written.queue!.report).toContain('Messages delivered during your tool calls could not be restored (not JSON).')
   expect(pruned).toEqual([])
 })
+
+// ---- [SP_CTX_02_04] [SP_CTX_DEC_22] the frozen prefix (phase 23)
+
+// a turn: thinking and an own context_list, thinking and Bash a, thinking and Bash b, the final text
+function turnRows(): SessionMessage[] {
+  const think = (h: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [], handle: h })
+  const call = (id: string, tool: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input: {} }], handle: `u${id}` })
+  const res = (id: string, text: string): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError: false }], handle: `r${id}` })
+  return [
+    { role: 'user', text: 'task', toolUses: [], handle: 'p' },
+    think('t1'),
+    call('z', 'mcp__context-editor__context_list'),
+    res('z', 'listing'),
+    think('t2'),
+    call('a', 'Bash'),
+    res('a', 'out a'),
+    think('t3'),
+    call('b', 'Bash'),
+    res('b', BIG),
+    { role: 'assistant', text: 'done', toolUses: [], handle: 'f' },
+  ]
+}
+
+// the API form of turnRows: one assistant message per response
+function turnApi(withResponses = true): unknown[] {
+  const reply = (id: string) => ({ role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: 's' }, { type: 'tool_use', id, name: 'x', input: {} }] })
+  const res = (id: string) => ({ role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'x' }] })
+  const all = [{ role: 'user', content: 'task' }, reply('z'), res('z'), reply('a'), res('a'), reply('b'), res('b'), { role: 'assistant', content: [{ type: 'text', text: 'done' }] }]
+  return withResponses ? all : all.filter(m => m.role === 'user')
+}
+
+// `keepCache`: the batch asked for the frozen prefix ("keep_cache": true)
+function frozenHarness(withResponses: boolean, keepCache = true) {
+  const rows = turnRows()
+  const pruned: string[][] = []
+  const h = harness(
+    { state: 'ok', value: { ...EMPTY_QUEUE, keepCache, edits: prepare(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'b is fine' }]).queued } },
+    {
+      readApi: async () => turnApi(withResponses),
+      readDeliveries: async () => ({ state: 'ok', value: { items: [delivery('d1', 'a', REPORTED), delivery('d2', 'b')] } }),
+      pruneDeliveries: done => void pruned.push([...done].sort()),
+    },
+  )
+  return { rows, ...h, pruned }
+}
+
+test('HandleCompaction — заморожений префікс (keep_cache): the rows before the response of the edit come back as they came: thinking, the own call, result rows and the delivery behind one', async () => {
+  const { rows, io, written, pruned } = frozenHarness(true)
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  // rows #0..#6 are the same objects, handle and all; the delivery behind result a rides on its handle
+  for (let i = 0; i < 7; i++) expect(out.messages[i]).toBe(rows[i]!)
+  expect(out.messages.some(r => r.text === REPORTED)).toBe(false)
+  // from the response of b on: its thinking went, the pair rebuilt, the delivery behind b inserted, the final text rebuilt
+  expect(out.messages[7]!.toolUses[0]!.tool_use_id.startsWith('b_ce')).toBe(true)
+  expect(out.messages[8]!.toolResults![0]!.text.startsWith('[context-editor] you read the full output here')).toBe(true)
+  expect(out.messages[9]!.text).toBe(DELIVERED)
+  expect(out.messages[10]!.text).toBe('done')
+  expect(out.messages[10]!.handle).toBeUndefined()
+  expect(out.messages.length).toBe(11)
+  // the own call before the first change stays: nothing is said about removed calls
+  expect(written.queue!.report).not.toContain('Your own context-editor calls')
+  expect(written.queue!.report).toContain('Messages delivered during your tool calls: 1 now stand as rows.')
+  expect(pruned).toEqual([['d2']])
+})
+
+test('HandleCompaction — префікс без API-повідомлень: without the response in the API form the stretch is rebuilt from the prompt as before', async () => {
+  const { rows, io, written } = frozenHarness(false)
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(out.messages[0]).toBe(rows[0]!)
+  // the thinking rows went, the own pair too; the delivery behind a is a row now
+  expect(out.messages.some(r => r.handle === 't1' || r.handle === 't2')).toBe(false)
+  expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
+  expect(out.messages.some(r => r.text === REPORTED)).toBe(true)
+  expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed')
+})
+
+test('HandleCompaction — без keep_cache (типово): the API form at hand, yet the stretch is rebuilt as before phase 23: thinking gone, own pair removed, result rows rebuilt (DEC_02), the delivery behind a a row', async () => {
+  const { rows, io, written } = frozenHarness(true, false)
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(out.messages[0]).toBe(rows[0]!)
+  // every assistant row of the stretch rebuilt: the thinking rows went
+  expect(out.messages.filter(r => r.role === 'assistant').every(r => r.handle === undefined)).toBe(true)
+  expect(out.messages.some(r => r.handle === 't1' || r.handle === 't2' || r.handle === 't3')).toBe(false)
+  // the result row of a, untouched by the edit, rebuilt without its handle (SP_CTX_DEC_02); the delivery behind it inserted
+  const ra = out.messages.findIndex(r => (r.toolResults ?? []).some(x => x.tool_use_id === 'a'))
+  expect(out.messages[ra]!.handle).toBeUndefined()
+  expect(out.messages[ra + 1]!.text).toBe(REPORTED)
+  expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
+  expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed')
+  // the queue after the batch: keepCache back to false
+  expect(written.queue!.keepCache).toBe(false)
+})

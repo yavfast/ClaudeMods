@@ -495,13 +495,18 @@ export function listMode(args: { from?: unknown; count?: unknown; index?: unknow
 // [SP_CTX_02_05] Removes this plugin's own calls and their results. An own
 // pair whose result row also holds media of another pair, or a result outside
 // the API window, stays: rebuilding that row would drop media nobody archived.
+// So does a pair in the frozen prefix ([SP_CTX_02_04], FrozenPrefix).
 export function dropOwnCalls(
   input: readonly SessionMessage[],
   mediaOwners: ReadonlySet<string> = new Set(),
   knownResults?: ReadonlySet<string>,
+  frozen: ReadonlySet<SessionMessage> = NONE_FROZEN,
 ): SessionMessage[] {
-  return dropOwnCallsCounted(input, mediaOwners, knownResults).rows
+  return dropOwnCallsCounted(input, mediaOwners, knownResults, frozen).rows
 }
+
+// No row is frozen: the seed and the callers outside a compaction.
+export const NONE_FROZEN: ReadonlySet<SessionMessage> = new Set()
 
 // [SP_CTX_02_05] DropOwnCalls with `removed`: the own pairs it removed (a call
 // with its result counts once; the pairs kept by media or outside the API
@@ -511,9 +516,17 @@ export function dropOwnCallsCounted(
   input: readonly SessionMessage[],
   mediaOwners: ReadonlySet<string> = new Set(),
   knownResults?: ReadonlySet<string>,
+  // [SP_CTX_02_04] the rows before the first change, returned as they came
+  frozen: ReadonlySet<SessionMessage> = NONE_FROZEN,
 ): { rows: SessionMessage[]; removed: number } {
   const own = new Set(input.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
   const kept = new Set<string>()
+  // [SP_CTX_02_05] an own pair in the frozen prefix stays: its bytes keep the prompt cache
+  for (const r of input) {
+    if (!frozen.has(r)) continue
+    for (const u of r.toolUses) if (own.has(u.tool_use_id)) kept.add(u.tool_use_id)
+    for (const t of r.toolResults ?? []) if (own.has(t.tool_use_id)) kept.add(t.tool_use_id)
+  }
   for (const r of input) {
     const results = r.toolResults ?? []
     if (!results.some(t => own.has(t.tool_use_id))) continue
@@ -534,7 +547,8 @@ export function dropOwnCallsCounted(
     })
   })
   // [SP_CTX_02_04] a rebuilt assistant row splits its response (pitfall 30)
-  return { rows: mergeCallRows(rebuildSplitResponses(dropped).filter(r => r.handle !== undefined || !isEmpty(r))), removed: ids.size }
+  const kept2 = rebuildSplitResponses(dropped, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmpty(r))
+  return { rows: mergeCallRows(kept2, frozen), removed: ids.size }
 }
 
 function findToolUse(rows: readonly SessionMessage[], id: string): number {
@@ -919,6 +933,11 @@ export type ApplyOptions = {
   // [SP_CTX_02_10] the API form is cut by the read window: rows before the
   // first known result may lie outside it
   apiTruncated?: boolean
+  // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix (a compaction, never a seed):
+  // the rows before the response that holds the first change are returned as
+  // they came, with their handle; `api` is the Messages API form, which tells
+  // the rows of one response apart (ResponseStart)
+  freeze?: { api: readonly unknown[] }
 }
 
 // [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
@@ -931,7 +950,7 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string> } {
+): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number } {
   const rows = [...input]
   const report: ApplyReport = {
     applied: [],
@@ -964,6 +983,8 @@ export function applyEdits(
   // a row edit (collapse, rewrite, describe) takes its rows exclusively.
   type Step = { edit: QueuedEdit; touched: number[]; pair?: string; hi: number; owners: string[]; run: () => void }
   const plan: Step[] = []
+  // [SP_CTX_02_04] the first row each applied step touches
+  const firsts: number[] = []
 
   for (const edit of edits) {
     const name = describeEdit(edit)
@@ -1138,23 +1159,98 @@ export function applyEdits(
     }
     if (step.pair) pairs.add(step.pair)
     for (const k of step.owners) report.mediaFiles.push(...(media.get(k) ?? []))
+    firsts.push(Math.min(...step.touched))
   }
+
+  // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix: every applied step touches
+  // rows from the earliest of `firsts` on and splices only there, so the rows
+  // before it stand at their input indexes, the same objects. Those before
+  // the response that holds that row are returned as they came.
+  const prefix = !options.freeze ? 0 : firsts.length ? responseStart(input, Math.min(...firsts), options.freeze.api) : input.length
+  const frozen: ReadonlySet<SessionMessage> = prefix ? new Set(input.slice(0, prefix)) : NONE_FROZEN
 
   // [SP_CTX_DEC_02] A kept tool_result row is stored after the boundary still
   // parented on the pre-compaction row, so it is rebuilt — unless it has media
-  // ([C_CTX_DEC_06]) or lies outside the API window, where its media is unknown.
+  // ([C_CTX_DEC_06]), lies outside the API window, where its media is unknown,
+  // or stands in the frozen prefix ([SP_CTX_DEC_22]).
   const known = options.knownResults
   const relinked = rows.map(r => {
     const results = r.toolResults ?? []
-    if (r.handle === undefined || results.length === 0) return r
+    if (frozen.has(r) || r.handle === undefined || results.length === 0) return r
     if (results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id })))) return r
     if (known && !results.every(t => known.has(t.tool_use_id))) return r
     return plain(r, {})
   })
-  const out = mergeCallRows(rebuildSplitResponses(relinked).filter(r => r.handle !== undefined || !isEmpty(r)))
+  const out = mergeCallRows(
+    rebuildSplitResponses(relinked, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmpty(r)),
+    frozen,
+  )
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
-  return { rows: out, report, made, renamed }
+  return { rows: out, report, made, renamed, prefix }
+}
+
+// [SP_CTX_02_04] The stretch a row lies in starts after the last prompt row
+// before it (a user row without results that is not a result row a drop left
+// empty): no response crosses a prompt.
+function isPrompt(r: SessionMessage): boolean {
+  return r.role === 'user' && !(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))
+}
+
+function stretchStart(rows: readonly SessionMessage[], at: number): number {
+  for (let i = Math.min(at, rows.length - 1); i >= 0; i--) if (isPrompt(rows[i]!)) return i + 1
+  return 0
+}
+
+const squashText = (s: string): string => s.replace(/\s+/g, '')
+
+// [SP_CTX_02_04] ResponseStart(rows, at, api): the first row of the model
+// response that holds rows[at]. The host merges the rows of one response (one
+// `message.id`, which the mod cannot see) into one assistant message of the
+// API form, also across result rows of its own parallel calls (plugin-hooks
+// 30, 40), so the API message that holds a call id or a text of the run of
+// assistant rows around `at` names its other rows. A result row belongs to the
+// response of the calls it answers; a prompt or delivery row is one of its
+// own. Without a matching API message (outside the window, a run with neither
+// calls nor text) the start of the stretch, as KeepResponsesWhole has it. Pure.
+export function responseStart(rows: readonly SessionMessage[], at: number, api: readonly unknown[]): number {
+  if (at <= 0) return 0
+  if (at >= rows.length) return rows.length
+  const floor = stretchStart(rows, at)
+  let i = at
+  const head = rows[i]!
+  if (head.role === 'user' && (head.toolResults ?? []).length) {
+    const calls = head.toolResults!.map(t => findToolUse(rows, t.tool_use_id)).filter(k => k >= floor && k < i)
+    if (!calls.length) return floor
+    i = Math.min(...calls)
+  }
+  if (rows[i]!.role !== 'assistant') return i
+  const responses = api.flatMap(msg => {
+    if ((msg as { role?: unknown } | null)?.role !== 'assistant') return []
+    const blocks = apiBlocks(msg)
+    const ids = new Set(blocks.flatMap(b => (b.type === 'tool_use' && typeof b.id === 'string' ? [b.id] : [])))
+    const texts = new Set(blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' && squashText(b.text) ? [squashText(b.text)] : [])))
+    return [{ ids, texts }]
+  })
+  const holds = (r: SessionMessage, m: { ids: ReadonlySet<string>; texts: ReadonlySet<string> }) =>
+    r.role === 'assistant' && (r.toolUses.some(u => m.ids.has(u.tool_use_id)) || (squashText(r.text) !== '' && m.texts.has(squashText(r.text))))
+  for (;;) {
+    // consecutive assistant rows are one response
+    while (i > floor && rows[i - 1]!.role === 'assistant') i--
+    let end = i
+    while (end + 1 < rows.length && rows[end + 1]!.role === 'assistant') end++
+    const run = rows.slice(i, end + 1)
+    // the latest API message that holds a row of the run
+    const msg = [...responses].reverse().find(m => run.some(r => holds(r, m)))
+    if (!msg) return floor
+    let earliest = i
+    for (let k = floor; k < i; k++) if (holds(rows[k]!, msg)) {
+      earliest = k
+      break
+    }
+    if (earliest === i) return i
+    i = earliest
+  }
 }
 
 // [SP_CTX_02_04] Produced(final, steps): where the rows the applied replacing
@@ -1190,7 +1286,10 @@ export function producedRows(final: readonly SessionMessage[], made: readonly Ma
 // row, every assistant row kept with a handle is rebuilt too: its thinking
 // blocks go, as in any rebuilt row, and the caller drops it when that leaves
 // it empty. Result rows keep their own rule (media keeps the handle).
-export function rebuildSplitResponses(rows: readonly SessionMessage[]): SessionMessage[] {
+// `frozen`: the rows of the frozen prefix ([SP_CTX_DEC_22]) stay as they came;
+// ResponseStart put the first change at the start of a response, so none of
+// them shares a response with a rebuilt row.
+export function rebuildSplitResponses(rows: readonly SessionMessage[], frozen: ReadonlySet<SessionMessage> = NONE_FROZEN): SessionMessage[] {
   const out = [...rows]
   let start = 0
   const close = (end: number) => {
@@ -1198,14 +1297,14 @@ export function rebuildSplitResponses(rows: readonly SessionMessage[]): SessionM
     if (stretch.some(r => r.role === 'assistant' && r.handle === undefined)) {
       for (let i = start; i < end; i++) {
         const r = out[i]!
-        if (r.role === 'assistant' && r.handle !== undefined) out[i] = plain(r, {})
+        if (r.role === 'assistant' && r.handle !== undefined && !frozen.has(r)) out[i] = plain(r, {})
       }
     }
   }
   out.forEach((r, i) => {
     // a prompt row ends the stretch; a result row a drop emptied is none
     // (it goes later, with the other rebuilt rows left empty)
-    if (r.role === 'user' && !(r.toolResults ?? []).length && (r.handle !== undefined || !isEmpty(r))) {
+    if (isPrompt(r)) {
       close(i)
       start = i
     }
@@ -1229,11 +1328,20 @@ const JOIN = '\n\n'
 // assistant rows are one response (a response never crosses a result or
 // prompt row); a text row before the calls stays a row of its own, as the
 // host takes it (spike context_editor_handoff_long, Entry 5). Pure.
-export function mergeCallRows(rows: readonly SessionMessage[]): SessionMessage[] {
+export function mergeCallRows(rows: readonly SessionMessage[], frozen: ReadonlySet<SessionMessage> = NONE_FROZEN): SessionMessage[] {
   const out: SessionMessage[] = []
   for (const r of rows) {
     const prev = out.at(-1)
-    if (prev && prev.role === 'assistant' && r.role === 'assistant' && prev.handle === undefined && r.handle === undefined && prev.toolUses.length > 0) {
+    if (
+      prev &&
+      prev.role === 'assistant' &&
+      r.role === 'assistant' &&
+      prev.handle === undefined &&
+      r.handle === undefined &&
+      prev.toolUses.length > 0 &&
+      !frozen.has(prev) &&
+      !frozen.has(r)
+    ) {
       out[out.length - 1] = {
         role: 'assistant',
         text: [prev.text, r.text].filter(Boolean).join(JOIN),

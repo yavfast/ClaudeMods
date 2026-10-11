@@ -413,3 +413,8 @@ test('RecordBoundary — host: with hostId the boundary carries it, without it n
   await recordBoundary(mem, async () => Promise.reject(new Error('disk full')), boundaryOf(rows, ID)!).catch(() => undefined)
   expect(mem.own).toBe('before')
 })
+
+test('EDIT_DESCRIPTION — keep_cache (phase 23): a few words point to the field; the text stays within MAX_DESCRIPTION', async () => {
+  expect(EDIT_DESCRIPTION).toContain('Batch edits in one call (see "keep_cache").')
+  expect(EDIT_DESCRIPTION.length).toBe(2029)
+})

@@ -458,3 +458,53 @@ test('PersonWarnings — доставка від людини: a collapse over i
     "Warning: drop s covers the person's messages: #9 (message sent during this tool call). Keep them verbatim unless you drop them deliberately.",
   ])
 })
+
+// ---- [SP_CTX_02_08] [SP_CTX_02_37] the turn channel's suggestion with the person's prompt (phase 23)
+
+test('DeliverReport — пропозиція: between turns the suggestion comes last in the hidden context; in a turn or with an optimization request it is not asked; a failure drops only it', async () => {
+  const asked: string[] = []
+  const suggestion = async () => (asked.push('s'), '[context-editor: suggestion] before you go on: …')
+  const between = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3 }, introduced(), { suggestion })
+  await deliverReport(between.io)
+  expect(between.log.seen).toEqual([['R', '[context-editor: suggestion] before you go on: …']])
+  const inTurn = deliverHarness({ ...EMPTY_QUEUE }, introduced(), { suggestion })
+  inTurn.log.inTurn = true
+  await deliverReport(inTurn.io)
+  expect(inTurn.log.seen).toEqual([[]])
+  const optimize = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, { state: 'ok', value: { ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A } }, { suggestion })
+  await deliverReport(optimize.io)
+  expect(optimize.log.seen[0]!.some(c => c.startsWith('[context-editor: suggestion]'))).toBe(false)
+  expect(asked).toEqual(['s'])
+  const failing = deliverHarness({ ...EMPTY_QUEUE }, introduced(), { suggestion: async () => Promise.reject(new Error('x')) })
+  await deliverReport(failing.io)
+  expect(failing.log.seen).toEqual([[]])
+})
+
+// ---- [SP_CTX_02_02] [SP_CTX_DEC_22] keep_cache (phase 23, live run): the agent's choice per batch
+
+test('context_edit — keep_cache: default false; the last explicit value of the batch wins, a call without it keeps the choice; a bad value makes the file unreadable', async () => {
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }], handle: 'h1' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A', isError: false }], handle: 'h2' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: {} }], handle: 'h3' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'b', text: 'B', isError: false }], handle: 'h4' },
+  ]
+  const edit = (id: string) => [{ op: 'summarize', tool_use_id: id, summary: 's' }]
+  const plain = queueEdits({ ...EMPTY_QUEUE }, rows, { edits: edit('a') })
+  if ('deny' in plain) throw new Error(plain.deny)
+  expect(plain.queue.keepCache).toBe(false)
+  const kept = queueEdits(plain.queue, rows, { edits: edit('b'), keep_cache: true })
+  if ('deny' in kept) throw new Error(kept.deny)
+  expect(kept.queue.keepCache).toBe(true)
+  const silent = queueEdits(kept.queue, rows, { edits: edit('a') })
+  if ('deny' in silent) throw new Error(silent.deny)
+  expect(silent.queue.keepCache).toBe(true)
+  const undone = queueEdits(silent.queue, rows, { edits: edit('b'), keep_cache: false })
+  if ('deny' in undone) throw new Error(undone.deny)
+  expect(undone.queue.keepCache).toBe(false)
+  // a queue file written before phase 23 has no field: false
+  const old = parseQueue(JSON.stringify({ edits: [] }))
+  expect(old.state === 'ok' && old.value.keepCache).toBe(false)
+  expect(parseQueue(JSON.stringify({ edits: [], keepCache: 'yes' })).state).toBe('unreadable')
+})

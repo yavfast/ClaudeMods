@@ -8,6 +8,7 @@
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
 import { describeEdit, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import { CACHE_LOOKBACK, lookbackStart } from './cache'
 import type { JournalSummary } from './journal'
 import type { Queue, Read } from './queue'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, type ReviewGroup, type Tag, type TagRegistry } from './tags'
@@ -30,7 +31,7 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT =
-  'context-editor: you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. A [context-editor] line may name earlier outputs not compressed yet as the context grows; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.'
+  'context-editor: you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.'
 
 // [SP_CTX_02_29] [C_CTX_DEC_04] D: the advice of a closed stage and of the
 // optimization turn; it names the reproducible pairs by the listing's `~`
@@ -246,6 +247,10 @@ export type Telemetry = {
   // [SP_CTX_02_28] the measured change of the request since the last apply,
   // shown once after the first model response after it
   measuredFreed?: number
+  // [SP_CTX_01_20] [SP_CTX_02_38] LookbackStart of the rows and the chars from
+  // it on: an apply whose earliest edit is from there keeps the prompt cache
+  // up to it; absent without rows
+  cache?: { start: number; chars: number; rows: number }
 }
 
 function errorText(err: unknown): string {
@@ -341,6 +346,10 @@ export async function telemetry(
     t.measure = 'unavailable'
     t.error = errorText(err)
   }
+  if (rows.length) {
+    const start = lookbackStart(rows)
+    t.cache = { start, chars: charsOf(rows, start, rows.length - 1), rows: rows.length }
+  }
   if (!reg) return t
   const save = update ? (ratio: number) => update(r => ({ ...r, charsPerToken: ratio })) : undefined
   t.ratio = await calibrate(rows, t, reg, save)
@@ -404,6 +413,19 @@ function blockLabel(name: string | undefined): string {
   return name !== undefined ? `Last block "${name}"` : 'Last block (no stage)'
 }
 
+// [SP_CTX_02_28] [SP_CTX_02_38] The cache line: by default an apply rewrites
+// the whole conversation; with "keep_cache" ([SP_CTX_DEC_22]) an edit from
+// LookbackStart on keeps the prompt cache up to it.
+function cacheLine(t: Telemetry): string {
+  const c = t.cache
+  if (!c) return ''
+  const head = 'Cache: an apply rewrites the whole conversation once'
+  const lookback = `the API's ~${CACHE_LOOKBACK}-position cache lookback`
+  if (c.start >= c.rows) return `${head}; even the last response is beyond ${lookback}, so "keep_cache" would not help`
+  if (c.start === 0) return `${head}; with "keep_cache": true only the rows from its earliest edit (the whole conversation is within ${lookback})`
+  return `${head}; with "keep_cache": true, an earliest edit from #${c.start} on (within ${lookback}) rewrites only the rows from it (at most ${estimate(c.chars, t.ratio)}) if your turn ends soon: edits apply at its end, and each call until then pushes them deeper`
+}
+
 // [SP_CTX_02_28] TelemetryText(t): one line per part.
 export function telemetryText(t: Telemetry): string {
   const lines: string[] = []
@@ -423,6 +445,8 @@ export function telemetryText(t: Telemetry): string {
       lines.push(`Context: size unavailable (${t.error ?? 'unknown error'})`)
       break
   }
+  const cache = cacheLine(t)
+  if (cache) lines.push(cache)
   if (!t.registry) return lines.join('\n')
   const startGone = '; its start row is gone, so it runs from #0'
   lines.push(

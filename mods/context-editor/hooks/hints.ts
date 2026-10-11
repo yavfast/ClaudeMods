@@ -1,50 +1,68 @@
-// [SP_CTX_02_37] [C_CTX_DEC_15] SoftHint: one factual line after a big or
-// search output once the context has grown, or after the first write that
-// follows a run of such outputs. It names the earlier outputs not compressed
-// yet, with their sizes, and never queues, closes or optimizes anything: the
-// decision stays the agent's. Pure logic behind a small port; register.ts
-// binds it to `$` and merges the line into the alias line ([SP_CTX_02_16]).
+// [SP_CTX_02_37] [C_CTX_DEC_15] [SP_CTX_DEC_23] SoftHint: a proposal line of
+// its own, `[context-editor: suggestion]`, in two moments: (1) after a big or
+// search output once the conversation is large and has grown by a step since
+// the last one; (2) with the person's next prompt after a run of such outputs
+// (the end of a turn is the natural batch). Only when the batch of outputs
+// not compressed yet is worth naming; it names the action (which cN, or
+// closing the open stage), what it frees, what it costs the prompt cache and
+// the verdict of the break-even ([SP_CTX_02_38]). It never queues, closes or
+// optimizes anything: the decision stays the agent's. Pure logic behind a
+// small port; register.ts binds it to `$` and puts the line after the alias
+// line ([SP_CTX_02_16]) or into the prompt's hidden context ([SP_CTX_02_08]).
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, aliasLine, type AliasRegistry } from './aliases'
-import { MARK, rowChars, totalChars, touchedBy, type QueuedEdit } from './edits'
+import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
+import { MARK, REPRODUCIBLE_TOOLS, rowChars, totalChars, touchedBy, type QueuedEdit } from './edits'
 import type { Queue, Read } from './queue'
 import { telemetry, tokensText, type RegistryUpdate, type UsageInfo } from './stages'
 import { dropLastApply, isActive, resolveTarget, type HintState, type TagRegistry } from './tags'
 
 // ---- [SP_CTX_01_12] constants
 
-// tokens of the conversation (the breakdown's Messages row) the size trigger needs
-export const HINT_CONVERSATION = 50_000
-// tokens of the candidates not compressed yet that either trigger needs
+// the prefix of the line: not the alias line's, so it reads as a proposal (P22)
+export const SUGGESTION = '[context-editor: suggestion]'
+// tokens of the conversation (the breakdown's Messages row) the size channel
+// needs, at most HINT_WINDOW_SHARE of the window
+export const HINT_CONVERSATION = 150_000
+export const HINT_WINDOW_SHARE = 0.35
+// growth of the request, in tokens, since the last suggestion before the next
+// size one, at most HINT_STEP_SHARE of the window
+export const HINT_STEP = 75_000
+export const HINT_STEP_SHARE = 0.1
+// the least the batch frees: a share of the conversation, and tokens
+export const HINT_BATCH = 0.1
 export const HINT_CANDIDATES = 15_000
-// growth of the context, in tokens, since the last hint before the next size hint
-export const HINT_STEP = 50_000
-// marked outputs (aliases given) since the last hint before a write counts as a stage boundary
+// marked outputs (aliases given) since the last suggestion before a turn's start counts
 export const HINT_RUN = 5
 // candidates the line names, largest first
 export const HINT_NAMES = 6
-// growth, in tokens, before a size check that found too few candidates runs again
+// growth, in tokens, before a size check that found no batch runs again
 export const HINT_RECHECK = 5_000
-// how long the result waits for the hint
+// how long a tool result or a prompt waits for the line
 export const HINT_WAIT_MS = 500
 // chars per token without a calibration ([SP_CTX_02_34])
 const PLAIN_RATIO = 4
 
-// What triggered the check: a marked output (big or search) or a write
-// without error (WRITE_TOOLS, [SP_CTX_02_16]); `alias` of this call, if it got one.
-export type HintCall = { kind: 'output' | 'write'; alias?: string }
+// [SP_CTX_02_37] The size channel's thresholds for a window (absent: the constants).
+export function sizeThreshold(window?: number): number {
+  return window ? Math.min(HINT_CONVERSATION, Math.round(HINT_WINDOW_SHARE * window)) : HINT_CONVERSATION
+}
+
+export function stepThreshold(window?: number): number {
+  return window ? Math.min(HINT_STEP, Math.round(HINT_STEP_SHARE * window)) : HINT_STEP
+}
 
 // [SP_CTX_02_37] Module memory: the request size of the last size check that
-// read the rows and found no hint; a reload only costs one more check.
-// `busy`: a check runs now ([SP_CTX_02_37]: one at a time).
+// read the rows and found no suggestion; `busy`: a check runs now (one at a
+// time, both channels).
 export type HintMemo = { checked?: number; busy?: boolean }
 
 export function newHintMemo(): HintMemo {
   return {}
 }
 
-// The deadline of one hint: once `expired`, no claim writes; once `claimed`,
-// the result waits for the line.
+// The deadline of one check: once `expired`, no claim writes; once `claimed`,
+// the caller waits for the line.
 export type Deadline = { expired: boolean; claimed: boolean }
 
 export type HintIO = {
@@ -55,8 +73,13 @@ export type HintIO = {
   rows: () => Promise<readonly SessionMessage[]>
   // the plain usage (1–3 ms): the last request with the fixed part, and the window
   request: () => Promise<{ tokens?: number; window?: number }>
-  // the usage with the breakdown (23–87 ms), only for the size trigger
+  // the usage with the breakdown (23–87 ms)
   usage: () => Promise<UsageInfo>
+  // [SP_CTX_02_38] the Messages API form (the responses of the rows), read
+  // only after the cheap gates; absent or failed: the rows alone
+  api?: () => Promise<readonly unknown[]>
+  // [SP_CTX_02_38] the main loop's model, for CostRatios; absent: the default
+  model?: () => Promise<string | undefined>
   // a new calibration, in the background ([SP_CTX_02_34])
   updateRegistry?: RegistryUpdate
   // on the registry chain: `change` sees the registry as read then; undefined
@@ -66,8 +89,9 @@ export type HintIO = {
 
 // One candidate: an active review tag whose target is in the conversation and
 // no queued edit touches; `row`: its first row; `chars`: the result's text
-// (a pair) or the row's size.
-export type Candidate = { alias?: string; row: number; chars: number }
+// (a pair) or the row's size; `reproducible`: the call's tool is in
+// REPRODUCIBLE_TOOLS (its summary is a pointer).
+export type Candidate = { alias?: string; row: number; chars: number; reproducible: boolean }
 
 // [SP_CTX_02_37] Candidates(rows, reg, queued, aliases): largest first. Pure.
 export function candidates(rows: readonly SessionMessage[], reg: TagRegistry, queued: readonly QueuedEdit[], aliases: ReadonlyMap<string, string>): Candidate[] {
@@ -90,43 +114,134 @@ export function candidates(rows: readonly SessionMessage[], reg: TagRegistry, qu
       // a result already replaced by the mod is no candidate
       if (text.startsWith(MARK)) continue
       const alias = aliases.get(id)
-      out.push({ ...(alias ? { alias } : {}), row: Math.min(...at), chars: text.length })
-    } else out.push({ row: Math.min(...at), chars: at.reduce((n, i) => n + rowChars(rows[i]!), 0) })
+      const tool = rows.flatMap(r => r.toolUses).find(u => u.tool_use_id === id)?.tool
+      out.push({ ...(alias ? { alias } : {}), row: Math.min(...at), chars: text.length, reproducible: tool !== undefined && REPRODUCIBLE_TOOLS.includes(tool) })
+    } else out.push({ row: Math.min(...at), chars: at.reduce((n, i) => n + rowChars(rows[i]!), 0), reproducible: false })
   }
   return out.sort((a, b) => b.chars - a.chars || a.row - b.row)
 }
 
-function tokensOf(chars: number, ratio: number): number {
-  return Math.round(chars / ratio)
-}
-
-// [SP_CTX_02_37] HintText: one line, parts joined by " · ".
-export type HintFacts = {
-  call: HintCall
-  run?: number
-  tokens?: number
-  window?: number
-  conversation?: number
-  named: { alias: string; tokens: number }[]
+// [SP_CTX_02_37] Proposal: the batch of all candidates as one apply.
+export type Proposal = {
+  channel: 'size' | 'turn'
+  // the open stage, which the turn channel proposes to close
+  stage?: string
+  named: string[]
   more: number
-  total: number
-  recache: number
+  freed: number
+  conversation: number
+  // [SP_CTX_02_38] by default (no "keep_cache") an apply rewrites the whole
+  // conversation: `cost` is that; `positions` still says how deep the earliest is
+  cost: CacheCost
+  rStar: number
+  rHat: number
+  verdict: Verdict
+  // [SP_CTX_DEC_22] the same batch with "keep_cache": true, when the earliest
+  // would be within the lookback at the end of the turn and that makes the
+  // verdict better; the size channel only
+  keep?: { cost: CacheCost; rStar: number; verdict: Verdict }
 }
 
-export function hintText(f: HintFacts): string {
-  const parts: string[] = []
-  if (f.call.kind === 'write') parts.push(`first write after ${f.run} big or search outputs`)
-  if (f.tokens !== undefined) {
-    const share = f.window ? Math.round((f.tokens / f.window) * 100) : undefined
-    const window = f.window ? `, ${share! < 1 ? '<1' : share}% of the ${tokensText(f.window)} window` : ''
-    const conv = f.conversation !== undefined ? ` (conversation ~${tokensText(f.conversation)})` : ''
-    parts.push(`context ~${tokensText(f.tokens)} tokens${window}${conv}`)
+const RANK: Record<Verdict, number> = { 'not-yet': 0, borderline: 1, worth: 2 }
+
+// [SP_CTX_02_37] What Propose reads besides the rows and the candidates.
+export type ProposeContext = {
+  ratio: number
+  conversation: number
+  // the last request's tokens; absent: the conversation
+  request?: number
+  channel: Proposal['channel']
+  stage?: string
+  ratios?: CostRatios
+  api?: readonly unknown[]
+}
+
+// [SP_CTX_02_37] Propose(rows, cands, ctx): what the batch frees (each
+// candidate less its summary), the cache it costs ([SP_CTX_02_38]) and the
+// break-even against the requests so far. By default an apply rebuilds the
+// stretch and drops every own call, so it rewrites the whole conversation;
+// only "keep_cache" ([SP_CTX_DEC_22]) keeps the cache up to the earliest
+// candidate's response, and only when that is within the lookback at the end
+// of the turn: the size channel adds APPLY_MARGIN positions for the calls
+// still to come, the turn channel proposes at the start of a turn, so it
+// never counts on it. Pure.
+export function propose(rows: readonly SessionMessage[], found: readonly Candidate[], ctx: ProposeContext): Proposal {
+  let freed = 0
+  let summary = 0
+  for (const c of found) {
+    const t = c.chars / ctx.ratio
+    const s = summaryTokens(t, c.reproducible)
+    freed += t - s
+    summary += s
   }
-  const names = f.named.map(n => `${n.alias} ~${tokensText(n.tokens)}`)
-  if (f.more) names.push(names.length ? `+${f.more} more (see context_list)` : `${f.more} (see context_list)`)
-  parts.push(`earlier outputs not compressed yet: ${names.join(', ')} (~${tokensText(f.total)} in all; an edit rebuilds the prompt cache from the earliest: up to ~${tokensText(f.recache)})`)
-  parts.push('if you have used them, summarize them by ref with context_edit, or close the stage with context_tag')
-  return `${MARK}${f.call.alias ? ` id ${f.call.alias}` : ''} · ${parts.join(' · ')}`
+  const first = found.length ? Math.min(...found.map(c => c.row)) : rows.length
+  const ratios = ctx.ratios ?? costRatios(undefined)
+  const request = ctx.request ?? ctx.conversation
+  const rHat = requestsSoFar(rows, ctx.api)
+  const cost = cacheCost(rows, first, freed, ctx.conversation, ctx.ratio, Infinity, ctx.api)
+  const rStar = breakEven({ rewrite: cost.rewrite, freed, summary, request }, ratios)
+  const verdict = verdictOf(rStar, rHat)
+  let keep: Proposal['keep']
+  if (ctx.channel === 'size') {
+    const k = cacheCost(rows, first, freed, ctx.conversation, ctx.ratio, APPLY_MARGIN, ctx.api)
+    const kStar = breakEven({ rewrite: k.rewrite, freed, summary, request }, ratios)
+    const kVerdict = verdictOf(kStar, rHat)
+    if (k.within && RANK[kVerdict] > RANK[verdict]) keep = { cost: k, rStar: kStar, verdict: kVerdict }
+  }
+  const named = found.flatMap(c => (c.alias ? [c.alias] : [])).slice(0, HINT_NAMES)
+  return {
+    channel: ctx.channel,
+    ...(ctx.stage !== undefined ? { stage: ctx.stage } : {}),
+    named,
+    more: found.length - named.length,
+    freed: Math.round(freed),
+    conversation: ctx.conversation,
+    cost,
+    rStar,
+    rHat,
+    verdict,
+    ...(keep ? { keep } : {}),
+  }
+}
+
+function requestsText(n: number): string {
+  return n >= 100_000 ? '100000+' : `${Math.round(n)}`
+}
+
+// [SP_CTX_02_37] SuggestionText: one line; the numbers in thousands as TelemetryText.
+export function suggestionText(p: Proposal): string {
+  const names = p.named.length ? `${p.named.join(', ')}${p.more ? ` +${p.more} more (see context_list)` : ''}` : `${p.more} candidates (see context_list)`
+  const what = p.named.length ? `summarize ${names} by ref` : `compress ${names}`
+  const pays = (rStar: number) => `pays back after ~${requestsText(rStar)} requests, this conversation has made ~${p.rHat}`
+  const said = (v: Verdict) => (v === 'worth' ? 'worth it now' : 'borderline: worth it only if the work goes on that long')
+  const gain = `~${tokensText(p.freed)} of the ~${tokensText(p.conversation)} conversation`
+  if (p.keep) {
+    const k = p.keep
+    const without = `Without keep_cache: the whole conversation (~${tokensText(p.cost.rewrite)}), pays back after ~${requestsText(p.rStar)} → ${p.verdict === 'not-yet' ? 'not worth it yet' : said(p.verdict)}; with it, a later --resume may show earlier answers twice.`
+    return `${SUGGESTION} ${what} in one context_edit with "keep_cache": true: frees ${gain}; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~${tokensText(k.cost.rewrite)}) if you end the turn within a few calls (edits apply when it ends; the earliest is ~${k.cost.positions} positions back now, and past ~${CACHE_LOOKBACK} the API finds no cache); ${pays(k.rStar)} → ${said(k.verdict)}. ${without}`
+  }
+  const verb = p.verdict === 'not-yet' ? 'would rewrite' : 'rewrites'
+  const whole = `${verb} the prompt cache of the whole conversation once (~${tokensText(p.cost.rewrite)})`
+  const cache =
+    p.channel === 'turn'
+      ? `${whole}: edits queued now apply when this turn ends, beyond the ~${CACHE_LOOKBACK} positions the API looks back`
+      : p.cost.positions + APPLY_MARGIN > CACHE_LOOKBACK
+        ? `${whole}: its earliest row is ~${p.cost.positions} positions back, beyond the ~${CACHE_LOOKBACK} the API looks back`
+        : whole
+  if (p.verdict === 'not-yet')
+    return `${SUGGESTION} not worth it yet: to ${what} would free ${gain} but ${cache}; ${pays(p.rStar)}. Batch more, or compress at the end of a stage.`
+  const body = `frees ${gain}; ${cache}; ${pays(p.rStar)} → ${said(p.verdict)}`
+  if (p.channel === 'size') return `${SUGGESTION} ${what} in one context_edit: ${body}.`
+  const close = p.stage !== undefined ? `close stage "${p.stage}" with context_tag and ` : ''
+  return `${SUGGESTION} before you go on: ${close}${what} in one context_edit? It ${body}. Your call: nothing runs unless you do it.`
+}
+
+// [SP_CTX_02_16] [SP_CTX_02_37] CallLines: the lines a finished call gets
+// before the note reminders: the alias line, then the size channel's
+// suggestion, a line of its own; a call without a mark gets neither. Pure.
+export function callLines(marked: boolean, alias: string | undefined, hint: string | undefined): string[] {
+  if (!marked) return []
+  return [...(alias ? [aliasLine(alias)] : []), ...(hint ? [hint] : [])]
 }
 
 function sameState(a: HintState | undefined, b: HintState | undefined): boolean {
@@ -149,111 +264,82 @@ export type HintOutcome =
   | 'throttled'
   | 'few-candidates'
   | 'small-conversation'
+  | 'small-batch'
+  | 'not-worth'
+  | 'repeated'
   | 'expired'
   | 'busy'
   | 'not-claimed'
   | 'hint'
 
-// [SP_CTX_02_37] HintCall: a write without error (WRITE_TOOLS with a path,
-// [SP_CTX_02_16]) is the boundary trigger, with its alias if it got one; else
-// a marked output (big or search: a failed write with a big output too); else none. Pure.
-export function hintCall(marked: boolean, write: boolean, alias?: string): HintCall | undefined {
-  const id = alias ? { alias } : {}
-  if (write) return { kind: 'write', ...id }
-  return marked ? { kind: 'output', ...id } : undefined
-}
+type Outcome = { outcome: HintOutcome; line?: string }
 
-// [SP_CTX_02_16] [SP_CTX_02_37] The one line of the call: the hint, which
-// starts with the alias, else the bare alias line, else none. Pure.
-export function pickLine(hint: string | undefined, alias: string | undefined): string | undefined {
-  return hint ?? (alias ? aliasLine(alias) : undefined)
-}
-
-// [SP_CTX_02_37] SoftHint. The cheap gates first (registry, alias count,
-// plain usage), the rows and the queue next, the breakdown last and only for
-// the size trigger. `d`: the deadline of this call ([SP_CTX_02_37], Bounded).
-// One check at a time: a call that comes while one runs gets no line.
-export async function softHint(io: HintIO, memo: HintMemo, call: HintCall, d: Deadline = { expired: false, claimed: false }): Promise<{ outcome: HintOutcome; line?: string }> {
+async function once(memo: HintMemo, work: () => Promise<Outcome>): Promise<Outcome> {
   if (memo.busy) return { outcome: 'busy' }
   memo.busy = true
   try {
-    return await check(io, memo, call, d)
+    return await work()
   } finally {
     memo.busy = false
   }
 }
 
-async function check(io: HintIO, memo: HintMemo, call: HintCall, d: Deadline): Promise<{ outcome: HintOutcome; line?: string }> {
+// [SP_CTX_02_37] SoftHint, the size channel, after a marked output. The cheap
+// gates first (registry, plain usage), the rows and the queue next, the
+// breakdown last. `d`: the deadline of this call (Bounded). One check at a
+// time: a call that comes while one runs gets no line.
+export function softHint(io: HintIO, memo: HintMemo, d: Deadline = { expired: false, claimed: false }): Promise<Outcome> {
+  return once(memo, () => sizeCheck(io, memo, d))
+}
+
+// [SP_CTX_02_37] TurnSuggestion, the turn channel, on the person's prompt
+// between turns: after a run of HINT_RUN marked outputs since the last
+// suggestion, without a size threshold; silent when the batch is not worth it
+// yet and the conversation is under the size threshold.
+export function turnSuggestion(io: HintIO, memo: HintMemo, d: Deadline = { expired: false, claimed: false }): Promise<Outcome> {
+  return once(memo, () => turnCheck(io, memo, d))
+}
+
+// The registries and the run, or why there is no check.
+async function registries(io: HintIO): Promise<{ reg: TagRegistry; aliases: AliasRegistry } | Outcome> {
   const tags = await io.readTags()
   const aliases = await io.readAliases()
   if (tags.state !== 'ok' || aliases.state === 'unreadable') return { outcome: 'no-registry' }
-  const reg = tags.value
-  let state = reg.hint
-  const next = aliases.value.next
-  const run = next - (state?.marks ?? 1)
-  if (!reg.tags.some(t => t.kind === 'review')) return { outcome: 'none' }
-  if (call.kind === 'write' && run < HINT_RUN) return { outcome: 'short-run' }
-  const req = await io.request()
-  const tokens = req.tokens
-  // a context smaller than at the last hint: an apply, a compaction or a
-  // handoff came between; counting starts again from here. A write keeps its
-  // run (the outputs before the apply) and goes on from the new size.
-  if (state?.tokens !== undefined && tokens !== undefined && tokens < state.tokens) {
-    memo.checked = undefined
-    if (call.kind === 'output') {
-      void io.updateTags(read => withHint(read, state, { tokens, marks: next })).catch(() => undefined)
-      return { outcome: 'shrunk' }
-    }
-    const reset: HintState = { tokens, marks: state.marks }
-    const seen = state
-    if (!(await io.updateTags(read => withHint(read, seen, reset)).catch(() => false))) return { outcome: 'not-claimed' }
-    state = reset
-  }
-  if (call.kind === 'output') {
-    if (tokens === undefined) return { outcome: 'no-size' }
-    // the request holds the fixed part: a request below the threshold means a smaller conversation
-    if (tokens < HINT_CONVERSATION || tokens - (state?.tokens ?? 0) < HINT_STEP) return { outcome: 'small' }
-    if (memo.checked !== undefined && tokens >= memo.checked && tokens - memo.checked < HINT_RECHECK) return { outcome: 'throttled' }
-  }
-  const seen = state
-  // a check that found nothing, or came too late: an output waits HINT_RECHECK
-  // of growth; a write consumes the run (only the first write after it counts)
-  const settle = (outcome: HintOutcome): { outcome: HintOutcome } => {
-    if (call.kind === 'output') memo.checked = tokens
-    else void io.updateTags(read => withHint(read, seen, { ...(seen?.tokens !== undefined ? { tokens: seen.tokens } : {}), marks: next })).catch(() => undefined)
-    return { outcome }
-  }
+  if (!tags.value.tags.some(t => t.kind === 'review')) return { outcome: 'none' }
+  return { reg: tags.value, aliases: aliases.value }
+}
+
+// The candidates, the rows they were found on.
+async function batch(io: HintIO, reg: TagRegistry, aliases: AliasRegistry): Promise<{ rows: readonly SessionMessage[]; found: Candidate[] }> {
   const rows = await io.rows()
   const q = await io.readQueue()
   const queued = q.state === 'unreadable' ? [] : q.value.edits
-  const found = candidates(rows, reg, queued, aliasesById(aliases.value))
-  const chars = found.reduce((n, c) => n + c.chars, 0)
-  let ratio = reg.charsPerToken ?? PLAIN_RATIO
-  const few = () => tokensOf(chars, ratio) < HINT_CANDIDATES
-  if (few()) return settle('few-candidates')
-  let conversation: number | undefined
-  if (call.kind === 'output') {
-    // [SP_CTX_02_28] the Messages row; lastApply stays for the agent's own telemetry
-    const t = await telemetry(rows, dropLastApply(reg), io.usage, io.updateRegistry)
-    ratio = t.ratio ?? ratio
-    conversation = t.measure === 'messages' ? t.conversation : tokensOf(totalChars(rows), ratio)
-    if ((conversation ?? 0) < HINT_CONVERSATION) return settle('small-conversation')
-    if (few()) return settle('few-candidates')
-  }
-  const named = found.filter(c => c.alias).slice(0, HINT_NAMES)
-  const first = Math.min(...found.map(c => c.row))
-  const line = hintText({
-    call,
-    run,
-    ...(tokens !== undefined ? { tokens } : {}),
-    ...(req.window ? { window: req.window } : {}),
-    ...(conversation !== undefined ? { conversation } : {}),
-    named: named.map(c => ({ alias: c.alias!, tokens: tokensOf(c.chars, ratio) })),
-    more: found.length - named.length,
-    total: tokensOf(chars, ratio),
-    recache: tokensOf(rows.slice(first).reduce((n, r) => n + rowChars(r), 0), ratio),
-  })
-  if (d.expired) return settle('expired')
+  return { rows, found: candidates(rows, reg, queued, aliasesById(aliases)) }
+}
+
+// [SP_CTX_02_38] The API form and the cost ratios of the model, once the
+// batch is worth a look; a failed read leaves the rows alone, the default ratios.
+async function costContext(io: HintIO): Promise<{ api: readonly unknown[]; ratios: CostRatios }> {
+  const api = io.api ? await io.api().catch((): readonly unknown[] => []) : []
+  const model = io.model ? await io.model().catch(() => undefined) : undefined
+  return { api, ratios: costRatios(model) }
+}
+
+// The conversation by the breakdown (the Messages row), else by the rows; the ratio.
+async function measure(io: HintIO, rows: readonly SessionMessage[], reg: TagRegistry): Promise<{ conversation: number; ratio: number }> {
+  // [SP_CTX_02_28] the Messages row; lastApply stays for the agent's own telemetry
+  const t = await telemetry(rows, dropLastApply(reg), io.usage, io.updateRegistry)
+  const ratio = t.ratio ?? reg.charsPerToken ?? PLAIN_RATIO
+  return { conversation: t.measure === 'messages' ? t.conversation! : Math.round(totalChars(rows) / ratio), ratio }
+}
+
+// A rough sum of what the candidates free, before the breakdown is read.
+function roughFreed(found: readonly Candidate[], ratio: number): number {
+  return found.reduce((n, c) => n + c.chars / ratio - summaryTokens(c.chars / ratio, c.reproducible), 0)
+}
+
+// The claim of a line on the registry chain, compare-and-set; none once the deadline expired.
+async function claim(io: HintIO, seen: HintState | undefined, next: HintState, d: Deadline): Promise<'claimed' | 'late' | 'taken'> {
   let late = false
   const written = await io
     .updateTags(read => {
@@ -261,13 +347,85 @@ async function check(io: HintIO, memo: HintMemo, call: HintCall, d: Deadline): P
         late = true
         return undefined
       }
-      const out = withHint(read, seen, { ...(tokens !== undefined ? { tokens } : {}), marks: next })
+      const out = withHint(read, seen, next)
       if (out) d.claimed = true
       return out
     })
     .catch(() => false)
-  if (late) return settle('expired')
-  if (!written) return { outcome: 'not-claimed' }
+  return late ? 'late' : written ? 'claimed' : 'taken'
+}
+
+async function sizeCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outcome> {
+  const got = await registries(io)
+  if ('outcome' in got) return got
+  const { reg, aliases } = got
+  const state = reg.hint
+  const next = aliases.next
+  const req = await io.request()
+  const tokens = req.tokens
+  // a context smaller than at the last suggestion: an apply, a compaction or
+  // a handoff came between; counting starts again from here
+  if (state?.tokens !== undefined && tokens !== undefined && tokens < state.tokens) {
+    memo.checked = undefined
+    void io.updateTags(read => withHint(read, state, { tokens, marks: next })).catch(() => undefined)
+    return { outcome: 'shrunk' }
+  }
+  if (tokens === undefined) return { outcome: 'no-size' }
+  const threshold = sizeThreshold(req.window)
+  // the request holds the fixed part: a request below the threshold means a smaller conversation
+  if (tokens < threshold || tokens - (state?.tokens ?? 0) < stepThreshold(req.window)) return { outcome: 'small' }
+  if (memo.checked !== undefined && tokens >= memo.checked && tokens - memo.checked < HINT_RECHECK) return { outcome: 'throttled' }
+  // a check that found nothing, or came too late, waits HINT_RECHECK of growth
+  const settle = (outcome: HintOutcome): Outcome => {
+    memo.checked = tokens
+    return { outcome }
+  }
+  const { rows, found } = await batch(io, reg, aliases)
+  if (roughFreed(found, reg.charsPerToken ?? PLAIN_RATIO) < HINT_CANDIDATES) return settle('few-candidates')
+  const { conversation, ratio } = await measure(io, rows, reg)
+  if (conversation < threshold) return settle('small-conversation')
+  const p = propose(rows, found, { ratio, conversation, request: tokens, channel: 'size', ...(await costContext(io)) })
+  if (p.freed < Math.max(HINT_CANDIDATES, HINT_BATCH * conversation)) return settle('small-batch')
+  const line = suggestionText(p)
+  if (d.expired) return settle('expired')
+  const got2 = await claim(io, state, { tokens, marks: next, proposed: p.freed }, d)
+  if (got2 === 'late') return settle('expired')
+  if (got2 === 'taken') return { outcome: 'not-claimed' }
+  memo.checked = undefined
+  return { outcome: 'hint', line }
+}
+
+async function turnCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outcome> {
+  const got = await registries(io)
+  if ('outcome' in got) return got
+  const { reg, aliases } = got
+  const state = reg.hint
+  const next = aliases.next
+  if (next - (state?.marks ?? 1) < HINT_RUN) return { outcome: 'short-run' }
+  // a check that proposes nothing consumes the run: the next turn needs a new one
+  const settle = (outcome: HintOutcome): Outcome => {
+    const keep = { ...(state?.tokens !== undefined ? { tokens: state.tokens } : {}), ...(state?.proposed !== undefined ? { proposed: state.proposed } : {}) }
+    void io.updateTags(read => withHint(read, state, { ...keep, marks: next })).catch(() => undefined)
+    return { outcome }
+  }
+  const { rows, found } = await batch(io, reg, aliases)
+  if (roughFreed(found, reg.charsPerToken ?? PLAIN_RATIO) < HINT_CANDIDATES) return settle('few-candidates')
+  const { conversation, ratio } = await measure(io, rows, reg)
+  const req = await io.request()
+  const ctx = { ratio, conversation, ...(req.tokens !== undefined ? { request: req.tokens } : {}), channel: 'turn' as const, ...(reg.stage ? { stage: reg.stage.name } : {}) }
+  const p = propose(rows, found, { ...ctx, ...(await costContext(io)) })
+  if (p.freed < Math.max(HINT_CANDIDATES, HINT_BATCH * conversation)) return settle('small-batch')
+  // the batch the agent was offered and left: again only once it grew by a
+  // batch of its own; a smaller context (an apply between) starts over
+  const shrunk = state?.tokens !== undefined && req.tokens !== undefined && req.tokens < state.tokens
+  if (!shrunk && state?.proposed !== undefined && p.freed - state.proposed < Math.max(HINT_CANDIDATES, HINT_BATCH * conversation)) return settle('repeated')
+  // not worth it in a conversation under the size threshold: nothing worth saying
+  if (p.verdict === 'not-yet' && conversation < sizeThreshold(req.window)) return settle('not-worth')
+  const line = suggestionText(p)
+  if (d.expired) return settle('expired')
+  const got2 = await claim(io, state, { ...(req.tokens !== undefined ? { tokens: req.tokens } : {}), marks: next, proposed: p.freed }, d)
+  if (got2 === 'late') return settle('expired')
+  if (got2 === 'taken') return { outcome: 'not-claimed' }
   memo.checked = undefined
   return { outcome: 'hint', line }
 }

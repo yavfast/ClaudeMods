@@ -38,7 +38,7 @@ import {
   type RefResolver,
 } from './edits'
 import { enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
-import { bounded, HINT_WAIT_MS, hintCall, newHintMemo, pickLine, softHint, type HintCall, type HintIO } from './hints'
+import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion, type HintIO } from './hints'
 import {
   contextHandoff,
   handleSeed,
@@ -137,14 +137,14 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
 - {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
-- {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it), e.g. a wrong conclusion.
+- {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
 - {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
 
 Calls worth editing carry a line "[context-editor] id cN" after their result: "ref":"cN" targets that call and "ref":"last" your latest call, without ${LIST}. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
 Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
-Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call. Record template and guide: skill ${PLUGIN}:${SKILL}.`
+Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 const REF = { type: 'string', description: 'Instead of tool_use_id: a call alias "cN" from a "[context-editor] id cN" line, or "last" for your latest call (context_* calls do not count).' }
@@ -170,6 +170,11 @@ const EDIT_SCHEMA = {
     },
     resume: { type: 'boolean', description: 'Resume the session after this batch applies (default true).' },
     resume_prompt: { type: 'string', description: 'What the resumed turn is told.' },
+    keep_cache: {
+      type: 'boolean',
+      description:
+        'Keep the prompt cache up to the first edit (default false): cheaper when the earliest edit is within your last few calls and you end the turn soon; but if this session is later resumed (--resume, reopening it), earlier answers may show twice.',
+    },
   },
   required: ['edits'],
 }
@@ -781,6 +786,9 @@ function hintIO($: EngineInterface): HintIO {
       return { tokens: u.context.tokens, window: u.context.window }
     },
     usage: () => usageInfo($),
+    // [SP_CTX_02_38] the responses of the rows and the model's cost ratios
+    api: () => apiMessages($),
+    model: () => $.session.model(),
     updateRegistry: change => {
       void updateRegistry($, change).catch(() => undefined)
       return Promise.resolve()
@@ -796,12 +804,21 @@ function hintIO($: EngineInterface): HintIO {
   }
 }
 
-// [SP_CTX_02_37] The hint for this call, if it is one that may carry it: a
-// marked output, or a write without error. Never longer than HINT_WAIT_MS.
-async function hintFor($: EngineInterface, call: HintCall | undefined): Promise<string | undefined> {
-  if (!call || !(await ensureStorage($).catch(() => undefined))) return undefined
+// [SP_CTX_02_37] The size channel's suggestion after a marked output. Never
+// longer than HINT_WAIT_MS.
+async function hintFor($: EngineInterface): Promise<string | undefined> {
+  if (!(await ensureStorage($).catch(() => undefined))) return undefined
   return bounded(
-    d => softHint(hintIO($), hintMemo, call, d).then(o => o.line),
+    d => softHint(hintIO($), hintMemo, d).then(o => o.line),
+    () => $.clock.sleep(HINT_WAIT_MS),
+  )
+}
+
+// [SP_CTX_02_37] The turn channel's suggestion for the person's prompt
+// between turns. Never longer than HINT_WAIT_MS.
+function suggestionFor($: EngineInterface): Promise<string | undefined> {
+  return bounded(
+    d => turnSuggestion(hintIO($), hintMemo, d).then(o => o.line),
     () => $.clock.sleep(HINT_WAIT_MS),
   )
 }
@@ -1053,7 +1070,7 @@ export const register: Register = on => {
   on('tool.call', { tool: 'mcp__context-editor__context_edit' }, async ($, e) => {
     if (e.agentId) return deny("a subagent's context cannot be edited; only the main conversation's.")
     if (!(await ensureStorage($))) return deny(`storage unavailable: ${storage.reason}`)
-    const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown }
+    const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
     const out = await serial('queue', async () => {
       const { rows, key } = await view($)
       // [SP_CTX_02_10] the API form is read only for a describe
@@ -1260,11 +1277,11 @@ export const register: Register = on => {
   })
 
   // [SP_CTX_02_16] After any other tool call of the main loop: the alias line
-  // of a call worth editing, or the soft hint that starts with the same id
-  // ([SP_CTX_02_37]: on a marked output or the first write after a run of
-  // them; it only informs), then the due reminders of the agent's own notes
-  // ([SP_CTX_02_33]). It never changes the result itself; a failure only
-  // drops its line. The alias chain, then the registry's chain, one after the other.
+  // of a call worth editing, then on a marked output the suggestion of the
+  // size channel, a line of its own ([SP_CTX_02_37]; it only informs), then
+  // the due reminders of the agent's own notes ([SP_CTX_02_33]). It never
+  // changes the result itself; a failure only drops its line. The alias
+  // chain, then the registry's chain, one after the other.
   on('tool.call', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId || done.deny !== undefined || String(e.tool).startsWith(OWN_TOOLS)) return done
@@ -1273,10 +1290,8 @@ export const register: Register = on => {
     const lines: string[] = []
     const marked = wantsMark(facts)
     const alias = marked ? await serial('aliases', () => markAlias(aliasIO($), facts)).catch(() => undefined) : undefined
-    const follow = callFollowUp(String(e.tool), e as unknown as Record<string, unknown>, done.isError === true)
-    const hint = await hintFor($, hintCall(marked, !!follow && 'write' in follow, alias)).catch(() => undefined)
-    const line = pickLine(hint, alias)
-    if (line) lines.push(line)
+    const hint = marked ? await hintFor($).catch(() => undefined) : undefined
+    lines.push(...callLines(marked, alias, hint))
     if (await ensureStorage($).catch(() => undefined)) lines.push(...(await serial('tags', () => noteReminders(tagIO($))).catch((): string[] => [])))
     // [SP_CTX_02_16] R4 and the journal in the background, queued only once the
     // lines are built: the result waits for neither (the reminders above share
@@ -1299,6 +1314,8 @@ export const register: Register = on => {
       enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),
       markIntroduced: () => changeTags($, withIntroduced),
       settle: s => settle($, s),
+      // [SP_CTX_02_37] the turn channel, between turns only
+      suggestion: () => suggestionFor($),
     })
   }).catch(($, e, next) => next(e))
 }

@@ -87,14 +87,15 @@ export type TagRegistry = {
 }
 
 // [SP_CTX_01_10] TagRegistry.hint: `marks` — AliasRegistry.next at the last
-// hint (or at the last stage-boundary check, which consumes the run);
-// `tokens` — the request size at the last hint, absent before the first one.
-export type HintState = { tokens?: number; marks: number }
+// suggestion (or at the last turn check, which consumes the run); `tokens` —
+// the request size at the last suggestion, absent before the first one;
+// `proposed` — the tokens the last suggestion's batch would free (phase 23).
+export type HintState = { tokens?: number; marks: number; proposed?: number }
 
 export function isHintState(v: unknown): v is HintState {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
   const h = v as Record<string, unknown>
-  return isCount(h.marks, 1) && (h.tokens === undefined || isCount(h.tokens, 0))
+  return isCount(h.marks, 1) && (h.tokens === undefined || isCount(h.tokens, 0)) && (h.proposed === undefined || isCount(h.proposed, 0))
 }
 
 export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false, notes: [], nextNote: 1 }

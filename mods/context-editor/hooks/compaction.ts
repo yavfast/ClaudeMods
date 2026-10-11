@@ -137,14 +137,20 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const { edits, refused } = screenPinned(messages, q.edits, tagsRead)
   // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
   const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
-  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(await io.readApi(), messages)
+  const api = await io.readApi()
+  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(api, messages)
   const mediaOwners = new Set(found.keys())
   const id = io.now()
   const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.dir}/${id}`, io.writeMedia)
 
-  const options = { knownResults, unmatchedPromptMedia, apiTruncated }
+  // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix, only when the batch asked for
+  // it ("keep_cache"): the rows before the response of the first change come
+  // back as they came, so the prompt cache holds up to it; by default the
+  // stretch is rebuilt as before, and --resume stays clean
+  const options = { knownResults, unmatchedPromptMedia, apiTruncated, ...(q.keepCache ? { freeze: { api } } : {}) }
   const archive = `${io.dir}/${id}.json`
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
+  const frozen = new Set(messages.slice(0, applied.prefix))
   applied.report.failed.unshift(...refused)
   // [C_CTX_01_01] Originals never vanish: without their archive nothing applies.
   if (applied.report.originals.length && !(await io.writeArchive(archive, archiveText(applied.report.originals, media)))) {
@@ -173,10 +179,11 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // a row of own results kept by its handle (outside the API window) is
   // removed by DropOwnCalls below: the host would not carry its attachments
   const own = new Set(messages.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
-  const goes = (r: SessionMessage) => (r.toolResults ?? []).length > 0 && (r.toolResults ?? []).every(t => own.has(t.tool_use_id))
+  // (a frozen row stays, own calls and all: it carries its attachments itself)
+  const goes = (r: SessionMessage) => !frozen.has(r) && (r.toolResults ?? []).length > 0 && (r.toolResults ?? []).every(t => own.has(t.tool_use_id))
   const put = insertDeliveries(messages, applied.rows, delivered.items, applied.renamed, false, goes)
   applied.report.deliveries = { ...put.counts, ...(delivered.unreadable !== undefined ? { unreadable: delivered.unreadable } : {}) }
-  const { rows, removed } = dropOwnCallsCounted(put.rows, mediaOwners, knownResults)
+  const { rows, removed } = dropOwnCallsCounted(put.rows, mediaOwners, knownResults, frozen)
   applied.report.ownCallsRemoved = removed
   // [SP_CTX_01_05] a delivery was no row before: it frees nothing and takes nothing
   applied.report.charsAfter = totalChars(rows) - put.added

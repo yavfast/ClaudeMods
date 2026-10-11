@@ -7,7 +7,7 @@ description: Open this for a long or multi-stage task with the context-editor mo
 
 The context-editor mod lets you edit your own conversation. You decide when to clean, by the logical state of the work. Attention degrades as the context grows: compress what is processed once a piece of work is done. The host's auto-compaction is only a safety net.
 
-Tools: `context_tag` (stages, tags), `context_list` (rows, telemetry), `context_edit` (edits), `context_note` (notes).
+Tools: `context_tag`, `context_list`, `context_edit`, `context_note`.
 
 ## Stages
 
@@ -35,7 +35,7 @@ Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: s
 
 Usually keep verbatim: the person's messages, the rules and skills still in force, and the conclusions you need next. A `[pin]` target cannot be edited (the person's first prompt is pinned for you).
 
-Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt` (in an optimization turn only with `"resume": true`). Each edit resets the prompt cache from its row on, so batch a block's edits in one call. When edits apply, your own `context_*` calls leave the conversation; tags and notes stay (see `context_list`). `{"index":i,"full":true}` in `context_list` shows a row whole.
+Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt` (in an optimization turn only with `"resume": true`). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line), but a later resume may show earlier answers twice. Your `context_*` calls leave the conversation; tags and notes stay. `{"index":i,"full":true}` in `context_list` shows a row whole.
 
 ## Dead ends
 
@@ -60,19 +60,18 @@ To have the block optimized when you finish your turn for the person, make this 
 - `State slot: #i`, or that its row is gone;
 - `Last apply: ~N tokens freed (measured …)`, once after an apply.
 
-Sizes are calibrated estimates (`approx.` until known). A `[context-editor]` line may name outputs not compressed yet, with sizes, as the context grows or at a first write after much reading; it only informs. Decide by the state of the work, not the numbers.
+Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line (as the context grows, or with the person's next prompt after much reading) proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
 
 ## Candidates
 
 - `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
 - `[disposable: note]`: your own replacement, applied when you close a stage or end a turn with the mark.
-- `[pin]`: never edited.
 
 The close report lists the block's candidates by reason and counts its `~` pairs.
 
 ## State slot
 
-Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state at the end; only that rewrite may change it, and the tag follows the rewritten row. A new `state` tag moves the slot. Each update resets the prompt cache from the slot's row on, so update it together with a block's edits, not on its own.
+Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state at the end; only that rewrite may change it, and the tag follows the rewritten row. A new `state` tag moves the slot. Each update is an apply: do it together with a block's edits, not on its own.
 
 ## Notes
 
@@ -86,4 +85,4 @@ Write about the content, not row numbers: indexes change after an apply. `contex
 
 ## Restoring an original
 
-Every replacement says where its original is: `(original: <path>, open with Read)`, and media files as `(media: <path>)`. If you need something you compressed, `Read` that file. It comes back at the end of the conversation, so read only what you need; such reads count in the `Effect` line.
+Every replacement says where its original is: `(original: <path>, open with Read)`, and media files as `(media: <path>)`. If you need something you compressed, `Read` that file. It comes back at the end of the conversation: read only what you need (such reads count in `Effect`).

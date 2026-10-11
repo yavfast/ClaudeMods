@@ -33,6 +33,9 @@ export type Queue = {
   // batch ("resume" given, or a non-empty resume_prompt); reset with the batch
   resumeSet: boolean
   tagsOnly: boolean
+  // [SP_CTX_01_04] [SP_CTX_DEC_22] the agent asked this batch to keep the
+  // prompt cache up to its first edit ("keep_cache"); reset with the batch
+  keepCache: boolean
   report?: string
   reportId?: number
   reportResume: boolean
@@ -57,6 +60,7 @@ export const EMPTY_QUEUE: Queue = {
   resumePrompt: DEFAULT_RESUME,
   resumeSet: false,
   tagsOnly: false,
+  keepCache: false,
   reportResume: false,
   reportPrompt: DEFAULT_RESUME,
   optimize: false,
@@ -80,6 +84,7 @@ export function parseQueue(text: string): Read<Queue> {
     typeof q.resumePrompt !== 'string' && 'resumePrompt',
     typeof q.resumeSet !== 'boolean' && 'resumeSet',
     typeof q.tagsOnly !== 'boolean' && 'tagsOnly',
+    typeof q.keepCache !== 'boolean' && 'keepCache',
     q.report !== undefined && typeof q.report !== 'string' && 'report',
     q.reportId !== undefined && typeof q.reportId !== 'number' && 'reportId',
     typeof q.reportResume !== 'boolean' && 'reportResume',
@@ -119,7 +124,7 @@ export function queueBytes(q: Queue): number {
   return new TextEncoder().encode(JSON.stringify(q)).length
 }
 
-export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown }
+export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
 
 // [SP_CTX_02_02] Rows the host writes as user rows that are no message of
 // the person: a plugin's prompt in its frame, and rows of host tags.
@@ -275,6 +280,9 @@ export function queueEdits(
   else if (q.optimizePrompted && !q.resumeSet) next.resume = prompt
   if (typeof args.resume === 'boolean' || prompt) next.resumeSet = true
   if (prompt) next.resumePrompt = args.resume_prompt as string
+  // [SP_CTX_02_02] [SP_CTX_DEC_22] the last explicit "keep_cache" of the batch
+  // wins; a call without it leaves the batch's choice (default false)
+  if (typeof args.keep_cache === 'boolean') next.keepCache = args.keep_cache
   if (queueBytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
   const warnings = personWarnings(rows, queued, delivered)
@@ -387,12 +395,17 @@ export type DeliverIO<R> = {
   markIntroduced: () => Promise<void>
   // on the queue chain, the queue as it is then
   settle: (s: Settle) => Promise<void>
+  // [SP_CTX_02_37] TurnSuggestion, bounded by HINT_WAIT: its line or none;
+  // asked only between turns and without an optimization request
+  suggestion?: () => Promise<string | undefined>
 }
 
 // [SP_CTX_02_08] [SP_CTX_02_27] The person's prompt (or another plugin's)
 // carries the session intro once, the pending report, and the advice of an
 // optimization request that no optimization turn served; each leaves only
-// once that prompt entered. A failed step never holds the prompt back.
+// once that prompt entered. Between turns, the suggestion of the turn
+// channel ([SP_CTX_02_37]) comes last: its state is claimed before the prompt
+// enters, so a dropped prompt loses it. A failed step never holds the prompt back.
 export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<R>): Promise<R> {
   const context: string[] = []
   const intro = await io.intro().catch(() => undefined)
@@ -404,6 +417,11 @@ export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<
     // ADVICE_FAILED / ADVICE_NO_BLOCK: the prompt goes without it, once
     const advice = await io.advice().catch(() => undefined)
     if (advice) context.push(advice)
+  }
+  // [SP_CTX_02_37] the advice of an optimization request already says what to compress
+  if (io.suggestion && !io.inTurn() && !q?.optimize) {
+    const line = await io.suggestion().catch(() => undefined)
+    if (line) context.push(line)
   }
   // the person took the turn between turns: the loop guard is no longer needed
   const tookOver = !!q?.optimizePrompted && !io.inTurn()
