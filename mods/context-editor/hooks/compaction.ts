@@ -8,6 +8,7 @@ import {
   dropOwnCallsCounted,
   formatReport,
   ownerKey,
+  OWN_TOOLS,
   PINNED,
   producedRows,
   replacedOwners,
@@ -20,6 +21,7 @@ import {
   type MediaRef,
   type QueuedEdit,
 } from './edits'
+import { insertDeliveries, type Deliveries } from './deliveries'
 import { applyEntry, type JournalEntry } from './journal'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_MARKER, MARKER, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
@@ -110,6 +112,12 @@ export type CompactionIO = {
   // [SP_CTX_02_31] JournalApply in the background, on the journal's chain:
   // never awaited, its failure changes nothing
   journal?: (entry: JournalEntry) => void
+  // [SP_CTX_01_22] the host's deliveries recorded in this session, read on
+  // their serial chain; absent: none
+  readDeliveries?: () => Promise<Read<Deliveries>>
+  // [SP_CTX_02_07] in the background, on the deliveries' chain: the items
+  // this apply no longer needs go; never awaited
+  pruneDeliveries?: (done: ReadonlySet<string>) => void
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -159,9 +167,19 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   }
   const archived = archive
   // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
-  const { rows, removed } = dropOwnCallsCounted(applied.rows, mediaOwners, knownResults)
+  // [SP_CTX_02_36] the host's deliveries behind rebuilt rows go back as rows,
+  // before DropOwnCalls: one behind an own call's result keeps its place
+  const delivered = await readDeliveries(io)
+  // a row of own results kept by its handle (outside the API window) is
+  // removed by DropOwnCalls below: the host would not carry its attachments
+  const own = new Set(messages.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
+  const goes = (r: SessionMessage) => (r.toolResults ?? []).length > 0 && (r.toolResults ?? []).every(t => own.has(t.tool_use_id))
+  const put = insertDeliveries(messages, applied.rows, delivered.items, applied.renamed, false, goes)
+  applied.report.deliveries = { ...put.counts, ...(delivered.unreadable !== undefined ? { unreadable: delivered.unreadable } : {}) }
+  const { rows, removed } = dropOwnCallsCounted(put.rows, mediaOwners, knownResults)
   applied.report.ownCallsRemoved = removed
-  applied.report.charsAfter = totalChars(rows)
+  // [SP_CTX_01_05] a delivery was no row before: it frees nothing and takes nothing
+  applied.report.charsAfter = totalChars(rows) - put.added
   // [SP_CTX_01_05] where the made rows stand in the list returned
   applied.report.produced = producedRows(rows, applied.made)
 
@@ -200,6 +218,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const boundary = boundaryOf(rows, io.hostId())
   if (boundary) await io.writeBoundary(boundary).catch(() => undefined)
   // [SP_CTX_02_31] what this application compressed; never delays the answer
+  // [SP_CTX_02_07] the deliveries this apply put back, or that went with their anchor
+  if (put.done.size && io.pruneDeliveries)
+    try {
+      io.pruneDeliveries(put.done)
+    } catch {
+      // a later apply skips a delivery that is already a row
+    }
   const entry = applyEntry(id, applied.report, archived, messages, edits)
   if (entry && io.journal)
     try {
@@ -208,6 +233,14 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
       // the journal is no part of the application
     }
   return { messages: rows }
+}
+
+// [SP_CTX_01_22] The recorded deliveries for an apply; an unreadable file
+// gives none and its reason for the report.
+async function readDeliveries(io: Pick<CompactionIO, 'readDeliveries'>): Promise<{ items: Deliveries['items']; unreadable?: string }> {
+  if (!io.readDeliveries) return { items: [] }
+  const read = await io.readDeliveries().catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) }))
+  return read.state === 'unreadable' ? { items: [], unreadable: read.reason } : { items: read.value.items }
 }
 
 // [SP_CTX_02_18] The boundary another compaction of the main conversation

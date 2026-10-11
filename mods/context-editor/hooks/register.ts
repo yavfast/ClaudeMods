@@ -56,6 +56,7 @@ import {
   deliverReport,
   EMPTY_QUEUE,
   MAX_DOCUMENT,
+  MAX_QUEUE_BYTES,
   parseQueue,
   settledQueue,
   withoutReport,
@@ -82,6 +83,16 @@ import {
 } from './stages'
 import { contextNote, MAX_NOTE, MAX_NOTES, MAX_REMIND, noteLabels, noteLines, noteReminders, remindable, afterReminders, remindsAfter, rowNotes, withReminderLines, type NoteArgs } from './notes'
 import { newTurns, turnCompleted, turnStarted } from './turns'
+import {
+  newAnchorMemory,
+  observeAppend,
+  parseDeliveries,
+  pruneDeliveries,
+  recordDelivery,
+  type Deliveries,
+  type DeliveryIO,
+  type QueuedDelivery,
+} from './deliveries'
 import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
   appendFacts,
@@ -301,6 +312,9 @@ const handoff = newHandoffMemory(`${Date.now().toString(36)}-${Math.random().toS
 // stream-json each one passes session.append again, with its tool's origin;
 // AutoTag skips them. A turn start ends the copies (they come between turns).
 const copied = new Set<string>()
+// [SP_CTX_02_35] The result ids of the last tool-result row of the main
+// conversation: the anchor of a delivery that follows it.
+const anchorMem = newAnchorMemory()
 
 function noteCopies(rows: readonly SessionMessage[] | undefined): void {
   copied.clear()
@@ -522,9 +536,53 @@ function onJournal($: EngineInterface, work: (io: JournalIO) => Promise<void>): 
   }).catch(() => undefined)
 }
 
+// [SP_CTX_02_35] RecordDelivery's step in event order; a failure records nothing.
+function observeOrNone(e: Parameters<typeof observeAppend>[1]): QueuedDelivery | undefined {
+  try {
+    return observeAppend(anchorMem, e, Date.now())
+  } catch {
+    return undefined
+  }
+}
+
+// [SP_CTX_01_22] The host's deliveries recorded in the session whose storage is `dir`.
+async function readDeliveriesAt($: EngineInterface, dir: string): Promise<Read<Deliveries>> {
+  const path = `${dir}/deliveries.json`
+  if (!(await $.fs.exists(path))) return { state: 'missing', value: { items: [] } }
+  try {
+    return parseDeliveries(await $.fs.read(path))
+  } catch (err) {
+    return { state: 'unreadable', reason: String(err) }
+  }
+}
+
+// [SP_CTX_02_35] The deliveries' port in the session whose storage is `dir`;
+// the caller runs each change on the deliveries' chain.
+function deliveryIO($: EngineInterface, dir: string): DeliveryIO {
+  return {
+    read: () => readDeliveriesAt($, dir),
+    write: async d => {
+      await $.fs.write(`${dir}/deliveries.json`, JSON.stringify(d))
+    },
+    quarantine: async () => {
+      const path = `${dir}/deliveries.json`
+      await $.process.run(['mv', path, `${path}.bad-${Date.now()}`]).catch(() => undefined)
+    },
+  }
+}
+
+// [SP_CTX_02_02] [SP_CTX_02_11] The deliveries not yet rows, for the person
+// warnings only: none when the file is missing or unreadable.
+async function deliveredNow($: EngineInterface): Promise<readonly QueuedDelivery[]> {
+  const dir = await ensureStorage($)
+  if (!dir) return []
+  const read = await serial('deliveries', () => readDeliveriesAt($, dir)).catch((): Read<Deliveries> => ({ state: 'unreadable', reason: 'read failed' }))
+  return read.state === 'ok' ? read.value.items : []
+}
+
 // [SP_CTX_02_28] The journal's part of the telemetry; a failed read says why.
 async function journalNow($: EngineInterface): Promise<JournalSummary | undefined> {
-  if (!storage.dir) return undefined
+  if (!(await ensureStorage($))) return undefined
   return journalSummary(await readJournal($).catch((err): Read<Journal> => ({ state: 'unreadable', reason: String(err) })))
 }
 
@@ -758,6 +816,12 @@ function handoffIO($: EngineInterface): HandoffIO {
     view: () => view($),
     readApi: () => apiMessages($),
     readTags: () => readTags($),
+    // [SP_CTX_02_22] the deliveries go into the seed as rows
+    readDeliveries: () =>
+      serial('deliveries', async (): Promise<Read<Deliveries>> => {
+        const dir = await ensureStorage($)
+        return dir ? readDeliveriesAt($, dir) : { state: 'unreadable', reason: storage.reason }
+      }),
     updateTagsAt: (dir, change) =>
       serial('tags', async () => {
         const next = change(await readTagsAt($, dir))
@@ -950,7 +1014,7 @@ export const register: Register = on => {
       const { rows, key } = await view($)
       // [SP_CTX_02_10] the API form is read only for a describe
       const found = needsApi(args) ? collectMedia(await apiMessages($), rows).found : undefined
-      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($), listed.key !== key, hasMediaFrom(found))
+      return contextEdit(queueIO($), rows, args, await pins($, rows), await resolver($), listed.key !== key, hasMediaFrom(found), await deliveredNow($))
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out
@@ -967,6 +1031,7 @@ export const register: Register = on => {
       onRegistry: work => serial('tags', work),
       replace: () => serial('queue', () => queueTagReplacements(tagIO($))),
       report: (block, replaced) => blockReport(blockIO($), block, replaced),
+      deliveries: () => deliveredNow($),
     }
     const out = await contextTag(
       io,
@@ -1024,8 +1089,20 @@ export const register: Register = on => {
   // of plugin origin (a compaction's copy, a plugin's note) is no new row, nor
   // a result row the last compaction returned (it comes with its tool's origin).
   on('session.append', async ($, e, next) => {
+    // [SP_CTX_02_35] The anchor moves in event order, before `next` awaits:
+    // two appends in flight cannot swap it. observeAppend is sync and reads
+    // pinned fields only; a refused row (only a plugin's `note` can be) records nothing.
+    const item = observeOrNone(e)
     const stored = await next(e)
     try {
+      // [SP_CTX_02_35] RecordDelivery in the background
+      if (stored.deny === undefined) {
+        if (item)
+          void serial('deliveries', async () => {
+            const dir = await ensureStorage($)
+            if (dir) await recordDelivery(deliveryIO($, dir), item, MAX_QUEUE_BYTES)
+          }).catch(() => undefined)
+      }
       if (!e.agentId && stored.deny === undefined && (e.door === 'prompt' || e.door === 'tool-result')) {
         const facts = appendFacts(e)
         // decided now: the next compaction or turn start changes the set
@@ -1116,6 +1193,9 @@ export const register: Register = on => {
           requestTokens: () => requestTokens($),
           // [SP_CTX_02_31] on the journal's chain, never awaited here
           journal: entry => onJournal($, io => journalApply(io, entry)),
+          // [SP_CTX_02_07] [SP_CTX_02_36] on the deliveries' chain
+          readDeliveries: () => serial('deliveries', () => readDeliveriesAt($, dir)),
+          pruneDeliveries: done => void serial('deliveries', () => pruneDeliveries(deliveryIO($, dir), done)).catch(() => undefined),
         },
         e.messages,
       ),

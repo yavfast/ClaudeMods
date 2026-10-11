@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { describeEdit, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, STATE_SLOT, type QueuedEdit } from '../hooks/edits'
+import { applyEdits, describeEdit, fingerprint, listRows, MARK, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, type QueuedEdit } from '../hooks/edits'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue, type Read } from '../hooks/queue'
 import {
   activeReviews,
@@ -389,6 +389,15 @@ test('two disposable tags on an empty queue become two edits of a tags-only batc
   expect('queue' in after && after.queue.tagsOnly).toBe(false)
 })
 
+test('QueueTagReplacements — заміна з тегу називає автора: an applied disposable note reads as the agent\'s own replacement (phase 19)', async () => {
+  const { io, log } = harness({ state: 'ok', value: disposables })
+  await queueTagReplacements(io)
+  const out = applyEdits(rows(), log.queue!.edits, '/s/1.json')
+  expect(out.report.applied.length).toBe(2)
+  expect(out.rows[2]!.toolResults![0]!.text).toBe(`${MARK} ${SUMMARIZED} (original: /s/1.json, open with Read): file A: KEY_0042 = ff`)
+  expect(out.rows[3]!.text).toBe(`${MARK} ${REWRITTEN} (original: /s/1.json, open with Read): dead end`)
+})
+
 test('replacements join a non-empty queue without making it tags-only', async () => {
   const pending: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'b' }] }
   const { io, log } = harness({ state: 'ok', value: disposables }, { state: 'ok', value: pending })
@@ -436,7 +445,7 @@ test('rebind moves the hint of a row tag that shifted and drops tags whose targe
     { kind: 'review', target: anchorOf(3), created_turn: 0 },
   ])
   const edits = prepare(before, [{ op: 'collapse', from_index: 1, to_index: 3, summary: 's' }]).queued
-  const after = [before[0]!, { role: 'assistant' as const, text: '[context-editor] 3 rows collapsed: s', toolUses: [] }, ...before.slice(4)]
+  const after = [before[0]!, { role: 'assistant' as const, text: '[context-editor] you read these 3 rows, then collapsed them into your note: s', toolUses: [] }, ...before.slice(4)]
   const out = rebindTags(r, before, after, edits, edits)
   expect(out.tags.length).toBe(1)
   expect(out.tags[0]!.target).toEqual({ anchor: fingerprint(before[6]!), hint: 4 })
@@ -457,7 +466,7 @@ test('a tag on a pair the agent changed is removed and no replacement is queued 
   const r = reg([{ kind: 'disposable', target: { tool_use_id: 'a' }, note: 'n', created_turn: 0 }])
   const edits = prepare(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'by the agent' }]).queued
   const after = before.map((row, i) =>
-    i === 1 ? use('a_ce1', 'Read') : i === 2 ? result('a_ce1', '[context-editor] summarized: by the agent') : row,
+    i === 1 ? use('a_ce1', 'Read') : i === 2 ? result('a_ce1', '[context-editor] you read the full output here, then replaced it with your summary: by the agent') : row,
   )
   const out = rebindTags(r, before, after, edits, edits)
   expect(out.tags).toEqual([])
@@ -784,7 +793,7 @@ test('MarkCall — R4 лише раніші читання: one response with Ed
 test('RebindTags — слот стану переписано: the state tag moves to the rewritten row (report.produced)', async () => {
   const before = rows15()
   const edits = prepare(before, [{ op: 'rewrite', index: 1, text: 'plan: step 2' }]).queued
-  const made = { role: 'assistant' as const, text: '[context-editor] rewritten (original: /s/1.json, open with Read): plan: step 2', toolUses: [] }
+  const made = { role: 'assistant' as const, text: '[context-editor] you rewrote this row (original: /s/1.json, open with Read): plan: step 2', toolUses: [] }
   const after = [before[0]!, made, ...before.slice(2)]
   const produced = [{ edit: 'rewrite #1', index: 1, fingerprint: fingerprint(made) }]
   const out = rebindTags(reg([{ kind: 'state', target: at15(1), created_turn: 0 }]), before, after, edits, edits, produced)
@@ -837,7 +846,7 @@ test('AutoTag — R5 стиснута раніша пара: an earlier Read of 
   const other = 'y'.repeat(5000)
   const r: SessionMessage[] = [
     readUse('a_ce1x', { file_path: '/f', offset: 10, limit: 50 }),
-    result('a_ce1x', '[context-editor] summarized (original: /s/1.json, open with Read): f lines 10..60 hold KEY'),
+    result('a_ce1x', '[context-editor] you read the full output here, then replaced it with your summary (original: /s/1.json, open with Read): f lines 10..60 hold KEY'),
     readUse('b', { file_path: '/f', offset: 10, limit: 50 }),
     result('b', other),
   ]

@@ -184,7 +184,7 @@ test('ApplyEdits — describe: the row is rebuilt without handle, its text kept 
   const res = applyEdits(rows, queued, '/a.json', new Map([[key, ['/m/1.png']]]), new Set([key]))
   expect(res.report.applied).toEqual(['describe #0'])
   expect(res.rows[0]!.handle).toBeUndefined()
-  expect(res.rows[0]!.text.startsWith(`${MARK} media replaced (original: /a.json, open with Read) (media: /m/1.png): a red square`)).toBe(true)
+  expect(res.rows[0]!.text.startsWith(`${MARK} you saw the media here, then replaced it with your description (original: /a.json, open with Read) (media: /m/1.png): a red square`)).toBe(true)
   expect(res.rows[0]!.text.endsWith('\n\nsee this')).toBe(true)
   // the media was found but not archived: the reason names the archive, not a missing match
   const unarchived = applyEdits(rows, queued, '/a.json', new Map(), new Set([key]))
@@ -365,4 +365,24 @@ test('BuildSeed — після підсумку: prompt media in the rows after 
   expect(described.text).toContain('(media: /s/old/1/1.png)')
   expect(described.text.endsWith('\n\nlook')).toBe(true)
   expect(out.unmatchedPromptMedia).toBe(0)
+})
+
+// [SP_CTX_02_10] [SP_CTX_02_36] phase 20: an inserted delivery row is a decoration, as its text block is in the API form
+test('PromptMatch — вставлена доставка: a subagent report row (<system-reminder id=…>) after a result does not shift the pairs', async () => {
+  const report = '<system-reminder id="r1">\nAnother Claude session sent a message while you were working:\nTEAL\n</system-reminder>'
+  const rows: SessionMessage[] = [
+    prompt('see this'),
+    reply('ok'),
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'r', tool: 'Bash', input: {} }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r', text: 'x', isError: false }] },
+    prompt(report),
+    reply('TEAL'),
+  ]
+  const api = [
+    { role: 'user', content: [text('see this'), img('cmVk')] },
+    { role: 'assistant', content: [text('ok'), { type: 'tool_use', id: 'r', name: 'Bash', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r', content: 'x' }, text(report)] },
+    asst('TEAL'),
+  ]
+  expect(matched(api, rows)).toEqual({ '0': 0 })
 })

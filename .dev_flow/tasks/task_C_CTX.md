@@ -27,8 +27,30 @@
 
 ## Subtasks
 
+### Subtask: backlog — F1 (власні підсумки), вкладення `queued_command`, P16 (читання через Bash)
+> Author: `claude-session-d5614704` — Created: 2026-10-11 — Last updated: 2026-10-11 — Status: `done`
+
+Розробник: «Добре. Продовжуй роботу з цими пунктами з backlog» (2026-10-11) на пропозицію: F1, втрата вкладень `queued_command` (раніше «Пізніше» — тепер обрано), P16.
+
+- [x] Проєкт (субагент): фаза 19 — F1, SP_CTX_DEC_17 (A «by you» у словах заміни після MARK — рекомендація; B вступ/навичка; C звіт; D A+B); фаза 20 — доставки `queued_command` за R1, SP_CTX_DEC_19 (A — `deliveries.json`, якір = `tool_use_id` рядка, вставка після перезібраного якоря, засів; R2 — backlog), спец 01_22, 02_35, 02_36; P16 — SP_CTX_DEC_18 (A лише спостерігати — рекомендація; B розбір команд; C навичка)
+- [x] Design sign-off (2026-10-11): DEC_19 — «A: R1 зараз, R2 у backlog»; DEC_18 — «A: лише спостерігати»; DEC_17 — розробник спитав: «Яка причина того, що агент не впізнає змінене повідомлення зі свого контексту?» → розбір s1b (нижче)
+- [x] DEC_17 — розробник спитав про окрему роль «context-editor»: неможливо (Messages API — лише `user`/`assistant`; ролі рядків у хості pinned, index.d.ts:650, 10614–10631); запропоновано A′ — маркер з автором і часом («you read the full output here, then replaced it with your summary»), а «підсумок у ролі агента» — спайк у backlog, якщо A′ не допоможе → розробник: «Ок»
+- [x] DEC_17 (A′), DEC_18 (A), DEC_19 (A) resolved; фаза 19 (тексти замін з автором і часом), фаза 20 (`hooks/deliveries.ts`, `deliveries.json`, вставка після перезібраного якоря в застосуванні й засіві, PersonText/попередження, PROMPT_DECORATIONS `<system-reminder`); backlog — спайк «підсумок рядком асистента»; CLAUDE.md; 434 → 459 тестів, validate, tsc — перевірено головною сесією
+- [x] Живий «Хто написав підсумки» (haiku, 3 прогони): FAIL 3/3 — нові тексти на місці, агент визнає, що сам поставив підсумки, але вважає, що його відповідь спиралась на стиснене («The `cat` outputs had already been replaced by summaries before I could read them in full»); причина — читання за порядком рядків; `.dev_flow/cache/live-test/phase19-results.md` → тригер спайку «підсумок рядком асистента» спрацював; перевірка на sonnet (2 прогони) — триває
+- [x] Рев'ю раунд 48 — WARNINGS: should — повторна доставка з тим самим текстом губиться (deliveries.ts:257,262,276; відтворено тестом) → «уже рядком» лише за якорем; should — спец 05_01 і план фази 19 зі старими текстами замін; prefer — хибне попередження `drop` при паралельних результатах, доставка за службовим викликом з `handle` зникає з DropOwnCalls, порядок `observeAppend`, застарілий шлях сховища після `/clear`
+- [x] «Хто написав підсумки» на sonnet: PASS 2/2 («In that turn I queued edits to replace the three raw log outputs with short summaries») → хибне авторство — особливість haiku; A′ лишається, спайк — у backlog з уточненим тригером; дрібне: моделі приписують `/compact` мода людині → backlog
+- [x] Виправлення раунду 48 (усі 7; субагент): «уже рядком» лише за якорем, тексти A′ у спеці/плані/фікстурах, `drop` при паралельних результатах, `goes` для рядків службових викликів, `observeAppend` до `next`, `ensureStorage` у `deliveredNow`/`readDeliveries`/`journalNow`, 05_03 «Хто написав підсумки», backlog `/compact`; 463 тести, validate, tsc — перевірено головною сесією; раунд 49 — confirm (main)
+- [x] Живі сценарії доставок (haiku, 2.1.296) — усі pass: посеред ходу (обидва хости), звіт субагента і сповіщення, паралельні виклики (обидва), передача, `--resume`, копії з `handle` без дубля; знахідка — `ref: "last"` мовчки бере старіший виклик → backlog плану; хост 2.1.296 блокує передній `sleep 45` («use Monitor»)
+- [x] Commit sign-off — «ок»; фази 19–20 закомічені
+
+Розбір F1 (s1b `8fd2864b`, транскрипт після межі): (1) заміна стоїть на місці оригіналу одразу після виклику `cat`, тож хронологічно виглядає, що інструмент повернув підсумок, а пізніша відповідь агента — ніби на основі підсумку; (2) виклик `context_edit`, у якому агент написав підсумки, прибрано (DropOwnCalls) — лишився тільки його текст «Queued three summaries…»; (3) «[context-editor] summarized» граматично називає автором мод; (4) підсумок написано в третій особі («Bash `cat alpha.log` output (90 lines…)»). Агент частково зрозумів («the context-editor then ran an optimization pass that replaced the three raw outputs»), але позиційний доказ переміг: «My one-line summaries rely on those summaries… I did not independently check the raw files».
+- [ ] Код, тест, рев'ю, живі сценарії, commit sign-off
+
+**Activity:**
+- 2026-10-11 — розробник обрав три пункти backlog
+
 ### Subtask: фаза 18 PL_CTX — дрібні знахідки практики (INDEXES_STALE, індекси у звіті, P15)
-> Author: `claude-session-d5614704` — Created: 2026-10-10 — Last updated: 2026-10-10 — Status: `in-progress`
+> Author: `claude-session-d5614704` — Created: 2026-10-10 — Last updated: 2026-10-10 — Status: `done`
 
 Розробник: «Ок. Роби.» (2026-10-10) на пропозицію зробити однією фазою: текст відмови `INDEXES_STALE` (backlog), індекси у звіті застосування (backlog), P15 з [задачі етапів](task_20261010_083402_stage-cleanup.md) — мітка після завершеного завдання і `resumePrompt` «Continue the task…».
 
@@ -39,7 +61,7 @@
 - [x] Живий прогін фази 18 (stream-json, haiku, 2.1.296): завершене завдання без `resume` — без промпту продовження; `(now #k)`; звіт із промптом людини; посеред завдання з `resume: true` — продовження; INDEXES_STALE — pass (`.dev_flow/cache/live-test/phase18-results.md`); F1 (агент не впізнає своїх підсумків) → backlog плану; F2 (EDIT_DESCRIPTION обіцяє продовження) → у виправлення
 - [x] Виправлення раунду 46 + F2 (субагент): `resumeSet`, скидання вибору в swapOptimize для перенесеного пакета, речення про зупинку в результаті, документація (застряглий `optimizePrompted`, `context_handoff` поза правилом), застарілі тексти, EDIT_DESCRIPTION 2045/2048, SKILL.md 7991/8000; 434 тести, validate — перевірено головною сесією (старий `pending.json` без `resumeSet` читається як false — queue.ts:75); раунд 47 — confirm (main): усі should/prefer закрито механічно
 - [x] Повтор живих сценаріїв 1, 2, 2b після виправлень — pass (F1 повторилась; дрібниця: відхилений виклик не каже, що `resume: true` записано)
-- [ ] **Next:** commit sign-off фази 18
+- [x] Commit sign-off — «Ок»; фаза 18 закомічена
 - [ ] Код, тест, рев'ю, живий прогін, commit sign-off
 
 **Activity:**

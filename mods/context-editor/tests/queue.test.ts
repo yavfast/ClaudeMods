@@ -21,6 +21,8 @@ import {
 } from '../hooks/queue'
 import { adviceFor, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntroduced } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
+import type { QueuedDelivery } from '../hooks/deliveries'
+import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
 
 const rows: SessionMessage[] = [
   { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
@@ -340,7 +342,7 @@ const personRows = (): SessionMessage[] => [
   { role: 'assistant', text: 'ok', toolUses: [] },
   { role: 'assistant', text: '', toolUses: [{ tool_use_id: 's', tool: 'Grep', input: {} }] },
   { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 's', text: 'hits', isError: false }] },
-  { role: 'user', text: '[context-editor] rewritten: x', toolUses: [] },
+  { role: 'user', text: '[context-editor] you rewrote this row: x', toolUses: [] },
   { role: 'user', text: 'context-editor: applied 1 edit(s)', toolUses: [] },
   { role: 'user', text: '<command-name>/compact</command-name><command-args>context-editor: apply queued edits</command-args>', toolUses: [] },
   { role: 'assistant', text: 'end', toolUses: [] },
@@ -415,4 +417,42 @@ test('PersonText — the person\'s words behind an open-file span, and the argum
   expect(r.map((_, i) => personRow(r, i))).toEqual([true, true, true, false, false, false])
   const out = queueEdits(EMPTY_QUEUE, [...r, { role: 'assistant', text: 'end', toolUses: [] }], { edits: [{ op: 'collapse', from_index: 0, to_index: 5, summary: 's' }] })
   expect('warnings' in out && out.warnings[0]).toContain('#0 (prompt), #1 (prompt), #2 (prompt).')
+})
+
+// ---- [SP_CTX_02_02] phase 20: the host's deliveries
+
+test('PersonText — вставлені доставки: the person\'s words of a person delivery; none of a subagent\'s report or a task notice', async () => {
+  expect(personText(PERSON_TEXT)).toBe('Remember PELICAN')
+  expect(personText(AGENT_TEXT)).toBe('')
+  expect(personText(TASK_TEXT)).toBe('')
+  const r: SessionMessage[] = [PERSON_TEXT, AGENT_TEXT, TASK_TEXT].map(text => ({ role: 'user', text, toolUses: [] }))
+  expect(r.map((_, i) => personRow(r, i))).toEqual([true, false, false])
+})
+
+test('PersonWarnings — доставка від людини: a collapse over its anchor and a drop of it warn; a summarize keeps it and does not', async () => {
+  const r = personRows()
+  const d: QueuedDelivery = { uuid: 'd1', anchor: ['s'], kind: 'person', origin: 'composer', text: PERSON_TEXT, cut: 0, media: 0, at: 1 }
+  const agent: QueuedDelivery = { ...d, uuid: 'd2', anchor: ['r'], kind: 'agent', text: AGENT_TEXT }
+  const out = queueEdits(
+    EMPTY_QUEUE,
+    r,
+    {
+      edits: [
+        { op: 'collapse', from_index: 7, to_index: 9, summary: 's' },
+        { op: 'drop', tool_use_id: 's' },
+        { op: 'summarize', tool_use_id: 's', summary: 'hits' },
+        { op: 'drop', tool_use_id: 'r' },
+      ],
+    },
+    undefined,
+    undefined,
+    false,
+    undefined,
+    [d, agent],
+  )
+  if ('deny' in out) throw new Error(out.deny)
+  expect(out.warnings).toEqual([
+    "Warning: collapse #7..#9 covers the person's messages: #9 (message sent during this tool call). Keep them verbatim unless you drop them deliberately.",
+    "Warning: drop s covers the person's messages: #9 (message sent during this tool call). Keep them verbatim unless you drop them deliberately.",
+  ])
 })

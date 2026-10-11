@@ -3,7 +3,7 @@
 > **Code:** SP_CTX
 > **Status:** draft
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-10
+> **Updated:** 2026-10-11
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Depends on:** none
@@ -14,8 +14,8 @@
 
 ## Contents
 
-- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга (із запитом оптимізації), звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, межа поточної розмови, запит передачі, засів нової сесії, етап і межа «після рядка», журнал ефекту, телеметрія, нотатка, константи
-- [02. Contracts](#SP_CTX_02) — перегляд з телеметрією, постановка правок, застосування, прибирання службових викликів, запуск компактизації і ходу оптимізації після ходу, обробник компактизації, доставка звіту, пошук медіа, тегування з етапами і слотом стану, автоправила, заміни з тегів, узгодження тегів і меж етапів, підготовка сховища, хук викликів (псевдоніми, застарілі читання, повторні читання), розв'язання псевдонімів, поточна розмова, передача в нову сесію (засів і його перевірки), обробка засіву, інструкція на початку сесії, телеметрія, блок етапу, мітка оптимізації, журнал ефекту, інструмент нотаток і нагадування нотаток, калібрована оцінка розміру
+- [01. Data Structures](#SP_CTX_01) — рядок розмови, правки, черга (із запитом оптимізації), звіт, архів, сховище, медіа-ресурс, теги та їх реєстр, реєстр псевдонімів, межа поточної розмови, запит передачі, засів нової сесії, етап і межа «після рядка», журнал ефекту, телеметрія, нотатка, доставка хоста посеред ходу, константи
+- [02. Contracts](#SP_CTX_02) — перегляд з телеметрією, постановка правок, застосування, прибирання службових викликів, запуск компактизації і ходу оптимізації після ходу, обробник компактизації, доставка звіту, пошук медіа, тегування з етапами і слотом стану, автоправила, заміни з тегів, узгодження тегів і меж етапів, підготовка сховища, хук викликів (псевдоніми, застарілі читання, повторні читання), розв'язання псевдонімів, поточна розмова, передача в нову сесію (засів і його перевірки), обробка засіву, інструкція на початку сесії, телеметрія, блок етапу, мітка оптимізації, журнал ефекту, інструмент нотаток і нагадування нотаток, калібрована оцінка розміру, запис і вставка доставок хоста посеред ходу
 - [03. Validation Rules](#SP_CTX_03) — що перевіряється для вводу агента і для результату застосування
 - [04. State Transitions](#SP_CTX_04) — життєвий цикл черги, окремої правки, тегу, запиту передачі, етапу, запиту оптимізації і нотатки
 - [05. Verification Criteria](#SP_CTX_05) — модульні очікування, інваріанти, інтеграційні сценарії, граничні випадки
@@ -124,6 +124,7 @@ Invariants:
 | notesDropped | list<string> | ≤ MAX_NOTES. Ідентифікатори нотаток, чиї рядки це застосування прибрало без заміни (RebindTags, [SP_CTX_02_14](#SP_CTX_02_14)); заповнюється після RebindTags |
 | ownCallsRemoved | int | ≥ 0. Скільки власних викликів мода (пар) прибрав DropOwnCalls ([SP_CTX_02_05](#SP_CTX_02_05)) у списку, який замінює розмову; 0 — не прибрано жодного |
 | mediaFiles | list<string> | ≤ кількості медіа-блоків у видимому вікні (≤ ROW_WINDOW повідомлень). Шляхи медіа-файлів, збережених цим застосуванням; для засіву ([SP_CTX_02_22](#SP_CTX_02_22)) — і медіа замінених пар, і медіа, перенесеного файлами |
+| deliveries | `{ inserted: int, removed: int, unreadable: string? }` | `inserted`, `removed` ≥ 0. Доставки хоста посеред ходу ([SP_CTX_01_22](#SP_CTX_01_22)), які InsertDeliveries ([SP_CTX_02_36](#SP_CTX_02_36)) вставило рядками (`inserted`) і які пішли разом із рядком-якорем, що його правка прибрала чи згорнула (`removed`); `unreadable` — причина, коли файл доставок не прочитався і вставок не було. Заповнюється після ApplyEdits (фаза 20) |
 
 Текстовий звіт — `FormatReport(report, archive, kind)`, `kind` = `compaction` | `seed`; форма залежить від того, чи застосовано хоч одну правку:
 - `applied` непорожній: `context-editor: applied N edit(s): <applied with NowIndex>. Not applied: <failed>. Conversation ~<before> -> ~<after> chars (estimate: <Estimate(before − after, ratio)> freed; context_list telemetry shows the measured change after the next response). Originals archived at <path>. Media archived: <paths>.` Число звіту — оцінка за символами; справжню зміну вимірює телеметрія (`Last apply`, [SP_CTX_02_28](#SP_CTX_02_28)): прогін на копії сесії дав оцінку на 46 % вищу за виміряну зміну (рев'ю 39)
@@ -132,7 +133,7 @@ Invariants:
 
 NowIndex (фаза 18; живий прогін фази 15: звіт казав `rewrite #23`, а агент після DropOwnCalls бачив той самий рядок як `#18` і не міг зіставити звіт із переліком): у тексті звіту кожен опис з `applied`, для якого `produced` має запис (`produced.edit` = цей опис), отримує суфікс ` (now #<produced.index>)` — `rewrite #23 (now #18)`, `summarize toolu_X (now #12)`, `collapse #10..#14 (now #11)`, `describe #0 (now #0)`; описи без запису в `produced` (`drop`, правка, чийого рядка в кінцевому списку вже немає) лишаються як є. Індекс — рядок із текстом заміни (рядок результату пари для `summarize` і `collapse` з носієм, рядок підсумку для `collapse` без носія, переписаний рядок для `rewrite` і `describe`), у кінцевому списку, тобто в переліку `context_list` одразу після цього застосування (у засіві — у засіяній сесії). Одна форма для всіх видів: суфікс додається і коли індекс не змінився, а для `summarize` він важливий так само, бо пара отримала новий ідентифікатор (FreshId) і старий `tool_use_id` у переліку вже не знайти. Індекс чинний для переліку відразу після цього застосування; звіт, дописаний до ще не доставленого (RESUME_FAILED), несе індекси своїх застосувань, і пізніше застосування їх зсуває — прийнято, як і для будь-якого індексу з минулого переліку. Межі довжини звіту немає; суфікс додає ≤ 12 символів на правку (≤ MAX_QUEUE_EDITS правок), спливне повідомлення однаково обрізає звіт до 200 символів. Описи в `failed` суфікса не мають: їхні правки нічого не створили.
 
-Після будь-якої з форм, коли `notesDropped` непорожній, додається ` Notes dropped (their rows were removed): <ids>.` Далі, коли серед `applied` є `describe`, — ` `+DESCRIBE_DROPS ([SP_CTX_01_12](#SP_CTX_01_12)). Далі, коли `ownCallsRemoved` > 0 і повернений список замінює розмову (у компактизації — `applied` непорожній; у засіві — завжди), додається ` Your own context-editor calls (<ownCallsRemoved>) were removed; tags and notes stay — see context_list.` (пропозиція P13: агент, чиї виклики `context_note` чи `context_edit` зникли з розмови, не впізнавав своїх дій — живі прогони фаз 14 і 17). Порожній звіт з однією з цих частин починається з `context-editor:`. `ratio` — `TagRegistry.charsPerToken`, прочитаний обробником (HandleCompaction уже читає реєстр) або BuildSeed; обробник телеметрії не запитує ([SP_CTX_02_34](#SP_CTX_02_34)). Частини без даних пропускаються. Правило мінімальне: рядок розміру є тоді й лише тоді, коли застосовано хоч одну правку. `charsBefore` — розмір рядків, до яких правки застосовано (рядки події компактизації або видимі рядки засіву); `charsAfter` — розмір тих самих рядків після ApplyEdits і DropOwnCalls: у компактизації це повернений список, у засіві — до CarryNote і голови, тож «звільнено» рахує лише правки.
+Після будь-якої з форм, коли `notesDropped` непорожній, додається ` Notes dropped (their rows were removed): <ids>.` Далі, коли серед `applied` є `describe`, — ` `+DESCRIBE_DROPS ([SP_CTX_01_12](#SP_CTX_01_12)). Далі, коли повернений список замінює розмову (у компактизації — `applied` непорожній; у засіві — завжди) і `deliveries.inserted + deliveries.removed` > 0, — ` Messages delivered during your tool calls: <inserted> now stand as rows, <removed> went with the rows your edits replaced.` (частина з нулем пропускається), а коли є `deliveries.unreadable` — ` Messages delivered during your tool calls could not be restored (<unreadable>).` (фаза 20: агент, який бачить на місці системного ходу рядок `user` з `<system-reminder>`, знає, звідки він; згорнуту доставку він бачив у попередженні постановки, [SP_CTX_02_02](#SP_CTX_02_02)). Далі, коли `ownCallsRemoved` > 0 і повернений список замінює розмову (у компактизації — `applied` непорожній; у засіві — завжди), додається ` Your own context-editor calls (<ownCallsRemoved>) were removed; tags and notes stay — see context_list.` (пропозиція P13: агент, чиї виклики `context_note` чи `context_edit` зникли з розмови, не впізнавав своїх дій — живі прогони фаз 14 і 17). Порожній звіт з однією з цих частин починається з `context-editor:`. `ratio` — `TagRegistry.charsPerToken`, прочитаний обробником (HandleCompaction уже читає реєстр) або BuildSeed; обробник телеметрії не запитує ([SP_CTX_02_34](#SP_CTX_02_34)). Частини без даних пропускаються. Правило мінімальне: рядок розміру є тоді й лише тоді, коли застосовано хоч одну правку. `charsBefore` — розмір рядків, до яких правки застосовано (рядки події компактизації або видимі рядки засіву); `charsAfter` — розмір тих самих рядків після ApplyEdits і DropOwnCalls: у компактизації це повернений список, у засіві — до CarryNote і голови, тож «звільнено» рахує лише правки; рядки доставок, вставлені InsertDeliveries, у `charsAfter` не входять — у `charsBefore` їх теж не було (доставка не рядок).
 
 ### 01_06. Archive  {#SP_CTX_01_06}
 
@@ -150,7 +151,7 @@ NowIndex (фаза 18; живий прогін фази 15: звіт казав 
 | state | `ready` \| `unavailable` | `ready` — каталог існує і доступний лише власникові |
 | reason | string? | Чому `unavailable` |
 
-Файли каталогу: `pending.json` (Queue), `tags.json` (TagRegistry), `aliases.json` (AliasRegistry), `boundary.json` (Boundary), `journal.json` (Journal, [SP_CTX_01_19](#SP_CTX_01_19)), архіви й медіа-файли застосувань і передач ([SP_CTX_01_06](#SP_CTX_01_06)), перенесені вбік черги `pending.json.bad-<ms>`. Файли стану (`pending.json`, `tags.json`, `aliases.json`, `boundary.json`, `journal.json`) лежать у каталозі 700 і власних прав не потребують: `$.fs.write` прав не задає (новий файл — 644, навичка plugin-hooks, пункт 9), але інші користувачі до файлів у каталозі 700 не дістаються. Архіви й медіа-файли, як і раніше, пише команда хоста з `umask 077` (600). Запис кожного файлу стану командою хоста (пункт (d) фази 17) відкинуто: `tags.json` пишеться майже на кожен виклик інструменту, а процес на кожен запис — зайва затримка без виграшу в захисті. Файлу готовності немає: компактизацію запускає той самий модуль, що її обробляє ([C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09)). Файл `editor-ready`, лишений версією з двома розширеннями, мод не читає і не пише.
+Файли каталогу: `pending.json` (Queue), `tags.json` (TagRegistry), `aliases.json` (AliasRegistry), `boundary.json` (Boundary), `journal.json` (Journal, [SP_CTX_01_19](#SP_CTX_01_19)), `deliveries.json` (доставки хоста посеред ходу, [SP_CTX_01_22](#SP_CTX_01_22); фаза 20), архіви й медіа-файли застосувань і передач ([SP_CTX_01_06](#SP_CTX_01_06)), перенесені вбік черги `pending.json.bad-<ms>` і файли доставок `deliveries.json.bad-<ms>`. Файли стану (`pending.json`, `tags.json`, `aliases.json`, `boundary.json`, `journal.json`, `deliveries.json`) лежать у каталозі 700 і власних прав не потребують: `$.fs.write` прав не задає (новий файл — 644, навичка plugin-hooks, пункт 9), але інші користувачі до файлів у каталозі 700 не дістаються. Архіви й медіа-файли, як і раніше, пише команда хоста з `umask 077` (600). Запис кожного файлу стану командою хоста (пункт (d) фази 17) відкинуто: `tags.json` пишеться майже на кожен виклик інструменту, а процес на кожен запис — зайва затримка без виграшу в захисті. Файлу готовності немає: компактизацію запускає той самий модуль, що її обробляє ([C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09)). Файл `editor-ready`, лишений версією з двома розширеннями, мод не читає і не пише.
 
 ### 01_08. MediaRef  {#SP_CTX_01_08}
 
@@ -215,7 +216,7 @@ Invariants:
 
 | Name | Value | Meaning |
 |------|-------|---------|
-| MARK | `[context-editor]` | Префікс тексту зміненого рядка або результату |
+| MARK | `[context-editor]` | Префікс тексту зміненого рядка або результату. Код розпізнає змінені рядки лише за цим префіксом (позначка `*` переліку, R5 (а), PersonText); слова після нього — частина тексту заміни: хто і коли її написав (`you read the full output here, then replaced it with your summary`, [SP_CTX_DEC_17](#SP_CTX_DEC_17); [SP_CTX_02_04](#SP_CTX_02_04)) |
 | MARKER | `context-editor: apply queued edits` | Аргумент вбудованої команди компактизації, яким мод позначає застосування черги ([SP_CTX_02_06](#SP_CTX_02_06)); обробник бачить його як `instructions`. Текст самопояснювальний: модель бачить його в рядку команди `/compact` разом з позначкою виконання |
 | HANDOFF_MARKER | `context-editor: seed the handed-off conversation` | Аргумент вбудованої команди компактизації, яким мод засіває очищену сесію ([SP_CTX_02_21](#SP_CTX_02_21), [SP_CTX_02_26](#SP_CTX_02_26)); видимий моделі так само, як MARKER |
 | OWN_TOOLS | `mcp__context-editor__` | Префікс назв інструментів мода |
@@ -242,6 +243,8 @@ Invariants:
 | MAX_FULL_ROW | 20 000 | Найбільше символів одного рядка в повному перегляді (`context_list` з `index` і `full`) |
 | MAX_BLOCK_INDEXES | 20 | Скільки індексів кандидатів однієї причини називає звіт закриття етапу ([SP_CTX_02_29](#SP_CTX_02_29)); решта — числом |
 | MAX_JOURNAL | 1000 | Найбільше записів журналу ефекту; найстаріші видаляються ([SP_CTX_01_19](#SP_CTX_01_19)) |
+| MAX_DELIVERIES / MAX_DELIVERY_TEXT | 200 / 40 000 | Найбільше записів у `deliveries.json` / найбільша довжина тексту однієї доставки, символи: довший текст обрізається з хвостом `… [context-editor: <n> chars cut]` ([SP_CTX_01_22](#SP_CTX_01_22)). Файл, як і черга, не більший за MAX_QUEUE_BYTES; понад межі першими видаляються найстаріші записи. Робоча сесія decd4bc6: 35 доставок, найдовша — 15 253 символи |
+| DELIVERY_FRAMES | person: `The user sent a new message while you were working:`; agent: `Another Claude session sent a message while you were working:`; task: `[SYSTEM NOTIFICATION - NOT USER INPUT]` | Перший непорожній рядок після відкривного `<system-reminder…>` у відрендереному тексті доставки; за ним DeliveryKind ([SP_CTX_01_22](#SP_CTX_01_22)). Тексти хоста 2.1.295–2.1.296 з транскрипту decd4bc6; інший рядок — клас `other` |
 | SKILL | `context-stages` | Тека навички мода `skills/context-stages/SKILL.md`; агент бачить її в переліку як `context-editor:context-stages` (навичка plugin-hooks, пункт 39; [SP_CTX_02_27](#SP_CTX_02_27)) |
 | INTRO_TEXT | `context-editor: you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person's messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. Nothing reminds you by size: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.` | Інструкція на початку сесії, прихований контекст першого промпту ([SP_CTX_02_27](#SP_CTX_02_27), [SP_CTX_DEC_11](#SP_CTX_DEC_11)); 866 символів, близько 217 токенів за оцінкою символи/4. Речення про власні виклики `context_*` додає фаза 15 (пропозиція P13) |
 | STAGE_ADVICE | `Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Pairs from Read, Grep and Glob are reproducible: they can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing.` | Порада закриття етапу і ходу оптимізації ([SP_CTX_02_29](#SP_CTX_02_29); [C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04), D; запис етапу — пропозиції P5 і P11, відтворюваність — P2 і P12, [C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)). Текст фази 14 називає відтворювані інструменти без позначки `~`, якої перелік фази 14 ще не показує (Verify фази 14, D3); фаза 15 разом з REPRO_FLAG повертає в цей текст вказівку на `~` (`Reproducible pairs (~: Read, Grep, Glob) can shrink …`) |
@@ -252,7 +255,7 @@ Invariants:
 | ROW_WINDOW | 4096 | Найбільше рядків, які віддає читання розмови, і найбільше повідомлень API-подання; рядки події компактизації (`e.messages`) цієї межі не мають — це всі рядки після останньої межі (навичка plugin-hooks, пункт 49) |
 | NO_MEDIA_NOW | `no media found in that row now` | Причина відмови `describe` при застосуванні, коли медіа рядка цим застосуванням не знайдено (PromptMatch дав «немає»); знайдене, але не заархівоване медіа відхиляється з `media could not be archived` ([SP_CTX_02_04](#SP_CTX_02_04)) |
 | DESCRIBE_DROPS | `describe: attachments the host added to that prompt (file contents from @path, reminders) are dropped; re-read files if needed.` | Рядок результату `context_edit` з прийнятим `describe` і звіту застосування з `describe` ([SP_CTX_02_02](#SP_CTX_02_02), [SP_CTX_02_04](#SP_CTX_02_04)) |
-| PROMPT_DECORATIONS | `<system-reminder>`, `<local-command-caveat>`, `[Image: source: ` | Початки текстових блоків, які хост додає до API-повідомлення промпту і яких немає в рядках (вкладення, застереження команди, isMeta-нотатка збереженого зображення); рядок, що так починається, — вставлений модом (доставка). PromptMatch їх пропускає ([SP_CTX_02_10](#SP_CTX_02_10); навичка plugin-hooks, пункт 47) |
+| PROMPT_DECORATIONS | `<system-reminder`, `<local-command-caveat>`, `[Image: source: ` | Початки текстових блоків, які хост додає до API-повідомлення промпту і яких немає в рядках (вкладення, застереження команди, isMeta-нотатка збереженого зображення); рядок, що так починається, — вставлений модом (доставка, [SP_CTX_02_36](#SP_CTX_02_36)). Перший — без `>` (фаза 20): звіт субагента хост рендерить як `<system-reminder id="…">` (транскрипт decd4bc6), і рядок такої доставки інакше починав би хід людини в PromptMatch. PromptMatch їх пропускає ([SP_CTX_02_10](#SP_CTX_02_10); навичка plugin-hooks, пункт 47) |
 | SUMMARY_OPENER | `This session is being continued from a previous conversation` | Початок тексту підсумку вбудованої компактизації в API-поданні і в транскрипті (спайк context_editor_handoff_long, Entry 2) |
 | TRANSCRIPT_LINE | `read the full transcript at:` | Початок рядка в підсумку вбудованої компактизації, що вказує на файл старої сесії; засів прибирає такі рядки ([SP_CTX_02_22](#SP_CTX_02_22)) |
 | MEDIA_DATA | 256 | Найкоротший рядок base64, який архів вважає даними медіа |
@@ -446,6 +449,30 @@ Invariants:
 - На одній цілі може бути кілька нотаток; нотатки і теги незалежні: тег на тій самій цілі не заміняє нотатку і навпаки.
 - Нотатка на рядку, який правка замінила, переходить на останній створений правкою рядок; на рядку, прибраному без заміни, — видаляється ([SP_CTX_02_14](#SP_CTX_02_14)).
 
+### 01_22. QueuedDelivery  {#SP_CTX_01_22}
+
+Доставка хоста посеред ходу — вкладення `queued_command`: повідомлення людини, набране під час ходу, звіт субагента, сповіщення фонової задачі. Хост пише її записом-вкладенням транскрипту, що висить за рядком з `tool_result`, і показує моделі системним ходом; рядком розмови вона не є — її немає ні в `$.session.messages()`, ні в `e.messages` компактизації, ні в API-поданні. Рядок, повернений обробником компактизації з `handle`, хост копіює разом із вкладеннями за ним; перезібраний без `handle` — без них, і модель потім відрікається від власних слів про зниклий текст (спайк [context_editor_attachments](./context_editor_attachments.spike.md); навичка plugin-hooks, пункти 43–44). Мод записує текст доставки в мить появи ([SP_CTX_02_35](#SP_CTX_02_35)) і вставляє його рядком, коли застосування чи засів повертає рядок, за яким вона висить, без `handle` ([SP_CTX_02_36](#SP_CTX_02_36)). Фаза 20.
+
+Файл `<storage>/deliveries.json` — `{ items: list<QueuedDelivery> }` у порядку запису, ≤ MAX_DELIVERIES записів і ≤ MAX_QUEUE_BYTES. Стани читання — як у черги: `missing` — порожньо, `unreadable` — файл не JSON, не об'єкт або запис не відповідає таблиці.
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| uuid | string | yes | — | — | `uuid` події `session.append` доставки; для діагностики |
+| anchor | list<string> | yes | — | 1+ ідентифікаторів | `tool_use_id` кожного результату рядка-якоря — останнього рядка основної розмови з дверима `tool-result`, що пройшов `session.append` перед доставкою |
+| kind | `person` \| `agent` \| `task` \| `other` | yes | — | — | DeliveryKind(text), нижче |
+| origin | string | yes | — | — | `origin.kind` події як є (`composer`, `unclassified`, `task-notification`, …); класу не визначає: людина в stream-json має `unclassified`, у терміналі — `composer` |
+| text | string | yes | — | непорожній, ≤ MAX_DELIVERY_TEXT разом із хвостом обрізання (розбір файлу допускає ще 100 символів хвоста) | відрендерений текст — текстові блоки `content` події, з'єднані `\n`, з рамкою `<system-reminder…>` як є |
+| cut | int | yes | 0 | ≥ 0 | скільки символів обрізано за MAX_DELIVERY_TEXT |
+| media | int | yes | 0 | ≥ 0 | скільки нетекстових блоків мав `content`; вони не переносяться: рядок без `handle` медіа не несе (навичка plugin-hooks, пункт 6) |
+| at | int | yes | — | мс від епохи | час запису |
+
+DeliveryKind(text): коли `text` без пробілів зліва починається з `<system-reminder`, береться перший непорожній рядок після рядка відкривного тегу; він дорівнює рядку DELIVERY_FRAMES — клас `person`, `agent` чи `task`; інакше (і без рамки) — `other`. Клас визначає текст, а не `origin`: походження розходяться між хостами, а звіти субагентів у VS Code мають у транскрипті `origin.kind: peer` (транскрипт decd4bc6: 3 `human`, 13 `peer`, 19 `task-notification`, усі за рядком з `tool_result`). `person` — повідомлення людини ([SP_CTX_02_02](#SP_CTX_02_02), PersonText); `agent` і `task` — невідтворювані звіти, які агент може згорнути, як інші результати ([C_CTX_03_04](./context_editor.concept.md#C_CTX_03_04), «Відтворюваність»).
+
+Invariants:
+- Пара (`text`, спільний ідентифікатор в `anchor`) унікальна у файлі: копія доставки, яку stream-json після компактизації знову проводить через `session.append` (за копією рядка-якоря), нового запису не дає.
+- Запис живе, доки рядок-якір лишається в розмові з `handle` (вкладення тоді переносить хост). Вставлений рядком, пішовши разом зі згорнутим чи прибраним якорем, або з якорем, якого вже немає в рядках компактизації (вбудована компактизація, межа), запис видаляється при наступному застосуванні мода ([SP_CTX_02_07](#SP_CTX_02_07)).
+- Файл належить сесії ([SP_CTX_01_07](#SP_CTX_01_07)); `--resume` у новому процесі має той самий `session_id`, тож записи лишаються. Передача файлу не переносить: засів несе доставки рядками ([SP_CTX_02_22](#SP_CTX_02_22)). Доставки форка сесії, старішої сесії чи такі, що прийшли до завантаження мода, записів не мають — запасне читання транскрипту (R2 спайку) — у backlog плану ([SP_CTX_DEC_19](#SP_CTX_DEC_19)).
+
 ## 02. Contracts  {#SP_CTX_02}
 
 Усі читання-змінювання-запису файлу в моді проходять через одну послідовну чергу на файл: дві операції над одним файлом не перекриваються. Прямий запит компактизації хоста мод не використовує: неінтерактивний хост відхиляє його завжди, а інтерактивний не викликає для нього обробників самого мода ([C_CTX_01_02](./context_editor.concept.md#C_CTX_01_02)).
@@ -531,7 +558,8 @@ Processing logic (pseudocode):
         edits = edits with each resolvable `ref` of summarize/drop replaced by its tool_use_id (ResolveRef, SP_CTX_02_17)
         hasMedia = edits hold a describe ? owner ∈ keys(CollectMedia(API form, rows).found) : false   # SP_CTX_02_10; API-подання читається лише для describe
         (queued, errors) = PrepareEdits(rows, edits, TagRegistry, hasMedia)   # реєстр unreadable → без перевірки pin; HandleCompaction відхилить кожну правку
-        warnings = PersonWarnings(rows, queued)                       # попередження, не відмова (C_CTX_DEC_21)
+        deliveries = read QueuedDeliveries (unreadable or missing → none)   # SP_CTX_01_22; лише для попередження
+        warnings = PersonWarnings(rows, queued, deliveries)           # попередження, не відмова (C_CTX_DEC_21)
         REQUIRE len(q.edits) + len(queued) <= MAX_QUEUE_EDITS AND size of the new file <= MAX_QUEUE_BYTES
         q.edits += queued; IF queued not empty: q.tagsOnly = false
         prompt = resume_prompt non-empty after trim
@@ -548,7 +576,9 @@ Processing logic (pseudocode):
 
     PersonRow(rows, i) = rows[i] is a user row without toolResults AND PersonText(rows[i].text) is not empty
     PersonText(text):                                                  # що в рядку написала людина
-        t = trimmed text with every leading closed span <ide_opened_file>…</ide_opened_file> or <system-reminder>…</system-reminder> removed   # VS Code додає відкритий файл перед словами людини (рев'ю 40: 62 рядки в транскриптах репозиторію)
+        IF DeliveryKind(text) = person → the lines after the frame line, up to the first line that starts with "This is how Claude Code surfaces" or up to </system-reminder>, trimmed   # вставлена доставка від людини (SP_CTX_01_22, фаза 20)
+        IF DeliveryKind(text) IN (agent, task) → empty                  # вставлений звіт субагента чи сповіщення задачі
+        t = trimmed text with every leading closed span <ide_opened_file>…</ide_opened_file> or <system-reminder…>…</system-reminder> removed   # VS Code додає відкритий файл перед словами людини (рев'ю 40: 62 рядки в транскриптах репозиторію); тег з атрибутами (`<system-reminder id="…">`) — теж (фаза 20)
         IF t is a command row (holds <command-name>):
             the mod's own /compact with MARKER or HANDOFF_MARKER → empty
             ELSE → the trimmed content of <command-args>, empty when absent   # аргументи slash-команди — слова людини (`/dev-flow research …`)
@@ -557,14 +587,18 @@ Processing logic (pseudocode):
         IF t starts with <local-command-stdout>, <local-command-caveat>, <task-notification> or (without <command-name>) <command-message> → empty   # рядки хоста
         ELSE → t
     PersonPair(rows, id) = the call with this id has a tool in PERSON_TOOLS                                                                 # відповідь людини на запитання агента
-    PersonWarnings(rows, queued) = for each queued collapse: PersonRow rows and rows of PersonPair results in its span;
-                                   for each queued summarize or drop of a PersonPair: its result row
-        → "Warning: <edit label> covers the person's messages: #<i> (prompt), #<j> (AskUserQuestion answer), …. Keep them verbatim unless you drop them deliberately."   # до MAX_BLOCK_INDEXES рядків на правку
-    PersonTagWarnings(rows, added) = for each added disposable range: PersonRow rows and rows of PersonPair results in #a..#b;   # context_tag, SP_CTX_02_11
+    PersonDelivered(rows, i, deliveries) = some QueuedDelivery with kind = person has an anchor id among the results of rows[i]   # ще не рядок: висить за цим результатом (SP_CTX_01_22, фаза 20)
+    PersonWarnings(rows, queued, deliveries) = for each queued collapse: PersonRow rows, rows of PersonPair results and PersonDelivered rows in its span;
+                                   for each queued summarize or drop of a PersonPair: its result row;
+                                   for each queued drop whose result row is PersonDelivered by a delivery whose every anchor id is the dropped pair: that row   # summarize лишає доставку на місці (SP_CTX_02_36) — без попередження; drop одного з паралельних результатів лишає рядок і доставку (рев'ю 48)
+        → "Warning: <edit label> covers the person's messages: #<i> (prompt), #<j> (AskUserQuestion answer), #<k> (message sent during this tool call), …. Keep them verbatim unless you drop them deliberately."   # до MAX_BLOCK_INDEXES рядків на правку
+    PersonTagWarnings(rows, added, deliveries) = for each added disposable range: PersonRow rows, rows of PersonPair results and PersonDelivered rows in #a..#b;   # context_tag, SP_CTX_02_11
                                      for each added disposable on a PersonPair: its result row
         → the same text with the label "disposable #<a>..#<b>" or "disposable <tool_use_id>"
 
 Попередження не повторюється при застосуванні і не впливає на пакет: що стискати, вирішує агент ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04)). Заміни з тегів (QueueTagReplacements) попередження при постановці в чергу не мають: ті самі рядки агент побачив у попередженні результату `context_tag` у мить тегування (PersonTagWarnings, [SP_CTX_02_11](#SP_CTX_02_11)) — прогін на копії сесії показав, що агент, який згортає діапазон, не помічає відповідей людини в ньому ([C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)).
+
+Доставки посеред ходу (фаза 20; [SP_CTX_01_22](#SP_CTX_01_22)). Повідомлення людини, яке хост доставив посеред ходу, — повідомлення людини так само, як промпт: поки воно ще не рядок, PersonDelivered знаходить його за рядком-якорем, і `collapse` чи `drop`, після яких воно піде разом із якорем ([SP_CTX_02_36](#SP_CTX_02_36)), отримують попередження; `summarize` якоря доставки не прибирає. Після першого застосування вставлена доставка — рядок `user`, і PersonText розпізнає в ній слова людини за рамкою DELIVERY_FRAMES (`<system-reminder>` з `The user sent a new message while you were working:`), а не відкидає її як нагадування хоста; звіт субагента і сповіщення задачі (`agent`, `task`) повідомленнями людини не є. Файл доставок не прочитався — попереджень про доставки немає, постановка не відмовляє.
 
 Опис інструмента (EDIT_DESCRIPTION) не довший за MAX_DESCRIPTION. Після фази 17 текст був 2038 з 2048 символів, і пункт (8) зведено до «Batch edits in one call.» (пояснення кешу — у навичці). Фаза 5 (2026-10-10) додала до пункту (2) рядок операції `describe` (`{"op":"describe","index","description"}`: медіа в рядку промпту людини, позначка `@` у `context_list`, текст лишається), а місце звільнила за порядком нижче: пункт (6) скорочено до «Compress a finished stage's block into a stage record; usually keep verbatim …», пункт (7) зведено до вказівки на навичку — «Record template and guide: skill context-editor:context-stages.» (шаблон запису етапу — у навичці, розділ «Compressing a block»); текст — 2037 з 2048. Фаза 15 додає до пункту (4) відмову для рядка з `state` (до 100 символів) і звільняє стільки ж у пункті (6): з нього зникають «(`context_tag` close), or without stages the earliest processed or excess span» і «and the working part»; бюджет фази 15 — сума ≤ 2048, перевіряє рядок 05_01 «опис інструмента». Обов'язковий зміст за пріоритетом (хост обрізає кінець, [SP_CTX_02](#SP_CTX_02)): (1) призначення і що правки застосовуються після кінця ходу, з продовженням `resume` / `resume_prompt`; (2) операції з обов'язковими полями і правило пар `collapse`; (3) `ref` і `last`; (4) відмова для цілей з `pin` і для рядка з `state`, крім `rewrite` цього рядка; (5) оригінали архівуються у файл, названий у заміні, і читаються `Read` ([C_CTX_DEC_18](./context_editor.concept.md#C_CTX_DEC_18)); (6) порада одним реченням — стискати блок завершеного етапу, лишаючи зазвичай дослівно повідомлення людини — зокрема відповіді на запитання агента (AskUserQuestion) — і чинні правила й навички (ділянка без етапів і робоча частина — у навичці з фази 15) ([C_CTX_DEC_04](./context_editor.concept.md#C_CTX_DEC_04), [C_CTX_DEC_21](./context_editor.concept.md#C_CTX_DEC_21)); (7) шаблон запису етапу — мета; рішення з причиною, дослівними словами людини і причиною відмови від інших варіантів; факти з джерелами; змінені артефакти; відкриті питання (пропозиції P5, P11) — з фази 5 в описі лише вказівка на навичку, де шаблон записано; (8) пакетування; (9) вказівка на навичку `context-editor:<SKILL>`. Лише в навичці SKILL ([SP_CTX_02_27](#SP_CTX_02_27)): ціна скидання кешу, відтворюване проти невідтворюваного, глухі кути діапазоном `disposable`, мітка оптимізації, телеметрія, причини `review`, слот стану докладно. Пункт (7) уже зведено до вказівки на навичку (фаза 5); далі скорочується текст пунктів (8) і (6); пункти (1)–(5) лишаються повністю. Довжину перевіряє рядок 05_01 «опис інструмента». Фаза 18 (рев'ю 46, живий прогін F2): речення про продовження — `The session then resumes by itself with "resume_prompt" (default: …) unless "resume" is false; in an optimization turn only on "resume": true or "resume_prompt".`; місце дали скорочення «not at once», «already», «compact», речення про архів (`Originals are archived (original: <path> in the replacement)`), `A [pin] target` і «you still need» — 2045 з 2048 символів.
 
@@ -612,7 +646,7 @@ Input:
 | unmatchedPromptMedia | int | yes | ≥ 0; кількість повідомлень людини з медіа, не зіставлених з рядками |
 | apiTruncated | bool | yes | API-подання обрізане вікном: `len(api) ≥ ROW_WINDOW − 1` ([SP_CTX_02_10](#SP_CTX_02_10)); тоді рядки до першого відомого результату можуть лежати поза поданням |
 
-Output: `{ rows: list<Row>, report: ApplyReport }`; `charsAfter` дораховує [SP_CTX_02_07](#SP_CTX_02_07).
+Output: `{ rows: list<Row>, report: ApplyReport, renamed: map<string, string> }`; `charsAfter` дораховує [SP_CTX_02_07](#SP_CTX_02_07); `renamed` — для кожної застосованої `summarize` її `tool_use_id` → FreshId, з яким пара стоїть у `rows` (читає InsertDeliveries, [SP_CTX_02_36](#SP_CTX_02_36); фаза 20).
 
 Processing logic (pseudocode):
     FUNCTION ApplyEdits(rows, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated):
@@ -647,7 +681,8 @@ Processing logic (pseudocode):
         rows = KeepResponsesWhole(rows)
         rows = remove rows without handle that became empty
         rows = MergeCallRows(rows)                    # виклики однієї відповіді без handle — одним рядком
-        RETURN rows, report
+        renamed = { id → id' : each applied summarize }   # для InsertDeliveries (SP_CTX_02_36)
+        RETURN rows, report, renamed
 
     FUNCTION KeepResponsesWhole(rows):            # відповідь моделі не розривається перезібраним рядком
         stretches = rows split before every prompt row (a user row without toolResults that is not a result row a drop left empty: it has a handle or content)   # порожній рядок ще не відфільтровано
@@ -656,14 +691,14 @@ Processing logic (pseudocode):
             rebuild every assistant row with handle in stretch                        # і до, і після перезібраного; thinking-блоки цих рядків губляться
         RETURN rows                                                                   # рядки результатів — за правилом вище (SP_CTX_DEC_02)
 
-    run summarize: id' = FreshId(id); use row rebuilt, call gets id' and loses text; result row rebuilt, result gets id' and text MARK+" summarized"+note+mediaNote(id)+": "+summary
+    run summarize: id' = FreshId(id); use row rebuilt, call gets id' and loses text; result row rebuilt, result gets id' and text MARK+" you read the full output here, then replaced it with your summary"+note+mediaNote(id)+": "+summary   # автор і час — SP_CTX_DEC_17 (A′), фаза 19
     run drop: call removed from its row, result from its row; both rows rebuilt; media paths of id go to the report only
     run collapse: span = rows[from..to] → originals; carrier = first call in span whose tool does not start with OWN_TOOLS
         carrier exists → 2 rows: assistant {text "", toolUses [carrier with id' = FreshId, input {}, no text]}, user {toolResults [{id', isError false, text T}]}
         no carrier → 1 row {role span[0].role, text T, toolUses []}
-        T = MARK+" <n> rows collapsed"+note+mediaNote(all owners in span)+": "+summary
-    run rewrite: row text = MARK+" rewritten"+note+": "+text; row rebuilt
-    run describe: row text = MARK+" media replaced"+note+mediaNote(row)+": "+description+"\n\n"+original text; row rebuilt   # вкладення хоста на handle рядка (вміст файлу з @шлях, нагадування) зникають разом із медіа (навичка plugin-hooks, пункт 44); звіт і результат context_edit кажуть це DESCRIBE_DROPS
+        T = MARK+" you read these <n> rows, then collapsed them into your note"+note+mediaNote(all owners in span)+": "+summary
+    run rewrite: row text = MARK+" you rewrote this row"+note+": "+text; row rebuilt
+    run describe: row text = MARK+" you saw the media here, then replaced it with your description"+note+mediaNote(row)+": "+description+"\n\n"+original text; row rebuilt   # вкладення хоста на handle рядка (вміст файлу з @шлях, нагадування) зникають разом із медіа (навичка plugin-hooks, пункт 44); звіт і результат context_edit кажуть це DESCRIBE_DROPS
     mediaNote(owners) = media has paths for these owners ? " (media: "+paths joined ", "+")" : ""
 
     FUNCTION Produced(final, steps) → list:                         # викликають HandleCompaction після DropOwnCalls і BuildSeed після нормалізації
@@ -676,6 +711,8 @@ Processing logic (pseudocode):
         RETURN rows
 
 Правки пар (summarize, drop) не розрізають рядків, тож кілька правок різних пар на спільних рядках застосовуються послідовно; правки рядків (collapse, rewrite, describe) беруть свої рядки виключно.
+
+Хто і коли написав заміну (фаза 19; [SP_CTX_DEC_17](#SP_CTX_DEC_17) — A′; живий прогін фази 18, F1). Текст кожної заміни каже, що агент сам бачив оригінал на цьому місці, а потім сам його замінив: `you read the full output here, then replaced it with your summary`, `you read these <n> rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description` — і для правок агента, і для замін з тегів `disposable` (нотатку теж написав агент, [SP_CTX_02_13](#SP_CTX_02_13)). Без цих слів haiku після власного `summarize` трьох виводів `cat` на питання «What did you do?» відповідав, що від `cat` отримав «готовий підсумок плагіна» і сирих файлів не перевіряв (`.dev_flow/cache/live-test/phase18-results.md`, F1): заміна стоїть там, де був результат, одразу після виклику, а власний виклик `context_edit` прибирає DropOwnCalls, тож причина — позиційна, і текст мусить назвати і автора, і час. Префікс MARK не змінюється, тож розпізнавання змінених рядків (позначка `*`, R5 (а), PersonText) не зачеплено; CarryNote засіву (`media carried as files`) і рядок псевдоніма (`id cN`) пише мод, а не агент, — їх слова лишаються.
 
 «Правка замінює медіа власника»: summarize і drop — власник `{tool_use_id}` пари; collapse — власники всіх пар і рядків діапазону; describe — власник `{row}`. Для `describe` умова сильніша за «власник у mediaOwners»: власника могло не бути в mediaOwners, якщо PromptMatch на рядках застосування дав «немає» (зсув, рядок у хвості, якого немає в API), — тоді опис без медіа-файлу мовчки знищив би зображення людини; тому `describe` вимагає шляхів медіа свого рядка в `media` і інакше відхиляється з NO_MEDIA_NOW. Так і в HandleCompaction (`media` — архів цього застосування), і в BuildSeed (`mediaOwners = ∅`, `media` — файли засіву).
 
@@ -696,6 +733,8 @@ Purpose: прибрати з результату ApplyEdits виклики ін
 Input: рядки, `mediaOwners`, `knownResults`. Logic: множина ідентифікаторів викликів, чия назва починається з OWN_TOOLS, крім тих службових пар, у рядку результату яких є інший результат з власником у `mediaOwners` або з id поза `knownResults` — такі пари лишаються разом із рядками, бо перезбирання знищило б незаархівоване медіа. Кожен рядок, що містить решту службових викликів або результатів, перезбирається без них; потім рядки проходять KeepResponsesWhole ([SP_CTX_02_04](#SP_CTX_02_04)), бо перезібраний рядок асистента зі службовим викликом теж розриває відповідь; рядки без `handle`, що стали порожніми, видаляються, а виклики однієї відповіді без `handle` зливаються в один рядок (MergeCallRows, [SP_CTX_02_04](#SP_CTX_02_04)): прибраний службовий рядок посеред паралельних викликів інакше лишив би два окремі перезібрані рядки викликів. Рядок-носій `collapse` ніколи не є службовим викликом ([SP_CTX_02_04](#SP_CTX_02_04)).
 
 Output: рядки і `removed` — кількість прибраних службових пар (виклик разом з результатом рахується одним; пари, що лишились біля медіа чи поза `knownResults`, не рахуються). HandleCompaction і BuildSeed пишуть її в `report.ownCallsRemoved` ([SP_CTX_01_05](#SP_CTX_01_05)): звіт застосування тоді каже агенту, що його власні виклики прибрано, а теги й нотатки лишились (пропозиція P13).
+
+Рядки доставок, які InsertDeliveries ([SP_CTX_02_36](#SP_CTX_02_36)) вставило перед DropOwnCalls, — рядки `user` без результатів: DropOwnCalls їх не чіпає. Доставка, що висіла за результатом службового виклику, лишається на своєму місці — після решти рядків тієї ж відповіді, бо хост доставляє її після останнього результату відповіді (фаза 20).
 
 ### 02_06. Flush  {#SP_CTX_02_06}
 
@@ -809,12 +848,14 @@ Processing logic (pseudocode):
                 IF ref.data absent OR writing fails: drop media[owner]; BREAK      # ApplyEdits fails its edits
                 media[owner] += path
         archive = <storage>/<id>.json
-        (rows, report) = ApplyEdits(messages, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated)
+        (rows, report, renamed) = ApplyEdits(messages, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated)
         IF report.originals not empty AND writing archive (compact JSON, through a host command) fails:
             IF the dispatch was abandoned: RETURN skip "compaction abandoned"
             write Queue with every edit failed "originals could not be archived" (report and kept fields as below)
             RETURN skip "originals could not be archived"                 # оригінали не зникають без архіву
-        (rows, report.ownCallsRemoved) = DropOwnCalls(rows, mediaOwners, knownResults); report.charsAfter = Σ size(rows)   # повернений список уже пройшов KeepResponsesWhole; лічильник — для речення P13 (SP_CTX_01_05)
+        deliveries = read QueuedDeliveries on the deliveries chain (unreadable → none; report.deliveries.unreadable = reason)   # SP_CTX_01_22, фаза 20
+        (rows, report.deliveries, done, added) = InsertDeliveries(messages, rows, deliveries, renamed, allRebuilt = false)   # SP_CTX_02_36: до DropOwnCalls; done — uuid записів, що більше не потрібні; added — розмір вставлених рядків
+        (rows, report.ownCallsRemoved) = DropOwnCalls(rows, mediaOwners, knownResults); report.charsAfter = Σ size(rows) − added   # повернений список уже пройшов KeepResponsesWhole; лічильник — для речення P13 (SP_CTX_01_05); доставки — не звільнене місце
         report.produced = Produced(rows, applied steps)                # SP_CTX_02_04: індекси в кінцевому списку
         IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned"   # пакет лишається в черзі
         RebindTags(rows, report)                                       # SP_CTX_02_14: теги, псевдоніми, межі етапів, слот стану
@@ -828,6 +869,7 @@ Processing logic (pseudocode):
         RecordBoundary(rows)                                           # SP_CTX_02_18
         lastApply: the request size read before the apply (plain $.session.usage().context.tokens, 1–3 ms, no breakdown, bounded by a short timeout like hostId — the handler never waits longer; absent or late → nothing) goes into TagRegistry.lastApply = { at: id, tokensBefore } with RebindTags   # SP_CTX_02_28: виміряна зміна
         in the background, on the journal chain: JournalApply(id, report, archive, messages, edits)   # SP_CTX_02_31; не затримує відповіді
+        in the background, on the deliveries chain, IF done not empty: re-read QueuedDeliveries; IF not unreadable: remove the items whose uuid is in done; write   # SP_CTX_02_36: вставлені, згорнуті й зниклі записи йдуть, записані тим часом лишаються; збій запису — повторну вставку відсікає перевірка «уже рядок»
         RETURN { messages: rows }
 
     ON handler failure:
@@ -915,7 +957,7 @@ Processing logic (pseudocode):
         RETURN result
 
     FUNCTION PromptMatch(api, rows) → map<int, int>:        # B з перевіркою A кожної пари (SP_CTX_DEC_06)
-        decoration(t) = trimmed-left t starts with one of PROMPT_DECORATIONS
+        decoration(t) = trimmed-left t starts with one of PROMPT_DECORATIONS   # «<system-reminder» без «>»: рядок вставленої доставки і її текстовий блок у повідомленні з tool_result хід не починають — ні в рядках, ні в API (фаза 20, SP_CTX_02_36)
         commandRow(t) = trimmed-left t starts with "<command-name>" or "<local-command-stdout>"
         squash(t) = t with every whitespace character (\s) removed
         text(msg) = text blocks of msg in order; a string content is one text block
@@ -1062,6 +1104,8 @@ Processing logic (pseudocode):
 R5 ([C_CTX_03_04](./context_editor.concept.md#C_CTX_03_04), «Дублікат»; пропозиція P3) позначає ранішу копію, бо пізніша — свіжа і, найімовірніше, потрібна далі. Порівняння тексту — точна рівність; поля `Read` — `file_path`, `offset`, `limit`, `pages` виклику (вхід виклику береться з рядка асистента з тим самим `tool_use_id` у поточній розмові; виклику не знайдено — рівності полів немає). Перетини різних діапазонів одного файлу не позначаються: концепт обмежує дублікат тим самим результатом і тим самим діапазоном. R5 бачить лише великий текст (від BIG_ROW, концепт: «великий текст повторює вміст раннього рядка») і читає поточну розмову лише для результатів і рядків без результатів від BIG_ROW, у фоні, не затримуючи рядка. Інструмент кожного результату береться з його власного виклику: рядок з кількома результатами паралельних викликів має одне походження, а інструменти в ньому різні. Двері `tool-message` і `attachment` хук дивиться лише заради R5 (б); R1–R3 їх не бачать.
 
 Фаза 15 (виконано 2026-10-10). Перед R4 і R5 з'ясовано, чому на копії реальної сесії R2 поставив `review` на старий великий вивід у першому ході (`.dev_flow/cache/live-test/fork-test-results.md`, розділ «Host, resumed or forked process»): копія рядка результату пройшла фільтр походження плагіна, бо приходить з походженням свого інструмента; її тепер відсікає `Copied` (вище) — інакше R5 (а), що читає поточну розмову на кожен великий результат, позначав би ранішу копію самої себе. Проба «Дублікат вставки навички» ([SP_CTX_05_03](#SP_CTX_05_03)) показала, що вставка навички — не рядок поточної розмови, тож R5 (б) перейшов у backlog плану, а хук мода (`session.append` у `hooks/register.ts`) і далі пропускає до правил лише двері `prompt` і `tool-result`; R5 (а) реалізовано ([SP_CTX_01_11](#SP_CTX_01_11)).
+
+Той самий хук `session.append` веде й RecordDelivery ([SP_CTX_02_35](#SP_CTX_02_35); фаза 20): двері `tool-result`, `prompt` і `response` основної розмови оновлюють якір у пам'яті модуля, двері `delivery` з вкладенням `queued_command` пишуть запис доставки у фоні. AutoTag від цього не змінюється: доставка — не рядок, правил R1–R5 вона не проходить, а вставлений модом рядок доставки в stream-json приходить дверима `prompt` з походженням плагіна і правила його не бачать.
 
 ### 02_13. QueueTagReplacements  {#SP_CTX_02_13}
 
@@ -1493,11 +1537,12 @@ Input:
 | folder | string | yes | `<old storage>/<id>` |
 | archive | string | yes | `<old storage>/<id>.json` |
 | writeMedia | функція (path, base64) → bool | yes | порт запису медіа-файлу, доступного лише власникові |
+| deliveries | list<QueuedDelivery> зі станом читання | yes | `deliveries.json` старої сесії ([SP_CTX_01_22](#SP_CTX_01_22)); `unreadable` — без вставок, причина у звіті (фаза 20) |
 
 Output: `{ rows: list<Row>, report: ApplyReport, visible: list<Row>, fromSummary: bool, unmatchedPromptMedia: int, carried: list<string> }` або відмова з причиною; `visible` — рядки, передані в ApplyEdits; `carried` — результати з CarryNote.
 
 Processing logic (pseudocode):
-    FUNCTION BuildSeed(transcript, rows, api, edits, tags, folder, archive, writeMedia):
+    FUNCTION BuildSeed(transcript, rows, api, edits, tags, folder, archive, writeMedia, deliveries):
         (knownResults, apiTruncated) = CollectMedia(api, rows)                              # SP_CTX_02_10
         hidden = some row of rows holds a tool result whose id is not in knownResults
                  OR some user row of rows other than rows[0] has text that, trimmed, starts with SUMMARY_OPENER   # підсумок посеред рядків — межа не записана
@@ -1532,10 +1577,11 @@ Processing logic (pseudocode):
             IF NOT writeMedia(path, ref.data): REFUSE "media of <owner> could not be archived"
             items[owner][k] = path
         media = for each owner, the present paths of items[owner] in order                 # вхід ApplyEdits: шляхи для mediaNote
-        (seed, report) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatched, apiTruncated)   # SP_CTX_02_04
+        (seed, report, renamed) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatched, apiTruncated)   # SP_CTX_02_04
         report.failed = early + refused + report.failed
+        (seed, report.deliveries, _, added) = InsertDeliveries(visible, seed, deliveries, renamed, allRebuilt = true)   # SP_CTX_02_36: у засіві жоден рядок не має handle, тож вставляється кожна доставка, чий якір лишився; {as: 'api'} доставок не має (пункт 43), без вставки передана розмова їх губить; фаза 20
         (seed, report.ownCallsRemoved) = DropOwnCalls(seed, ∅, knownResults)                # зокрема виклик context_handoff; лічильник — для речення P13 (SP_CTX_01_05)
-        report.charsAfter = Σ size(seed)                                                   # тут: «звільнено» рахує лише правки, без CarryNote і голови
+        report.charsAfter = Σ size(seed) − added                                           # тут: «звільнено» рахує лише правки, без CarryNote, голови і вставлених доставок
         replaced = owners whose media the edits in report.applied replace
         FOR each tool result t in seed whose owner {t.tool_use_id} is in found and not in replaced:
             t.text = t.text + (t.text blank ? "" : "\n\n") + CarryNote(found[owner], items[owner])
@@ -1943,6 +1989,74 @@ Processing logic (pseudocode):
 
 Errors: відмов немає; збій запису відношення — оцінки цього виклику з новим відношенням, наступні — зі старим.
 
+### 02_35. RecordDelivery  {#SP_CTX_02_35}
+
+Purpose: записати доставку хоста посеред ходу ([SP_CTX_01_22](#SP_CTX_01_22)) в мить, коли хост проводить її через `session.append`, разом із рядком, за яким вона висить. Фаза 20; [SP_CTX_DEC_19](#SP_CTX_DEC_19).
+
+Джерело тексту — лише `session.append`: доставка проходить його в обох хостах дверима `delivery` (`type: attachment`, `name: queued_command`, `content` — відрендерений текст), а попередній рядок у порядку подій — рядок-якір з `tool_result`, той самий, що батько запису в транскрипті (спайк, Entry 1–2; навичка plugin-hooks, пункт 43). `prompt.submit` з `turnId` дає лише сирий текст людини без рамки й без якоря і не використовується.
+
+Processing logic (pseudocode):
+    memory of the module: lastAnchor: list<string> = []              # результати останнього рядка tool-result основної розмови
+    # частина хука session.append AutoTag (SP_CTX_02_12): рядок спершу збережено, хук його не змінює і не затримує
+    ON row appended (main loop; agentId absent; the row not denied):
+        IF door = tool-result: lastAnchor = tool_use_id of every tool_result block of the row; RETURN
+        IF door IN (prompt, response): lastAnchor = []; RETURN        # промпт (і рядок, вставлений модом, у stream-json) чи відповідь моделі: наступна доставка висіла б уже не за тим результатом
+        IF door = delivery AND message.type = attachment AND message.name = queued_command:
+            text = the text blocks of message.content joined with "\n"; media = count of the other blocks
+            IF lastAnchor empty OR text blank after trim: RETURN      # не спостерігалось (35 з 35 — за рядком з tool_result); не записується
+            item = { uuid: event uuid, anchor: lastAnchor, kind: DeliveryKind(text), origin: origin.kind or "?",
+                     text: text cut to MAX_DELIVERY_TEXT (tail "… [context-editor: <n> chars cut]"), cut: n, media, at: now }
+            in the background, on the deliveries chain, IF storage ready:
+                read QueuedDeliveries; unreadable → move the file aside to deliveries.json.bad-<ms> and start empty
+                IF some item has text = item.text AND shares an id with item.anchor: RETURN   # копія після компактизації (stream-json)
+                append item; drop the oldest items while there are more than MAX_DELIVERIES or the file would exceed MAX_QUEUE_BYTES; write
+        # інші двері (note, tool-message, attachment інших назв) lastAnchor не змінюють: ланцюжок доставок за одним результатом ділить якір
+
+Хости. Термінал: копії рядків після компактизації (і вкладення за рядками з `handle`) оминають `session.append` (пункт 24), тож копій доставок немає. Stream-json: копія рядка-якоря приходить дверима `tool-result`, за нею копія доставки — дверима `delivery`; запис відсікає перевірка пари (`text`, `anchor`). Рядок, який вставив InsertDeliveries, у stream-json приходить дверима `prompt` з походженням плагіна: він скидає `lastAnchor` і доставкою не є. Подія субагента (`agentId`) не чіпає ні пам'яті, ні файлу.
+
+Межі. Гаряче перезавантаження модуля скидає `lastAnchor`: доставка до наступного рядка `tool-result` не записується (вікно — один виклик інструмента). `/clear` і `/resume`: сховище переходить до нової сесії (PrepareStorage, [SP_CTX_02_15](#SP_CTX_02_15)), а `lastAnchor` скидає перший рядок промпту. `--resume` новим процесом: файл сесії лишається, пам'ять нова. Доставка, що прийшла, коли сесія вільна, починає новий хід звичайним промптом-рядком (`door: prompt`) і не губиться — запису не потребує (спайк, Entry 2).
+
+Errors: відмов немає; збій читання, переносу чи запису губить лише цей запис, рядок розмови не змінюється.
+
+### 02_36. InsertDeliveries  {#SP_CTX_02_36}
+
+Purpose: повернути доставки на їхнє місце в списку, що замінює розмову: рядок `user` з текстом доставки одразу після рядка-якоря, коли цей рядок іде без `handle` і хост вкладення за ним не перенесе. Чиста функція. Фаза 20; [SP_CTX_DEC_19](#SP_CTX_DEC_19).
+
+Input:
+| Parameter | Type | Required | Constraints |
+|-----------|------|----------|-------------|
+| before | list<Row> | yes | рядки, до яких застосовано правки: `e.messages` компактизації або видимі рядки засіву |
+| rows | list<Row> | yes | вихід ApplyEdits ([SP_CTX_02_04](#SP_CTX_02_04)) |
+| items | list<QueuedDelivery> | yes | у порядку файлу; порожньо, коли файлу немає чи він не прочитався |
+| renamed | map<string, string> | yes | вихід ApplyEdits: `tool_use_id` застосованої `summarize` → FreshId |
+| allRebuilt | bool | yes | `true` у засіві: жоден засіяний рядок не має `handle` |
+| goes | функція (Row) → bool | no | типово «ні»; у HandleCompaction — рядок з результатами лише службових викликів (OWN_TOOLS): поза вікном API він лишається з `handle`, але DropOwnCalls його прибере |
+
+Output: `{ rows, counts: { inserted, removed }, done: set<string>, added: int }`; `done` — `uuid` записів, які більше не потрібні; `added` — сума розмірів вставлених рядків.
+
+Processing logic (pseudocode):
+    FUNCTION InsertDeliveries(before, rows, items, renamed, allRebuilt, goes):
+        FOR item IN items (file order):
+            IF no row of before holds a result whose id is in item.anchor: done += item; CONTINUE   # якір до межі або зник після вбудованої компактизації
+            IF a user row with item.text stands right after that row, past result-less user rows only: done += item; CONTINUE   # уже рядок (вставлено раніше, запис не видалився); той самий текст деінде — інша доставка (рев'ю 48)
+            ids = item.anchor ∪ { renamed[id] : id ∈ item.anchor }
+            k = the index in rows of the row that holds a result whose id is in ids
+            IF k absent: removed += 1; done += item; CONTINUE                  # якір прибрано (drop) або згорнуто (collapse): доставка йде з ним; людину попереджено при постановці (SP_CTX_02_02)
+            IF rows[k] has handle AND NOT allRebuilt AND NOT goes(rows[k]): CONTINUE   # вкладення переносить хост; вставка дала б дубль (пункт 44); запис лишається. goes — рядок лише службових результатів, який DropOwnCalls прибере (рев'ю 48)
+            insert Row { role: user, text: item.text, toolUses: [] } right after rows[k] and after the rows already inserted after it
+            inserted += 1; added += size(item.text); done += item
+        RETURN rows, { inserted, removed }, done, added
+
+Чому одразу після якоря. Хост зливає рядок результату і наступний рядок `user` в одне повідомлення `user` (`tool_result`, далі текст) без лагодження пар, і модель знову бачить доставку (спайк, Entry 1–2, режим `plain-results-inject`: «PELICAN», «HERON», «TEAL» в обох хостах; без вставки — «NOT-VISIBLE» і відмова від власних слів). Текст лишається відрендереним, з рамкою `<system-reminder…>`; роль — `user` замість системного ходу, як і в пробі. Порядок кількох доставок за одним якорем — порядок запису.
+
+Відповідь не розривається. Хост доставляє чергу після останнього результату відповіді, перед наступним запитом, тож за рядком доставки починається нова відповідь; KeepResponsesWhole (у DropOwnCalls) вважає вставлений рядок промптом — і відповідь через нього справді не йде. Це припущення з даних (35 доставок робочої сесії, кожна за рядком з `tool_result`, спайк — без паралельних викликів); перевіряє сценарій 05_03 «Доставки посеред ходу» з паралельними викликами — без `ensureToolResultPairing` у журналі.
+
+Де викликається. HandleCompaction — після ApplyEdits, до DropOwnCalls ([SP_CTX_02_07](#SP_CTX_02_07)): доставка за результатом службового виклику лишається на місці, коли DropOwnCalls прибирає його рядки ([SP_CTX_02_05](#SP_CTX_02_05)). BuildSeed — так само, з `allRebuilt = true` ([SP_CTX_02_22](#SP_CTX_02_22)). Produced, NowIndex, RebindTags і межа поточної розмови бачать список уже з вставленими рядками; `charsAfter` їх не рахує ([SP_CTX_01_05](#SP_CTX_01_05)). Межа етапу «після рядка-якоря» робить рядок доставки першим рядком блоку, а кінець блоку на якорі лишає доставку наступному блоку — прийнято: модель бачила доставку саме після цього результату.
+
+Після вставки доставка — звичайний рядок: `context_list` її показує, `collapse` може її згорнути, PersonText бачить у доставці від людини її слова ([SP_CTX_02_02](#SP_CTX_02_02)), PromptMatch вважає її прикрасою (PROMPT_DECORATIONS), а наступне застосування повертає її з `handle`, як будь-який рядок `user` без результатів. Медіа доставки (`media` > 0) не переноситься: рядок несе лише текст.
+
+Errors: відмов немає.
+
 ## 03. Validation Rules  {#SP_CTX_03}
 
 ### 03_01. Input Validation  {#SP_CTX_03_01}
@@ -2233,7 +2347,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | OptimizeText, PersonAdvice | нотатки без рядків | у реєстрі 3 нотатки | речення `You have 3 note(s); context_list shows them…`; рядків розмови не читано |
 | Telemetry | нотатки | 3 нотатки, одна з `remindAt` / жодної | `Notes: 3 (1 with a reminder pending)` / рядка немає |
 | ApplyEdits | summarize | пара `a`, результат 5000 символів | рядки пари перезібрано, спільний id `a_ce…`, виклик без `text`, результат містить summary; рядки без результатів зберігають `handle`, крім рядків асистента того самого відрізка, що й перезібраний рядок `tool_use a` — і до, і після нього (KeepResponsesWhole) |
-| ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `4 rows collapsed`; вміст наступного рядка не змінено (рядок асистента того самого відрізка перезібрано без `handle` — KeepResponsesWhole) |
+| ApplyEdits | collapse | рядки 2..5 з двома парами | 2 рядки-носії з новим id, `you read these 4 rows, then collapsed them into your note`; вміст наступного рядка не змінено (рядок асистента того самого відрізка перезібрано без `handle` — KeepResponsesWhole) |
 | ApplyEdits | collapse зі службовим викликом першим | діапазон, що починається з виклику `context_list` | носій — перший не службовий виклик; після DropOwnCalls підсумок присутній |
 | ApplyEdits | collapse без викликів | діапазон лише з текстових рядків | один рядок з підсумком |
 | ApplyEdits | drop | пара `c` | рядки пари зникли |
@@ -2257,7 +2371,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | ApplyEdits | thinking перед зміненим викликом | відрізок: промпт; рядок лише з thinking; `tool_use a`; результат `a` (одна відповідь з thinking, усі з `handle`); summarize `a` | рядок thinking перезібрано й видалено; рядок `tool_use a` і результат перезібрано; жоден рядок асистента відрізка не має `handle` |
 | DropOwnCalls | службовий виклик посеред відповіді | відрізок: текст, `context_list`, Read з медіа (одна відповідь) | пару `context_list` прибрано; рядок `tool_use` Read і рядок тексту перед ним перезібрано (вміст той самий); результат Read з `handle` |
 | ApplyEdits | медіа не заархівовано | правка замінює власника з mediaOwners без шляхів у media | `failed` `media could not be archived` |
-| ApplyEdits | describe | рядок промпту з медіа, шлях медіа в `media` | `describe #0` застосовано; рядок без `handle`; текст `MARK media replaced (original: …) (media: <path>): <опис>`, порожній рядок, оригінальний текст; звіт містить DESCRIBE_DROPS |
+| ApplyEdits | describe | рядок промпту з медіа, шлях медіа в `media` | `describe #0` застосовано; рядок без `handle`; текст `MARK you saw the media here, then replaced it with your description (original: …) (media: <path>): <опис>`, порожній рядок, оригінальний текст; звіт містить DESCRIBE_DROPS |
 | ApplyEdits | describe без медіа при застосуванні | `describe #0`, у `media` немає шляхів рядка: власник у mediaOwners без файлу / власника немає в mediaOwners (PromptMatch дав «немає») | перший: `describe #0: media could not be archived`; другий: `describe #0: no media found in that row now`; рядок зберігає `handle` в обох |
 | HandleCompaction | describe без зіставлення при застосуванні | у черзі `describe #0` (при постановці медіа знайдено); `e.messages` закінчується рядком `user`, якого немає в API | медіа не записано; skip; звіт черги — `describe #0: no media found in that row now` |
 | BuildSeed | describe без зіставлення | те саме для засіву | файлів немає; `failed = [describe #0: no media found in that row now]`; текст промпту без змін |
@@ -2412,7 +2526,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | FormatReport | власні виклики (P13) | компактизація з непорожнім `applied`, `ownCallsRemoved = 2` / `ownCallsRemoved = 0` / компактизація без застосованих правок / засів без правок, `ownCallsRemoved = 1` | звіт закінчується ` Your own context-editor calls (2) were removed; tags and notes stay — see context_list.` / речення немає / речення немає (розмова не змінилась) / `context-editor: Your own context-editor calls (1) were removed; …` |
 | FormatReport | NowIndex (фаза 18) | `applied` [`rewrite #23`, `summarize a`, `drop b`, `collapse #3..#6`]; `produced` [`rewrite #23` → 18, `summarize a` → 9, `collapse #3..#6` → 4] | `applied 4 edit(s): rewrite #23 (now #18); summarize a (now #9); drop b; collapse #3..#6 (now #4).`; `report.applied` після форматування — без суфіксів |
 | FormatReport | NowIndex без запису | застосовано `rewrite #5`, а його рядка в кінцевому списку немає (запису в `produced` немає) / індекс не змінився (`describe #0` → 0) | `rewrite #5` без суфікса / `describe #0 (now #0)` |
-| HandleCompaction | NowIndex після DropOwnCalls | у пакеті `rewrite #23`; до рядка 23 — 5 рядків власних викликів мода | звіт черги містить `rewrite #23 (now #18)`; рядок #18 повернених рядків — `[context-editor] rewritten …`; RebindTags звіряє правки з пакетом за `applied` без суфіксів (стан етапів і нотаток — як до фази 18) |
+| HandleCompaction | NowIndex після DropOwnCalls | у пакеті `rewrite #23`; до рядка 23 — 5 рядків власних викликів мода | звіт черги містить `rewrite #23 (now #18)`; рядок #18 повернених рядків — `[context-editor] you rewrote this row …`; RebindTags звіряє правки з пакетом за `applied` без суфіксів (стан етапів і нотаток — як до фази 18) |
 | BuildSeed | NowIndex у засіві | засів із `summarize a` | звіт нової сесії називає `summarize a (now #k)`, де `k` — індекс рядка результату в засіяному списку (`produced`, після голови, якщо вона є, і нормалізації); `report.applied` — `summarize a` |
 | DetectOptimize | мітка з відкритим етапом | останній рядок `answer` — OPTIMIZE_MARK, етап відкрито, рядки #0..#20 | `lastClosed = { name, after, end #20, turn }`; `stage` знято; `optimize = true` записано до кроку `TagRegistry.turn += 1` |
 | DetectOptimize | без етапу | етапу немає, `lastClosed.end` — #8 | `lastClosed = { name відсутня, after #8, end #20 }` |
@@ -2436,7 +2550,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | RebindTags | засів з CarryNote | `stage.after` — рядок результату незміненої пари з медіа, якому засів дописав CarryNote | межа на найближчому попередньому незміненому рядку засіву |
 | RebindTags | межа на перезібраному рядку | `stage.after` — рядок асистента з `handle`, перезібраний KeepResponsesWhole без змін | межа лишається на ньому (відбиток той самий), `hint` оновлено |
 | RebindTags | межа без попередників | межа на #1, пару #0/#1 прибрано `drop` | `null` |
-| RebindTags | слот стану переписано | `state` на #5, застосовано `rewrite` #5 | тег `state` на переписаному рядку (`anchor` — відбиток `[context-editor] rewritten (original: …): <text>`) |
+| RebindTags | слот стану переписано | `state` на #5, застосовано `rewrite` #5 | тег `state` на переписаному рядку (`anchor` — відбиток `[context-editor] you rewrote this row (original: …): <text>`) |
 | RebindTags | діапазон | тег-діапазон #4..#7, застосовано summarize пари в #6/#7 / зсув на 2 рядки без правок у діапазоні | тег видалено / `hint` і `toHint` оновлено |
 | RebindTags | заміна діапазону в пакеті | `collapse` 4..7 з `summary = note` діапазону | тег видалено (застосована чи відхилена) |
 | RunHandoff | етапи в новій сесії | відкритий етап і `lastClosed`, `introduced = true` у старій сесії | у реєстрі нової сесії межі перенесено RelocateMark з `s.visible` на `s.rows`; `introduced = false` |
@@ -2482,8 +2596,36 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | DeliverReport | дописаний звіт | під час входу промпту дописано новий звіт | видалено лише доставлений текст |
 | Flush | відправка відхилена | `submit` падає або повертає `drop` | `lastSubmittedReportId` не змінюється; звіт лишається в черзі; попередження; наступний промпт людини отримує звіт через DeliverReport |
 | Flush | хост відмовляє | `compact` падає з текстом T | одна спроба, без очікувань; черга лишається; рядок стану містить T |
+| ApplyEdits | хто написав заміну (фаза 19) | summarize, collapse, rewrite, describe одним пакетом | тексти починаються з `[context-editor] you read the full output here, then replaced it with your summary`, `[context-editor] you read these <n> rows, then collapsed them into your note`, `[context-editor] you rewrote this row`, `[context-editor] you saw the media here, then replaced it with your description`; позначка `*` переліку, R5 (а) і PersonText розпізнають їх, як і раніше |
+| QueueTagReplacements | заміна з тегу називає автора (фаза 19) | тег `disposable` на пару, мітка оптимізації, застосування | текст результату — `[context-editor] you read the full output here, then replaced it with your summary (original: …): <note>` |
+| RecordDelivery | якір — попередній результат | `tool-result` з результатами a і b, далі `delivery` з `queued_command` | запис з `anchor = [a, b]` і `kind` за рамкою |
+| RecordDelivery | ланцюжок доставок | `tool-result` a, `delivery` d1, `delivery` d2 | два записи з `anchor = [a]` у порядку подій |
+| RecordDelivery | без якоря | `prompt`, далі `delivery`; `response`, далі `delivery` | запису немає |
+| RecordDelivery | копія stream-json | у файлі є (d, [a]); `tool-result` a (копія), `delivery` d | нового запису немає |
+| RecordDelivery | субагент | ті самі події з `agentId` | ні `lastAnchor`, ні файлу не змінено |
+| RecordDelivery | межі | текст 50 000 символів; запис понад MAX_DELIVERIES; нечитабельний файл | текст обрізано до MAX_DELIVERY_TEXT з хвостом, `cut = 10000`; найстаріший запис видалено; файл перенесено в `deliveries.json.bad-<ms>`, новий файл з одним записом |
+| DeliveryKind | рамки | текст людини, звіт субагента (`<system-reminder id="…">`), сповіщення задачі, інший `<system-reminder>`, текст без рамки | `person`, `agent`, `task`, `other`, `other` |
+| InsertDeliveries | незмінений якір перезібрано | рядок результату a без медіа, перезібраний; запис за a | рядок `user` з текстом доставки одразу після рядка a; `inserted = 1`; запис у `done` |
+| InsertDeliveries | якір з `handle` | рядок a з медіа повертається з `handle`, `allRebuilt = false` | вставки немає; запису в `done` немає |
+| InsertDeliveries | summarize якоря | summarize a | рядок доставки — після рядка результату з FreshId з `renamed` |
+| InsertDeliveries | drop і collapse якоря | drop a; collapse діапазону з рядком a | вставки немає; `removed = 1`; запис у `done` |
+| InsertDeliveries | уже рядок | у `before` є рядок `user` без результатів з тим самим текстом | вставки немає; запис у `done` |
+| InsertDeliveries | якір зник | id якоря немає в `before` | вставки немає, `removed` не змінюється; запис у `done` |
+| InsertDeliveries | дві доставки за одним якорем | записи d1, d2 за a | d1, d2 одразу після рядка a в порядку файлу |
+| InsertDeliveries | однаковий текст за різними якорями | два записи з однаковим текстом за a і за b; потім застосування, де за a текст уже рядок | обидва вставлено; удруге вставлено лише запис за b, обидва в `done` |
+| InsertDeliveries | рядок з `handle`, що піде | рядок результатів лише службових викликів поза вікном API лишається з `handle`; `goes` для нього — так | доставку вставлено після нього; DropOwnCalls прибирає рядок, доставка лишається на місці |
+| PersonDelivered | паралельні результати | якір — рядок з результатами a і b; `drop a` / `drop` обох | без попередження / з попередженням |
+| InsertDeliveries | засів | `allRebuilt = true`, рядок a мав `handle` | вставлено |
+| HandleCompaction | доставка за службовим викликом | доставка за результатом `context_list`; summarize іншої пари | DropOwnCalls прибрав пару `context_list`, рядок доставки стоїть після попереднього рядка відповіді; кожен виклик має результат |
+| HandleCompaction | звіт і розмір з доставками | одна доставка вставлена, одна пішла разом з якорем, прибраним `drop` | звіт закінчується ` Messages delivered during your tool calls: 1 now stand as rows, 1 went with the rows your edits replaced.`; `charsAfter` без тексту вставленої; NowIndex рахує вставлений рядок |
+| HandleCompaction | файл доставок після застосування | вставлено d1; d2 лишився за рядком з `handle`; між читанням і записом додано d3 | у файлі d2 і d3 |
+| HandleCompaction | нечитабельний файл доставок | `deliveries.json` пошкоджено | правки застосовано без вставок; звіт: `Messages delivered during your tool calls could not be restored (<reason>).` |
+| BuildSeed | доставки в засіві | доставка за незміненою парою, доставка за парою з summarize | обидва рядки доставок — після своїх рядків результату; CheckSeed приймає; `charsAfter` без них |
+| PersonText | вставлені доставки | рядок доставки людини / субагента / сповіщення задачі | слова людини між рядком рамки і «This is how Claude Code surfaces» / порожньо / порожньо |
+| PersonWarnings | доставка від людини | collapse діапазону з рядком-якорем; drop якоря; summarize якоря | попередження з `#<k> (message sent during this tool call)` для collapse і drop; для summarize — немає |
+| PromptMatch | вставлена доставка | рядки: промпт з медіа, відповідь, рядок результату, рядок доставки (`<system-reminder id="…">`), відповідь; API: те саме з повідомленням `user [tool_result, text]` | пари ходів збігаються; медіа промпту зіставлено, як без доставки |
 
-Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `media.test.ts` (PromptMatch на живих дампах `media-fixtures.ts` і штучних випадках, describe наскрізно: context_edit, ApplyEdits, HandleCompaction, BuildSeed), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти, збіг за інструкцією за будь-якого `trigger`, гілка HANDOFF_MARKER), `flush.test.ts` (Flush через порт FlushIO). Зв'язування портів з `$` (PrepareStorage, запуск команд хоста) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag з етапами, слотом стану і діапазонами, AutoTag з R5, R4, QueueTagReplacements, RebindTags з межами етапів і слотом стану, розбір реєстру, перелік з тегами, позначками етапу і `~`) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildSeed, CheckSeed, CheckSeeded, HandleSeed, пропуск компактизації, RunHandoff через порт: засів, збій до і після `/clear`, документ, відкладання, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). Етапи, мітка і хід оптимізації — `stages.test.ts` (CloseStage, BlockReport, OptimizeText, PersonAdvice, DetectOptimize, Telemetry через порт `usage`, SessionIntro) і `flush.test.ts` (хід оптимізації, повторна перевірка й порівняння-і-запис, запасні шляхи до звичайного продовження); журнал — `journal.test.ts` (JournalApply, JournalReread, Trim, розбір файлу); вміст навички (рядок SKILL.md вище) перевіряють `claude plugin validate` і рев'ю за таблицею [SP_CTX_02_27](#SP_CTX_02_27), бо модулі мода не мають файлового API поза `$`. describe і PromptMatch не реалізовані (план PL_CTX).
+Модульні тести: `mods/context-editor/tests/edits.test.ts` (ApplyEdits, PrepareEdits, DropOwnCalls, FreshId, CollectMedia, перегляд), `media.test.ts` (PromptMatch на живих дампах `media-fixtures.ts` і штучних випадках, describe наскрізно: context_edit, ApplyEdits, HandleCompaction, BuildSeed), `queue.test.ts` (розбір черги, context_edit, доставка звіту), `compaction.test.ts` (HandleCompaction через порти, збіг за інструкцією за будь-якого `trigger`, гілка HANDOFF_MARKER), `flush.test.ts` (Flush через порт FlushIO). Зв'язування портів з `$` (PrepareStorage, запуск команд хоста) перевіряється живими сценаріями. Теги — `tags.test.ts` (context_tag з етапами, слотом стану і діапазонами, AutoTag з R5, R4, QueueTagReplacements, RebindTags з межами етапів і слотом стану, розбір реєстру, перелік з тегами, позначками етапу і `~`) і `compaction.test.ts` (повторна перевірка `pin` і RebindTags у HandleCompaction). Передача — `handoff.test.ts` (context_handoff, розбір запиту в черзі, BuildSeed, CheckSeed, CheckSeeded, HandleSeed, пропуск компактизації, RunHandoff через порт: засів, збій до і після `/clear`, документ, відкладання, один запуск). Поточна розмова — `boundary.test.ts` (CurrentRows, RecordBoundary, розбір Boundary, застарілі індекси в правках і тегах, довжина описів) і `compaction.test.ts` (запис межі в HandleCompaction, межа спостерігача, архів без дубля медіа). Псевдоніми — `aliases.test.ts` (розбір реєстру, MarkCall, межа MAX_ALIASES, ResolveRef, `ref` у context_edit і context_tag, перелік з псевдонімами, очищення після застосування через порт HandleCompaction). Етапи, мітка і хід оптимізації — `stages.test.ts` (CloseStage, BlockReport, OptimizeText, PersonAdvice, DetectOptimize, Telemetry через порт `usage`, SessionIntro) і `flush.test.ts` (хід оптимізації, повторна перевірка й порівняння-і-запис, запасні шляхи до звичайного продовження); журнал — `journal.test.ts` (JournalApply, JournalReread, Trim, розбір файлу); доставки хоста (фаза 20) — `deliveries.test.ts` (RecordDelivery через порт, DeliveryKind, InsertDeliveries, розбір і межі файлу), `compaction.test.ts` і `handoff.test.ts` (вставка в HandleCompaction і BuildSeed), `queue.test.ts` (PersonText і PersonWarnings з доставками), `media.test.ts` (PromptMatch з рядком доставки); вміст навички (рядок SKILL.md вище) перевіряють `claude plugin validate` і рев'ю за таблицею [SP_CTX_02_27](#SP_CTX_02_27), бо модулі мода не мають файлового API поза `$`. describe і PromptMatch не реалізовані (план PL_CTX).
 
 ### 05_02. Invariant Checks  {#SP_CTX_05_02}
 
@@ -2548,6 +2690,10 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | Команда людини (обов'язковий, обидва хости) | — | `/handoff` між ходами | те саме, що інструмент; `/clear` і `/compact` з відкладеної дії обробника команди стають у чергу, а не відхиляються | not run (попередній pass фази 9 — `/handoff document` на двох розширеннях) |
 | Відновлення сесії (лише текст) | «стиснення» без медіа: summarize текстового результату, відповідь перезібрано цілою (KeepResponsesWhole) | `claude --resume <id>`, спитати KEY_0377 | очікувано: підсумок пережив відновлення, KEY_0377 «немає в контексті» (навичка plugin-hooks, пункт 7; спайк context_editor_handoff_long, Entry 6) | pass (2.1.295, фаза 12, haiku з thinking) — обидва хости, новий процес `--resume` і `/resume` у тому самому процесі: ключа з оригіналу немає, підсумок є; після межі жодного рядка асистента з оригінальним `message.id`, жодного `ensureToolResultPairing`; до кроку 1 K — fail з thinking |
 | Відновлення сесії (медіа або злиття відповіді) | summarize пари, поруч з якою лишився рядок з медіа з `handle`, або відповідь, частину якої повернено з `handle` | `claude --resume <id>`, спитати про змінену пару | очікувано: оригінали повертаються (батько до межі в копії рядка з `handle`; рядки асистента з тим самим `message.id`) — [C_CTX_DEC_05](./context_editor.concept.md#C_CTX_DEC_05) | pass (2.1.295, фаза 11) — оригінал зображення повертається, як і очікувано; `context_list` у новому процесі — увесь завантажений ланцюжок |
+| Хто написав підсумки (stream-json; фаза 19) | драйвер фази 18 (`.dev_flow/cache/live-test/phase18/sj.sh`, FIFO), haiku, файли `alpha.log`, `beta.log`, `gamma.log` | сценарій 1 фази 18: три `cat`, підсумок, мітка, у ході оптимізації summarize трьох пар без `resume`; потім промпт людини «What did you do?» | агент каже, що прочитав виводи повністю і потім сам їх стиснув; не каже, що отримав від `cat` «підсумок плагіна» і не бачив сирих файлів (F1 фази 18). Якщо каже — спайк «підсумок власним рядком асистента після заглушки результату» (backlog плану, [SP_CTX_DEC_17](#SP_CTX_DEC_17)) | haiku FAIL 0/3, sonnet PASS 2/2 (2026-10-11, 2.1.296; `.dev_flow/cache/live-test/phase19-results.md`): усі три заміни мали текст A′, і агент називає підсумки своїми, але haiku і далі вважає, що його відповідь спиралась на підсумки (позиційне прочитання); A′ лишається ([SP_CTX_DEC_17](#SP_CTX_DEC_17)) |
+| Доставки посеред ходу (обидва хости; фаза 20) | термінал (ce.sh) і stream-json (FIFO), haiku, закріплений бінарник; сценарії спайку вкладень (`.dev_flow/cache/attach-spike/scen1.sh`, `scen2.sh`) як основа | (1) `Bash` `sleep 25`, за 9 с — повідомлення людини з ключовим словом; (2) лише stream-json: фоновий субагент (`Agent`, `run_in_background`) з кольором у звіті і фоновий `Bash`, що завершуються під час 45-секундного `Bash`; (3) два паралельні `Read` у одній відповіді, під час них — повідомлення людини; далі summarize іншої пари, кінець ходу, застосування; питання без інструментів: ключове слово, колір, чи завершилась фонова задача | відповіді правильні, модель не відрікається від своїх слів; `context_list` показує рядки доставок одразу після їхніх результатів; у звіті — `Messages delivered during your tool calls: <n> now stand as rows`; у `deliveries.json` після застосування немає вставлених записів; у журналі налагодження немає `ensureToolResultPairing` | pass 2026-10-11, фаза 20 (2.1.296, haiku): людина посеред ходу — обидва хости; звіт субагента і сповіщення задачі — stream-json; паралельні виклики — обидва хости (якір — останній рядок результату відповіді); копія з `handle` — хост переносить сам, дубля у файлі немає; без помилок пар (`.dev_flow/cache/live-test/phase20-results.md`) |
+| Доставка в передачі (stream-json; фаза 20) | доставка людини посеред ходу, як у сценарії вище | `/handoff` | засіяна сесія відповідає ключовим словом з доставки | pass 2026-10-11, фаза 20: засіяна сесія назвала ключове слово (`.dev_flow/cache/live-test/phase20-results.md`) |
+| Доставка після `--resume` (stream-json; фаза 20, необов'язковий) | доставка записана, процес завершено | `-p --resume <sid>`, summarize іншої пари, кінець ходу; питання про ключ | ключ відомий: файл доставок належить сесії, а не процесу | pass 2026-10-11, фаза 20: доставку, записану процесом 1, вставив процес 2 (`.dev_flow/cache/live-test/phase20-results.md`) |
 
 ### 05_04. Edge Cases and Boundaries  {#SP_CTX_05_04}
 
@@ -2613,9 +2759,15 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | Мітка при недоставленому `optimize` | ще одна мітка, поки `optimize` ще є (хід між ними почав промпт, що оминає хуки мода) | `lastClosed` — новий блок до кінця цього ходу; `optimize` лишається `true`; порада одна — про новий блок |
 | Етап закрито в перерваному ході | `close` у ході, який перервано, мітка в наступному | лічильник ходів не зріс, тож мітка бере блок того етапу як закритого «в цьому ході» |
 | Застаріле читання через оболонку | файл змінено командою `Bash` (`sed -i`, `git checkout`) | R4 не спрацьовує ([SP_CTX_DEC_13](#SP_CTX_DEC_13)); агент може сам поставити `review` |
+| Читання через оболонку | агент читає файли командою `Bash` (`cat`, `head`, `sed -n`, `wc`) замість `Read` | пара без `~`; R4 і повторні читання журналу її не бачать; R2 (`big`) — як для будь-якого великого результату ([SP_CTX_DEC_18](#SP_CTX_DEC_18): без змін) |
 | Журнал нечитабельний | `journal.json` пошкоджено | записи пропускаються, файл не перезаписується; телеметрія показує причину; людина видаляє файл |
 | Хід оптимізації перервано | людина перериває хід оптимізації | кінець перерваного ходу знімає `optimizePrompted`; пакет, якщо є, застосується після наступного завершеного ходу зі своїми налаштуваннями |
 | Повторне читання архіву | агент читає `Read` файл `(original: …)` | запис `reread` з `archive = true`; оригінал повертається в кінець розмови, а не на своє місце ([C_CTX_DEC_18](./context_editor.concept.md#C_CTX_DEC_18)) |
+| Доставка з медіа | людина посеред ходу надсилає зображення з текстом | запис з `media = 1`; вставлено лише текст (рядок без `handle` медіа не несе) |
+| Доставка без якоря | доставка після рядка промпту чи відповіді (не спостерігалось) | не записується; застосування її губить, як до фази 20 |
+| Доставка з форка сесії, зі старішої сесії або до завантаження мода | доставка є в транскрипті, запису немає | губиться при застосуванні, як до фази 20; запасне читання транскрипту — backlog ([SP_CTX_DEC_19](#SP_CTX_DEC_19)) |
+| Перезавантаження модуля посеред ходу | доставка до першого рядка `tool-result` після перезавантаження | не записується |
+| Застосування між записом доставки і копією | stream-json: копія доставки за рядком-якорем з `handle` приходить після застосування | дубля в файлі немає (перевірка пари `text` і `anchor`) |
 
 ## 06. Reversibility  {#SP_CTX_06}
 
@@ -2937,6 +3089,65 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 **Rationale:** C робить безпечний результат типовим, не додає ходу і зберігає продовження для агента, якому воно потрібне; правило живе в чистій функції постановки в чергу і в заміні Flush, а DetectOptimize і DeliverReport не змінюються. Рев'ю 46 уточнило: вибір агента тримає поле `resumeSet` (і після виклику без прийнятих правок); пакет ходу з міткою, що лишився в черзі, свого продовження не зберігає (заміна Flush скидає його); правило стосується лише `context_edit`, не `context_handoff`; вікна — промпт людини між заміною і відправкою промпту, перерваний хід оптимізації і застряглий `optimizePrompted` ([SP_CTX_02_02](#SP_CTX_02_02)).
 **Rejected because:** A — безпечний результат залежить від того, чи модель пам'ятає прапорець, а забутий прапорець дає хибне «Continue the task» після завершеного завдання; B — платить ходом за кожне завершене завдання і лишає двозначне «otherwise continue»; D — суперечить призначенню мітки, не прибирає причини, а навичка не має місця.
 
+### DEC_17 — Чи знає агент, що заміну написав він сам  {#SP_CTX_DEC_17}
+
+> **Status:** resolved
+> **Date:** 2026-10-11
+
+**Question:** Після застосування агент не впізнає власних підсумків. Живий прогін фази 18 (stream-json, haiku, сесії s1, s1b, s1r; `.dev_flow/cache/live-test/phase18-results.md`, F1): агент прочитав три файли `cat`, сам стиснув їх `summarize`, а на «What did you do?» відповів, що від `cat` отримав «already … a plugin summary, not the raw log text» і сирих файлів не перевіряв. Звіт застосування (зі списком `summarize … (now #k)`) того ходу був у прихованому контексті промпту, тож звіт сам не допоміг. Текст заміни — `[context-editor] summarized (original: …): <summary>` — не каже, хто підсумовував. Як це виправити найменшою зміною?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — слова автора в тексті заміни після MARK: `summarized by you`, `<n> rows collapsed by you`, `rewritten by you`, `media replaced by your description` ([SP_CTX_02_04](#SP_CTX_02_04)) | виправлення стоїть саме там, де модель помиляється, і лишається в розмові, доки є заміна; +7…12 символів на заміну; бюджети EDIT_DESCRIPTION (2045/2048), SKILL.md (7991/8000) і INTRO_TEXT не зачеплені; префікс MARK той самий, тож позначка `*`, R5 (а) і PersonText не змінюються; правка коду — чотири рядки шаблонів у `applyEdits` і точні рядки в тестах |
+| B — речення у вступі (INTRO_TEXT) і навичці: «Rows starting [context-editor] summarized/collapsed/rewritten hold your own summaries of output you read in full» | вступ приходить один раз на початку сесії і далеко від заміни; навичка відкривається не завжди і не має місця (7991/8000 — треба скорочувати інше); старі тексти замін лишаються двозначними |
+| C — речення в звіті застосування, як P13: «Rows marked [context-editor] are your own summaries» | звіт доходить один раз; у прогоні звіт уже був у контексті, і агент помилився — доказів, що речення допоможе, немає |
+| D — A + B | найсильніше; платить і за B |
+| A′ — A, але текст заміни каже і автора, і час: агент прочитав оригінал тут, а потім сам замінив його: `you read the full output here, then replaced it with your summary`, `you read these <n> rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description` | те саме, що A, плюс відповідь на головну причину F1 — позиційну: заміна стоїть там, де був результат, одразу після виклику, а власний виклик `context_edit` прибирає DropOwnCalls, тож агент вважає, що й пізніша відповідь спиралась на підсумок (s1b: «My one-line summaries rely on those summaries… I did not independently check the raw files»); +40…60 символів на заміну |
+
+**Decision:** A′ — рішення розробника 2026-10-11. Тексти — [SP_CTX_02_04](#SP_CTX_02_04); префікс MARK і розпізнавання змінених рядків за ним не змінюються; заміни з тегів `disposable` мають ті самі тексти (нотатку написав агент). Окрема роль «context-editor» неможлива: Messages API має лише `user` і `assistant`, а ролі рядків задає хост.
+**Rationale:** помилка виникає, коли модель читає сам рядок заміни, і вона позиційна: заміна стоїть на місці результату, тож без слів «you read … here, then replaced» агент вважає її тим, що повернув інструмент. A′ змінює саме цей рядок, без нових текстів у вступі, навичці й описах і без їхніх бюджетів.
+**Rejected because:** A — каже лише автора, а не те, що агент бачив оригінал до заміни; B — далеко від місця помилки, навичка без місця; C — звіт уже був у контексті прогону; D — платить за B без доказу, що A′ не вистачить. Спайк «підсумок власним рядком асистента після заглушки результату» — у backlog плану (тригер нижче).
+
+Живий сценарій 05_03 «Хто написав підсумки» (2026-10-11, `.dev_flow/cache/live-test/phase19-results.md`): haiku 0/3, sonnet 2/2. A′ лишається: агент тепер називає поставлені підсумки своїми, але haiku і далі вважає, що його відповідь спиралась на підсумки. Тригер спайку в backlog уточнено: моделі класу haiku помиляються; повертатися, якщо помилка з'явиться в sonnet чи opus на практиці.
+
+### DEC_18 — Чи класифікувати читання файлів через Bash як відтворювані  {#SP_CTX_DEC_18}
+
+> **Status:** resolved
+> **Date:** 2026-10-11
+
+**Question:** Пропозиція P16 (практика 1, manim, sonnet; `.dev_flow/tasks/task_20261010_083402_stage-cleanup.md`): агент читав репозиторій командами `Bash` (`cat`, `head`, `sed -n`, `ls`, `wc`, у циклах), а не `Read`. Позначка `~` (REPRODUCIBLE_TOOLS: `Read`, `Grep`, `Glob`), R4 (`stale`) і повторні читання журналу ефекту цього не бачать (`journal.json`: `compressed: []`); бачить лише R2 (`big`). Агент і без `~` стиснув ці виводи до вказівників правильно. Що робити?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — лише спостерігати: без змін; пункт у backlog плану з тригером повернення | коду немає; у практиці R2 і судження агента вистачило; `~`, R4 і журнал і далі сліпі до читань оболонкою (як R4 — за [SP_CTX_DEC_13](#SP_CTX_DEC_13)) |
+| B — `Bash`, чия команда складається лише з команд читання, — відтворювана пара (`~`; можна й `compressed` журналу). Розбір: команда ділиться на прості команди за `&&`, `\|\|`, `;`, `\|`; кожна починається словом з READ_COMMANDS (`cat`, `head`, `tail`, `sed` з `-n` і без `-i`, `ls`, `wc`, `nl`, `grep`, `rg`, `find` без `-exec`, `-delete`, `-ok`, `stat`, `file`, `tree`); дозволено `cd <dir>` першою частиною; будь-яке `>`, `>>`, `<(`, `$(`, `` ` ``, `tee`, змінні середовища перед командою чи цикл (`for`, `while`) — не відтворювана; шляхи для журналу — лише аргументи `cat`/`head`/`tail`/`sed -n` без шаблонів; R4 для записів оболонкою — поза обсягом (SP_CTX_DEC_13) | `~` з'являється там, де агент читає оболонкою; але цикли `for f in …; do head …; done` (саме так у практиці) не проходять розбір, тож виграш малий без розбору циклів, а з ним — більший розбирач і хибні класи; LIST_LEGEND, LIST_DESCRIPTION, STAGE_ADVICE і навичка мусять назвати новий клас — бюджети описів і SKILL.md (7991/8000) |
+| C — речення в навичці: «prefer Read for files you may compress later» | дешево в коді; навичка без місця — треба скорочувати інше; агент, що навички не відкрив, речення не бачить; змінює поведінку агента заради мітки мода |
+
+**Decision:** A — рішення розробника 2026-10-11: лише спостерігати; пункт backlog плану з тригером повернення.
+**Rationale:** практика не показала шкоди: агент стиснув виводи оболонки правильно і без `~`; B коштує розбирача команд оболонки з хибними класами (той самий аргумент, що відкинув евристики Bash у SP_CTX_DEC_13) і не ловить циклів, які агент і писав; C платить місцем у навичці за звичку, без доказу користі.
+**Rejected because:** B — ціна й хибні класи без доведеного виграшу; C — бюджет навички і втручання в звички агента без доказу. Повернутися, коли агент лишить великі виводи оболонки нестиснутими або стисне їх як невідтворювані, або журнал покаже потрібні повторні читання файлів, прочитаних оболонкою.
+
+### DEC_19 — Доставки хоста посеред ходу при застосуванні  {#SP_CTX_DEC_19}
+
+> **Status:** resolved
+> **Date:** 2026-10-11
+
+**Question:** Застосування мовчки губить доставки `queued_command` — повідомлення людини посеред ходу, звіти субагентів, сповіщення фонових задач: мод перезбирає рядки результатів без `handle` ([SP_CTX_DEC_02](#SP_CTX_DEC_02)), а вкладення хост переносить лише за рядком з `handle` (спайк [context_editor_attachments](./context_editor_attachments.spike.md); навичка plugin-hooks, пункти 43–45). Як їх зберегти і що робити з доставкою, чий рядок-якір правка прибирає?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — R1 спайку: запис тексту з `session.append` (`door: delivery`) у файл сесії, якір — попередній рядок `tool-result` ([SP_CTX_02_35](#SP_CTX_02_35)); вставка рядком `user` одразу після якоря, що йде без `handle`, у компактизації й засіві ([SP_CTX_02_36](#SP_CTX_02_36)); `summarize` якоря лишає доставку (після нового рядка результату), `drop` і `collapse` якоря забирають її разом з ним — з попередженням для доставки людини ([SP_CTX_02_02](#SP_CTX_02_02)); R2 (транскрипт) — у backlog | лише задокументовані хуки; перевірено спайком в обох хостах; запис на диску переживає `--resume` і перезавантаження модуля (той самий `session_id`); форк, старіша сесія і доставки до завантаження мода губляться, як досі |
+| B — A + R2 одразу: коли записів немає, читати транскрипт `~/.claude/projects/<cwd>/<sid>.jsonl` (записи `queued_command` після останнього `compact_boundary`, якір за `parentUuid`) | покриває форк і старіші сесії; але недокументований формат файлу (пункт 17), шлях з `cwd` і `sid`, читання через `$.process.run` (файл буває > 4 MiB) з `jq` або розбором у модулі, ще одна гілка в обробнику з бюджетом часу; потрібна лише там, де мод не бачив доставки |
+| C — `drop` якоря лишає доставку на місці (вставка після рядка перед прибраною парою) | людина не втрачає повідомлення через `drop` чужої пари; але місце «перед парою» може бути рядком викликів без результатів поруч — розрив пар; ще одна гілка; `collapse` однаково мусить її поглинути |
+| H — лишати `handle` на рядку-якорі | хост переносить сам; копія з батьком до межі повертає оригінали після `--resume` (пункт 7а) — спайк відкинув як основне |
+
+**Decision:** A — рішення розробника 2026-10-11: R1 зараз (фаза 20), R2 — у backlog плану.
+**Rationale:** A закриває випадок, де дефект знайдено (робоча сесія з модом від початку: VS Code із субагентами), мінімальним кодом за перевіреним механізмом; R2 відокремлюється, бо дає лише запасне джерело для тієї самої вставки (той самий InsertDeliveries, без зміни контракту), а коштує недокументованого формату й читання великих файлів; `drop`/`collapse` якоря поводиться як з відповіддю на AskUserQuestion: правка свідома, людину попереджено.
+**Rejected because:** B — ціна недокументованого джерела до появи потреби (повернутися, коли форк чи практика на копії сесії загубить доставку); C — ризик розриву пар заради рідкого випадку з попередженням; H — повертає оригінали після відновлення.
+
 ## Changelog
 
 | Date | Change |
@@ -3002,3 +3213,7 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | 2026-10-10 | Фаза 18 (дрібні знахідки практики): текст відмови INDEXES_STALE просить перелік з рядками (`count > 0`; 02_03, 02_18, 05_01); NowIndex — індекс після застосування ` (now #k)` у звіті для правок із записом у `produced` (01_05, 05_01); продовження після ходу оптимізації — за замовчуванням без продовження (SP_CTX_DEC_16; 01_04, 02_02, 02_06, 02_27, 02_29, 04_06, 05_01, 05_03 — сценарій «Хід оптимізації після завершеного завдання») |
 | 2026-10-10 | SP_CTX_DEC_16 resolved — C, рішення розробника («C: без продовження»): пакет ходу оптимізації без явного `resume` не продовжується, `resume_prompt` означає продовження; позначки «proposed» прибрано (01_04, 02_02, 02_06, 02_27, 02_29, 04_06, 05_01); фаза 18 реалізована — код і модульні тести (05_01 «BuildSeed NowIndex у засіві» уточнено: індекс з `produced`) |
 | 2026-10-10 | Рев'ю 46 фази 18: `resumeSet` у черзі — вибір продовження в ході оптимізації не губиться після виклику без прийнятих правок (01_04, 02_02); заміна Flush скидає продовження пакета, що лишився (02_06, 04_06); `queuedText` каже про зупинку; застряглий `optimizePrompted` і лише `context_edit` (02_02, DEC_16); STALE_INDEXES називає й `full`; EDIT_DESCRIPTION — виняток ходу оптимізації (F2 живого прогону); навичка — виняток у розділі правок; примітка «до фази 18» у 05_03; рядки 05_01 |
+| 2026-10-11 | Дизайн фаз 19–20 (документи, без коду): F1 фази 18 — слова автора в тексті заміни після MARK (`summarized by you` …; SP_CTX_DEC_17 proposed, рекомендація A; 01_12, 02_04, 05_01, 05_03); P16 — читання через `Bash` не класифікується (SP_CTX_DEC_18 proposed, рекомендація A — спостерігати; 05_04); доставки хоста посеред ходу за R1 спайку вкладень (SP_CTX_DEC_19 proposed, рекомендація A, R2 — backlog): структура QueuedDelivery і `deliveries.json` (01_22, 01_07), MAX_DELIVERIES, MAX_DELIVERY_TEXT, DELIVERY_FRAMES, PROMPT_DECORATIONS з `<system-reminder` без `>` (01_12), RecordDelivery (02_35, зв'язування — 02_12), InsertDeliveries (02_36) у HandleCompaction і BuildSeed до DropOwnCalls (02_07, 02_22, 02_05), `renamed` з ApplyEdits (02_04), `deliveries` у звіті й `charsAfter` без вставлених рядків (01_05), PersonText і PersonWarnings з доставками (02_02), PromptMatch (02_10); 05_01, 05_03, 05_04 |
+| 2026-10-11 | SP_CTX_DEC_17 resolved — A′ (рішення розробника): текст заміни каже автора і час (`you read the full output here, then replaced it with your summary`, `you read these <n> rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`; 01_12, 02_04, 05_01, 05_03); SP_CTX_DEC_18 resolved — A (спостерігати); SP_CTX_DEC_19 resolved — A (R1 — фаза 20, R2 — backlog) |
+| 2026-10-11 | Фази 19–20 реалізовано (код і модульні тести; живі сценарії 05_03 — далі): тексти A′ у `applyEdits`; `hooks/deliveries.ts` (QueuedDelivery, DeliveryKind, RecordDelivery через порт DeliveryIO, InsertDeliveries, PersonDelivered), вставка в HandleCompaction і BuildSeed, PersonText і PersonWarnings з доставками, PROMPT_DECORATIONS; уточнено: розбір файлу допускає хвіст обрізання до 100 символів понад MAX_DELIVERY_TEXT (01_22); засів читає файл доставок через HandoffIO (`readDeliveries`), `context_tag` — через TagIO (`deliveries`) |
+| 2026-10-11 | Рев'ю 48 фаз 19–20: «уже рядок» — лише рядок з тим самим текстом одразу після якоря, тож однаковий текст за різними якорями вставляється (02_36, 05_01); `goes` — рядок лише службових результатів з `handle` поза вікном API отримує доставку (02_36, 05_01); PersonWarnings для `drop` — лише коли весь якір доставки у прибраній парі (02_02, 05_01); тексти замін у старих рядках 05_01 — A′; результат 05_03 «Хто написав підсумки» (haiku 0/3, sonnet 2/2) і примітка в DEC_17 |

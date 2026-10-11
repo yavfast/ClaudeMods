@@ -35,7 +35,7 @@ The handoff (`context_handoff`, `/handoff`) builds a seed from what the model se
 
 Commands run only from a deferred action (`$.clock.after`) planned in `turn.complete` or in the `/handoff` command handler, never from a timer made in a `tool.call` or `prompt.submit` hook. Each command gets one attempt; the host's refusal text goes into the reasons or the status line.
 
-Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a directory with mode 700. It holds `pending.json` (the queue), `tags.json`, `aliases.json`, `boundary.json`, `journal.json` (the journal of effect), archives of the replaced originals with their media, and the handoff's seed files.
+Shared state lives on disk at `$HOME/.claude/context-editor/<session_id>/`, a directory with mode 700. It holds `pending.json` (the queue), `tags.json`, `aliases.json`, `boundary.json`, `journal.json` (the journal of effect), `deliveries.json` (the host's mid-turn deliveries, recorded so an apply can put them back as rows), archives of the replaced originals with their media, and the handoff's seed files.
 
 ### Ports pattern (how the code is split for testing)
 
@@ -52,6 +52,7 @@ Faking the whole host `$` is expensive, so the logic sits in pure modules behind
 - `hooks/stages.ts`: stages and their row marks, the close report, the optimization mark and turn texts, telemetry and calibrated size estimates.
 - `hooks/notes.ts`: the agent's service notes (`context_note`), their relocation after edits, and note reminders.
 - `hooks/journal.ts` (`JournalIO`): the journal of effect: what each application compressed, own writes of compressed paths, rereads of compressed content and archives.
+- `hooks/deliveries.ts` (`DeliveryIO`): the host's mid-turn deliveries (`queued_command`: the person's messages typed during a turn, subagent reports, task notifications): RecordDelivery from `session.append`, InsertDeliveries after a rebuilt anchor row in the compaction and the seed, and the frames PersonText reads.
 - `hooks/register.ts`: tool schemas and descriptions, the event hooks, and storage I/O. It has its own `serial()` chain per file so that read-modify-write cycles never overlap.
 
 Tests in `tests/*.test.ts` use `claude-code/testing`, call these pure functions with fake IO objects, and build `SessionMessage` rows by hand. New logic belongs in a ports module with a test. `register.ts` should only do the binding.

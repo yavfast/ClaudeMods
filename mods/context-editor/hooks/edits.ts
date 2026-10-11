@@ -33,6 +33,10 @@ export type ApplyReport = {
   // DropOwnCalls removed from the list that replaces the conversation
   ownCallsRemoved: number
   mediaFiles: string[]
+  // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries InsertDeliveries put
+  // back as rows, and those that went with a replaced anchor; `unreadable`:
+  // the deliveries file could not be read, so none was inserted
+  deliveries?: { inserted: number; removed: number; unreadable?: string }
 }
 
 // [SP_CTX_01_05] One entry of ApplyReport.produced.
@@ -46,6 +50,18 @@ export type Made = { edit: string; resultId?: string; text?: string }
 
 // [SP_CTX_01_12]
 export const MARK = '[context-editor]'
+// [SP_CTX_02_04] [SP_CTX_DEC_17] (A') The words after MARK in a replacement:
+// the agent read the original in this place and replaced it itself. A
+// replacement stands where the result was, right after the call, and the
+// agent's own context_edit call is gone, so without them it took its summary
+// for what the tool returned (live run of phase 18, F1). Changed rows are
+// still told apart by the MARK prefix alone.
+export const SUMMARIZED = 'you read the full output here, then replaced it with your summary'
+export const REWRITTEN = 'you rewrote this row'
+export const DESCRIBED = 'you saw the media here, then replaced it with your description'
+export function collapsedWords(n: number): string {
+  return `you read these ${n} rows, then collapsed them into your note`
+}
 export const OWN_TOOLS = 'mcp__context-editor__'
 export const BIG_ROW = 4000
 export const LIST_COUNT = 60
@@ -889,7 +905,7 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport; made: Made[] } {
+): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string> } {
   const rows = [...input]
   const report: ApplyReport = {
     applied: [],
@@ -903,6 +919,8 @@ export function applyEdits(
     mediaFiles: [],
   }
   const made: Made[] = []
+  // [SP_CTX_02_04] an applied summarize's tool_use_id → its FreshId, for InsertDeliveries ([SP_CTX_02_36])
+  const renamed = new Map<string, string>()
   // [C_CTX_DEC_18] the replacement itself says how to get the original back
   const note = archive ? ` (original: ${archive}, open with Read)` : ''
   const mediaNote = (keys: readonly string[]) => {
@@ -964,11 +982,12 @@ export function applyEdits(
                 rows[resAt] = plain(res, {
                   toolResults: (res.toolResults ?? []).map(r =>
                     r.tool_use_id === edit.tool_use_id
-                      ? { tool_use_id: id, isError: r.isError, text: `${MARK} summarized${note}${mediaNote([pair!])}: ${edit.summary}` }
+                      ? { tool_use_id: id, isError: r.isError, text: `${MARK} ${SUMMARIZED}${note}${mediaNote([pair!])}: ${edit.summary}` }
                       : stripResult(r),
                   ),
                 })
                 made.push({ edit: name, resultId: id })
+                renamed.set(edit.tool_use_id, id)
               }
             : () => {
                 report.originals.push({ edit: name, rows: [rows[useAt]!, rows[resAt]!] })
@@ -1017,7 +1036,7 @@ export function applyEdits(
         run = () => {
           const span = rows.slice(from, to + 1)
           report.originals.push({ edit: name, rows: span })
-          const text = `${MARK} ${span.length} rows collapsed${note}${mediaNote(keys)}: ${edit.summary}`
+          const text = `${MARK} ${collapsedWords(span.length)}${note}${mediaNote(keys)}: ${edit.summary}`
           // The carrier keeps roles and pairing valid around the span; it is
           // never one of this plugin's own calls, which are dropped later.
           const carrier = span.flatMap(r => r.toolUses).find(u => !u.tool.startsWith(OWN_TOOLS))
@@ -1055,8 +1074,8 @@ export function applyEdits(
           report.originals.push({ edit: name, rows: [row] })
           const text =
             edit.op === 'rewrite'
-              ? `${MARK} rewritten${note}: ${edit.text}`
-              : `${MARK} media replaced${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
+              ? `${MARK} ${REWRITTEN}${note}: ${edit.text}`
+              : `${MARK} ${DESCRIBED}${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
           rows[at] = plain(row, { text })
           made.push({ edit: name, text })
         }
@@ -1109,7 +1128,7 @@ export function applyEdits(
   const out = mergeCallRows(rebuildSplitResponses(relinked).filter(r => r.handle !== undefined || !isEmpty(r)))
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
-  return { rows: out, report, made }
+  return { rows: out, report, made, renamed }
 }
 
 // [SP_CTX_02_04] Produced(final, steps): where the rows the applied replacing
@@ -1217,8 +1236,18 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   if (r.applied.some(a => a.startsWith('describe '))) parts.push(DESCRIBE_DROPS)
   if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length))
     parts.push(`Your own context-editor calls (${r.ownCallsRemoved}) were removed; tags and notes stay — see context_list.`)
+  // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation
+  if (r.deliveries && (kind === 'seed' || r.applied.length)) parts.push(deliveriesText(r.deliveries))
   const text = parts.filter(Boolean).join(' ')
   return !text || parts[0] ? text : `context-editor: ${text}`
+}
+
+// [SP_CTX_01_05] The report's sentence on the host's deliveries; "" when
+// there is nothing to say.
+export function deliveriesText(d: NonNullable<ApplyReport['deliveries']>): string {
+  if (d.unreadable !== undefined) return `Messages delivered during your tool calls could not be restored (${d.unreadable}).`
+  const parts = [d.inserted ? `${d.inserted} now stand as rows` : '', d.removed ? `${d.removed} went with the rows your edits replaced` : ''].filter(Boolean)
+  return parts.length ? `Messages delivered during your tool calls: ${parts.join(', ')}.` : ''
 }
 
 // [SP_CTX_01_05] NowIndex: each applied edit with a `produced` entry names

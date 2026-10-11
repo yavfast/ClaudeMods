@@ -7,6 +7,7 @@ import {
   boundaryView,
   currentRows,
   fingerprint,
+  formatReport,
   MARK,
   prepare,
   recordBoundary,
@@ -49,6 +50,7 @@ import {
 import { EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, MAX_TAGS, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted } from '../hooks/turns'
+import type { QueuedDelivery } from '../hooks/deliveries'
 
 const BIG = 'KEY_0042 = 2c5f\n' + 'x'.repeat(5000)
 const PNG = 'iVBORw0KGgo='
@@ -133,10 +135,27 @@ test('BuildSeed — правки й медіа: summarize and drop applied, the 
   expect(checkSeed(seed.rows)).toBeUndefined()
 })
 
+// [SP_CTX_02_22] [SP_CTX_02_36] phase 20
+test('BuildSeed — доставки в засіві: behind an untouched pair and behind a summarized one, each right after its result row', async () => {
+  const d = (uuid: string, anchor: string, t: string): QueuedDelivery => ({ uuid, anchor: [anchor], kind: 'person', origin: 'composer', text: t, cut: 0, media: 0, at: 1 })
+  const one = '<system-reminder>\nThe user sent a new message while you were working:\nPELICAN\n</system-reminder>'
+  const two = '<system-reminder>\nThe user sent a new message while you were working:\nHERON\n</system-reminder>'
+  const seed = built(
+    (await seedOf({ deliveries: { state: 'ok', value: { items: [d('d1', 'c', one), d('d2', 'a', two)] } } }, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out,
+  )
+  const at1 = seed.rows.findIndex(r => r.text === one)
+  const at2 = seed.rows.findIndex(r => r.text === two)
+  expect(seed.rows[at1 - 1]!.toolResults![0]!.tool_use_id).toBe('c')
+  expect(seed.rows[at2 - 1]!.toolResults![0]!.tool_use_id.startsWith('a_ce')).toBe(true)
+  expect(checkSeed(seed.rows)).toBeUndefined()
+  expect(seed.report.deliveries).toEqual({ inserted: 2, removed: 0 })
+  expect(formatReport(seed.report, '/s/old/1.json', 'seed')).toContain('Messages delivered during your tool calls: 2 now stand as rows.')
+})
+
 // [SP_CTX_01_05] phase 18
 test('BuildSeed — NowIndex у засіві: the report names the summarized pair by its result row in the seeded list', async () => {
   const seed = built((await seedOf({}, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out)
-  const k = seed.rows.findIndex(r => (r.toolResults ?? []).some(t => t.text.includes('summarized')))
+  const k = seed.rows.findIndex(r => (r.toolResults ?? []).some(t => t.text.includes('then replaced it with your summary')))
   expect(k).toBeGreaterThan(0)
   expect(seed.report.produced.map(p => p.index)).toEqual([k])
   expect(seedReportTail({ report: seed.report, archive: '/s/old/1.json' })).toContain(`applied 1 edit(s): summarize a (now #${k}).`)

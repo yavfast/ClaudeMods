@@ -1,5 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { checkShape, DESCRIBE_DROPS, describeEdit, MARK, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { deliveryWords, personDelivered, type QueuedDelivery } from './deliveries'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -126,7 +127,8 @@ const PLUGIN_FRAME = /^The .+ plugin sent a message:/
 // (`<command-message>` alone, without `<command-name>`, is the host's notice of a running command)
 const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-notification>', '<command-message>']
 // leading closed spans the host puts before the person's words (VS Code: the open file)
-const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)>[\s\S]*?<\/\1>/
+// (`<system-reminder id="…">`: a subagent's report, [SP_CTX_02_02], phase 20)
+const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)(?:\s[^>]*)?>[\s\S]*?<\/\1>/
 // [SP_CTX_01_12] The mod's compaction marks (compaction.ts re-exports them):
 // queue.ts must not import compaction.ts, which imports it.
 export const MARKER = 'context-editor: apply queued edits'
@@ -140,6 +142,9 @@ export const SUMMARY_OPENER = 'This session is being continued from a previous c
 // `<system-reminder>` spans are taken off; a slash command's arguments are
 // the person's words, except the mod's own /compact (review round 40).
 export function personText(raw: string): string {
+  // [SP_CTX_01_22] an inserted delivery: the person's words, or none of a subagent's or a task's
+  const delivered = deliveryWords(raw)
+  if (delivered !== undefined) return delivered
   let t = raw.trim()
   for (let m = LEADING_SPAN.exec(t); m; m = LEADING_SPAN.exec(t)) t = t.slice(m[0].length).trim()
   if (t.includes('<command-name>')) {
@@ -168,16 +173,24 @@ export function personPair(rows: readonly SessionMessage[], id: string): boolean
 // [SP_CTX_02_02] The rows of the person's messages an edit covers: prompt
 // rows and AskUserQuestion answers in a collapse's span, the answer row of a
 // summarize or drop of an AskUserQuestion pair.
-function personHits(rows: readonly SessionMessage[], e: QueuedEdit): string[] {
+// [SP_CTX_02_02] PersonDelivered: a person's message the host delivered
+// behind a result, not yet a row, goes with a collapse or a drop of that
+// result ([SP_CTX_02_36]); a summarize keeps it.
+const DELIVERED = 'message sent during this tool call'
+
+function personHits(rows: readonly SessionMessage[], e: QueuedEdit, delivered: readonly QueuedDelivery[] = []): string[] {
   const hits: string[] = []
   if (e.op === 'collapse') {
     for (const i of touchedBy(rows, e)?.rows ?? []) {
       if (personRow(rows, i)) hits.push(`#${i} (prompt)`)
       for (const t of rows[i]!.toolResults ?? []) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
+      if (personDelivered(rows, i, delivered)) hits.push(`#${i} (${DELIVERED})`)
     }
-  } else if ((e.op === 'summarize' || e.op === 'drop') && personPair(rows, e.tool_use_id)) {
+  } else if (e.op === 'summarize' || e.op === 'drop') {
     const res = touchedBy(rows, e)?.rows[1]
-    if (res !== undefined) hits.push(`#${res} (AskUserQuestion answer)`)
+    if (res !== undefined && personPair(rows, e.tool_use_id)) hits.push(`#${res} (AskUserQuestion answer)`)
+    // a drop of one of parallel results leaves the row, and the delivery, to the others
+    if (res !== undefined && e.op === 'drop' && personDelivered(rows, res, delivered, new Set([e.tool_use_id]))) hits.push(`#${res} (${DELIVERED})`)
   }
   return hits
 }
@@ -190,10 +203,10 @@ function personWarning(label: string, hits: readonly string[]): string {
 // [SP_CTX_02_02] [C_CTX_DEC_21] PersonWarnings: a queued edit that covers
 // the person's messages is not refused, but the result names those rows; what
 // to compress stays the agent's call. Pure.
-export function personWarnings(rows: readonly SessionMessage[], queued: readonly QueuedEdit[]): string[] {
+export function personWarnings(rows: readonly SessionMessage[], queued: readonly QueuedEdit[], delivered: readonly QueuedDelivery[] = []): string[] {
   const out: string[] = []
   for (const e of queued) {
-    const hits = personHits(rows, e)
+    const hits = personHits(rows, e, delivered)
     if (hits.length) out.push(personWarning(describeEdit(e), hits))
   }
   return out
@@ -202,10 +215,14 @@ export function personWarnings(rows: readonly SessionMessage[], queued: readonly
 // [SP_CTX_02_02] [SP_CTX_02_11] PersonTagWarnings: the same for a disposable
 // tag just added, a range `from..to` or a pair; its replacement is queued
 // later without a warning. Pure.
-export function personTagWarning(rows: readonly SessionMessage[], target: { from: number; to: number } | { tool_use_id: string }): string | undefined {
+export function personTagWarning(
+  rows: readonly SessionMessage[],
+  target: { from: number; to: number } | { tool_use_id: string },
+  delivered: readonly QueuedDelivery[] = [],
+): string | undefined {
   const e: QueuedEdit =
     'tool_use_id' in target ? { op: 'summarize', tool_use_id: target.tool_use_id, summary: '-' } : { op: 'collapse', from_index: target.from, to_index: target.to, summary: '-' }
-  const hits = personHits(rows, e)
+  const hits = personHits(rows, e, delivered)
   if (!hits.length) return undefined
   return personWarning('tool_use_id' in target ? `disposable ${target.tool_use_id}` : `disposable #${target.from}..#${target.to}`, hits)
 }
@@ -235,6 +252,8 @@ export function queueEdits(
   staleIndexes = false,
   // [SP_CTX_02_10] whether a person's prompt row has media (PromptMatch)
   hasMedia: (owner: MediaOwner) => boolean = () => false,
+  // [SP_CTX_01_22] the host's deliveries not yet rows, for PersonWarnings only
+  delivered: readonly QueuedDelivery[] = [],
 ): { queue: Queue; queued: number; errors: string[]; warnings: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
@@ -256,7 +275,7 @@ export function queueEdits(
   if (prompt) next.resumePrompt = args.resume_prompt as string
   if (queueBytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
-  const warnings = personWarnings(rows, queued)
+  const warnings = personWarnings(rows, queued, delivered)
   if (queued.some(e => e.op === 'describe')) warnings.push(DESCRIBE_DROPS)
   return { queue: next, queued: queued.length, errors, warnings }
 }
@@ -312,6 +331,7 @@ export async function contextEdit(
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
   hasMedia: (owner: MediaOwner) => boolean = () => false,
+  delivered: readonly QueuedDelivery[] = [],
 ): Promise<{ result: string } | { deny: string }> {
   let read = await io.readQueue()
   let notice = ''
@@ -321,7 +341,7 @@ export async function contextEdit(
     notice = `The unreadable queue (${read.reason}) was moved to ${moved}; its edits are not applied.\n`
     read = { state: 'missing', value: { ...EMPTY_QUEUE } }
   }
-  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia)
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

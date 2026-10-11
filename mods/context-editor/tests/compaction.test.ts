@@ -28,6 +28,7 @@ import {
 } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
+import type { Deliveries, QueuedDelivery } from '../hooks/deliveries'
 
 const BIG = 'x'.repeat(5000)
 const PNG = 'iVBORw0KGgo='
@@ -375,8 +376,8 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   // two own pairs went: the rewritten row is #3, the summarized result #2
-  expect(out.messages[3]!.text).toContain('[context-editor] rewritten')
-  expect(out.messages[2]!.toolResults![0]!.text).toContain('[context-editor] summarized')
+  expect(out.messages[3]!.text).toContain('[context-editor] you rewrote this row')
+  expect(out.messages[2]!.toolResults![0]!.text).toContain('[context-editor] you read the full output here, then replaced it with your summary')
   expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #3); summarize a (now #2).')
   // the stage marks still follow the edits matched by their plain descriptions
   expect(written.tags).toBeDefined()
@@ -471,4 +472,114 @@ test('HandleCompaction — P13 and the journal: the own call removed is counted 
   await handleCompaction(none.io, conversation())
   expect(failed).toEqual([])
   expect(none.written.queue!.report).not.toContain('Your own')
+})
+
+// ---- [SP_CTX_02_07] [SP_CTX_02_36] the host's deliveries (phase 20)
+
+const DELIVERED = '<system-reminder>\nThe user sent a new message while you were working:\nRemember PELICAN\n</system-reminder>'
+const REPORTED = '<system-reminder id="r1">\nAnother Claude session sent a message while you were working:\nTEAL\n</system-reminder>'
+
+function delivery(uuid: string, anchor: string, text = DELIVERED): QueuedDelivery {
+  return { uuid, anchor: [anchor], kind: 'person', origin: 'unclassified', text, cut: 0, media: 0, at: 1 }
+}
+
+function withPairs(...ids: string[]): SessionMessage[] {
+  const rows = conversation()
+  ids.forEach((id, k) => {
+    rows.push({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Bash', input: {} }], handle: `p${k}a` })
+    rows.push({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: `out ${id}`, isError: false }], handle: `p${k}b` })
+  })
+  return rows
+}
+
+// the API form: every result known; `media` ids hold an image
+function api(ids: string[], media: string[] = []) {
+  return ids.map(id => ({
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: id, content: media.includes(id) ? [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }] : 'x' }],
+  }))
+}
+
+function deliveryHarness(rows: SessionMessage[], edits: unknown[], items: QueuedDelivery[] | Read<Deliveries>, media: string[] = []) {
+  const pruned: string[][] = []
+  const read: Read<Deliveries> = Array.isArray(items) ? { state: 'ok', value: { items } } : items
+  const h = harness(
+    { state: 'ok', value: { ...EMPTY_QUEUE, edits: prepare(rows, edits).queued } },
+    {
+      readApi: async () => api(['z', 'a', 'b', 'c'], media),
+      readDeliveries: async () => read,
+      pruneDeliveries: done => void pruned.push([...done].sort()),
+    },
+  )
+  return { ...h, pruned }
+}
+
+test('HandleCompaction — доставка за службовим викликом: DropOwnCalls takes the context_list pair, the delivery stays in place', async () => {
+  const rows = withPairs('b')
+  const { io } = deliveryHarness(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 's' }], [delivery('d1', 'z')])
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  const at = out.messages.findIndex(r => r.text === DELIVERED)
+  expect(at).toBe(1)
+  expect(out.messages[0]!.text).toBe('task')
+  expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
+  // every call has its result in the next row
+  out.messages.forEach((r, i) => {
+    for (const u of r.toolUses) expect((out.messages[i + 1]!.toolResults ?? []).some(t => t.tool_use_id === u.tool_use_id)).toBe(true)
+  })
+})
+
+test('HandleCompaction — звіт і розмір з доставками: one inserted, one gone with its anchor; charsAfter without it; NowIndex counts it', async () => {
+  const rows = withPairs('b', 'c')
+  const { io, written, pruned } = deliveryHarness(
+    rows,
+    [
+      { op: 'summarize', tool_use_id: 'b', summary: 's' },
+      { op: 'drop', tool_use_id: 'c' },
+    ],
+    [delivery('d1', 'a', REPORTED), delivery('d2', 'c')],
+  )
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  const at = out.messages.findIndex(r => r.text === REPORTED)
+  expect(out.messages[at - 1]!.toolResults![0]!.tool_use_id).toBe('a')
+  expect(out.messages.some(r => r.text === DELIVERED)).toBe(false)
+  expect(written.queue!.report).toContain('Messages delivered during your tool calls: 1 now stand as rows, 1 went with the rows your edits replaced.')
+  const b = out.messages.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id.startsWith('b_ce')))
+  expect(b > at).toBe(true)
+  expect(written.queue!.report).toContain(`summarize b (now #${b})`)
+  const freed = /~(\d+) -> ~(\d+) chars/.exec(written.queue!.report!)!
+  expect(Number(freed[2])).toBe(totalChars(out.messages) - REPORTED.length)
+  expect(pruned).toEqual([['d1', 'd2']])
+})
+
+test('HandleCompaction — файл доставок після застосування: a delivery behind a row kept with its handle stays in the file', async () => {
+  const rows = withPairs('b')
+  const { io, pruned } = deliveryHarness(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 's' }], [delivery('d1', 'a'), delivery('d2', 'b', REPORTED)], ['a'])
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  // the media row keeps its handle: the host carries its attachment
+  expect(out.messages.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'a'))!.handle).toBe('h4')
+  expect(out.messages.some(r => r.text === DELIVERED)).toBe(false)
+  expect(out.messages.some(r => r.text === REPORTED)).toBe(true)
+  expect(pruned).toEqual([['d2']])
+})
+
+test('HandleCompaction — доставка за службовим викликом поза вікном API: the own row kept by its handle goes with DropOwnCalls; the delivery stays', async () => {
+  const rows = withPairs('b')
+  const { io } = deliveryHarness(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 's' }], [delivery('d1', 'z')])
+  io.readApi = async () => api(['a', 'b'])
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(out.messages.some(r => r.toolUses.some(u => u.tool_use_id === 'z'))).toBe(false)
+  expect(out.messages.findIndex(r => r.text === DELIVERED)).toBe(1)
+})
+
+test('HandleCompaction — нечитабельний файл доставок: the edits apply without inserts; the report says why', async () => {
+  const rows = withPairs('b')
+  const { io, written, pruned } = deliveryHarness(rows, [{ op: 'summarize', tool_use_id: 'b', summary: 's' }], { state: 'unreadable', reason: 'not JSON' })
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.queue!.report).toContain('Messages delivered during your tool calls could not be restored (not JSON).')
+  expect(pruned).toEqual([])
 })

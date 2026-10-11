@@ -19,6 +19,7 @@ import {
   producedRows,
   replacedOwners,
   ROW_WINDOW,
+  SUMMARIZED,
 } from '../hooks/edits'
 
 const BIG = 'x'.repeat(5000)
@@ -74,7 +75,7 @@ test('collapse keeps one tool pair as the carrier of the summary', async () => {
   expect(report.applied).toEqual(['collapse #2..#5'])
   expect(out.length).toBe(7)
   expect(out[2]!.toolUses[0]!.tool_use_id.startsWith('a_ce')).toBe(true)
-  expect(out[3]!.toolResults![0]!.text).toContain('4 rows collapsed')
+  expect(out[3]!.toolResults![0]!.text).toContain('you read these 4 rows, then collapsed them into your note')
   // the next row keeps its content; after the inserted carrier in the same
   // stretch it is rebuilt without its handle ([SP_CTX_02_04], pitfall 30)
   expect(out[4]!.text).toBe('Conclusion: X is true.')
@@ -224,7 +225,7 @@ test('a collapse starting with an own call keeps its summary after the own calls
 
 test('a collapse of text rows only becomes one text row', async () => {
   const { rows: out } = run([{ op: 'collapse', from_index: 0, to_index: 1, summary: 'intro' }])
-  expect(out[0]!.text).toContain('2 rows collapsed')
+  expect(out[0]!.text).toContain('you read these 2 rows, then collapsed them into your note')
   expect(out[0]!.toolUses.length).toBe(0)
   expect(out.length).toBe(8)
 })
@@ -569,7 +570,7 @@ test('ApplyEdits — примітка оригіналу: the replacement says w
     { role: 'assistant', text: 'wrong', toolUses: [] },
   ]
   const out = applyEdits(input, prepare(input, [{ op: 'rewrite', index: 1, text: 'right' }]).queued, '/s/1.json')
-  expect(out.rows[1]!.text).toBe('[context-editor] rewritten (original: /s/1.json, open with Read): right')
+  expect(out.rows[1]!.text).toBe('[context-editor] you rewrote this row (original: /s/1.json, open with Read): right')
   expect(out.report.produced).toEqual([{ edit: 'rewrite #1', index: 1, fingerprint: fingerprint(out.rows[1]!) }])
 })
 
@@ -750,4 +751,34 @@ test('FormatReport — власні виклики (P13): applied with 2 removed
   )
   // after the notes dropped
   expect(formatReport({ ...base, notesDropped: ['n2'] }, '', 'compaction')).toContain(`Notes dropped (their rows were removed): n2. ${sentence}`)
+})
+
+// ---- [SP_CTX_02_04] [SP_CTX_DEC_17] (A') who wrote a replacement, and when (phase 19)
+
+test('ApplyEdits — хто написав заміну: each replacement says the agent read the original here and replaced it itself; MARK still marks it', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
+    { role: 'assistant', text: 'wrong', toolUses: [], handle: 'h1' },
+    use('a', 'Read', 'h2'),
+    result('a', 'aaa', 'h3'),
+    use('b', 'Read', 'h4'),
+    result('b', 'bbb', 'h5'),
+    use('c', 'Read', 'h6'),
+    result('c', 'ccc', 'h7'),
+  ]
+  const { queued } = prepare(input, [
+    { op: 'rewrite', index: 1, text: 'right' },
+    { op: 'summarize', tool_use_id: 'a', summary: 'A holds K' },
+    { op: 'collapse', from_index: 4, to_index: 7, summary: 'B and C' },
+  ])
+  const out = applyEdits(input, queued, '/s/1.json')
+  expect(out.report.applied.length).toBe(3)
+  const note = ' (original: /s/1.json, open with Read): '
+  expect(out.rows[1]!.text).toBe(`${MARK} you rewrote this row${note}right`)
+  expect(out.rows[3]!.toolResults![0]!.text).toBe(`${MARK} ${SUMMARIZED}${note}A holds K`)
+  expect(SUMMARIZED).toBe('you read the full output here, then replaced it with your summary')
+  expect(out.rows[5]!.toolResults![0]!.text).toBe(`${MARK} you read these 4 rows, then collapsed them into your note${note}B and C`)
+  // the listing still flags every replaced row by the MARK prefix
+  const page = listRows(out.rows, 0, 20)
+  for (const i of [1, 3, 5]) expect(page).toContain(`#${i}*`)
 })

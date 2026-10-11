@@ -23,6 +23,7 @@ import {
   type RefResolver,
 } from './edits'
 import { MAX_QUEUE_BYTES, personTagWarning, queueBytes, type Queue, type Read } from './queue'
+import type { QueuedDelivery } from './deliveries'
 import {
   carrierRow,
   closeStage,
@@ -296,6 +297,9 @@ export type TagIO = {
   replace?: () => Promise<Replaced>
   // context_tag: BlockReport of one close ([SP_CTX_02_29]); a throw is REPORT_FAILED
   report?: (block: ClosedBlock, replaced?: Replaced) => Promise<string>
+  // context_tag: the host's deliveries not yet rows, for PersonTagWarnings
+  // ([SP_CTX_01_22]); none when absent or unreadable
+  deliveries?: () => Promise<readonly QueuedDelivery[]>
 }
 
 // [SP_CTX_02_11]
@@ -347,6 +351,7 @@ export function applyTagRequests(
   resolve: RefResolver = NO_REFS,
   staleIndexes = false,
   carrier = rows.length,
+  delivered: readonly QueuedDelivery[] = [],
 ): TagOutcome {
   const tags = [...reg.tags]
   let size = bytes({ ...reg, tags })
@@ -473,9 +478,9 @@ export function applyTagRequests(
     // [SP_CTX_02_11] PersonTagWarnings: the tag stands, the result names the person's rows
     if (kind === 'disposable') {
       const warn = isRange(target)
-        ? personTagWarning(rows, { from: target.hint, to: target.toHint })
+        ? personTagWarning(rows, { from: target.hint, to: target.toHint }, delivered)
         : 'tool_use_id' in target
-          ? personTagWarning(rows, { tool_use_id: target.tool_use_id })
+          ? personTagWarning(rows, { tool_use_id: target.tool_use_id }, delivered)
           : undefined
       if (warn) out.lines.push(warn)
     }
@@ -512,7 +517,8 @@ export async function contextTag(
     if (read.state === 'unreadable')
       return { code: 'DENIED_REGISTRY_READ', deny: `the tag registry cannot be read (${read.reason}); it is left as it is.` }
     const rows = await io.rows()
-    const out = applyTagRequests(read.value, rows, raws, resolve, staleIndexes, carrierRow(rows, callId))
+    const delivered = (await io.deliveries?.().catch(() => undefined)) ?? []
+    const out = applyTagRequests(read.value, rows, raws, resolve, staleIndexes, carrierRow(rows, callId), delivered)
     if (out.changed) {
       try {
         await io.writeTags(out.registry)

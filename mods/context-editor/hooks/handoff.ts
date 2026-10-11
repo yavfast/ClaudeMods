@@ -28,6 +28,7 @@ import {
 } from './edits'
 import { DEFAULT_RESUME, MAX_DOCUMENT, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
+import { insertDeliveries, type Deliveries } from './deliveries'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
@@ -179,6 +180,8 @@ export type SeedInput = {
   folder: string
   archive: string
   writeMedia: (path: string, base64: string) => Promise<boolean>
+  // [SP_CTX_01_22] the old session's recorded deliveries; absent: none
+  deliveries?: Read<Deliveries>
 }
 
 const REMINDER = '<system-reminder>'
@@ -328,11 +331,17 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))))
   // [SP_CTX_02_22] prompts whose media the seed does not carry: not tied to a row, or tied and not replaced
   const unmatchedPromptMedia = unmatched + [...found.keys()].filter(k => k.startsWith('r:') && !replaced.has(k)).length
+  // [SP_CTX_02_36] the host's deliveries: the API form has none (plugin-hooks
+  // 43), and no seeded row keeps a handle, so each one whose anchor stays goes
+  // back as a row, before DropOwnCalls
+  const delivered = input.deliveries
+  const put = insertDeliveries(visible, applied.rows, delivered?.state === 'ok' ? delivered.value.items : [], applied.renamed, true)
+  report.deliveries = { ...put.counts, ...(delivered?.state === 'unreadable' ? { unreadable: delivered.reason } : {}) }
   // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
-  const { rows: kept, removed } = dropOwnCallsCounted(applied.rows, new Set(), knownResults)
+  const { rows: kept, removed } = dropOwnCallsCounted(put.rows, new Set(), knownResults)
   report.ownCallsRemoved = removed
-  // [SP_CTX_01_05] "freed" counts the edits only: before CarryNote and the head
-  report.charsAfter = totalChars(kept)
+  // [SP_CTX_01_05] "freed" counts the edits only: before CarryNote and the head, without the deliveries
+  report.charsAfter = totalChars(kept) - put.added
   const carried: string[] = []
   let seed = kept.map(r => {
     const carries = results(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
@@ -506,6 +515,8 @@ export type HandoffIO = {
   view: () => Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[] }>
   readApi: () => Promise<readonly unknown[]>
   readTags: () => Promise<Read<TagRegistry>>
+  // [SP_CTX_01_22] the deliveries recorded in the current session; absent: none
+  readDeliveries?: () => Promise<Read<Deliveries>>
   // the same for the tag registry in `dir`
   updateTagsAt: (dir: string, change: (read: Read<TagRegistry>) => TagRegistry | undefined) => Promise<void>
   // ids of the folders `<dir>/<id>` that hold a seed.json
@@ -662,7 +673,8 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
     const { transcript, rows } = await io.view()
     const api = await io.readApi()
     const tags = await io.readTags()
-    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia })
+    const deliveries = io.readDeliveries ? await io.readDeliveries().catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
+    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia, deliveries })
     if ('refuse' in built) {
       await clean(false)
       return { reason: built.reason }
