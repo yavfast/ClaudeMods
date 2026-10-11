@@ -25,6 +25,7 @@ import {
   checkSeeded,
   contextHandoff,
   DOCUMENT_FRAME,
+  documentText,
   dropRequest,
   handleSeed,
   HANDOFF_DELAY_MS,
@@ -1539,7 +1540,7 @@ test('RunHandoff — виняток усередині AfterClear: caught there;
   expect(s.toasts).toContain('context-editor: handoff after /clear: step fail failed: disk full')
 })
 
-test('RunHandoff — виняток після /clear, document: FailAfterClear without a seed.json path; no second delivery', async () => {
+test('RunHandoff — HandedOff падає після /clear, document: the document is still delivered; the toast names HandedOff and the running request; outcome document', async () => {
   const { io, s, oldQueue } = host({ h: { mode: 'document', document: 'doc' } })
   const update = io.updateQueue
   io.updateQueue = async (d, change) =>
@@ -1548,10 +1549,16 @@ test('RunHandoff — виняток після /clear, document: FailAfterClear 
       if (next?.report?.includes('handed off to')) throw new Error('disk full')
       return next
     })
-  expect(await runHandoff(io, s.mem, 0)).toBe('failed')
-  expect(s.submitted).toEqual([])
-  expect(oldQueue().report).toBe('context-editor: handoff failed after the session was cleared: failed: disk full; this session was not changed.')
-  expect(oldQueue().report).not.toContain('seed.json')
+  expect(await runHandoff(io, s.mem, 0)).toBe('document')
+  expect(s.submitted.length).toBe(1)
+  expect(s.submitted[0]).toContain('\n\ndoc\n\ncontext-editor: this session continues old (document).')
+  expect(s.toasts).toEqual([
+    'context-editor: handoff after /clear: step HandedOff failed: disk full. The old session old still holds a running handoff request; run /handoff cancel there.',
+  ])
+  // the old queue as the claim left it: no FailAfterClear, no copy of the delivered document
+  expect(oldQueue().handoff?.state).toBe('running')
+  expect(oldQueue().report).toBeUndefined()
+  expect(s.files.has(DOC_COPY)).toBe(false)
 })
 
 test('RunHandoff — запис старої черги після засіву не вдався: seeded, the report and resume delivered; the toast names HandedOff and the running request', async () => {
@@ -1738,32 +1745,124 @@ test('Deliver — AfterClear, сховище недоступне: a turn began 
   expect(s.toasts).toContain('context-editor: handoff after /clear: step deliver failed: the storage of this session is unavailable: mkdir: denied')
 })
 
-// BUG (reported, not fixed here): in DocumentWay the Deliver after HandedOff is
-// not caught as a step. With resume false and the new session's storage or
-// queue unusable, the throw reaches onException after /clear with HandedOff
-// already written (terminal): no FailAfterClear, no toast. The document is
-// lost while the old queue says it was handed off.
-test('DocumentWay — Deliver лише в черзі падає (поточна поведінка): resume false, the new storage unavailable; outcome failed, the document lost without a toast; the old queue says handed off', async () => {
-  for (const breakNew of [
-    (h: ReturnType<typeof host>) => {
-      const storage = h.io.storage
-      h.io.storage = async () => (h.s.session === 'new' ? { reason: 'HOME is not set' } : storage())
-    },
-    (h: ReturnType<typeof host>) => {
-      const update = h.io.updateQueue
-      h.io.updateQueue = async (d, change) => (d === '/s/new' ? void (await change(unreadableRead('bad json'))) : update(d, change))
-    },
-  ]) {
+// [SP_CTX_02_21] HandDocument: after /clear, HandedOff and Deliver are steps (CF-41)
+const breakNewStorage = (h: ReturnType<typeof host>) => {
+  const storage = h.io.storage
+  h.io.storage = async () => (h.s.session === 'new' ? { reason: 'HOME is not set' } : storage())
+}
+const breakNewQueue = (h: ReturnType<typeof host>) => {
+  const update = h.io.updateQueue
+  h.io.updateQueue = async (d, change) => (d === '/s/new' ? void (await change(unreadableRead('bad json'))) : update(d, change))
+}
+const DOC_COPY = `/s/old/${NOW}/document.txt`
+
+test('DocumentWay — Deliver лише в черзі падає: resume false, the new storage or queue unusable; outcome document, a toast names the step and the copy of the document in the old storage', async () => {
+  for (const [breakNew, error] of [
+    [breakNewStorage, 'the storage of this session is unavailable: HOME is not set'],
+    [breakNewQueue, 'the queue of this session cannot be read (bad json)'],
+  ] as const) {
     const h = host({ h: { mode: 'document', document: 'my handoff', resume: false } })
     breakNew(h)
-    expect(await runHandoff(h.io, h.s.mem, 0)).toBe('failed')
+    expect(await runHandoff(h.io, h.s.mem, 0)).toBe('document')
     expect(h.s.commands).toEqual(['clear'])
     expect(h.s.submitted).toEqual([])
     expect(h.s.queues.has('/s/new')).toBe(false)
-    expect(h.s.toasts).toEqual([])
+    expect(h.s.toasts).toEqual([`context-editor: handoff after /clear: step deliver failed: ${error}. The document is in ${DOC_COPY}.`])
+    // the copy is the text Deliver would have given, frame and tail included
+    expect(h.s.files.get(DOC_COPY)).toBe(documentText('my handoff', 'context-editor: this session continues old (document).'))
     expect(h.oldQueue().report).toBe('context-editor: this session was handed off to new (document).')
     expect(h.oldQueue().handoff).toBeUndefined()
   }
+  // the copy cannot be written either: the toast says the document is lost
+  const lost = host({ h: { mode: 'document', document: 'my handoff', resume: false } })
+  breakNewStorage(lost)
+  lost.io.writeText = async () => false
+  expect(await runHandoff(lost.io, lost.s.mem, 0)).toBe('document')
+  expect(lost.s.toasts).toEqual([
+    `context-editor: handoff after /clear: step deliver failed: the storage of this session is unavailable: HOME is not set. The document is lost: ${DOC_COPY} could not be written.`,
+  ])
+})
+
+test('DocumentWay — хід між /clear і Deliver, шлях черги падає: resume true; the text goes the queue way and fails; outcome document, the toast names the copy; no prompt', async () => {
+  const h = host({ h: { mode: 'document', document: 'my handoff' } })
+  breakNewStorage(h)
+  // a turn starts in the new session right after HandedOff
+  const update = h.io.updateQueue
+  h.io.updateQueue = async (d, change) => {
+    await update(d, change)
+    if (d === '/s/old' && h.oldQueue().report?.includes('handed off to') && !h.s.turns.inTurn) turnStarted(h.s.turns)
+  }
+  expect(await runHandoff(h.io, h.s.mem, 0)).toBe('document')
+  expect(h.s.submitted).toEqual([])
+  expect(h.s.toasts).toEqual([`context-editor: handoff after /clear: step deliver failed: the storage of this session is unavailable: HOME is not set. The document is in ${DOC_COPY}.`])
+  expect(h.s.files.get(DOC_COPY)).toContain('my handoff')
+})
+
+test('AfterClear з документом — Deliver падає: the copy lies beside the seed files (<old storage>/<seed id>/document.txt), not under the time of the failure; outcome document', async () => {
+  const h = host({ h: { document: 'my handoff', resume: false } })
+  const run = h.io.runCommand
+  h.io.runCommand = async (c, a) => {
+    // the clock moves on after the seed was built at NOW
+    h.s.now += 5000
+    if (c === 'compact') throw new Error('T')
+    await run(c, a)
+  }
+  breakNewQueue(h)
+  expect(await runHandoff(h.io, h.s.mem, 0)).toBe('document')
+  expect(h.s.toasts).toEqual([`context-editor: handoff after /clear: step deliver failed: the queue of this session cannot be read (bad json). The document is in ${DOC_COPY}.`])
+  expect(h.s.files.get(DOC_COPY)).toContain('The transcript way failed (transcript: the seed compaction was refused: T)')
+  expect(h.s.files.has(`/s/old/${NOW}/seed.json`)).toBe(true)
+  expect([...h.s.files.keys()].filter(f => f.endsWith('/document.txt'))).toEqual([DOC_COPY])
+})
+
+test('HandDocument — промпт відхилено: DocumentWay and AfterClear with the document; the host refuses the prompt; the toast with the host text names the copy; outcome document', async () => {
+  const doc = host({ h: { mode: 'document', document: 'my handoff' } })
+  doc.io.submit = async () => {
+    throw new Error('T: dropped')
+  }
+  expect(await runHandoff(doc.io, doc.s.mem, 0)).toBe('document')
+  expect(doc.s.toasts).toEqual([`context-editor: the handoff prompt was refused: T: dropped. The document is in ${DOC_COPY}.`])
+  // the copy is the text without the resume prompt
+  expect(doc.s.files.get(DOC_COPY)).toBe(documentText('my handoff', 'context-editor: this session continues old (document).'))
+  expect(doc.oldQueue().report).toBe('context-editor: this session was handed off to new (document).')
+  const after = host({ h: { document: 'my handoff' } })
+  const run = after.io.runCommand
+  after.io.runCommand = async (c, a) => {
+    if (c === 'compact') throw new Error('T')
+    await run(c, a)
+  }
+  after.io.submit = async () => {
+    throw new Error('T: dropped')
+  }
+  expect(await runHandoff(after.io, after.s.mem, 0)).toBe('document')
+  expect(after.s.toasts).toEqual([`context-editor: the handoff prompt was refused: T: dropped. The document is in ${DOC_COPY}.`])
+  expect(after.s.files.get(DOC_COPY)).toContain('my handoff')
+})
+
+test('AfterClear — хід одразу після /clear з документом агента: the document is not delivered; its copy is written and the notice names it; FailAfterClear in the old queue', async () => {
+  const { io, s, oldQueue } = host({ h: { document: 'my handoff' } })
+  const run = io.runCommand
+  io.runCommand = async (c, a) => {
+    await run(c, a)
+    if (c === 'clear') turnStarted(s.turns)
+  }
+  expect(await runHandoff(io, s.mem, 0)).toBe('failed')
+  expect(s.commands).toEqual(['clear'])
+  expect(s.submitted).toEqual([])
+  expect(oldQueue().report).toContain('transcript: a turn began in the new session')
+  expect(s.files.get(DOC_COPY)).toBe(
+    documentText('my handoff', 'context-editor: this session continues old (document). The transcript way failed (transcript: a turn began in the new session).'),
+  )
+  expect(s.queues.get('/s/new')!.report).toContain(`The assembled conversation is in /s/old/${NOW}/seed.json. The document is in ${DOC_COPY}.`)
+  // without the agent's document: no copy
+  const bare = host()
+  const bareRun = bare.io.runCommand
+  bare.io.runCommand = async (c, a) => {
+    await bareRun(c, a)
+    if (c === 'clear') turnStarted(bare.s.turns)
+  }
+  expect(await runHandoff(bare.io, bare.s.mem, 0)).toBe('failed')
+  expect(bare.s.files.has(DOC_COPY)).toBe(false)
 })
 
 test('DocumentWay — /clear відхилено: Fail with "document: /clear was refused: <host text>"; after a refused seed both reasons; the edits stay, no prompt', async () => {

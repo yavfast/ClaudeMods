@@ -183,26 +183,26 @@ Processing logic (pseudocode):
         afterClearEntered = true; pending seed = none; reasons = ["transcript: " + reason]
         # кожен крок нижче захищений тут же; збій кроку додає його назву до спливного повідомлення, решта кроків іде далі
         IF MovedSince(turnsClear):                                          # людина вже працює в новій сесії: її не чіпати
-            step fail: FailAfterClear(s, reasons); step deliver: Deliver(notice(s, reasons), none, turnsClear, queueOnly = true)
-            RETURN failed                                                   # notice — у чергу поточної сесії
+            kept = h.document present ? KeepDocument(DocumentText(h.document, "context-editor: this session continues <old> (document). The transcript way failed (" + reasons + ")." + dropped)) : ""   # документ агента тут не доставляється
+            step fail: FailAfterClear(s, reasons); step deliver: Deliver(notice(s, reasons) + kept, none, turnsClear, queueOnly = true)
+            RETURN failed                                                   # notice — у чергу поточної сесії; kept називає копію документа
         # другий /clear відхилено: `now` лишається засіяною сесією, і HandedOff та документ потрапляють у неї поверх засіву (прийнято)
         step clear: IF s.taken: TRY run built-in command clear CATCH err: reasons += "/clear: " + err   # прибрати засіяну сесію; без засіву вона й так порожня
         now = session id
         IF h.document present:
-            step handed: HandedOff(now, document)
-            step deliver: Deliver(DocumentText(h.document, "context-editor: this session continues <old> (document). The transcript way failed (" + reasons + ")." + dropped), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
-            RETURN document
+            RETURN HandDocument(now, DocumentText(h.document, "context-editor: this session continues <old> (document). The transcript way failed (" + reasons + ")." + dropped), turnsClear)
         step fail: FailAfterClear(s, reasons)
         step deliver: Deliver(notice(s, reasons), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
         RETURN failed
-        ON a failure of any step (caught here): toast "context-editor: handoff after /clear: step <step> failed: <error>"
+        ON a failure of any step (caught here): toast "context-editor: handoff after /clear: step <step> failed: <error>"   # кроки HandDocument — зі своїми текстами
 
     notice(s, reasons) = "context-editor: the handoff from <old> failed after the session was cleared (" + reasons + "). The previous session <old> is unchanged." + (s present ? " The assembled conversation is in " + s.file + "." : "")
 
-    FUNCTION Deliver(text, resumePrompt?, turnsClear, queueOnly = false):   # кожна відправка після /clear
+    FUNCTION Deliver(text, resumePrompt?, turnsClear, queueOnly = false, refused?):   # кожна відправка після /clear; refused — що додати до тосту відмови
         IF queueOnly OR MovedSince(turnsClear):                             # продовження вимкнено (h.resume = false) або людина активна
             Queue of the current session: report += text, reportId = now, reportResume = false   # DeliverReport віддасть з наступним промптом
         ELSE: submit prompt (text + (resumePrompt ? "\n\n" + ResumeText(resumePrompt, HANDOFF_RESUME_FRAME) : ""))   # SP_CTX_02_06; текст продовження — з рамкою автора
+            IF the host refuses it (an exception or drop): toast "context-editor: the handoff prompt was refused: <host text>" + (refused ? "." + refused() : "")   # не кидає далі
 
     DocumentText(doc, tail) = DOCUMENT_FRAME + "\n\n" + doc + "\n\n" + tail   # документ — текст моделі (агента або форку), рамка називає автора
 
@@ -222,9 +222,22 @@ Processing logic (pseudocode):
         cleared = true; turnsClear = turns
         why = reasons not empty ? " The transcript way failed (" + reasons + ")." : ""
         IF turns ≠ turns0: why += " A turn ran before /clear; it stays in <old> and is not in this document."   # /clear чекав кінця ходу
-        new = session id; HandedOff(new, document)                         # стара черга — до промпту
-        Deliver(DocumentText(doc, "context-editor: this session continues <old> (document)." + why + dropped), h.resumePrompt, turnsClear, queueOnly = NOT h.resume)
+        new = session id
+        RETURN HandDocument(new, DocumentText(doc, "context-editor: this session continues <old> (document)." + why + dropped), turnsClear)
+
+    FUNCTION HandDocument(to, text, turnsClear):                            # після /clear: DocumentWay і AfterClear з документом агента; ніколи не кидає
+        # кожен крок захищений тут же; збій кроку — спливне повідомлення, наступний крок іде далі (аудит PL_AUD_CTX, CF-41)
+        step HandedOff: HandedOff(to, document)                            # стара черга — до промпту
+        step deliver: Deliver(text, h.resumePrompt, turnsClear, queueOnly = NOT h.resume, refused = KeepDocument(text))   # відхилений промпт теж губив би документ
+        ON a failure of step HandedOff: toast "context-editor: handoff after /clear: step HandedOff failed: <error>. The old session <old> still holds a running handoff request; run /handoff cancel there."
+        ON a failure of step deliver:                                       # сховище чи черга нової сесії недоступні (шлях черги: resume = false або хід після /clear)
+            toast "context-editor: handoff after /clear: step deliver failed: <error>." + KeepDocument(text)
         RETURN document
+
+    FUNCTION KeepDocument(text):                                            # копія недоставленого документа; ніколи не кидає
+        file = <old storage>/<id>/document.txt WHERE id = seed present ? seed.id : now   # поруч із файлами засіву, коли засів є
+        write text into file (owner-only, host command)                    # текст, який мав піти: з рамкою і хвостом, без продовження
+        RETURN written ? " The document is in <file>." : " The document is lost: <file> could not be written."
 
     FUNCTION HandedOff(to, mode): old Queue: KeepOtherSteps (edits = [], resume, resumePrompt, resumeSet, tagsOnly, keepCache — за замовчуванням), handoff absent, AppendReport("this session was handed off to <to> (<mode>)", reportId = now, reportResume = false); terminal = true   # SP_CTX_01_04: вибори пакета скидаються з пакетом, інакше пакет старої сесії після --resume успадкував би keep_cache (аудит PL_AUD_CTX, CF-6)
     FUNCTION Defer(): old Queue: handoff.state = queued, owner removed     # знову після наступного кінця ходу
@@ -234,11 +247,11 @@ Processing logic (pseudocode):
 
 Автор тексту в промпті нової сесії ([SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17), аудит PL_AUD_CTX, CF-8). Документ передачі написала модель — агент у `document` або форк моделі з HANDOFF_PROMPT, а `resume_prompt` — агент; мод надсилає їх з роллю `user` у сесію, де виклику `context_handoff` уже немає, тож без рамки вони виглядали б словами людини. Документ відкриває рядок DOCUMENT_FRAME: `context-editor: your handoff document from the previous session follows; it is your own text, not the person's.`; текст продовження агента йде за рамкою HANDOFF_RESUME_FRAME: `context-editor: the resume prompt you set before the handoff: <text>`, а DEFAULT_RESUME (зокрема для `/handoff` людини, яка тексту продовження не задає) — з префіксом мода, як у Flush ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)). Рамка — частина самого тексту, тож вона лишається і тоді, коли Deliver кладе текст у звіт черги для DeliverReport. У черзі (`handoff.document`, `handoff.resumePrompt`) тексти зберігаються без рамки.
 
-`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`.
+`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`; для документа спливне повідомлення ще й називає його копію (KeepDocument, DOCUMENT_NOT_DELIVERED), бо HandedOff уже прибрав документ зі старої черги.
 
 Порядок має значення. Засів збирається і пишеться до очищення сесії: після `/clear` читання розмови й API-подання бачать уже нову, порожню сесію, а окремий запит до моделі над старою розмовою неможливий. Тому збій збирання веде до способу `document` у старій сесії, а збій після очищення — до повторного очищення (лише коли засів уже взято) і документа агента, а без нього — повідомлення з ідентифікатором старої сесії і шляхом до файлу засіву. Правки черги старої сесії при `Fail` і `FailAfterClear` лишаються в її черзі: стара сесія не змінена, і її можна відновити; при `HandedOff` вони йдуть у засів або, для `document`, не переносяться (`dropped`).
 
-Ідентифікатор нової сесії до `/clear` невідомий, тож файл засіву, архів оригіналів і перенесене медіа лежать у сховищі старої сесії ([SP_CTX_DEC_09](./context_editor.sp.md#SP_CTX_DEC_09)); їхні шляхи вписано в текст засіяних рядків. Засів живе в пам'яті модуля: перезавантаження модуля між `/clear` і компактизацією засіву лишає нову сесію порожньою, а запит у старій черзі — у стані `running`; новий екземпляр, у якого `handoffInFlight = false`, вважає його належним через HANDOFF_STALE ([SP_CTX_01_15](./context_editor.structures.sp.md#SP_CTX_01_15), [SP_CTX_05_04](./context_editor.scenarios.sp.md#SP_CTX_05_04)). Поки RunHandoff цього екземпляра йде, запит не належний, хоч би скільки `/clear` чекав кінця довгого ходу; будь-який виняток RunHandoff до засіву закінчується Fail, AfterClear або FailAfterClear, а збої після засіву Seed перехоплює сам (спливне повідомлення називає крок), тож запит не лишається `running`, хіба що не вдався сам запис старої черги. Теги й псевдоніми копіюються і одразу проходять ті самі RebindTags і очищення псевдонімів, що й після компактизації в тій самій сесії ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): незмінені засіяні пари зберігають ідентифікатори викликів старої сесії ([SP_CTX_01_17](./context_editor.structures.sp.md#SP_CTX_01_17)), тож їхні теги й псевдоніми працюють далі; змінені пари отримали FreshId, і їхні теги й псевдоніми видаляються, тож `ref` такої пари в новій сесії дає UNKNOWN_REF, а не TARGET_NOT_FOUND.
+Ідентифікатор нової сесії до `/clear` невідомий, тож файл засіву, архів оригіналів і перенесене медіа лежать у сховищі старої сесії ([SP_CTX_DEC_09](./context_editor.sp.md#SP_CTX_DEC_09)); їхні шляхи вписано в текст засіяних рядків. Засів живе в пам'яті модуля: перезавантаження модуля між `/clear` і компактизацією засіву лишає нову сесію порожньою, а запит у старій черзі — у стані `running`; новий екземпляр, у якого `handoffInFlight = false`, вважає його належним через HANDOFF_STALE ([SP_CTX_01_15](./context_editor.structures.sp.md#SP_CTX_01_15), [SP_CTX_05_04](./context_editor.scenarios.sp.md#SP_CTX_05_04)). Поки RunHandoff цього екземпляра йде, запит не належний, хоч би скільки `/clear` чекав кінця довгого ходу; будь-який виняток RunHandoff до засіву закінчується Fail, AfterClear або FailAfterClear, а збої після засіву Seed перехоплює сам, як і HandDocument — збої HandedOff і Deliver документа після `/clear` (спливне повідомлення називає крок; документ, який Deliver не віддав, лишається копією в сховищі старої сесії), тож запит не лишається `running`, хіба що не вдався сам запис старої черги. Теги й псевдоніми копіюються і одразу проходять ті самі RebindTags і очищення псевдонімів, що й після компактизації в тій самій сесії ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): незмінені засіяні пари зберігають ідентифікатори викликів старої сесії ([SP_CTX_01_17](./context_editor.structures.sp.md#SP_CTX_01_17)), тож їхні теги й псевдоніми працюють далі; змінені пари отримали FreshId, і їхні теги й псевдоніми видаляються, тож `ref` такої пари в новій сесії дає UNKNOWN_REF, а не TARGET_NOT_FOUND.
 
 Етапи, слот стану й інструкція в новій сесії. Відкритий етап і останній закритий блок переходять у реєстр нової сесії з межами, перенесеними RelocateMark з `s.visible` на `s.rows` ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): межа, чий рядок замінила правка засіву, переходить на останній створений нею рядок; рядок, що лишився до підсумку (`fromSummary`), має `lost` у «до» і дає `null`; рядок, змінений засівом (CarryNote, `s.carried`) або прибраний нормалізацією, — найближчий попередній незмінений засіяний рядок або `null`. Тег `state` незміненого рядка переходить за відбитком; переписаний правкою засіву — за правилом слоту стану. `introduced` у копії — `false`: нова сесія — інший ідентифікатор, а прихований контекст першого промпту старої сесії в засіяні рядки не потрапляє, тож інструкцію отримає перший промпт нової сесії, що проходить хуки мода ([SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27)); власні промпти мода (продовження після засіву, документ) хуків не проходять (F1). `lastApply` у копії реєстру знімається (виміряна зміна в новій сесії не була б звільненням застосування). Нотатки переходять разом із тегами: RelocateNote з `s.visible` на `s.rows` ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)); нотатка на рядку виклику незміненої пари, який засів злив з іншими рядками викликів тієї ж відповіді (MergeCallRows: жоден засіяний рядок не має `handle`), переходить на злитий рядок за ідентифікатором свого першого виклику, а не видаляється; `notesDropped` засіву називає звіт нової сесії. Журнал ефекту не переноситься: він лишається у сховищі старої сесії разом з архівами, які називає. Способом `document` реєстрів у новій сесії немає, тож `introduced` там теж `false`.
 
@@ -261,6 +274,8 @@ Errors: відмови не виходять назовні — кожна пр�
 | SESSION_CHANGED | після компактизації засіву поточна сесія — не та, що створив `/clear` | FailAfterClear без повторного очищення, без промпту і без запису в поточну сесію |
 | PERSON_ACTIVE | людина почала хід до відправки звіту, документа чи повідомлення | текст — у звіт черги поточної сесії з `reportResume = false`; промпту немає |
 | REPORT_LOST | після засіву звіт не доставлено | спливне повідомлення; результат передачі — `transcript` |
+| DOCUMENT_NOT_DELIVERED | після `/clear` Deliver документа кинув виняток (сховище чи черга нової сесії недоступні) або хост відхилив його промпт; або хід почався в новій сесії до кінця засіву, коли є документ агента (TURN_IN_NEW) | копія тексту в `<old storage>/<id>/document.txt` (KeepDocument); спливне повідомлення (для TURN_IN_NEW — повідомлення про збій) називає цей файл; результат — `document` (для TURN_IN_NEW — `failed`, стара черга — FailAfterClear) |
+| HANDED_OFF_FAILED | після `/clear` запис HandedOff у стару чергу не вдався (способом `document`) | документ усе одно доставлено; спливне повідомлення називає крок і радить `/handoff cancel` у старій сесії, де запит лишився `running`; результат — `document` |
 
 ### 02_22. BuildSeed  {#SP_CTX_02_22}
 
@@ -437,3 +452,5 @@ Errors:
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_19–02_26 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.handoff.sp.md](./context_editor.handoff.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фази 3–4 (CF-5, CF-6): блок-нагадування в першому повідомленні API-подання — за префіксом `<system-reminder` (REMINDER_PREFIX), зокрема з атрибутами (02_22); HandedOff скидає вибори пакета старої черги через KeepOtherSteps, звіт — AppendReport (02_21) |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): документ передачі відкриває DOCUMENT_FRAME (DocumentText), текст продовження агента — за рамкою HANDOFF_RESUME_FRAME, DEFAULT_RESUME — з префіксом мода (Deliver, DocumentWay, AfterClear у 02_21; SP_CTX_DEC_17) |
+| 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): після `/clear` HandedOff і Deliver документа — кроки HandDocument, спільного для DocumentWay і AfterClear: збій кроку — спливне повідомлення, наступний крок іде далі, результат `document`; збій Deliver пише копію тексту в `<old storage>/<id>/document.txt` і називає її; крок `handed` AfterClear перейменовано на HandedOff; помилки DOCUMENT_NOT_DELIVERED, HANDED_OFF_FAILED (02_21) |
+| 2026-10-11 | PL_AUD_CTX фаза 6a, рев'ю: KeepDocument — окрема функція; відхилений хостом промпт документа теж пише копію і називає її (Deliver `refused`); AfterClear з ходом у новій сесії (TURN_IN_NEW) копіює документ агента і називає копію в повідомленні про збій; DOCUMENT_NOT_DELIVERED розширено (02_21) |

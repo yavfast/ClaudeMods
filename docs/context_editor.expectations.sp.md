@@ -64,7 +64,7 @@
 | RunHandoff | компактизацію засіву відхилено | `compact` кидає виняток з текстом T | AfterClear без другого `clear` (засів не взято); з документом агента — HandedOff `document`, промпт з T у причині; без документа — FailAfterClear і промпт з `<old>` і шляхом `seed.json` |
 | RunHandoff | засів не взято | обробник відповів `skip` | AfterClear з `the seed compaction did not take the seed`, без другого `clear` (засів не взято) |
 | RunHandoff | розбіжність | CheckSeeded повертає причину | AfterClear з цією причиною |
-| RunHandoff | хід у новій сесії | хід почався після `clear` (`MovedSince(turnsClear)`), HandleSeed відповів SKIP_TURN_STARTED | FailAfterClear; другого `clear` і промпту немає |
+| RunHandoff | хід у новій сесії | хід почався після `clear` (`MovedSince(turnsClear)`), HandleSeed відповів SKIP_TURN_STARTED | FailAfterClear; другого `clear` і промпту немає; з документом агента — його копія в `<old storage>/<id>/document.txt`, повідомлення про збій її називає |
 | RunHandoff | resume false | спосіб `transcript` | промпту немає; звіт у черзі нової сесії; у старій — нотатка, `reportResume` false |
 | RunHandoff | resume false, запасні тексти | `h.resume = false`; документ після збою засіву / повідомлення AfterClear / документ способу `document` | жодного промпту: кожен текст — у звіт черги нової сесії з `reportResume = false` |
 | RunHandoff | теги й псевдоніми | реєстри старої сесії | скопійовано в сховище нової сесії до промпту і узгоджено RebindTags; збій копіювання чи узгодження — речення у звіті, засів лишається |
@@ -82,7 +82,8 @@
 | RunHandoff | Fail кидає до `/clear` | запис старої черги в Fail падає | одна спроба, повтору немає; спливне повідомлення; `handoffInFlight = false` |
 | RunHandoff | виняток після `/clear`, transcript | виняток у Seed до AfterClear | один AfterClear: з документом агента — HandedOff `document` і документ; без документа — FailAfterClear і повідомлення з шляхом `seed.json` |
 | RunHandoff | виняток усередині AfterClear | крок AfterClear кидає | перехоплено в AfterClear: жодного ще одного `/clear`, один FailAfterClear, без повторної доставки; спливне повідомлення називає крок |
-| RunHandoff | виняток після `/clear`, document | виняток у DocumentWay після `/clear` | FailAfterClear без шляху `seed.json`; повторної доставки немає |
+| RunHandoff | HandedOff падає після `/clear`, document | запис HandedOff у стару чергу кидає виняток | документ усе одно доставлено; спливне повідомлення називає крок HandedOff і радить `/handoff cancel`; FailAfterClear немає; результат `document` |
+| RunHandoff | Deliver документа падає після `/clear` | сховище чи черга нової сесії недоступні: `resume = false` / хід почався між `/clear` і Deliver (шлях черги) / AfterClear з документом агента; або хост відхилив промпт документа (виняток чи `drop`) — тоді спливне повідомлення з текстом відмови хоста | результат `document`; копія тексту в `<old storage>/<id>/document.txt` (`id` — засіву, коли він є, інакше час); спливне повідомлення називає крок deliver і цей файл; копію не записано — «The document is lost» |
 | Due | running без handoffInFlight | `running`, `handoffInFlight = false`, старший за HANDOFF_STALE / молодший | належний / ні (поле `owner` не читається) |
 | Flush | хід від планування, хід іде | `MovedSince(turns0)` перед командою, `inTurn = true` | команди немає, `scheduled = false`; кінець ходу запланує Flush |
 | Flush | хід від планування, скінчився звичайно | `MovedSince(turns0)`, `inTurn = false`, `lastTurnAborted = false` | команди немає; Flush заплановано знову через FLUSH_DELAY |
@@ -506,3 +507,5 @@
 | 2026-10-11 | PL_AUD_CTX фази 1–2 (CF-1, CF-2): очікування PrepareStorage/EnsureStorage (без HOME, недійсний id, паралельні виклики, робота почата в сесії A, покинута підготовка) і HandleCompaction (покинуто під час очікування реєстру і між записами, запис черги кидає, порядок фіксації, без пари «applied» + «failed», архів не записано і покинуто); `store.test.ts` |
 | 2026-10-11 | PL_AUD_CTX фази 1–2, рев'ю: покинуто під час запису черги; обробник компактизації приєднується до підготовки |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8, CF-9): рядок NoteReminders з автором (`reminder from your note n1`); очікування «автор продовження» (Flush), «автор тексту» (RunHandoff), «обрізання в рамці» (RecordDelivery) |
+| 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): «виняток після `/clear`, document» замінено рядками «HandedOff падає після `/clear`, document» і «Deliver документа падає після `/clear`» (05_01) |
+| 2026-10-11 | PL_AUD_CTX фаза 6a, рев'ю: відхилений промпт документа — копія; хід у новій сесії з документом агента — копія, названа в повідомленні (05_01) |

@@ -639,8 +639,9 @@ function defer(run: Run): Promise<void> {
   })
 }
 
-function notice(run: Run, s: HandoffSeed | undefined, reasons: string[]): string {
-  return `context-editor: the handoff from ${run.old} failed after the session was cleared (${reasons.join('; ')}). The previous session ${run.old} is unchanged.${s ? ` The assembled conversation is in ${s.file}.` : ''}`
+// `kept`: KeepDocument's sentence when the agent's document was copied instead of delivered
+function notice(run: Run, s: HandoffSeed | undefined, reasons: string[], kept = ''): string {
+  return `context-editor: the handoff from ${run.old} failed after the session was cleared (${reasons.join('; ')}). The previous session ${run.old} is unchanged.${s ? ` The assembled conversation is in ${s.file}.` : ''}${kept}`
 }
 
 // [SP_CTX_02_21] The document prompt: the author's frame, the document, then
@@ -651,8 +652,16 @@ export function documentText(doc: string, tail: string): string {
 
 // [SP_CTX_02_21] Deliver: every text after /clear. When the resume is off or
 // the person has begun a turn, the text waits in the current session's queue
-// for DeliverReport; otherwise it goes as a prompt. A refused prompt is a toast.
-async function deliver(run: Run, text: string, resumePrompt: string | undefined, turnsClear: number, queueOnly: boolean): Promise<void> {
+// for DeliverReport; otherwise it goes as a prompt. A refused prompt is a
+// toast, followed by what `refused` adds (HandDocument: where the copy is).
+async function deliver(
+  run: Run,
+  text: string,
+  resumePrompt: string | undefined,
+  turnsClear: number,
+  queueOnly: boolean,
+  refused?: () => Promise<string>,
+): Promise<void> {
   const { io } = run
   if (queueOnly || movedSince(io.turns, turnsClear)) {
     const st = await io.storage()
@@ -667,7 +676,8 @@ async function deliver(run: Run, text: string, resumePrompt: string | undefined,
     // [SP_CTX_DEC_17] the resume prompt under its author's frame
     await io.submit(resumePrompt ? `${text}\n\n${resumeText(resumePrompt, HANDOFF_RESUME_FRAME)}` : text)
   } catch (err) {
-    io.toast(`context-editor: the handoff prompt was refused: ${errorText(err)}`)
+    const more = refused ? `.${await refused()}` : ''
+    io.toast(`context-editor: the handoff prompt was refused: ${errorText(err)}${more}`)
   }
 }
 
@@ -911,8 +921,10 @@ async function afterClear(run: Run, s: HandoffSeed, reason: string, turnsClear: 
   try {
     // the person already works in the new session: leave it as it is
     if (movedSince(io.turns, turnsClear)) {
+      // the agent's document is not delivered here: its copy, named in the notice
+      const kept = h.document ? await keepDocument(run, documentText(h.document, afterClearTail(run, reasons))) : ''
       await step('fail', () => failAfterClear(run, s, reasons))
-      await step('deliver', () => deliver(run, notice(run, s, reasons), undefined, turnsClear, true))
+      await step('deliver', () => deliver(run, notice(run, s, reasons, kept), undefined, turnsClear, true))
       return 'failed'
     }
     // clear the seeded session; without a taken seed it is empty anyway
@@ -928,20 +940,13 @@ async function afterClear(run: Run, s: HandoffSeed, reason: string, turnsClear: 
     await step('session', async () => {
       now = await io.sessionId()
     })
-    if (h.document) {
-      const doc = h.document
-      await step('handed', () => handedOff(run, now, 'document'))
-      await step('deliver', () =>
-        deliver(
-          run,
-          documentText(doc, `context-editor: this session continues ${run.old} (document). The transcript way failed (${reasons.join('; ')}).${dropped(run)}`),
-          h.resumePrompt,
-          turnsClear,
-          !h.resume,
-        ),
+    if (h.document)
+      return await handDocument(
+        run,
+        now,
+        documentText(h.document, afterClearTail(run, reasons)),
+        turnsClear,
       )
-      return 'document'
-    }
     await step('fail', () => failAfterClear(run, s, reasons))
     await step('deliver', () => deliver(run, notice(run, s, reasons), h.resumePrompt, turnsClear, !h.resume))
     return 'failed'
@@ -949,6 +954,11 @@ async function afterClear(run: Run, s: HandoffSeed, reason: string, turnsClear: 
     io.toast(`context-editor: handoff after /clear failed: ${errorText(err)}`)
     return 'failed'
   }
+}
+
+// the tail of the agent's document after a failed transcript way
+function afterClearTail(run: Run, reasons: string[]): string {
+  return `context-editor: this session continues ${run.old} (document). The transcript way failed (${reasons.join('; ')}).${dropped(run)}`
 }
 
 // [SP_CTX_02_21] DocumentWay: the document as the first prompt of a cleared session.
@@ -986,10 +996,41 @@ async function documentWay(run: Run): Promise<HandoffOutcome> {
   let why = run.reasons.length ? ` The transcript way failed (${run.reasons.join('; ')}).` : ''
   // /clear waited for the end of a turn: that turn stays in the old session
   if (io.turns.turns !== run.turns0) why += ` A turn ran before /clear; it stays in ${run.old} and is not in this document.`
-  // the old queue first, then the prompt
-  await handedOff(run, created, 'document')
-  await deliver(run, documentText(doc, `context-editor: this session continues ${run.old} (document).${why}${dropped(run)}`), h.resumePrompt, run.turnsClear, !h.resume)
+  return handDocument(run, created, documentText(doc, `context-editor: this session continues ${run.old} (document).${why}${dropped(run)}`), run.turnsClear)
+}
+
+// [SP_CTX_02_21] HandDocument: after /clear, the document into the session
+// `to` (DocumentWay, and AfterClear with the agent's document). The old queue
+// first, then the text: HandedOff and Deliver are steps, each caught here; a
+// failure is a toast naming the step, and the next step still runs. A failed
+// Deliver or a refused prompt would lose the document (HandedOff took it out
+// of the old queue, a fork's text was never there), so its toast names a copy
+// written into the old session's storage. Never throws.
+async function handDocument(run: Run, to: string, text: string, turnsClear: number): Promise<'document'> {
+  const { io, h } = run
+  const step = async (name: string, work: () => Promise<void>, more: () => Promise<string>) => {
+    try {
+      await work()
+    } catch (err) {
+      io.toast(`context-editor: handoff after /clear: step ${name} failed: ${errorText(err)}.${await more()}`)
+    }
+  }
+  await step(
+    'HandedOff',
+    () => handedOff(run, to, 'document'),
+    async () => ` The old session ${run.old} still holds a running handoff request; run /handoff cancel there.`,
+  )
+  const keep = () => keepDocument(run, text)
+  await step('deliver', () => deliver(run, text, h.resumePrompt, turnsClear, !h.resume, keep), keep)
   return 'document'
+}
+
+// [SP_CTX_02_21] KeepDocument, the copy of an undelivered document: `<old storage>/<id>/document.txt`,
+// beside the seed's files when there is a seed (id = its build time), else id = now.
+async function keepDocument(run: Run, text: string): Promise<string> {
+  const file = `${run.oldDir}/${run.seed?.id ?? run.io.now()}/document.txt`
+  const kept = await run.io.writeText(file, text).catch(() => false)
+  return kept ? ` The document is in ${file}.` : ` The document is lost: ${file} could not be written.`
 }
 
 // [SP_CTX_02_21] Any exception after the claim: the request never stays

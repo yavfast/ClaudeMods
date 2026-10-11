@@ -77,7 +77,8 @@ running ──handoffInFlight in this instance──▶ never due, not replaceab
 running ──any exception before /clear──▶ (none) via one Fail attempt (a failed write gives a toast only)
 running ──any exception after /clear, transcript, AfterClear not yet entered──▶ AfterClear once: with the agent's document → handed off (document); without → FailAfterClear + notice
 running ──an exception inside AfterClear──▶ caught there; no second /clear, no second delivery, at most one FailAfterClear
-running ──any exception after /clear, document way──▶ (none) via FailAfterClear, without a seed.json path
+running ──after /clear, document way or AfterClear with the document: Deliver fails──▶ (none) + report "handed off to <new> (document)"; a toast names the copy <old storage>/<id>/document.txt (HandDocument)
+running ──after /clear, document way or AfterClear with the document: the HandedOff write fails──▶ running; the document still delivered; a toast advises /handoff cancel in the old session
 ```
 
 | From | To | Condition | Side effects |
@@ -159,3 +160,4 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 |------|--------|
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §04 State Transitions (04_01–04_07) перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.states.sp.md](./context_editor.states.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фаза 2 (CF-2): applying → pending не змінює нічого, крім файлів архіву; збій після точки фіксації не додає звіту про збій (04_01) |
+| 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): після `/clear` способом `document` збої HandedOff і Deliver перехоплює HandDocument — замість FailAfterClear: «handed off» з копією недоставленого документа або `running` з порадою `/handoff cancel` (04_04) |

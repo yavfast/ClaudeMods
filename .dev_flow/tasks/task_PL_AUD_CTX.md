@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_PL_AUD_CTX`
 > **Created:** 2026-10-11 19:10
-> **Last updated:** 2026-10-11 20:40
+> **Last updated:** 2026-10-11 20:48
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-d5614704`
 > **Autonomy:** `full` — "Продовжуй автономно на свій вибір. Це технічні моменти, у яких я не розбираюсь, тож приймай рішення самостійно."
@@ -12,8 +12,8 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `plan` — [.dev_flow/audit/context-editor_20261011_182951.plan.md](../audit/context-editor_20261011_182951.plan.md) |
-| **Pipeline phase** | `implement` — Ф6a (CF-41) |
-| **Traceable ID** | `PL_AUD_CTX_P6A` |
+| **Pipeline phase** | `implement` — Ф7 (CF-15) |
+| **Traceable ID** | `PL_AUD_CTX_P7` |
 
 ## Intent
 
@@ -38,7 +38,7 @@
   - [x] Ф3+Ф4 (CF-3…CF-7) — якорі thinking-only, LocateSpan/RangeAfter, пін на злитому рядку, appendReport/keepOtherSteps, обмеження parseQueue; 559 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p3-results.md); правило STRUCT-01
   - [x] Ф5 (CF-8, CF-9) — рамка автора для тексту моделі в промптах (resume, документ передачі), cutDelivery повертає закривальні теги як їх пише хост; 565 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p5-results.md)
   - [x] Ф6 (CF-10…CF-14) — страхувальні тести, `tests/row-fixtures.ts`, `ApplyOptions.newId`; 565 → 606 тестів; знайдено дефект DocumentWay після /clear → CF-41
-  - [ ] Ф6a (CF-41) — DocumentWay після /clear: кроки HandedOff/Deliver з тостом, копія документа
+  - [x] Ф6a (CF-41) — DocumentWay після /clear: HandDocument (кроки HandedOff/Deliver з тостом), копія документа `<old>/<id>/document.txt` і при відмові хоста в промпті, і при ході в новій сесії; 606 → 610 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p6a-results.md); у backlog CF-42 (повтор передачі після збою HandedOff), CF-43 (fork-промпт потрапляє в документ як слова людини)
   - [ ] Ф7–Ф11 (CF-15…CF-23)
   - [ ] Ф12 (CF-24…CF-27)
 
@@ -52,6 +52,7 @@
 
 ## Shared Activity Log
 
+- 2026-10-11 20:48 [claude-session-d5614704] Ф6a закомічено; рев'ю WARNINGS (2 should, 2 prefer): відмова хоста в промпті й хід у новій сесії теж зберігають копію документа, тест «поруч із seed» посилено; повтор передачі після збою HandedOff → CF-42; живий прогін знайшов, що fork /handoff записує інструкцію мода як слова людини → CF-43.
 - 2026-10-11 20:40 [claude-session-d5614704] Ф6 закомічено; рев'ю WARNINGS (2 should, 6 prefer) виправлено; тести знайшли дефект DocumentWay (`handoff.ts:990–991`) — винесено у фазу Ф6a (CF-41), наступна; живий прогін не потрібен (лише тести).
 - 2026-10-11 20:25 [claude-session-d5614704] Ф5 закомічено; рев'ю PASS (5 prefer виправлено); живий прогін знайшов закривальний тег з атрибутом (`</pasted_content id="…">`) — виправлено; реалізатор був без Bash (блок перевірки безпеки), тести й tsc проганяв я; час попередніх записів виправлено за часом комітів (був вигаданий).
 
