@@ -11,6 +11,7 @@ import {
   fingerprint,
   formatReport,
   HEAD_ROWS,
+  indexRows,
   mergeCallRows,
   MAX_TEXT,
   ownerKey,
@@ -31,7 +32,7 @@ import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
-import { apiBlocks, errorText, findToolUse, isPlainUserRow, MARK, modText, resultsOf, squash, totalChars } from './rows'
+import { apiBlocks, errorText, isPlainUserRow, MARK, modText, resultsOf, squash, totalChars } from './rows'
 import { storageRefusal, type ChangeFn, type Read, type StorageState } from './store'
 
 export { ROW_WINDOW }
@@ -382,6 +383,14 @@ export function checkSeed(rows: readonly SessionMessage[]): string | undefined {
   if (rows[0]!.role !== 'user') return "the first row is not the person's"
   const calls = new Set<string>()
   const answers = new Set<string>()
+  // [PL_AUD_CTX_P11] index maps, built once (CF-23): the first row of each
+  // call and of each result, and for each row the next prompt row after it
+  const ix = indexRows(rows)
+  const nextPrompt: number[] = new Array(rows.length)
+  for (let i = rows.length - 1, p = rows.length; i >= 0; i--) {
+    nextPrompt[i] = p
+    if (isPlainUserRow(rows[i]!)) p = i
+  }
   for (const [i, r] of rows.entries()) {
     if (r.handle !== undefined) return `row ${i}: holds a handle`
     if (isBlank(r)) return `row ${i}: empty`
@@ -395,20 +404,15 @@ export function checkSeed(rows: readonly SessionMessage[]): string | undefined {
       if (answers.has(t.tool_use_id)) return `row ${i}: repeated result id ${t.tool_use_id}`
       answers.add(t.tool_use_id)
     }
-    // its result, in a later row, before any prompt row (a user row without results)
+    // its result, in a later row, before any prompt row (a user row without
+    // results); no result of it stands before row i, or that row failed first
     for (const u of r.toolUses) {
-      let ok = false
-      for (const later of rows.slice(i + 1)) {
-        if (resultsOf(later).some(t => t.tool_use_id === u.tool_use_id)) {
-          ok = true
-          break
-        }
-        if (isPlainUserRow(later)) break
-      }
-      if (!ok) return `row ${i}: call ${u.tool_use_id} has no result before the next prompt`
+      const res = ix.resultAt(u.tool_use_id)
+      if (res <= i || res >= nextPrompt[i]!) return `row ${i}: call ${u.tool_use_id} has no result before the next prompt`
     }
     for (const t of resultsOf(r)) {
-      if (findToolUse(rows.slice(0, i), t.tool_use_id) < 0) return `row ${i}: result ${t.tool_use_id} answers no call`
+      const call = ix.useAt(t.tool_use_id)
+      if (call < 0 || call >= i) return `row ${i}: result ${t.tool_use_id} answers no call`
     }
   }
   return undefined

@@ -287,11 +287,49 @@ export type UpdateOptions<U extends OnUnreadable> = {
 // The read a change sees: every state with 'change', else one with a value.
 export type Seen<T, U extends OnUnreadable> = U extends 'change' ? Read<T> : Readable<T>
 
+// [SP_CTX_01_07] [PL_AUD_CTX_P11] The cache of storage files of one module
+// instance (CF-22, conflict X1): a file's read as this instance last read or
+// wrote it, by path (the path holds the session's folder), valid in the
+// cache's epoch only. It serves views and gates only (`cached`, `peek`): a
+// read-modify-write always reads the file, so a second writer (another
+// process on the session, an old module instance) is seen at the next one
+// and never overwritten from a stale entry; a view may lag until then. A drop
+// (a new storage published: the session start or a switch) begins a new
+// epoch, so no read crosses a session; a read of the file renews the entry, a
+// write through the Store replaces it with the text written, a failed write
+// or a quarantine removes it. An unreadable read is never kept. A read that a
+// write, a move or a drop overtook keeps nothing.
+export type FileCache = {
+  epoch: number
+  entries: Map<string, { epoch: number; text?: string; read?: Readable<unknown> }>
+  // writes and quarantines per path, so a read in flight knows it was overtaken
+  changes: Map<string, number>
+}
+
+export function newFileCache(): FileCache {
+  return { epoch: 0, entries: new Map(), changes: new Map() }
+}
+
+// [SP_CTX_01_07] A new epoch: every entry goes.
+export function dropFileCache(cache: FileCache): void {
+  cache.epoch++
+  cache.entries.clear()
+}
+
 export type Store<T> = {
   readonly path: string
   // [SP_CTX_01_07] missing, ok, or unreadable (a failed read or parse); a
-  // failed existence check rejects
+  // failed existence check rejects. Always the file: every read-modify-write
+  // (update, and any read on the chain for a later write) sees a second
+  // writer; with a cache, the read renews its entry.
   read: () => Promise<Read<T>>
+  // [PL_AUD_CTX_P11] the read for a view or a gate that writes nothing: a
+  // valid cache entry, else the file. It may lag a second writer until the
+  // next read of the file.
+  cached: () => Promise<Read<T>>
+  // [PL_AUD_CTX_P11] the read a valid cache entry holds, without the file
+  // system and without waiting for the chain; undefined without one
+  peek: () => Readable<T> | undefined
   // a failed write rejects
   write: (value: T) => Promise<void>
   // moves the file aside to `<path>.bad-<ms>`; the new path, or undefined
@@ -312,10 +350,11 @@ export function jsonFile<T>(
   path: string,
   empty: () => T,
   parse: (text: string) => Read<T>,
-  opts: { lock?: Lock; written?: (value: T) => void } = {},
+  opts: { lock?: Lock; written?: (value: T) => void; cache?: FileCache } = {},
 ): Store<T> {
   const lock = opts.lock ?? NO_LOCK
-  const read = async (): Promise<Read<T>> => {
+  const cache = opts.cache
+  const fromFile = async (): Promise<Read<T>> => {
     if (!(await fs.exists(path))) return { state: 'missing', value: empty() }
     try {
       return parse(await fs.read(path))
@@ -323,13 +362,73 @@ export function jsonFile<T>(
       return { state: 'unreadable', reason: String(err) }
     }
   }
+  const changes = () => cache?.changes.get(path) ?? 0
+  // a change of the file through this store: a read in flight keeps nothing
+  const changing = () => {
+    if (!cache) return
+    cache.changes.set(path, changes() + 1)
+    cache.entries.delete(path)
+  }
+  const peek = (): Readable<T> | undefined => {
+    const hit = cache?.entries.get(path)
+    if (!cache || !hit || hit.epoch !== cache.epoch) return undefined
+    if (!hit.read && hit.text !== undefined) {
+      let got: Read<T>
+      try {
+        got = parse(hit.text)
+      } catch (err) {
+        got = { state: 'unreadable', reason: String(err) }
+      }
+      if (got.state === 'unreadable') {
+        cache.entries.delete(path)
+        return undefined
+      }
+      hit.read = got
+      hit.text = undefined
+    }
+    return hit.read as Readable<T> | undefined
+  }
+  // [SP_CTX_01_07] the file itself; its read replaces the entry unless a
+  // write, a move or a new epoch overtook it
+  const read = async (): Promise<Read<T>> => {
+    if (!cache) return fromFile()
+    const epoch = cache.epoch
+    const seen = changes()
+    const got = await fromFile()
+    if (cache.epoch === epoch && changes() === seen) {
+      if (got.state === 'unreadable') cache.entries.delete(path)
+      else cache.entries.set(path, { epoch, read: got })
+    }
+    return got
+  }
+  const cached = async (): Promise<Read<T>> => peek() ?? read()
+  // A write or a move counts as a change when it starts and again when it
+  // ends: nothing a read overlapping it stored (it may have seen either text)
+  // outlives the end, which replaces or drops the entry.
   const write = async (value: T): Promise<void> => {
-    await fs.write(path, JSON.stringify(value))
+    const text = JSON.stringify(value)
+    changing()
+    const epoch = cache?.epoch
+    const seen = changes()
+    try {
+      await fs.write(path, text)
+    } catch (err) {
+      changing()
+      throw err
+    }
+    const alone = changes() === seen
+    changing()
+    if (cache && alone && cache.epoch === epoch) cache.entries.set(path, { epoch, text })
     opts.written?.(value)
   }
   const quarantine = async (): Promise<string | undefined> => {
     const moved = `${path}.bad-${fs.now()}`
-    return (await fs.move(path, moved).catch(() => false)) ? moved : undefined
+    changing()
+    try {
+      return (await fs.move(path, moved).catch(() => false)) ? moved : undefined
+    } finally {
+      changing()
+    }
   }
   const update = <U extends OnUnreadable = 'skip'>(change: (read: Seen<T, U>) => T | undefined | Promise<T | undefined>, o: UpdateOptions<U> = {}): Promise<boolean> =>
     lock(async () => {
@@ -349,7 +448,7 @@ export function jsonFile<T>(
       await write(next)
       return true
     }, o.within)
-  return { path, read, write, quarantine, onChain: lock, update }
+  return { path, read, cached, peek, write, quarantine, onChain: lock, update }
 }
 
 // ---- [PL_AUD_CTX_P7] The two read-modify-write contracts of the ports

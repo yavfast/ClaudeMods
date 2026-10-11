@@ -13,17 +13,20 @@ import {
   peekHostId,
   readView,
   recordBoundary,
+  snapshotOf,
   startHostId,
   type Boundary,
   type BoundaryMemory,
   type RefResolver,
+  type Snapshot,
+  type View,
 } from './edits'
 import { afterTurn, enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
 import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion, type HintIO } from './hints'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, blockReport, contextList, detectOptimize, introFor, withIntroduced, type BlockIO, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
-import { contextNote, noteReminders, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
+import { adviceFor, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { modText } from './rows'
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
@@ -31,8 +34,10 @@ import {
   carry,
   changeOf,
   dirOf,
+  dropFileCache,
   ensureStorage as ensureIn,
   jsonFile,
+  newFileCache,
   newStorageMemory,
   prepareStorage as prepareFor,
   publishedDir,
@@ -99,6 +104,9 @@ const copied = new Set<string>()
 const anchorMem = newAnchorMemory()
 // [SP_CTX_02_37] The request size of the last size check without a hint.
 const hintMemo = newHintMemo()
+// [SP_CTX_01_07] [PL_AUD_CTX_P11] The cache of the tag and alias registries:
+// a new epoch each time a storage is published (a session start or switch).
+const fileCache = newFileCache()
 
 function noteCopies(rows: readonly SessionMessage[] | undefined): void {
   copied.clear()
@@ -140,8 +148,8 @@ function stores($: EngineInterface, dir: string): Stores {
         if (dir === publishedDir(storage)) $.ui.status(q.edits.length ? `${q.edits.length} context edit(s) queued` : undefined)
       },
     }),
-    tags: jsonFile(fs, `${dir}/tags.json`, () => ({ ...EMPTY_REGISTRY }), parseRegistry, { lock: chainOf($, 'tags') }),
-    aliases: jsonFile(fs, `${dir}/aliases.json`, () => ({ ...EMPTY_ALIASES, map: {} }), parseAliases, { lock: chainOf($, 'aliases') }),
+    tags: jsonFile(fs, `${dir}/tags.json`, () => ({ ...EMPTY_REGISTRY }), parseRegistry, { lock: chainOf($, 'tags'), cache: fileCache }),
+    aliases: jsonFile(fs, `${dir}/aliases.json`, () => ({ ...EMPTY_ALIASES, map: {} }), parseAliases, { lock: chainOf($, 'aliases'), cache: fileCache }),
     deliveries: jsonFile(fs, `${dir}/deliveries.json`, (): Deliveries => ({ items: [] }), parseDeliveries, { lock: chainOf($, 'deliveries') }),
     journal: jsonFile(fs, `${dir}/journal.json`, () => ({ ...EMPTY_JOURNAL, entries: [] }), parseJournal, { lock: chainOf($, 'journal') }),
   }
@@ -187,7 +195,7 @@ async function readBoundaryText($: EngineInterface, dir: string): Promise<string
 
 // [SP_CTX_02_18] The rows of the current conversation, the transcript from
 // the last compaction's head on, and a key that changes with that start.
-function view($: EngineInterface): Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[]; key: string }> {
+function view($: EngineInterface): Promise<View> {
   return readView({
     hostId: () => hostIdOf($),
     messages: () => $.session.messages(),
@@ -200,13 +208,15 @@ function view($: EngineInterface): Promise<{ transcript: readonly SessionMessage
   })
 }
 
-async function conversation($: EngineInterface): Promise<readonly SessionMessage[]> {
-  return (await view($)).rows
+// [SP_CTX_02_18] [PL_AUD_CTX_P11] The reads of the conversation of one event
+// or tool call: CurrentRows with Key() and the API form, each once.
+function snapshot($: EngineInterface): Snapshot {
+  return snapshotOf({ view: () => view($), api: () => apiMessages($) })
 }
 
 // [SP_CTX_02_18] Indexes from a listing taken before the start moved name other rows.
-async function staleIndexes($: EngineInterface): Promise<boolean> {
-  return listed.key !== (await view($)).key
+async function staleIndexes(snap: Snapshot): Promise<boolean> {
+  return listed.key !== (await snap.key())
 }
 
 // [SP_CTX_02_18] RecordBoundary's write into the storage `dir`; once written
@@ -222,7 +232,7 @@ async function writeBoundaryAt($: EngineInterface, dir: string, b: Boundary): Pr
 // unreadable registry), "last" on the rows the caller reads.
 async function resolver($: EngineInterface, dir: string | undefined, callId: unknown): Promise<RefResolver> {
   const id = typeof callId === 'string' && callId ? callId : undefined
-  return refResolver(dir ? await stores($, dir).aliases.read() : { state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }, id)
+  return refResolver(dir ? await stores($, dir).aliases.cached() : { state: 'missing', value: { ...EMPTY_ALIASES, map: {} } }, id)
 }
 
 // [SP_CTX_02_31] Each change on the journal's own chain, in the background,
@@ -286,6 +296,8 @@ function prepareIO($: EngineInterface, inCompaction: boolean): PrepareIO {
     published: () => {
       ownBoundary.own = undefined
       listed.key = undefined
+      // [SP_CTX_01_07] no cached read crosses into another session
+      dropFileCache(fileCache)
     },
     status: text => $.ui.status(text),
   }
@@ -409,9 +421,10 @@ function usageInfo($: EngineInterface): Promise<UsageInfo> {
 async function dueLines($: EngineInterface): Promise<string[]> {
   const dir = await storageDir($).catch(() => undefined)
   if (!dir) return []
-  return stores($, dir)
-    .tags.onChain(() => noteReminders(tagIO($, dir)))
-    .catch((): string[] => [])
+  const tags = stores($, dir).tags
+  // [PL_AUD_CTX_P11] a known registry without a pending reminder: no chain, no read
+  if (!reminderPending(tags.peek())) return []
+  return tags.onChain(() => noteReminders(tagIO($, dir))).catch((): string[] => [])
 }
 
 async function remindAfter<T extends object>($: EngineInterface, tool: string, agentId: unknown, out: T): Promise<T> {
@@ -423,20 +436,21 @@ async function remindAfter<T extends object>($: EngineInterface, tool: string, a
 // usage first, the breakdown only for the size trigger, the calibration in
 // the background (SoftHint does not wait for it), the hint state on the
 // registry's chain (true when written).
-function hintIO($: EngineInterface, dir: string): HintIO {
+function hintIO($: EngineInterface, dir: string, snap: Snapshot = snapshot($)): HintIO {
   const s = stores($, dir)
   return {
-    readTags: s.tags.read,
-    readAliases: () => s.aliases.onChain(() => s.aliases.read()),
+    // [SP_CTX_01_07] views and gates: the cache; the claim reads the file (changeTags)
+    readTags: s.tags.cached,
+    readAliases: () => s.aliases.onChain(() => s.aliases.cached()),
     readQueue: s.queue.read,
-    rows: () => conversation($),
+    rows: snap.rows,
     request: async () => {
       const u = await $.session.usage()
       return { tokens: u.context.tokens, window: u.context.window }
     },
     usage: () => usageInfo($),
     // [SP_CTX_02_38] the responses of the rows and the model's cost ratios
-    api: () => apiMessages($),
+    api: snap.api,
     model: () => $.session.model(),
     updateTags: updateOf(s.tags),
     changeTags: changeOf(s.tags),
@@ -463,20 +477,18 @@ function suggestionFor($: EngineInterface, dir: string): Promise<string | undefi
   )
 }
 
-// [SP_CTX_02_29] BlockReport bound to the host. [SP_CTX_02_34]
-// [SP_CTX_02_28] A change of the telemetry (a new calibration, the measured
-// apply consumed) goes into the registry in `dir`, on its chain.
-function blockIO($: EngineInterface, dir: string): BlockIO {
+// [SP_CTX_02_29] BlockReport's host (the conversation comes from the call's
+// snapshot, tagCallIO). [SP_CTX_02_34] [SP_CTX_02_28] A change of the
+// telemetry (a new calibration, the measured apply consumed) goes into the
+// registry in `dir`, on its chain.
+function blockHost($: EngineInterface, dir: string): BlockHost {
   const s = stores($, dir)
   return {
-    key: async () => (await view($)).key,
-    rows: () => conversation($),
-    readTags: s.tags.read,
+    // [SP_CTX_01_07] a view: the cache
+    readTags: s.tags.cached,
     updateTags: updateOf(s.tags),
-    media: async () => collectMedia(await apiMessages($), await conversation($)).found,
     usage: () => usageInfo($),
     journal: async () => (await journalNow($, dir)) ?? { applications: 0, rereads: 0, archiveRereads: 0 },
-    api: () => apiMessages($),
     setListed: key => {
       listed.key = key
     },
@@ -486,15 +498,15 @@ function blockIO($: EngineInterface, dir: string): BlockIO {
 // [SP_CTX_02_30] DetectOptimize bound to the host in the storage `dir`
 // (undefined: none, the mark is ignored): each queue change on the queue's
 // chain, each registry change on the registry's, never one inside the other.
-function detectIO($: EngineInterface, dir: string | undefined): DetectIO {
+function detectIO($: EngineInterface, dir: string | undefined, snap: Snapshot = snapshot($)): DetectIO {
   const s = () => stores($, need(dir))
   return {
     ready: async () => dir !== undefined,
     readQueue: async () => s().queue.read(),
     changeQueue: async change => changeOf(s().queue)(change),
     changeTags: async change => changeOf(s().tags)(change),
-    rows: () => conversation($),
-    replace: async () => s().queue.onChain(() => queueTagReplacements(tagIO($, dir))),
+    rows: snap.rows,
+    replace: async () => s().queue.onChain(() => queueTagReplacements(tagIO($, dir, snap))),
     status: text => $.ui.status(text),
   }
 }
@@ -564,10 +576,10 @@ function seedIO($: EngineInterface): SeedIO {
 
 // [SP_CTX_02_11] The registry's port in the storage `dir`; undefined: none,
 // and the caller refuses before it reads.
-function tagIO($: EngineInterface, dir: string | undefined): TagIO {
+function tagIO($: EngineInterface, dir: string | undefined, snap: Snapshot = snapshot($)): TagIO {
   const s = () => stores($, need(dir))
   return {
-    rows: () => conversation($),
+    rows: snap.rows,
     readTags: () => s().tags.read(),
     writeTags: reg => s().tags.write(reg),
     readQueue: () => s().queue.read(),
@@ -598,13 +610,14 @@ function deny(reason: string) {
 }
 
 // [SP_CTX_02_01] context_list bound to the host.
-function listIO($: EngineInterface): ListIO {
+function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
   return {
-    view: () => view($),
-    api: () => apiMessages($),
+    view: snap.view,
+    api: snap.api,
     storage: () => storageDir($),
-    readTags: dir => stores($, dir).tags.read(),
-    readAliases: dir => stores($, dir).aliases.read(),
+    // [SP_CTX_01_07] a view: the cache
+    readTags: dir => stores($, dir).tags.cached(),
+    readAliases: dir => stores($, dir).aliases.cached(),
     usage: () => usageInfo($),
     updateTags: dir => updateOf(stores($, dir).tags),
     journal: dir => journalNow($, dir),
@@ -617,13 +630,13 @@ function listIO($: EngineInterface): ListIO {
 
 // [SP_CTX_02_11] [SP_CTX_02_32] What context_tag and context_note take from
 // the host first, in this order: the storage (none for a subagent), the ref
-// resolver and whether the listed indexes are stale.
-async function registryCall($: EngineInterface, e: { agentId?: string; tool_use_id?: unknown }) {
+// resolver and whether the listed indexes are stale, on the call's `snap`.
+async function registryCall($: EngineInterface, e: { agentId?: string; tool_use_id?: unknown }, snap: Snapshot) {
   const st = e.agentId ? undefined : await ensureStorage($)
   const dir = st && dirOf(st)
   const down = st && 'reason' in st ? st.reason : undefined
   const refs = e.agentId ? NO_REFS : await resolver($, dir, e.tool_use_id)
-  return { dir, down, refs, stale: !!dir && (await staleIndexes($)) }
+  return { dir, down, refs, stale: !!dir && (await staleIndexes(snap)) }
 }
 
 export const register: Register = on => {
@@ -650,9 +663,10 @@ export const register: Register = on => {
     const { dir } = st
     const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
     const out = await stores($, dir).queue.onChain(async held => {
-      const { rows, key } = await view($)
+      const snap = snapshot($)
+      const { rows, key } = await snap.view()
       // [SP_CTX_02_10] the API form is read only for a describe
-      const found = needsApi(args) ? collectMedia(await apiMessages($), rows).found : undefined
+      const found = needsApi(args) ? collectMedia(await snap.api(), rows).found : undefined
       const pins = pinsFrom(await stores($, dir).tags.read(), rows)
       return contextEdit(queueIO($, dir), rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
     })
@@ -663,22 +677,29 @@ export const register: Register = on => {
   // [SP_CTX_02_11]
   on('tool.call', { tool: 'mcp__context-editor__context_tag' }, async ($, e) => {
     const args = e as unknown as TagArgs
-    const { dir, down, refs, stale } = await registryCall($, e)
+    // [PL_AUD_CTX_P11] one read of the conversation for the whole call: the
+    // stale check, the requests, the replacements and the close reports
+    const snap = snapshot($)
+    const { dir, down, refs, stale } = await registryCall($, e, snap)
     // the registry's read-modify-write on its chain; the replacements on the
     // queue's afterwards, never one chain inside the other; the deliveries
     // read inside the registry's chain (tags → deliveries)
     let held: Held | undefined
-    const io: TagIO = {
-      ...tagIO($, dir),
-      onRegistry: work =>
-        chainOf($, 'tags')(h => {
-          held = h
-          return work().finally(() => (held = undefined))
-        }),
-      replace: () => chainOf($, 'queue')(() => queueTagReplacements(tagIO($, dir))),
-      report: (block, replaced) => blockReport(blockIO($, need(dir)), block, replaced),
-      deliveries: () => deliveredNow($, need(dir), held),
-    }
+    const { rows: _rows, ...registry } = tagIO($, dir, snap)
+    const io = tagCallIO(
+      snap,
+      {
+        ...registry,
+        onRegistry: work =>
+          chainOf($, 'tags')(h => {
+            held = h
+            return work().finally(() => (held = undefined))
+          }),
+        deliveries: () => deliveredNow($, need(dir), held),
+      },
+      work => chainOf($, 'queue')(work),
+      () => blockHost($, need(dir)),
+    )
     const out = await contextTag(io, { agentId: e.agentId, tags: args.tags }, down, refs, stale, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
     return 'deny' in out ? deny(out.deny) : remindAfter($, TAG, e.agentId, { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`tagging failed: ${next.error.kind}`)))
@@ -688,8 +709,9 @@ export const register: Register = on => {
   // a session has loaded it.
   on('tool.call', { tool: /^mcp__context-editor__context_note$/ }, async ($, e) => {
     const args = e as unknown as NoteArgs
-    const { dir, down, refs, stale } = await registryCall($, e)
-    const out = await contextNote({ ...tagIO($, dir), onRegistry: work => chainOf($, 'tags')(work) }, { agentId: e.agentId, notes: args.notes }, down, refs, stale)
+    const snap = snapshot($)
+    const { dir, down, refs, stale } = await registryCall($, e, snap)
+    const out = await contextNote({ ...tagIO($, dir, snap), onRegistry: work => chainOf($, 'tags')(work) }, { agentId: e.agentId, notes: args.notes }, down, refs, stale)
     return 'deny' in out ? deny(out.deny) : remindAfter($, NOTE, e.agentId, { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`noting failed: ${next.error.kind}`)))
 
@@ -894,8 +916,8 @@ export const register: Register = on => {
     const s = stores($, dir)
     return deliverReport({
       readQueue: s.queue.read,
-      intro: async () => introFor(await s.tags.read()),
-      advice: async () => adviceFor(await s.tags.read()),
+      intro: async () => introFor(await s.tags.cached()),
+      advice: async () => adviceFor(await s.tags.cached()),
       inTurn: () => turns.inTurn,
       enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),
       markIntroduced: async () => void (await changeOf(s.tags)(withIntroduced)),

@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_PL_AUD_CTX`
 > **Created:** 2026-10-11 19:10
-> **Last updated:** 2026-10-11 22:23
+> **Last updated:** 2026-10-11 23:01
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-d5614704`
 > **Autonomy:** `full` — "Продовжуй автономно на свій вибір. Це технічні моменти, у яких я не розбираюсь, тож приймай рішення самостійно."
@@ -12,8 +12,8 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `plan` — [.dev_flow/audit/context-editor_20261011_182951.plan.md](../audit/context-editor_20261011_182951.plan.md) |
-| **Pipeline phase** | `implement` — Ф11 (CF-21, CF-22, CF-23) |
-| **Traceable ID** | `PL_AUD_CTX_P11` |
+| **Pipeline phase** | `propagate` — Ф12 (CF-24…CF-27) |
+| **Traceable ID** | `PL_AUD_CTX_P12` |
 
 ## Intent
 
@@ -43,7 +43,7 @@
   - [x] Ф8 (CF-16) — один ResponseStart: `isPromptRow` і `responses(rows, api)` у `edits.ts`, `cacheShape` один раз на пропозицію, LookbackStart і телеметрія йдуть за ResponseStart (читають форму API); 627 → 631 тест; живий прогін PASS (.dev_flow/cache/live-test/audit-p8-results.md); backlog CF-45, CF-46
   - [x] Ф9 (CF-17, CF-18) — `hooks/rows.ts` (L0): предикати рядків (`isPromptRow`, `isPromptRowStrict`, `isPlainUserRow`, `isEmptyRow`, `resultsOf`), пошук пари, розміри, `squash`/`sameText`, `apiBlocks`, `errorText`, `worthEditing`, `MARK`, `PREFIX`/`modText` (53 літерали), `PLAIN_RATIO`; поведінка й тексти байт у байт; `toolResults ?? []` 54 → 1; 631 → 635 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p9-results.md)
   - [x] Ф10 (CF-19, CF-20) — логіка `register.ts` у порти: `contextList`/`listLabels`/`listAliases` (stages), `afterTurn` (flush; кроки стійкі й до синхронного кидка), `observeCompaction`/`compactionFailed` (compaction), `appendRow`/`pinsFrom` (tags), `parseSeedNames` (handoff); `hooks/tools.ts` — назви, описи, схеми (тексти байт у байт); `register.ts` 1249 → 910 рядків; 635 → 658 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p10-results.md); backlog CF-47, CF-48
-  - [ ] Ф11 (CF-21…CF-23)
+  - [x] Ф11 (CF-21…CF-23) — знімок розмови на подію (`Snapshot` у `edits.ts`, `tagCallIO` у `stages.ts`: закриття етапу читає розмову раз), кеш `tags.json`/`aliases.json` у `store.ts` (ключ — тека сесії й епоха; лише для показу й воріт, кожне читання-змінювання-запис читає файл), ворота `reminderPending`/`autoTagNeeded`, витіснення псевдоніма за O(1), `RowIndex` для цілей тегів і нотаток і CheckSeed; 658 → 673 тести; живий прогін PASS (.dev_flow/cache/live-test/audit-p11-results.md; час tool.call ~62 мс незалежно від 2→62 тегів); backlog CF-49…CF-53
   - [ ] Ф12 (CF-24…CF-27)
 
 ## Coordination Notes
@@ -56,6 +56,7 @@
 
 ## Shared Activity Log
 
+- 2026-10-11 23:01 [claude-session-d5614704] Ф11 закомічено; рев'ю FAIL → must (гонка кешу: читання, що почалося під час запису, лишало старий текст) і should (другий записувач губив зміни через кеш у RMW) виправлено — запис і перенесення рахуються зміною на початку й у кінці, кеш лише для показу й воріт; повторне рев'ю PASS with WARNINGS (3 prefer: формулювання §01_07 і коментаря `store.ts` виправлено, відставання `marks` у hints з другим записувачем прийнято); живий прогін PASS (/clear, /resume, зовнішня правка видна з нової епохи); знахідки прогону → CF-51 (зникає tool_reference у перебудованому результаті ToolSearch → дублі пар після /resume), CF-52, CF-53.
 - 2026-10-11 22:23 [claude-session-d5614704] Ф10 закомічено; рев'ю PASS with WARNINGS (4 prefer: коментар HandoffIO, тести afterTurn — паралельна передача й тека в момент події, синхронний кидок кроку тепер не зупиняє наступний; рядок PinsFrom у §02_03 — виправлено; дублі літералів → CF-47); живий прогін PASS (6 сценаріїв, 0 помилок мода); хід оптимізації стискає власний виклик `context_tag` → CF-48.
 - 2026-10-11 21:58 [claude-session-d5614704] Ф9 закомічено; рев'ю PASS with WARNINGS (1 should — таблиця шарів `docs/_framework.md` перебудована з імпортів; 3 prefer — `isBig` для прапорця `!`, назва тесту, порожні рядки) — усі виправлено; живий прогін PASS; підтверджено відоме: рядок `/compact context-editor: apply queued edits` модель приписує людині (backlog).
 - 2026-10-11 21:41 [claude-session-d5614704] Ф8 закомічено; рев'ю PASS (4 prefer: 3 виправлено — порожній рядок без зв'язку не «відомий», LookbackStart за ResponseStart, kinds() для порожнього рядка; 1 → CF-45); живий прогін PASS, випадок «текст після викликів в одному повідомленні» наживо не відтворюється (haiku пише текст окремим повідомленням) — покрито тестами; спостереження: дублі після --resume і без keep_cache → CF-46, вигадані цитати виводу мода → P23 задачі етапів.

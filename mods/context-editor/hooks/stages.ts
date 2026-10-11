@@ -15,6 +15,7 @@ import {
   estimate,
   fingerprint,
   fullRow,
+  indexRows,
   listMode,
   listRows,
   locate,
@@ -25,13 +26,15 @@ import {
   type MediaSizes,
   type Produced,
   type QueuedEdit,
+  type RowIndex,
+  type Snapshot,
 } from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart } from './cache'
-import { charsOf, errorText, findToolResult, findToolUse, modText, resultsOf, totalChars } from './rows'
+import { charsOf, errorText, findToolUse, modText, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
-import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, type ReviewGroup, type Tag, type TagRegistry } from './tags'
+import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
 import { afterReminders, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
 
 // ---- [SP_CTX_01_12] constants
@@ -396,10 +399,11 @@ export async function telemetry(
       startLost: markIndex(rows, b.after) === 'lost',
     }
   }
-  t.reviews = activeReviews(rows, reg)
-  const slot = stateRow(rows, reg)
+  const ix = indexRows(rows)
+  t.reviews = activeReviews(rows, reg, ix)
+  const slot = stateRow(rows, reg, ix)
   t.state = slot === undefined ? 'none' : slot < 0 ? 'lost' : { row: slot }
-  t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target)).length
+  t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target, ix)).length
   t.notes = { count: reg.notes.length, reminders: reg.notes.filter(n => n.remindAt !== undefined).length }
   return t
 }
@@ -609,13 +613,35 @@ export type BlockIO = {
   setListed: (key: string) => void
 }
 
+// [SP_CTX_02_29] What BlockReport takes from the host besides the conversation.
+export type BlockHost = Omit<BlockIO, 'key' | 'rows' | 'media' | 'api'>
+
+// [SP_CTX_02_18] [PL_AUD_CTX_P11] BlockReport on the snapshot of its call:
+// Key(), the rows, the media sizes and the Cache line from one read each.
+export function snapshotBlockIO(snap: Snapshot, host: BlockHost): BlockIO {
+  return { ...host, key: snap.key, rows: snap.rows, media: async () => collectMedia(await snap.api(), await snap.rows()).found, api: snap.api }
+}
+
+// [SP_CTX_02_11] [PL_AUD_CTX_P11] The ports of one context_tag call over one
+// snapshot (CF-21): the requests, QueueTagReplacements (on the queue's chain,
+// through `onQueue`) and each close report read the same rows. `block` gives
+// the report's host once a close needs it. register.ts binds the rest.
+export function tagCallIO(snap: Snapshot, registry: Omit<TagIO, 'rows' | 'replace' | 'report'>, onQueue: <T>(work: () => Promise<T>) => Promise<T>, block: () => BlockHost): TagIO {
+  const base: TagIO = { ...registry, rows: snap.rows }
+  return {
+    ...base,
+    replace: () => onQueue(() => queueTagReplacements(base)),
+    report: (b, replaced) => blockReport(snapshotBlockIO(snap, block()), b, replaced),
+  }
+}
+
 // [SP_CTX_02_13] What QueueTagReplacements queued.
 // `freed`: Estimate of the replaced text less the notes ([SP_CTX_02_34])
 export type Replaced = { queued: number; freed: string }
 
 // The rows of a tag's target that lie in a..e, the first of them, or -1.
-function firstIn(rows: readonly SessionMessage[], tag: Tag, a: number, e: number): number {
-  const at = (resolveTarget(rows, tag.target) ?? []).filter(i => i >= a && i <= e)
+function firstIn(rows: readonly SessionMessage[], tag: Tag, a: number, e: number, ix: RowIndex): number {
+  const at = (resolveTarget(rows, tag.target, ix) ?? []).filter(i => i >= a && i <= e)
   return at.length ? Math.min(...at) : -1
 }
 
@@ -628,12 +654,12 @@ function indexList(name: string, at: number[]): string {
 }
 
 // [SP_CTX_02_29] The pairs of REPRODUCIBLE_TOOLS whose call and result rows lie in a..e.
-function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number): number {
+function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number, ix: RowIndex): number {
   let n = 0
   for (let i = a; i <= e; i++)
     for (const u of rows[i]!.toolUses) {
       if (!REPRODUCIBLE_TOOLS.includes(u.tool)) continue
-      const res = findToolResult(rows, u.tool_use_id)
+      const res = ix.resultAt(u.tool_use_id)
       if (res >= a && res <= e) n++
     }
   return n
@@ -677,17 +703,18 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     // phase 15), the disposables, and the reproducible pairs of the block
     const reviews = new Map<ReviewGroup, number[]>()
     const disposables: number[] = []
+    const ix = indexRows(rows)
     for (const tag of reg?.tags ?? []) {
       if (tag.kind === 'review' && isActive(tag, reg!.turn)) {
-        const at = firstIn(rows, tag, a, e as number)
+        const at = firstIn(rows, tag, a, e as number, ix)
         if (at >= 0) reviews.set(reviewGroup(tag), [...(reviews.get(reviewGroup(tag)) ?? []), at])
       }
       if (tag.kind === 'disposable') {
-        const at = firstIn(rows, tag, a, e as number)
+        const at = firstIn(rows, tag, a, e as number, ix)
         if (at >= 0) disposables.push(at)
       }
     }
-    const repro = reproduciblePairs(rows, a, e as number)
+    const repro = reproduciblePairs(rows, a, e as number, ix)
     const cand = [
       ...REVIEW_GROUPS.map(g => indexList(groupName(g), reviews.get(g) ?? [])),
       indexList('disposable', disposables),

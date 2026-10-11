@@ -15,6 +15,7 @@ import {
   noteLines,
   noteReminders,
   rebindNotes,
+  reminderPending,
   remindable,
   remindsAfter,
   withReminderLines,
@@ -454,4 +455,15 @@ test('afterReminders — the registry the listing counts: due reminders taken as
   expect(counted.notes.map(n => n.remindAt)).toEqual([undefined, 9])
   expect(g.notes[0]!.remindAt).toBe(5)
   expect(telemetryText(await telemetry(rows(), counted, async () => ({ context: { window: 1000 } })))).toContain('Notes: 2 (1 with a reminder pending)')
+})
+
+// ---- [SP_CTX_02_33] [PL_AUD_CTX_P11] the gate before the registry's chain
+
+test('ReminderPending — ворота в пам\'яті: a known registry without a pending remindAt skips; one with a pending remindAt, an unknown one (no cached read) or an unreadable one goes to NoteReminders', async () => {
+  const note = { id: 'n1', target: { tool_use_id: 'a' }, text: 'x', createdTurn: 0 }
+  expect(reminderPending(okRead(reg({ notes: [note] })))).toBe(false)
+  expect(reminderPending(missingRead(reg()))).toBe(false)
+  expect(reminderPending(okRead(reg({ notes: [{ ...note, remindAt: 3 }] })))).toBe(true)
+  expect(reminderPending(undefined)).toBe(true)
+  expect(reminderPending(unreadableRead('x'))).toBe(true)
 })

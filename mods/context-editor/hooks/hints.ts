@@ -12,7 +12,7 @@
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, aliasLine, type AliasRegistry } from './aliases'
 import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, cacheShape, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
-import { REPRODUCIBLE_TOOLS, touchedBy, type QueuedEdit } from './edits'
+import { indexRows, REPRODUCIBLE_TOOLS, touchedBy, type QueuedEdit } from './edits'
 import { MARK, PLAIN_RATIO, resultsOf, rowChars, totalChars } from './rows'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -99,24 +99,26 @@ export type Candidate = { alias?: string; row: number; chars: number; reproducib
 export function candidates(rows: readonly SessionMessage[], reg: TagRegistry, queued: readonly QueuedEdit[], aliases: ReadonlyMap<string, string>): Candidate[] {
   const busyIds = new Set<string>()
   const busyRows = new Set<number>()
+  const ix = indexRows(rows)
   for (const edit of queued) {
-    const t = touchedBy(rows, edit)
+    const t = touchedBy(rows, edit, ix)
     for (const id of t?.ids ?? []) busyIds.add(id)
     for (const i of t?.rows ?? []) busyRows.add(i)
   }
   const out: Candidate[] = []
   for (const tag of reg.tags) {
     if (tag.kind !== 'review' || !isActive(tag, reg.turn)) continue
-    const at = resolveTarget(rows, tag.target)
+    const at = resolveTarget(rows, tag.target, ix)
     if (!at || at.some(i => busyRows.has(i))) continue
     if ('tool_use_id' in tag.target) {
       const id = tag.target.tool_use_id
       if (busyIds.has(id)) continue
-      const text = rows.flatMap(resultsOf).find(t => t.tool_use_id === id)?.text ?? ''
+      // a resolved pair: both rows are there
+      const text = resultsOf(rows[ix.resultAt(id)]!).find(t => t.tool_use_id === id)?.text ?? ''
       // a result already replaced by the mod is no candidate
       if (text.startsWith(MARK)) continue
       const alias = aliases.get(id)
-      const tool = rows.flatMap(r => r.toolUses).find(u => u.tool_use_id === id)?.tool
+      const tool = rows[ix.useAt(id)]!.toolUses.find(u => u.tool_use_id === id)?.tool
       out.push({ ...(alias ? { alias } : {}), row: Math.min(...at), chars: text.length, reproducible: tool !== undefined && REPRODUCIBLE_TOOLS.includes(tool) })
     } else out.push({ row: Math.min(...at), chars: at.reduce((n, i) => n + rowChars(rows[i]!), 0), reproducible: false })
   }

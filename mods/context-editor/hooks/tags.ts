@@ -2,6 +2,7 @@ import type { SessionMessage } from 'claude-code'
 import {
   describeEdit,
   fingerprint,
+  indexRows,
   locate,
   locateSpan,
   MAX_QUEUE_EDITS,
@@ -22,6 +23,7 @@ import {
   type Produced,
   type QueuedEdit,
   type RefResolver,
+  type RowIndex,
 } from './edits'
 import { MAX_QUEUE_BYTES, personTagWarning, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
@@ -202,37 +204,38 @@ export function isActive(tag: Tag, turn: number): boolean {
 }
 
 // The rows a tag's target is on now: both rows of a pair, the located row,
-// or every row of a range whose ends are both found.
-export function resolveTarget(rows: readonly SessionMessage[], target: TagTarget): number[] | undefined {
-  if ('tool_use_id' in target) return touchedBy(rows, { op: 'drop', tool_use_id: target.tool_use_id })?.rows
+// or every row of a range whose ends are both found. `ix`: the index of
+// `rows`, built once by a caller that resolves many targets on them.
+export function resolveTarget(rows: readonly SessionMessage[], target: TagTarget, ix: RowIndex = indexRows(rows)): number[] | undefined {
+  if ('tool_use_id' in target) return touchedBy(rows, { op: 'drop', tool_use_id: target.tool_use_id }, ix)?.rows
   if (!isRange(target)) {
-    const at = locate(rows, target.anchor, target.hint)
+    const at = locate(rows, target.anchor, target.hint, ix)
     return at < 0 ? undefined : [at]
   }
   // [SP_CTX_02_04] LocateSpan: a thinking-only first row is found from the last
-  const span = locateSpan(rows, target, { anchor: target.toAnchor, hint: target.toHint })
+  const span = locateSpan(rows, target, { anchor: target.toAnchor, hint: target.toHint }, ix)
   return !span || span.to <= span.from ? undefined : Array.from({ length: span.to - span.from + 1 }, (_, k) => span.from + k)
 }
 
 // [SP_CTX_01_09] The row of the state slot on `rows`: undefined without a
 // state tag, -1 when its row is not found.
-export function stateRow(rows: readonly SessionMessage[], reg: TagRegistry): number | undefined {
+export function stateRow(rows: readonly SessionMessage[], reg: TagRegistry, ix?: RowIndex): number | undefined {
   const tag = reg.tags.find(t => t.kind === 'state')
   if (!tag || !('anchor' in tag.target)) return undefined
-  return locate(rows, tag.target.anchor, tag.target.hint)
+  return locate(rows, tag.target.anchor, tag.target.hint, ix)
 }
 
 // [SP_CTX_02_03] The pinned targets on `rows`, as prepare takes them, and the
 // row of the state slot: ScreenPinned and PrepareEdits read both.
-export function pinnedTargets(rows: readonly SessionMessage[], reg: TagRegistry): Pinned {
+export function pinnedTargets(rows: readonly SessionMessage[], reg: TagRegistry, ix: RowIndex = indexRows(rows)): Pinned {
   const ids = new Set<string>()
   const at = new Set<number>()
   for (const tag of reg.tags) {
     if (tag.kind !== 'pin') continue
     if ('tool_use_id' in tag.target) ids.add(tag.target.tool_use_id)
-    else for (const i of resolveTarget(rows, tag.target) ?? []) at.add(i)
+    else for (const i of resolveTarget(rows, tag.target, ix) ?? []) at.add(i)
   }
-  const state = stateRow(rows, reg)
+  const state = stateRow(rows, reg, ix)
   return state !== undefined && state >= 0 ? { ids, rows: at, state } : { ids, rows: at }
 }
 
@@ -259,9 +262,10 @@ function tagLabel(tag: Tag, at: readonly number[]): string {
 // pair's tag shows on both of its rows, a range's on its first row.
 export function tagLabels(rows: readonly SessionMessage[], reg: TagRegistry): Map<number, string[]> {
   const labels = new Map<number, string[]>()
+  const ix = indexRows(rows)
   for (const tag of reg.tags) {
     if (!isActive(tag, reg.turn)) continue
-    const at = resolveTarget(rows, tag.target)
+    const at = resolveTarget(rows, tag.target, ix)
     if (!at) continue
     const label = tagLabel(tag, at)
     for (const i of isRange(tag.target) ? [at[0]!] : at) labels.set(i, [...(labels.get(i) ?? []), label])
@@ -280,11 +284,11 @@ export function reviewGroup(tag: Tag): ReviewGroup {
 
 // [SP_CTX_02_28] Active review tags whose targets are still there, by group,
 // with the first row of each target, in row order.
-export function activeReviews(rows: readonly SessionMessage[], reg: TagRegistry): Map<ReviewGroup, number[]> {
+export function activeReviews(rows: readonly SessionMessage[], reg: TagRegistry, ix: RowIndex = indexRows(rows)): Map<ReviewGroup, number[]> {
   const out = new Map<ReviewGroup, number[]>()
   for (const t of reg.tags) {
     if (t.kind !== 'review' || !isActive(t, reg.turn)) continue
-    const at = resolveTarget(rows, t.target)
+    const at = resolveTarget(rows, t.target, ix)
     if (!at) continue
     const g = reviewGroup(t)
     out.set(g, [...(out.get(g) ?? []), Math.min(...at)])
@@ -368,6 +372,7 @@ export function applyTagRequests(
 ): TagOutcome {
   const tags = [...reg.tags]
   let size = bytes({ ...reg, tags })
+  const ix = indexRows(rows)
   // [SP_CTX_01_18] a lost start of the stage or of the last block becomes null
   let stages: TagRegistry = normalizeLost(reg, rows)
   const out: TagOutcome = { registry: reg, added: 0, removed: 0, rejected: [], events: [], lines: [], changed: stages !== reg }
@@ -433,7 +438,7 @@ export function applyTagRequests(
         id = got.id
       }
       target = { tool_use_id: id }
-      if (!resolveTarget(rows, target)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
+      if (!resolveTarget(rows, target, ix)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
     } else {
       if (staleIndexes) return reject('INDEXES_STALE', STALE_INDEXES)
       const index = r.index as number
@@ -460,14 +465,14 @@ export function applyTagRequests(
       const span = { op: 'collapse' as const, from_index: from, to_index: to as number, summary: '-' }
       const split = prepare(rows, [span]).errors[0]
       if (split) return reject('BAD_RANGE', split.replace(/^collapse #\d+\.\.#\d+: /, ''))
-      const guarded = pinnedTargets(rows, { ...reg, tags })
+      const guarded = pinnedTargets(rows, { ...reg, tags }, ix)
       if (touchesPin(rows, span, guarded) || (guarded.state !== undefined && guarded.state >= from && guarded.state <= (to as number)))
         return reject('BAD_RANGE', 'the range holds a row or a call tagged pin or state')
       target = { ...(target as { anchor: string; hint: number }), toAnchor: fingerprint(rows[to as number]!), toHint: to as number }
     } else if (kind === 'disposable' && row && (row.role !== 'assistant' || row.toolUses.length > 0))
       return reject('BAD_TARGET', 'by index without "to" only an assistant text row can be disposable; tag a tool result by its tool_use_id, a span by "index" and "to"')
     // [SP_CTX_01_09] the state slot changes only by a rewrite of its row: no disposable replaces it
-    else if (kind === 'disposable' && row && pinnedTargets(rows, { ...reg, tags }).state === r.index)
+    else if (kind === 'disposable' && row && pinnedTargets(rows, { ...reg, tags }, ix).state === r.index)
       return reject('BAD_TARGET', 'that row holds the state slot; change it only by a rewrite of that row, or remove its state tag first')
     if (kind === 'state' && (!row || row.role !== 'assistant' || row.toolUses.length > 0 || !row.text.trim()))
       return reject('BAD_TARGET', 'the state slot is one of your own assistant text rows, by "index"')
@@ -488,7 +493,7 @@ export function applyTagRequests(
       return reject('TAGS_FULL', `the registry is full (${MAX_TAGS} tags or ${MAX_REGISTRY_BYTES} bytes); remove tags you no longer need`)
     const oldTag = old >= 0 ? tags[old]! : undefined
     if (oldTag) {
-      const was = 'anchor' in oldTag.target ? locate(rows, oldTag.target.anchor, oldTag.target.hint) : -1
+      const was = 'anchor' in oldTag.target ? locate(rows, oldTag.target.anchor, oldTag.target.hint, ix) : -1
       out.lines.push(was >= 0 ? `The state slot moved from #${was} to #${r.index}.` : `The state slot moved to #${r.index}.`)
     }
     if (at >= 0) tags[at] = tag
@@ -706,10 +711,11 @@ export function markDuplicates(reg: TagRegistry, rows: readonly SessionMessage[]
   if (!big.length) return reg
   const add = tagAdder(reg)
   const calls = callsOf(rows)
+  const ix = indexRows(rows)
   for (const r of big) {
     const call = calls.get(r.id)
     if (!call || call.tool.startsWith(OWN_TOOLS)) continue
-    const at = findToolResult(rows, r.id)
+    const at = ix.resultAt(r.id)
     const stop = at < 0 ? rows.length : at
     const sameRead = (id: string) => {
       const earlier = calls.get(id)
@@ -731,12 +737,13 @@ export function markDuplicates(reg: TagRegistry, rows: readonly SessionMessage[]
 // `stale`, without a term, replacing a review of any reason; other tags stay. Pure.
 export function markStale(reg: TagRegistry, rows: readonly SessionMessage[], path: string, writeId: string): TagRegistry {
   const add = tagAdder(reg)
-  const w = findToolUse(rows, writeId)
+  const ix = indexRows(rows)
+  const w = ix.useAt(writeId)
   const stop = w < 0 ? rows.length : w
   for (let i = 0; i < stop; i++)
     for (const u of rows[i]!.toolUses) {
       if (u.tool !== 'Read' || (u.input as { file_path?: unknown } | undefined)?.file_path !== path) continue
-      if (!resolveTarget(rows, { tool_use_id: u.tool_use_id })) continue
+      if (!resolveTarget(rows, { tool_use_id: u.tool_use_id }, ix)) continue
       // a stale review stays as it is: a repeated write rewrites nothing
       add.put({ kind: 'review', reason: 'stale', target: { tool_use_id: u.tool_use_id }, created_turn: reg.turn }, old => old.kind === 'review' && old.reason !== 'stale')
     }
@@ -783,6 +790,20 @@ export function resultIds(rows: readonly SessionMessage[]): string[] {
   return rows.flatMap(r => resultsOf(r).map(t => t.tool_use_id))
 }
 
+// [SP_CTX_02_12] [PL_AUD_CTX_P11] Whether a rule may change the registry for
+// this row, from the row alone (CF-22): a person's prompt (R1, until the first
+// one is pinned), a result of another tool that is big or of a search tool
+// (R2, R3), or a big result text (R5 (a)). Not for a plugin's row or a
+// compaction's copy. Without it AutoTag neither waits for the registry's chain
+// nor reads the registry. Pure.
+export function autoTagNeeded(f: AppendFacts, copy = false): boolean {
+  if (isPluginRow(f) || copy) return false
+  if (f.door === 'prompt') return HUMAN.includes(f.origin)
+  if (f.door !== 'tool-result') return false
+  if (f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS) && f.ids.length && (isBig(f.size) || isSearchTool(f.tool))) return true
+  return f.results.some(r => isBig(r.text.length))
+}
+
 // [SP_CTX_02_12] [SP_CTX_02_35] What a row's append needs from the host;
 // register.ts binds it to `$`.
 export type AppendIO = {
@@ -815,16 +836,22 @@ export async function appendRow<S extends { deny?: unknown }>(io: AppendIO, e: A
   } catch {
     item = undefined
   }
-  const rules = !e.agentId && (e.door === 'prompt' || e.door === 'tool-result')
+  // [PL_AUD_CTX_P11] the rules only for a row they may tag; read from the
+  // event now, a row they cannot read is no row for them
+  let facts: AppendFacts | undefined
+  if (!e.agentId && (e.door === 'prompt' || e.door === 'tool-result'))
+    try {
+      facts = appendFacts(e)
+    } catch {
+      facts = undefined
+    }
+  const rules = facts !== undefined && autoTagNeeded(facts)
   const at = item || rules ? io.storage() : undefined
   const stored = await store()
   try {
     if (at && stored.deny === undefined) {
       if (item) io.record(at, item)
-      if (rules) {
-        const facts = appendFacts(e)
-        io.autoTag(at, facts, isCompactionCopy(facts, io.copied))
-      }
+      if (rules) io.autoTag(at, facts!, isCompactionCopy(facts!, io.copied))
     }
   } catch {
     // the stored row stands whatever the rules did
@@ -836,7 +863,7 @@ export async function appendRow<S extends { deny?: unknown }>(io: AppendIO, e: A
 // registry's serial chain. `copy`: isCompactionCopy, decided by the caller
 // when the row was appended.
 export async function autoTag(io: TagIO, f: AppendFacts, copy = false): Promise<void> {
-  if (isPluginRow(f) || copy) return
+  if (!autoTagNeeded(f, copy)) return
   const read = await io.readTags()
   if (read.state === 'unreadable') return
   let rows: readonly SessionMessage[] | undefined
@@ -860,17 +887,17 @@ export async function countTurn(io: TagIO): Promise<void> {
 
 // [SP_CTX_02_13] The edits the disposable tags stand for, on `rows`: a pair
 // summarized, a row rewritten, a range collapsed.
-export function tagEdits(rows: readonly SessionMessage[], reg: TagRegistry): Edit[] {
+export function tagEdits(rows: readonly SessionMessage[], reg: TagRegistry, ix: RowIndex = indexRows(rows)): Edit[] {
   const edits: Edit[] = []
   for (const tag of reg.tags) {
     if (tag.kind !== 'disposable' || tag.note === undefined) continue
     if ('tool_use_id' in tag.target) {
-      if (resolveTarget(rows, tag.target)) edits.push({ op: 'summarize', tool_use_id: tag.target.tool_use_id, summary: tag.note })
+      if (resolveTarget(rows, tag.target, ix)) edits.push({ op: 'summarize', tool_use_id: tag.target.tool_use_id, summary: tag.note })
     } else if (isRange(tag.target)) {
-      const at = resolveTarget(rows, tag.target)
+      const at = resolveTarget(rows, tag.target, ix)
       if (at) edits.push({ op: 'collapse', from_index: at[0]!, to_index: at.at(-1)!, summary: tag.note })
     } else {
-      const at = locate(rows, tag.target.anchor, tag.target.hint)
+      const at = locate(rows, tag.target.anchor, tag.target.hint, ix)
       if (at >= 0) edits.push({ op: 'rewrite', index: at, text: tag.note })
     }
   }
@@ -910,7 +937,8 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const inQueue = new Set(q.edits.map(tagEditKey).filter(k => k !== undefined))
   const fresh = { ...tags.value, tags: tags.value.tags.filter(t => !inQueue.has(tagKey(t) ?? '')) }
   const rows = await io.rows()
-  const { queued } = prepare(rows, tagEdits(rows, fresh), undefined, pinnedTargets(rows, tags.value))
+  const ix = indexRows(rows)
+  const { queued } = prepare(rows, tagEdits(rows, fresh, ix), undefined, pinnedTargets(rows, tags.value, ix))
   if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return NOTHING
   const next: Queue = { ...q, edits: [...q.edits, ...queued], tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
   if (bytes(next) > MAX_QUEUE_BYTES) return NOTHING
@@ -958,15 +986,16 @@ function rangeAfter(
   was: readonly number[],
   t: RangeTarget,
   survived: () => Map<number, number>,
+  ix: RowIndex = indexRows(after),
 ): number[] | undefined {
   const same = (i: number) => after.indexOf(before[i]!)
   const last = was.at(-1)!
   const kept = same(last)
-  const y = kept >= 0 ? kept : locate(after, t.toAnchor, t.toHint)
+  const y = kept >= 0 ? kept : locate(after, t.toAnchor, t.toHint, ix)
   if (y < 0) return undefined
   let x = same(was[0]!)
   if (x < 0 && (kept < 0 || !thinkingOnly(before[was[0]!]!))) {
-    const span = locateSpan(after, t, { anchor: t.toAnchor, hint: t.toHint })
+    const span = locateSpan(after, t, { anchor: t.toAnchor, hint: t.toHint }, ix)
     if (span && span.to === y) x = span.from
   }
   if (x < 0) {
@@ -993,8 +1022,10 @@ export function rebindTags(
 ): TagRegistry {
   const editedRows = new Set<number>()
   const editedIds = new Set<string>()
+  const was0 = indexRows(before)
+  const now0 = indexRows(after)
   for (const edit of applied) {
-    const t = touchedBy(before, edit)
+    const t = touchedBy(before, edit, was0)
     for (const i of t?.rows ?? []) editedRows.add(i)
     for (const id of t?.ids ?? []) editedIds.add(id)
   }
@@ -1006,28 +1037,28 @@ export function rebindTags(
     if (key !== undefined && tried.has(key)) continue
     const t = tag.target
     if ('tool_use_id' in t) {
-      if (editedIds.has(t.tool_use_id) || !resolveTarget(after, t)) continue
+      if (editedIds.has(t.tool_use_id) || !resolveTarget(after, t, now0)) continue
       tags.push(tag)
       continue
     }
     if (isRange(t)) {
-      const was = resolveTarget(before, t)
+      const was = resolveTarget(before, t, was0)
       if (was && was.some(i => editedRows.has(i))) continue
-      const now = was ? rangeAfter(before, after, was, t, () => (survived ??= survivors(before, after, editedRows))) : resolveTarget(after, t)
+      const now = was ? rangeAfter(before, after, was, t, () => (survived ??= survivors(before, after, editedRows)), now0) : resolveTarget(after, t, now0)
       if (!now) continue
       const [x, y] = [now[0]!, now.at(-1)!]
       tags.push({ ...tag, target: { anchor: fingerprint(after[x]!), hint: x, toAnchor: fingerprint(after[y]!), toHint: y } })
       continue
     }
-    const was = locate(before, t.anchor, t.hint)
+    const was = locate(before, t.anchor, t.hint, was0)
     if (was >= 0 && editedRows.has(was)) {
       // [SP_CTX_02_14] the state slot follows the rewrite of its own row
-      const rewrite = tag.kind === 'state' ? applied.find(e => e.op === 'rewrite' && touchedBy(before, e)?.rows[0] === was) : undefined
+      const rewrite = tag.kind === 'state' ? applied.find(e => e.op === 'rewrite' && touchedBy(before, e, was0)?.rows[0] === was) : undefined
       const made = rewrite ? produced.find(p => p.edit === describeEdit(rewrite)) : undefined
       if (made) tags.push({ ...tag, target: { anchor: made.fingerprint, hint: made.index } })
       continue
     }
-    const now = locate(after, t.anchor, t.hint)
+    const now = locate(after, t.anchor, t.hint, now0)
     if (now >= 0) {
       tags.push({ ...tag, target: { anchor: t.anchor, hint: now } })
       continue

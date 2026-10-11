@@ -7,6 +7,11 @@ import {
   dropOwnCallsCounted,
   fingerprint,
   formatReport,
+  indexRows,
+  locate,
+  locateSpan,
+  snapshotOf,
+  touchedBy,
   freshId,
   fullRow,
   LIST_COUNT,
@@ -27,8 +32,8 @@ import {
   ROW_WINDOW,
   SUMMARIZED,
 } from '../hooks/edits'
-import { MARK } from '../hooks/rows'
-import { emptyRowBetweenCalls, result } from './row-fixtures'
+import { findToolResult, findToolUse, MARK } from '../hooks/rows'
+import { emptyRowBetweenCalls, prompt, reply as replyRow, result, use as useRow } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
 
@@ -1153,4 +1158,58 @@ test('FreshId — унікальність: two ids made for the same base diffe
   const uses = out.rows.flatMap(r => r.toolUses.map(u => u.tool_use_id))
   expect(new Set(uses).size).toBe(uses.length)
   expect([...uses].sort()).toEqual([...out.rows.flatMap(r => (r.toolResults ?? []).map(t => t.tool_use_id))].sort())
+})
+
+// ---- [SP_CTX_02_04] [PL_AUD_CTX_P11] RowIndex (CF-23)
+
+test('RowIndex — ті самі відповіді, що й скан: Locate, LocateSpan, TouchedBy and the pair lookup give on the index what they give on the rows, repeated and thinking-only rows too', async () => {
+  const think: SessionMessage = { role: 'assistant', text: '', toolUses: [] }
+  const rows: SessionMessage[] = [prompt('p'), replyRow('same'), useRow('a'), result('a'), think, replyRow('same'), useRow('b'), result('b'), think, prompt('q'), result('a')]
+  const ix = indexRows(rows)
+  for (const id of ['a', 'b', 'zz']) {
+    expect(ix.useAt(id)).toBe(findToolUse(rows, id))
+    expect(ix.resultAt(id)).toBe(findToolResult(rows, id))
+  }
+  // the scan Locate was before the index: hint first, else the one match
+  const scan = (anchor: string, hint: number) => {
+    if (rows[hint] && fingerprint(rows[hint]!) === anchor) return hint
+    const hits = rows.flatMap((r, i) => (fingerprint(r) === anchor ? [i] : []))
+    return hits.length === 1 ? hits[0]! : -1
+  }
+  for (const [i, r] of rows.entries())
+    for (const hint of [i, 0, 99, -1]) expect(locate(rows, fingerprint(r), hint, ix)).toBe(scan(fingerprint(r), hint))
+  expect(locate(rows, 'user||gone', 3, ix)).toBe(-1)
+  const span = { anchor: fingerprint(rows[4]!), hint: 4 }
+  const end = { anchor: fingerprint(rows[7]!), hint: 7 }
+  expect(locateSpan(rows, span, end, ix)).toEqual(locateSpan(rows, span, end))
+  for (const edit of [
+    { op: 'drop' as const, tool_use_id: 'a' },
+    { op: 'summarize' as const, tool_use_id: 'b', summary: 's' },
+    { op: 'drop' as const, tool_use_id: 'zz' },
+    { op: 'collapse' as const, from_index: 4, to_index: 7, summary: 's', anchors: [span.anchor, end.anchor] },
+    { op: 'rewrite' as const, index: 5, text: 't', anchors: [fingerprint(rows[5]!)] },
+  ])
+    expect(touchedBy(rows, edit, ix)).toEqual(touchedBy(rows, edit))
+})
+
+test('Snapshot — одне читання на подію: CurrentRows, Key() and the API form are read once for any number of steps; a failed read is not kept', async () => {
+  const reads = { view: 0, api: 0 }
+  let fail = true
+  const snap = snapshotOf({
+    view: async () => {
+      reads.view++
+      if (fail) throw new Error('busy')
+      return { transcript: [], rows: [prompt('p')], key: 's|' }
+    },
+    api: async () => (reads.api++, []),
+  })
+  await expect(snap.rows()).rejects.toThrow('busy')
+  fail = false
+  const [rows, key, view] = await Promise.all([snap.rows(), snap.key(), snap.view()])
+  expect(rows.length).toBe(1)
+  expect(key).toBe('s|')
+  expect(view.rows).toBe(rows)
+  await snap.api()
+  await snap.api()
+  expect(reads).toEqual({ view: 2, api: 1 })
 })

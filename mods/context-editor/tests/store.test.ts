@@ -5,12 +5,14 @@ import {
   CHAIN_RANK,
   changeOf,
   dirOf,
+  dropFileCache,
   ensureStorage,
   isCount,
   jsonFile,
   jsonObject,
   lockOrder,
   madeStorage,
+  newFileCache,
   newStorageMemory,
   NOT_HELD,
   prepareStorage,
@@ -532,4 +534,198 @@ test('trimOldest: the newest maxItems stay; then the oldest go while the framed 
   expect(trimOldest(items, 10, bytes(['cc', 'dd']))).toEqual(['cc', 'dd'])
   expect(trimOldest(items, 10, 21, i => ({ items: i }))).toEqual(['cc', 'dd'])
   expect(trimOldest(items, 10, 1)).toEqual([])
+})
+
+// ---- [SP_CTX_01_07] [PL_AUD_CTX_P11] the cache of storage files (CF-22, X1)
+
+// Files in memory that count the host's calls per path.
+function countedFiles(init: Record<string, string> = {}) {
+  const m = memFiles(init)
+  const calls = { exists: 0, read: 0 }
+  const fs: FileIO = {
+    ...m.fs,
+    exists: async path => (calls.exists++, m.fs.exists(path)),
+    read: async path => (calls.read++, m.fs.read(path)),
+  }
+  return { ...m, fs, calls }
+}
+
+test('FileCache — читання з кешу: a view (cached) after a read takes no host call; a write replaces the entry with what it wrote; peek gives it without waiting', async () => {
+  const cache = newFileCache()
+  const f = countedFiles({ [PATH]: '{"n":1}' })
+  const store = jsonFile<Doc>(f.fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  expect(store.peek()).toBeUndefined()
+  expect(await store.cached()).toEqual({ state: 'ok', value: { n: 1 } })
+  expect(await store.cached()).toEqual({ state: 'ok', value: { n: 1 } })
+  expect(f.calls).toEqual({ exists: 1, read: 1 })
+  // another store of the same file (a new port each event) shares the entry
+  const again = jsonFile<Doc>(f.fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  expect(again.peek()).toEqual({ state: 'ok', value: { n: 1 } })
+  // a read-modify-write reads the file, whatever the cache holds
+  expect(await updateOf(again)(d => ({ n: d.n + 1 }))).toBe(true)
+  expect(f.calls).toEqual({ exists: 2, read: 2 })
+  expect(f.files.get(PATH)).toBe('{"n":2}')
+  expect(await store.cached()).toEqual({ state: 'ok', value: { n: 2 } })
+  expect(f.calls).toEqual({ exists: 2, read: 2 })
+  // missing is kept too
+  const fresh = countedFiles()
+  const doc = jsonFile<Doc>(fresh.fs, PATH, () => ({ n: 0 }), parseDoc, { cache: newFileCache() })
+  expect(await doc.cached()).toEqual({ state: 'missing', value: { n: 0 } })
+  expect(await doc.cached()).toEqual({ state: 'missing', value: { n: 0 } })
+  expect(fresh.calls.exists).toBe(1)
+})
+
+test('FileCache — другий записувач: the cache holds n:1, the file is changed past the Store to n:5; an update +1 writes 6 (it reads the file), and the view follows', async () => {
+  const cache = newFileCache()
+  const f = countedFiles({ [PATH]: '{"n":1}' })
+  const store = jsonFile<Doc>(f.fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  expect(await store.cached()).toEqual({ state: 'ok', value: { n: 1 } })
+  f.files.set(PATH, '{"n":5}')
+  // a view may lag until the next read of the file
+  expect(await store.cached()).toEqual({ state: 'ok', value: { n: 1 } })
+  expect(await updateOf(store)(d => ({ n: d.n + 1 }))).toBe(true)
+  expect(f.files.get(PATH)).toBe('{"n":6}')
+  expect(await store.cached()).toEqual({ state: 'ok', value: { n: 6 } })
+})
+
+test('FileCache — читання під час запису чи перенесення: a read that starts while a write or a move is in flight and saw the old file keeps nothing; the write\'s own entry stands', async () => {
+  const cache = newFileCache()
+  const m = memFiles({ [PATH]: '{"n":1}' })
+  let openWrite: () => void = () => undefined
+  const writeGate = new Promise<void>(r => (openWrite = r))
+  let openRead: () => void = () => undefined
+  const readGate = new Promise<void>(r => (openRead = r))
+  const fs: FileIO = {
+    ...m.fs,
+    write: async (path, text) => {
+      await writeGate
+      m.files.set(path, text)
+    },
+    read: async path => {
+      const text = m.files.get(path)!
+      await readGate
+      return text
+    },
+  }
+  const store = jsonFile<Doc>(fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  const writing = store.write({ n: 2 })
+  await yields()
+  const reading = store.read()
+  await yields()
+  openWrite()
+  await writing
+  expect(store.peek()).toEqual({ state: 'ok', value: { n: 2 } })
+  openRead()
+  expect(await reading).toEqual({ state: 'ok', value: { n: 1 } })
+  expect(m.files.get(PATH)).toBe('{"n":2}')
+  expect(store.peek()).toEqual({ state: 'ok', value: { n: 2 } })
+
+  // the same for a quarantine: a read during the move never caches the moved file as ok
+  const q = memFiles({ [PATH]: '{"n":3}' })
+  let openMove: () => void = () => undefined
+  const moveGate = new Promise<void>(r => (openMove = r))
+  let openRead2: () => void = () => undefined
+  const readGate2 = new Promise<void>(r => (openRead2 = r))
+  const qfs: FileIO = {
+    ...q.fs,
+    move: async (from, to) => (await moveGate, q.fs.move(from, to)),
+    read: async path => {
+      const text = q.files.get(path)!
+      await readGate2
+      return text
+    },
+  }
+  const qs = jsonFile<Doc>(qfs, PATH, () => ({ n: 0 }), parseDoc, { cache: newFileCache() })
+  const moving = qs.quarantine()
+  await yields()
+  const during = qs.read()
+  await yields()
+  openMove()
+  expect(await moving).toBe(`${PATH}.bad-7`)
+  openRead2()
+  expect(await during).toEqual({ state: 'ok', value: { n: 3 } })
+  expect(qs.peek()).toBeUndefined()
+  expect(await qs.cached()).toEqual({ state: 'missing', value: { n: 0 } })
+})
+
+test('FileCache — не кешується: an unreadable read, a failed write and a quarantine leave no entry; the next read goes to the file', async () => {
+  const cache = newFileCache()
+  const f = countedFiles({ [PATH]: '{"n":-1}' })
+  const store = jsonFile<Doc>(f.fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  expect((await store.read()).state).toBe('unreadable')
+  expect((await store.read()).state).toBe('unreadable')
+  expect(f.calls.read).toBe(2)
+  // repaired by hand: read again, then kept
+  f.files.set(PATH, '{"n":4}')
+  expect(await store.read()).toEqual({ state: 'ok', value: { n: 4 } })
+  f.fail.write = true
+  await expect(store.write({ n: 5 })).rejects.toThrow('disk full')
+  expect(store.peek()).toBeUndefined()
+  f.fail.write = false
+  expect(await store.read()).toEqual({ state: 'ok', value: { n: 4 } })
+  expect(await store.quarantine()).toBe(`${PATH}.bad-7`)
+  expect(store.peek()).toBeUndefined()
+  expect(await store.read()).toEqual({ state: 'missing', value: { n: 0 } })
+})
+
+test('FileCache — читання, яке обігнав запис: a read in flight when the file is written keeps nothing; the entry is the written value', async () => {
+  const cache = newFileCache()
+  const m = memFiles({ [PATH]: '{"n":1}' })
+  let open: () => void = () => undefined
+  const gate = new Promise<void>(r => (open = r))
+  const fs: FileIO = {
+    ...m.fs,
+    read: async path => {
+      const text = m.files.get(path)!
+      await gate
+      return text
+    },
+  }
+  const store = jsonFile<Doc>(fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  const slow = store.read()
+  await yields()
+  await store.write({ n: 2 })
+  open()
+  expect(await slow).toEqual({ state: 'ok', value: { n: 1 } })
+  expect(store.peek()).toEqual({ state: 'ok', value: { n: 2 } })
+})
+
+test('FileCache — зміна сесії: a published storage drops every entry; a read of the session left and come back to sees the file as it is now', async () => {
+  const cache = newFileCache()
+  const mem = newStorageMemory()
+  const h = host('A', { published: () => dropFileCache(cache) })
+  const dirA = dirOf(await ensureStorage(mem, h.io))!
+  const pathA = `${dirA}/doc.json`
+  const f = countedFiles({ [pathA]: '{"n":1}' })
+  const inA = () => jsonFile<Doc>(f.fs, pathA, () => ({ n: 0 }), parseDoc, { cache })
+  expect(await inA().cached()).toEqual({ state: 'ok', value: { n: 1 } })
+  expect(inA().peek()).toEqual({ state: 'ok', value: { n: 1 } })
+  // /clear: session B is published, the cache drops
+  h.log.session = 'B'
+  expect(dirOf(await ensureStorage(mem, h.io))).toBe('/home/u/.claude/context-editor/B')
+  expect(inA().peek()).toBeUndefined()
+  // meanwhile session A's file changed past this instance (another process)
+  f.files.set(pathA, '{"n":9}')
+  // /resume back to A: published again, read from the file
+  h.log.session = 'A'
+  expect(dirOf(await ensureStorage(mem, h.io))).toBe(dirA)
+  expect(await inA().cached()).toEqual({ state: 'ok', value: { n: 9 } })
+  expect(f.calls.read).toBe(2)
+})
+
+test('FileCache — скидання під час читання: a read that a drop overtook keeps nothing in the new epoch', async () => {
+  const cache = newFileCache()
+  const m = memFiles({ [PATH]: '{"n":1}' })
+  let open: () => void = () => undefined
+  const gate = new Promise<void>(r => (open = r))
+  const fs: FileIO = { ...m.fs, read: async path => (await gate, m.files.get(path)!) }
+  const store = jsonFile<Doc>(fs, PATH, () => ({ n: 0 }), parseDoc, { cache })
+  const slow = store.read()
+  await yields()
+  dropFileCache(cache)
+  open()
+  await slow
+  expect(store.peek()).toBeUndefined()
+  // a store without a cache never peeks
+  expect(jsonFile<Doc>(m.fs, PATH, () => ({ n: 0 }), parseDoc).peek()).toBeUndefined()
 })

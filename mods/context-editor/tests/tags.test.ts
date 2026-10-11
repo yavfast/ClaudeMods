@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, touchedBy, type QueuedEdit } from '../hooks/edits'
-import { MARK } from '../hooks/rows'
+import { BIG_ROW, MARK } from '../hooks/rows'
 import { insertDeliveries } from '../hooks/deliveries'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
@@ -11,6 +11,7 @@ import {
   applyRules,
   applyTagRequests,
   autoTag,
+  autoTagNeeded,
   contextTag,
   countTurn,
   EMPTY_REGISTRY,
@@ -1074,10 +1075,11 @@ function appender(over: Partial<AppendIO> = {}, item?: QueuedDelivery) {
   return { io, calls, tagged, store }
 }
 
-const resultRow = (ids: string[]) => ({
+// a result the rules see: big (R2); `text` a small one
+const resultRow = (ids: string[], text = 'x'.repeat(BIG_ROW), tool = 'Read') => ({
   door: 'tool-result',
-  origin: { kind: 'tool', tool: 'Read' },
-  message: { content: ids.map(id => ({ type: 'tool_result', tool_use_id: id, content: 'x' })) },
+  origin: { kind: 'tool', tool },
+  message: { content: ids.map(id => ({ type: 'tool_result', tool_use_id: id, content: text })) },
 })
 
 test('AppendRow — порядок: the anchor step and the folder come at the event, before the row is stored; the rules and the record after it', async () => {
@@ -1123,6 +1125,44 @@ test('AppendRow — a compaction copy: every result id in Copied; a failed ancho
   })
   expect(await appendRow(broken.io, resultRow(['a']), broken.store)).toEqual({})
   expect(broken.calls).toEqual(['storage', 'store', 'autoTag'])
+})
+
+test('AutoTagNeeded — без читання реєстру: a small result of a tool that is no search tool, a plugin row or a copy need no rule; a person\'s prompt, a big or search result and a big result text do', async () => {
+  const small = fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 10, results: [{ id: 'a', text: '0123456789' }] })
+  expect(autoTagNeeded(small)).toBe(false)
+  expect(autoTagNeeded({ ...small, tool: 'Grep' })).toBe(true)
+  expect(autoTagNeeded({ ...small, size: BIG_ROW })).toBe(true)
+  expect(autoTagNeeded({ ...small, tool: 'mcp__context-editor__context_list', size: BIG_ROW })).toBe(false)
+  expect(autoTagNeeded({ ...small, tool: undefined, results: [{ id: 'a', text: 'x'.repeat(BIG_ROW) }] })).toBe(true)
+  expect(autoTagNeeded({ ...small, tool: 'Grep' }, true)).toBe(false)
+  expect(autoTagNeeded(fact({ text: 'the task' }))).toBe(true)
+  expect(autoTagNeeded(fact({ origin: 'plugin', text: 'the task' }))).toBe(false)
+  expect(autoTagNeeded(fact({ door: 'attachment', origin: 'engine', size: 6000 }))).toBe(false)
+})
+
+test('AutoTag — малий результат не читає tags.json: neither the registry nor the rows are read, nothing is written; a big one reads the registry', async () => {
+  const reads = { tags: 0, rows: 0 }
+  const { io, log } = harness(empty(), undefined, {
+    readTags: async () => (reads.tags++, empty()),
+    rows: async () => (reads.rows++, []),
+  })
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 10, results: [{ id: 'a', text: '0123456789' }] }))
+  expect(reads).toEqual({ tags: 0, rows: 0 })
+  expect(log.tagWrites).toBe(0)
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: BIG_ROW, results: [{ id: 'a', text: 'x'.repeat(BIG_ROW) }] }))
+  expect(reads.tags).toBe(1)
+})
+
+test('AppendRow — малий результат: no folder asked, no AutoTag queued on the registry chain; a delivery behind it is still recorded', async () => {
+  const small = appender()
+  await appendRow(small.io, resultRow(['a'], 'short'), small.store)
+  expect(small.calls).toEqual(['observe', 'store'])
+  const search = appender()
+  await appendRow(search.io, resultRow(['a'], 'short', 'Grep'), search.store)
+  expect(search.calls).toEqual(['observe', 'storage', 'store', 'autoTag'])
+  const delivery = appender({}, ITEM)
+  await appendRow(delivery.io, resultRow(['a'], 'short'), delivery.store)
+  expect(delivery.calls).toEqual(['observe', 'storage', 'store', 'record u1'])
 })
 
 test('PinsFrom — an unreadable registry gives no pins; a readable one its pinned targets', async () => {

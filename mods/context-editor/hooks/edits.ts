@@ -126,12 +126,63 @@ export function locateSpan(
   rows: readonly SessionMessage[],
   from: { anchor: string; hint: number },
   to: { anchor: string; hint: number },
+  ix: RowIndex = indexRows(rows),
 ): { from: number; to: number } | undefined {
-  const y = locate(rows, to.anchor, to.hint)
+  const y = locate(rows, to.anchor, to.hint, ix)
   if (y < 0) return undefined
-  const x = distinctiveAnchor(from.anchor) ? locate(rows, from.anchor, from.hint) : y - (to.hint - from.hint)
-  if (x < 0 || x > y || fingerprint(rows[x]!) !== from.anchor) return undefined
+  const x = distinctiveAnchor(from.anchor) ? locate(rows, from.anchor, from.hint, ix) : y - (to.hint - from.hint)
+  if (x < 0 || x > y || ix.print(x) !== from.anchor) return undefined
   return { from: x, to: y }
+}
+
+// [SP_CTX_02_04] [PL_AUD_CTX_P11] The index of one row list, each part built
+// on first use: the fingerprint of each row and the rows of each fingerprint
+// (Locate), the first row holding each call and each result (the pair lookup
+// of findToolUse / findToolResult). Lookups on it give what the scans of the
+// rows give; a pass over many targets (tags, notes, candidates) builds it once
+// instead of scanning the rows for each target (CF-23). The rows must not
+// change while it is used.
+export type RowIndex = {
+  readonly rows: readonly SessionMessage[]
+  // the fingerprint of row i (an existing row)
+  print: (i: number) => string
+  // every row whose fingerprint is `print`, in row order
+  at: (print: string) => readonly number[]
+  // the row holding the call `id` / its result; -1 when none
+  useAt: (id: string) => number
+  resultAt: (id: string) => number
+}
+
+export function indexRows(rows: readonly SessionMessage[]): RowIndex {
+  let prints: string[] | undefined
+  let byPrint: Map<string, number[]> | undefined
+  let uses: Map<string, number> | undefined
+  let results: Map<string, number> | undefined
+  const firstOf = (ids: (row: SessionMessage) => readonly string[]): Map<string, number> => {
+    const m = new Map<string, number>()
+    rows.forEach((r, i) => {
+      for (const id of ids(r)) if (!m.has(id)) m.set(id, i)
+    })
+    return m
+  }
+  return {
+    rows,
+    print: i => (prints ? prints[i]! : fingerprint(rows[i]!)),
+    at: print => {
+      if (!byPrint) {
+        prints ??= rows.map(fingerprint)
+        byPrint = new Map()
+        for (const [i, f] of prints.entries()) {
+          const list = byPrint.get(f)
+          if (list) list.push(i)
+          else byPrint.set(f, [i])
+        }
+      }
+      return byPrint.get(print) ?? []
+    },
+    useAt: id => (uses ??= firstOf(r => r.toolUses.map(u => u.tool_use_id))).get(id) ?? -1,
+    resultAt: id => (results ??= firstOf(r => resultsOf(r).map(t => t.tool_use_id))).get(id) ?? -1,
+  }
 }
 
 // [SP_CTX_01_14] Where the current conversation starts: the head of the rows
@@ -258,7 +309,7 @@ export type ViewIO = {
 // [SP_CTX_02_18] CurrentRows and Key(): the identity awaited first (a tool or
 // prompt path, without the ~1 s budget), then the transcript and one read of
 // the boundary for both.
-export async function readView(io: ViewIO): Promise<{ transcript: readonly SessionMessage[]; rows: readonly SessionMessage[]; key: string }> {
+export async function readView(io: ViewIO): Promise<View> {
   const hostId = await io.hostId()
   const transcript = await io.messages()
   const st = await io.storage()
@@ -266,6 +317,35 @@ export async function readView(io: ViewIO): Promise<{ transcript: readonly Sessi
   const raw = await io.readBoundary(st.dir)
   const { rows, mark } = boundaryView(transcript, raw, hostId, io.own())
   return { transcript, rows, key: `${st.sessionId}|${mark}` }
+}
+
+// [SP_CTX_02_18] One read of CurrentRows: the transcript, the current rows and Key().
+export type View = { transcript: readonly SessionMessage[]; rows: readonly SessionMessage[]; key: string }
+
+// [SP_CTX_02_18] [PL_AUD_CTX_P11] What one event or tool call reads of the
+// conversation: CurrentRows with Key(), and the API form, each at most once
+// (CF-21); every step of the event works on the same rows. A failed read is
+// not kept: the next step that asks reads again. Only a step that polls the
+// conversation (AwaitSeeded, [SP_CTX_02_24]) reads it past a snapshot.
+export type Snapshot = {
+  view: () => Promise<View>
+  rows: () => Promise<readonly SessionMessage[]>
+  key: () => Promise<string>
+  api: () => Promise<readonly unknown[]>
+}
+
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+  let got: Promise<T> | undefined
+  return () =>
+    (got ??= read().catch((err: unknown) => {
+      got = undefined
+      throw err
+    }))
+}
+
+export function snapshotOf(read: { view: () => Promise<View>; api: () => Promise<readonly unknown[]> }): Snapshot {
+  const view = once(read.view)
+  return { view, rows: async () => (await view()).rows, key: async () => (await view()).key, api: once(read.api) }
 }
 
 // [SP_CTX_02_15] A switch of session in this process (/clear, /resume), not
@@ -705,16 +785,16 @@ export const NO_PINS: Pinned = { ids: new Set(), rows: new Set() }
 
 // The rows and pairs an edit changes, resolved on `rows` (anchors through
 // Locate); undefined when its target is not there.
-export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit): { rows: number[]; ids: string[] } | undefined {
+export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit, ix?: RowIndex): { rows: number[]; ids: string[] } | undefined {
   switch (edit.op) {
     case 'summarize':
     case 'drop': {
-      const useAt = findToolUse(rows, edit.tool_use_id)
-      const resAt = findToolResult(rows, edit.tool_use_id)
+      const useAt = ix ? ix.useAt(edit.tool_use_id) : findToolUse(rows, edit.tool_use_id)
+      const resAt = ix ? ix.resultAt(edit.tool_use_id) : findToolResult(rows, edit.tool_use_id)
       return useAt < 0 || resAt < 0 ? undefined : { rows: [useAt, resAt], ids: [edit.tool_use_id] }
     }
     case 'collapse': {
-      const { from, to } = spanOf(rows, edit)
+      const { from, to } = spanOf(rows, edit, ix)
       if (from < 0 || to < from || to >= rows.length) return undefined
       const span = Array.from({ length: to - from + 1 }, (_, k) => from + k)
       const ids = span.flatMap(i => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...resultsOf(rows[i]!).map(r => r.tool_use_id)])
@@ -722,7 +802,7 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit): { 
     }
     case 'rewrite':
     case 'describe': {
-      const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index) : edit.index
+      const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index, ix) : edit.index
       return at < 0 || !rows[at] ? undefined : { rows: [at], ids: [] }
     }
   }
@@ -822,17 +902,18 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
 
 // [SP_CTX_02_04] The rows a collapse names now: by its anchors (LocateSpan),
 // or by its indexes when it has none; -1 for an end not found.
-function spanOf(rows: readonly SessionMessage[], edit: Extract<Edit, { op: 'collapse' }> & { anchors?: string[] }): { from: number; to: number } {
+function spanOf(rows: readonly SessionMessage[], edit: Extract<Edit, { op: 'collapse' }> & { anchors?: string[] }, ix?: RowIndex): { from: number; to: number } {
   const [a, b] = edit.anchors ?? []
   if (a === undefined || b === undefined) return { from: edit.from_index, to: edit.to_index }
-  return locateSpan(rows, { anchor: a, hint: edit.from_index }, { anchor: b, hint: edit.to_index }) ?? { from: -1, to: -1 }
+  return locateSpan(rows, { anchor: a, hint: edit.from_index }, { anchor: b, hint: edit.to_index }, ix) ?? { from: -1, to: -1 }
 }
 
 // [SP_CTX_02_04] Locate: the row an anchor names, at its old index if it is
 // still there, else the one row anywhere that matches; -1 when none or many.
-export function locate(rows: readonly SessionMessage[], anchor: string, hint: number): number {
-  if (rows[hint] && fingerprint(rows[hint]!) === anchor) return hint
-  const hits = rows.flatMap((r, i) => (fingerprint(r) === anchor ? [i] : []))
+// `ix`: the index of `rows`, when the caller locates many anchors on them.
+export function locate(rows: readonly SessionMessage[], anchor: string, hint: number, ix: RowIndex = indexRows(rows)): number {
+  if (rows[hint] && ix.print(hint) === anchor) return hint
+  const hits = ix.at(anchor)
   return hits.length === 1 ? hits[0]! : -1
 }
 

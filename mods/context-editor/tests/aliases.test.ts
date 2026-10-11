@@ -171,6 +171,23 @@ test('past MAX_ALIASES marks the oldest alias goes', async () => {
   expect(parseAliases(JSON.stringify(reg)).state).toBe('ok')
 })
 
+test('витіснення за O(1): the alias MAX_ALIASES numbers back goes even past a pruned one; a file holding older numbers loses every one below the window at once', async () => {
+  // c2 pruned: the registry holds MAX_ALIASES − 1 aliases, c1 among them
+  const holes = Object.fromEntries(Array.from({ length: MAX_ALIASES }, (_, i) => [`c${i + 1}`, `t${i + 1}`]).filter(([k]) => k !== 'c2'))
+  const out = addAlias({ next: MAX_ALIASES + 1, map: holes }, 'new').registry
+  expect(out.map.c1).toBeUndefined()
+  expect(out.map[`c${MAX_ALIASES + 1}`]).toBe('new')
+  expect(Object.keys(out.map).length).toBe(MAX_ALIASES - 1)
+  // a file from before phase 11: c1 and c2 kept below the window, c5 pruned
+  const legacy = Object.fromEntries(Array.from({ length: MAX_ALIASES + 2 }, (_, i) => [`c${i + 1}`, `t${i + 1}`]).filter(([k]) => k !== 'c5' && k !== 'c4' && k !== 'c3'))
+  expect(Object.keys(legacy).length).toBe(MAX_ALIASES - 1)
+  const grown = addAlias(addAlias({ next: MAX_ALIASES + 3, map: legacy }, 'a').registry, 'b').registry
+  expect(Object.keys(grown.map).length).toBeLessThanOrEqual(MAX_ALIASES)
+  expect(grown.map.c1).toBeUndefined()
+  expect(grown.map.c2).toBeUndefined()
+  expect(parseAliases(JSON.stringify(grown)).state).toBe('ok')
+})
+
 // ---- [SP_CTX_02_17] ResolveRef
 
 test('ResolveRef: last by the rows, an alias, an unknown alias, an unreadable registry', async () => {

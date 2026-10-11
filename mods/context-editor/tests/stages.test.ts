@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare, producedRows, type QueuedEdit } from '../hooks/edits'
+import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, prepare, producedRows, readView, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import type { AliasRegistry } from '../hooks/aliases'
@@ -32,6 +32,7 @@ import {
   SKILL,
   STAGE_ADVICE,
   startOf,
+  tagCallIO,
   telemetry,
   telemetryText,
   contextList,
@@ -202,6 +203,38 @@ test('context_tag — закриття: a stage after #3, the close call at #12:
   expect(text).toContain(STAGE_ADVICE)
   // the report lists the block's indexes: listedKey renewed
   expect(log.listed).toBe('K')
+})
+
+test('context_tag — закриття читає розмову один раз (CF-21): the stale check, the requests, the replacements and the report share one snapshot; the API form is read once', async () => {
+  const r = rows()
+  const reads = { messages: 0, boundary: 0, api: 0 }
+  const view: ViewIO = {
+    hostId: async () => 'h:1',
+    messages: async () => (reads.messages++, r),
+    storage: async () => ({ sessionId: 's', dir: '/s' }),
+    readBoundary: async () => (reads.boundary++, undefined),
+    own: () => undefined,
+  }
+  // the ports register.ts binds for a context_tag call: one snapshot (tagCallIO)
+  const snap = snapshotOf({ view: () => readView(view), api: async () => (reads.api++, []) })
+  const log = { tags: reg({ turn: 5, stage: { name: 'A', after: mark(r, 3), openedTurn: 2 } }), queue: { ...EMPTY_QUEUE } as Queue, listed: undefined as string | undefined, queued: 0 }
+  const io = tagCallIO(
+    snap,
+    {
+      readTags: async () => okRead(log.tags),
+      writeTags: async t => void (log.tags = t),
+      readQueue: async () => okRead(log.queue),
+      writeQueue: async q => void (log.queue = q),
+    },
+    work => (log.queued++, work()),
+    () => ({ readTags: async () => okRead(log.tags), usage: async () => USAGE, setListed: key => void (log.listed = key) }),
+  )
+  const stale = 's|' !== (await snap.key())
+  const text = await tagCall(io, [{ op: 'close' }], stale)
+  expect(log.queued).toBe(1)
+  expect(text).toContain('Stage "A" closed: rows #4..#11')
+  expect(log.listed).toBe('s|')
+  expect(reads).toEqual({ messages: 1, boundary: 1, api: 1 })
 })
 
 test('context_tag — open при відкритому етапі: A closes with its report, B opens at the same mark as the end of A', async () => {

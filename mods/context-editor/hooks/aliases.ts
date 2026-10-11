@@ -46,15 +46,17 @@ export function parseAliases(text: string): Read<AliasRegistry> {
   return { state: 'ok', value: { next: reg.next, map: { ...reg.map } } }
 }
 
-// [SP_CTX_02_16] A new alias for `toolUseId`; the oldest go past MAX_ALIASES. Pure.
+// [SP_CTX_02_16] [SP_CTX_01_13] A new alias for `toolUseId`; an alias older
+// than the newest MAX_ALIASES numbers goes: the one MAX_ALIASES numbers back,
+// without a sort ([PL_AUD_CTX_P11], CF-22). A registry that still holds more
+// than MAX_ALIASES (older numbers kept past pruned ones by a file from before
+// phase 11) loses every number below the window at once. Pure.
 export function addAlias(reg: AliasRegistry, toolUseId: string): { registry: AliasRegistry; alias: string } {
   const alias = `${ALIAS_PREFIX}${reg.next}`
   const map = { ...reg.map, [alias]: toolUseId }
-  const keys = Object.keys(map)
-  if (keys.length > MAX_ALIASES) {
-    keys.sort((a, b) => aliasNumber(a)! - aliasNumber(b)!)
-    for (const old of keys.slice(0, keys.length - MAX_ALIASES)) delete map[old]
-  }
+  const oldest = reg.next - MAX_ALIASES
+  delete map[`${ALIAS_PREFIX}${oldest}`]
+  if (Object.keys(map).length > MAX_ALIASES) for (const key of Object.keys(map)) if (aliasNumber(key)! <= oldest) delete map[key]
   return { registry: { next: reg.next + 1, map }, alias }
 }
 

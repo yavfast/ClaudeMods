@@ -472,6 +472,9 @@ test('CheckSeed — порушення: each broken rule has its own reason', as
   expect(checkSeed([good[0]!, result('zz'), ...good.slice(1)])).toBe('row 1: result zz answers no call')
   expect(checkSeed([...good, use('y')])).toBe('row 4: call y has no result before the next prompt')
   expect(checkSeed([good[0]!, use('x'), text('user', 'new prompt'), result('x')])).toBe('row 1: call x has no result before the next prompt')
+  // a result written before its call answers no call; a call answered only after a prompt has no result
+  expect(checkSeed([good[0]!, result('x'), use('x'), result('x')])).toBe('row 1: result x answers no call')
+  expect(checkSeed([good[0]!, use('x'), text('user', 'p2'), use('y'), result('y'), result('x')])).toBe('row 1: call x has no result before the next prompt')
   expect(checkSeed([...good, use('x'), result('x')])).toBe('row 4: repeated call id x')
   expect(checkSeed([good[0]!, { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'x', tool: 'R', input: {} }, { tool_use_id: 'y', tool: 'R', input: {} }] }, result('x'), result('x'), result('y')])).toBe(
     'row 3: repeated result id x',

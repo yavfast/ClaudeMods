@@ -11,6 +11,7 @@ import type { SessionMessage } from 'claude-code'
 import {
   describeEdit,
   fingerprint,
+  indexRows,
   locate,
   NO_REFS,
   OWN_TOOLS,
@@ -21,11 +22,12 @@ import {
   type Produced,
   type QueuedEdit,
   type RefResolver,
+  type RowIndex,
 } from './edits'
 import { MARK } from './rows'
 import { distinctive, survivors } from './stages'
 import { MAX_REGISTRY_BYTES, type TagDeny, type TagIO, type TagRegistry } from './tags'
-import { bytes, isCount, storageRefusal } from './store'
+import { bytes, isCount, storageRefusal, type Read } from './store'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -83,20 +85,21 @@ export function badNoteFields(notes: unknown, nextNote: unknown): string | undef
 }
 
 // The rows a note's target is on now: both rows of a pair, the located row,
-// or the rows of a located range; undefined when it is not there.
-export function noteRows(rows: readonly SessionMessage[], target: NoteTarget): number[] | undefined {
-  if ('tool_use_id' in target) return touchedBy(rows, { op: 'drop', tool_use_id: target.tool_use_id })?.rows
-  const at = locate(rows, target.anchor, target.hint)
+// or the rows of a located range; undefined when it is not there. `ix`: the
+// index of `rows`, built once by a caller that resolves many notes on them.
+export function noteRows(rows: readonly SessionMessage[], target: NoteTarget, ix: RowIndex = indexRows(rows)): number[] | undefined {
+  if ('tool_use_id' in target) return touchedBy(rows, { op: 'drop', tool_use_id: target.tool_use_id }, ix)?.rows
+  const at = locate(rows, target.anchor, target.hint, ix)
   if (at < 0) return undefined
   if (!('toAnchor' in target)) return [at]
-  const to = locate(rows, target.toAnchor, target.toHint)
+  const to = locate(rows, target.toAnchor, target.toHint, ix)
   if (to < at) return undefined
   return Array.from({ length: to - at + 1 }, (_, k) => at + k)
 }
 
 // The row a note shows on (the first row of its target) and, for a range, its last.
-function placeOf(rows: readonly SessionMessage[], n: Note): { first: number; last?: number } | undefined {
-  const at = noteRows(rows, n.target)
+function placeOf(rows: readonly SessionMessage[], n: Note, ix: RowIndex): { first: number; last?: number } | undefined {
+  const at = noteRows(rows, n.target, ix)
   if (!at) return undefined
   if ('toAnchor' in n.target) return { first: at[0]!, last: at.at(-1)! }
   return { first: Math.min(...at) }
@@ -110,8 +113,9 @@ function placeOf(rows: readonly SessionMessage[], n: Note): { first: number; las
 export function noteLabels(rows: readonly SessionMessage[], reg: Pick<TagRegistry, 'notes'>): Map<number, string[]> {
   const labels = new Map<number, string[]>()
   const put = (i: number, label: string) => labels.set(i, [...(labels.get(i) ?? []), label])
+  const ix = indexRows(rows)
   for (const n of reg.notes) {
-    const at = noteRows(rows, n.target)
+    const at = noteRows(rows, n.target, ix)
     if (!at) continue
     if ('toAnchor' in n.target) put(at[0]!, `[${n.id} #${at[0]}..#${at.at(-1)}]`)
     else for (const i of at) put(i, `[${n.id}]`)
@@ -127,8 +131,9 @@ export type NoteLine = PageNote
 // `Notes elsewhere` (a note whose target is not found: no row).
 export function noteLines(rows: readonly SessionMessage[], reg: Pick<TagRegistry, 'notes' | 'turn'>): NoteLine[] {
   const out: NoteLine[] = []
+  const ix = indexRows(rows)
   for (const n of reg.notes) {
-    const at = placeOf(rows, n)
+    const at = placeOf(rows, n, ix)
     const remind = n.remindAt !== undefined ? ` (reminder in ${Math.max(0, n.remindAt - reg.turn)} turn(s))` : ''
     out.push(at ? { id: n.id, row: at.first, line: `${n.id} #${at.first}: ${n.text}${remind}` } : { id: n.id, line: `${n.id}: ${n.text}${remind}` })
   }
@@ -137,7 +142,8 @@ export function noteLines(rows: readonly SessionMessage[], reg: Pick<TagRegistry
 
 // [SP_CTX_02_01] The notes on one row, in full, for the whole-row view.
 export function rowNotes(rows: readonly SessionMessage[], reg: Pick<TagRegistry, 'notes'>, index: number): string[] {
-  return reg.notes.filter(n => (noteRows(rows, n.target) ?? []).includes(index)).map(n => `${n.id}: ${n.text}`)
+  const ix = indexRows(rows)
+  return reg.notes.filter(n => (noteRows(rows, n.target, ix) ?? []).includes(index)).map(n => `${n.id}: ${n.text}`)
 }
 
 // ---- [SP_CTX_02_29] notes in the close report
@@ -145,8 +151,9 @@ export function rowNotes(rows: readonly SessionMessage[], reg: Pick<TagRegistry,
 // The notes whose target (the first row of a range) lies in a..e, as
 // `<id> #<i>: <text>`, at most `limit` of them, then "+<n> more"; "" for none.
 export function blockNotes(rows: readonly SessionMessage[], reg: Pick<TagRegistry, 'notes'>, a: number, e: number, limit: number): string {
+  const ix = indexRows(rows)
   const inBlock = reg.notes.flatMap(n => {
-    const at = placeOf(rows, n)
+    const at = placeOf(rows, n, ix)
     return at && at.first >= a && at.first <= e ? [{ at: at.first, text: `${n.id} #${at.first}: ${n.text}` }] : []
   })
   if (!inBlock.length) return ''
@@ -193,6 +200,7 @@ export function applyNoteRequests(
   let notes = [...reg.notes]
   let nextNote = reg.nextNote
   const out: NoteOutcome = { registry: reg, added: [], removed: [], rejected: [], lines: [] }
+  const ix = indexRows(rows)
   raws.forEach((raw, k) => {
     const reject = (code: NoteError, why: string) => void out.rejected.push({ code, reason: `note ${k + 1}: ${why} (${code})` })
     const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
@@ -231,7 +239,7 @@ export function applyNoteRequests(
         id = got.id
       }
       target = { tool_use_id: id }
-      if (!noteRows(rows, target)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
+      if (!noteRows(rows, target, ix)) return reject('TARGET_NOT_FOUND', `no completed tool call with id ${id}; refresh context_list`)
     } else {
       if (staleIndexes) return reject('INDEXES_STALE', STALE_INDEXES)
       const index = r.index as number
@@ -323,15 +331,19 @@ export function rebindNotes(
   const changed = new Set<number>()
   const replacedIds = new Set<string>()
   const removedIds = new Set<string>()
-  for (const e of applied) {
-    const t = touchedBy(before, e)
+  const was0 = indexRows(before)
+  const now0 = indexRows(after)
+  // the rows each applied edit touched, once per batch
+  const touched = applied.map(e => touchedBy(before, e, was0))
+  for (const [k, e] of applied.entries()) {
+    const t = touched[k]
     for (const i of t?.rows ?? []) changed.add(i)
     for (const id of t?.ids ?? []) (e.op === 'drop' ? removedIds : replacedIds).add(id)
   }
   const map = survivors(before, after, changed)
   // Spot(x): the row of `after` that row x of `before` became, or undefined (removed)
   const spot = (x: number): number | undefined => {
-    const labels = new Set(applied.filter(e => e.op !== 'drop' && (touchedBy(before, e)?.rows ?? []).includes(x)).map(describeEdit))
+    const labels = new Set(applied.filter((e, k) => e.op !== 'drop' && (touched[k]?.rows ?? []).includes(x)).map(describeEdit))
     const made = produced.filter(p => labels.has(p.edit))
     if (made.length) return made.reduce((a, b) => (b.index > a.index ? b : a)).index
     if (labels.size) return undefined
@@ -353,22 +365,22 @@ export function rebindNotes(
 
   function relocateNote(target: NoteTarget): NoteTarget | undefined {
     if ('tool_use_id' in target) {
-      const pair = touchedBy(before, { op: 'drop', tool_use_id: target.tool_use_id })
+      const pair = touchedBy(before, { op: 'drop', tool_use_id: target.tool_use_id }, was0)
       if (!pair) return undefined
       if (removedIds.has(target.tool_use_id)) return undefined
       if (replacedIds.has(target.tool_use_id)) {
         const k = spot(pair.rows[1]!)
         return k === undefined ? undefined : rowTarget(k)
       }
-      return touchedBy(after, { op: 'drop', tool_use_id: target.tool_use_id }) ? target : undefined
+      return touchedBy(after, { op: 'drop', tool_use_id: target.tool_use_id }, now0) ? target : undefined
     }
-    const x = locate(before, target.anchor, target.hint)
+    const x = locate(before, target.anchor, target.hint, was0)
     if (x < 0) return undefined
     if (!('toAnchor' in target)) {
       const k = spot(x)
       return k === undefined ? undefined : rowTarget(k)
     }
-    const y = locate(before, target.toAnchor, target.toHint)
+    const y = locate(before, target.toAnchor, target.toHint, was0)
     if (y < x) return undefined
     let s: number | undefined
     let e: number | undefined
@@ -381,6 +393,15 @@ export function rebindNotes(
 }
 
 // ---- [SP_CTX_02_33] NoteReminders
+
+// [SP_CTX_02_33] [PL_AUD_CTX_P11] Whether NoteReminders may find a due
+// reminder: a note with a pending `remindAt`, or a registry not known yet
+// (`peek` without a cached read). Only a write of the registry adds a
+// `remindAt` (context_note), so a known registry without one lets a call skip
+// the registry's chain and its read (CF-22). Pure.
+export function reminderPending(peek: Read<TagRegistry> | undefined): boolean {
+  return !peek || peek.state === 'unreadable' || peek.value.notes.some(n => n.remindAt !== undefined)
+}
 
 // The due reminders of the registry, oldest first, and the registry with
 // their `remindAt` removed; undefined when none is due. Pure.
