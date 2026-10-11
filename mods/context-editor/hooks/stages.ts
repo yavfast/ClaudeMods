@@ -7,7 +7,7 @@
 // tag functions from tags.ts: the cycle holds functions only, no top-level
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
-import { describeEdit, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
+import { describeEdit, distinctive, estimate, fingerprint, locate, ownerKey, REPRO_FLAG, REPRODUCIBLE_TOOLS, rowChars, touchedBy, type MediaSizes, type Produced, type QueuedEdit } from './edits'
 import { CACHE_LOOKBACK, lookbackStart } from './cache'
 import type { JournalSummary } from './journal'
 import type { Queue, Read } from './queue'
@@ -39,7 +39,7 @@ export const INTRO_TEXT =
 export const STAGE_ADVICE =
   "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
 
-export { estimate }
+export { distinctive, estimate }
 
 // ---- [SP_CTX_01_18] Stage, ClosedBlock and RowMark
 
@@ -52,11 +52,6 @@ export type ClosedBlock = { name?: string; after: RowMark | null; end: RowMark |
 
 // The registry fields stages live in ([SP_CTX_01_10]).
 export type StageFields = { stage?: Stage; lastClosed?: ClosedBlock; turn: number }
-
-// A thinking-only row has the fingerprint "assistant||", which tells no rows apart.
-export function distinctive(row: SessionMessage): boolean {
-  return row.toolUses.length > 0 || (row.toolResults ?? []).length > 0 || row.text.length > 0
-}
 
 // MarkBefore(rows, i): the last distinctive row before `i`, or null.
 export function markBefore(rows: readonly SessionMessage[], i: number): RowMark | null {

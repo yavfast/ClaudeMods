@@ -4,9 +4,11 @@ import {
   describeEdit,
   fingerprint,
   locate,
+  locateSpan,
   MARK,
   MAX_QUEUE_EDITS,
   MAX_TEXT,
+  mergedCallRow,
   NO_REFS,
   oneLine,
   OWN_TOOLS,
@@ -14,7 +16,9 @@ import {
   rowChars,
   STALE_INDEXES,
   touchedBy,
+  thinkingOnly,
   touchesPin,
+  UNTRACKED_ROW,
   type Edit,
   type Pinned,
   type Produced,
@@ -26,7 +30,6 @@ import type { QueuedDelivery } from './deliveries'
 import {
   carrierRow,
   closeStage,
-  distinctive,
   markBefore,
   CALIB_MAX,
   CALIB_MIN,
@@ -35,6 +38,7 @@ import {
   normalizeLost,
   reportFailed,
   startOf,
+  survivors,
   type ClosedBlock,
   type Replaced,
   type RowMark,
@@ -216,11 +220,13 @@ export function isActive(tag: Tag, turn: number): boolean {
 // or every row of a range whose ends are both found.
 export function resolveTarget(rows: readonly SessionMessage[], target: TagTarget): number[] | undefined {
   if ('tool_use_id' in target) return touchedBy(rows, { op: 'drop', tool_use_id: target.tool_use_id })?.rows
-  const at = locate(rows, target.anchor, target.hint)
-  if (at < 0) return undefined
-  if (!isRange(target)) return [at]
-  const to = locate(rows, target.toAnchor, target.toHint)
-  return to <= at ? undefined : Array.from({ length: to - at + 1 }, (_, k) => at + k)
+  if (!isRange(target)) {
+    const at = locate(rows, target.anchor, target.hint)
+    return at < 0 ? undefined : [at]
+  }
+  // [SP_CTX_02_04] LocateSpan: a thinking-only first row is found from the last
+  const span = locateSpan(rows, target, { anchor: target.toAnchor, hint: target.toHint })
+  return !span || span.to <= span.from ? undefined : Array.from({ length: span.to - span.from + 1 }, (_, k) => span.from + k)
 }
 
 // [SP_CTX_01_09] The row of the state slot on `rows`: undefined without a
@@ -465,7 +471,6 @@ export function applyTagRequests(
       const guarded = pinnedTargets(rows, { ...reg, tags })
       if (touchesPin(rows, span, guarded) || (guarded.state !== undefined && guarded.state >= from && guarded.state <= (to as number)))
         return reject('BAD_RANGE', 'the range holds a row or a call tagged pin or state')
-      if (!distinctive(rows[to as number]!)) return reject('BAD_RANGE', `row #${to} holds only thinking and cannot end a range; end it at a row with text or a tool call`)
       target = { ...(target as { anchor: string; hint: number }), toAnchor: fingerprint(rows[to as number]!), toHint: to as number }
     } else if (kind === 'disposable' && row && (row.role !== 'assistant' || row.toolUses.length > 0))
       return reject('BAD_TARGET', 'by index without "to" only an assistant text row can be disposable; tag a tool result by its tool_use_id, a span by "index" and "to"')
@@ -476,6 +481,9 @@ export function applyTagRequests(
       return reject('BAD_TARGET', 'the state slot is one of your own assistant text rows, by "index"')
     if (r.ttl_turns !== undefined && (kind !== 'review' || !isCount(r.ttl_turns, 1)))
       return reject('BAD_TTL', 'ttl_turns is an integer >= 1 and only for kind "review"')
+    // [SP_CTX_02_11] a thinking-only row has an anchor Locate cannot tell
+    // apart: no tag on it alone (a range may start there, LocateSpan)
+    if (row && r.to === undefined && thinkingOnly(row)) return reject('TARGET_NOT_FOUND', UNTRACKED_ROW(r.index as number))
     const tag: Tag = { kind, target, created_turn: reg.turn }
     if (kind === 'disposable') tag.note = r.note as string
     if (kind === 'review') tag.reason = 'agent'
@@ -893,6 +901,42 @@ function tagKey(tag: Tag): string | undefined {
   return isRange(t) ? `r:${t.anchor}\n${t.toAnchor}\n${tag.note}` : `a:${t.anchor}\n${tag.note}`
 }
 
+// [SP_CTX_02_14] Where an untouched range (rows `was` of `before`) stands in
+// `after`. Each end by identity first: a row kept with its handle is the same
+// object, wherever a delivery row was inserted or a row removed
+// ([SP_CTX_02_36]). Else the end by Locate and the first row by LocateSpan,
+// whose count from the end assumes the range kept its row count; so a
+// thinking-only first row goes by LocateSpan only when the end, too, was not
+// kept by identity (every row rebuilt, as in a seed): with the end kept, a
+// thinking-only first row missing by identity was removed with its rebuilt
+// stretch. A first row gone or not found gives way to the first row of the
+// range that survived (Survivors), as a stage mark does. Undefined when the
+// last row is gone or no row of the range before it survived.
+function rangeAfter(
+  before: readonly SessionMessage[],
+  after: readonly SessionMessage[],
+  was: readonly number[],
+  t: RangeTarget,
+  survived: () => Map<number, number>,
+): number[] | undefined {
+  const same = (i: number) => after.indexOf(before[i]!)
+  const last = was.at(-1)!
+  const kept = same(last)
+  const y = kept >= 0 ? kept : locate(after, t.toAnchor, t.toHint)
+  if (y < 0) return undefined
+  let x = same(was[0]!)
+  if (x < 0 && (kept < 0 || !thinkingOnly(before[was[0]!]!))) {
+    const span = locateSpan(after, t, { anchor: t.toAnchor, hint: t.toHint })
+    if (span && span.to === y) x = span.from
+  }
+  if (x < 0) {
+    const map = survived()
+    const k = was.map(i => map.get(i)).find(k => k !== undefined)
+    if (k !== undefined) x = k
+  }
+  return x < 0 || x >= y ? undefined : Array.from({ length: y - x + 1 }, (_, k) => x + k)
+}
+
 // [SP_CTX_02_14] [SP_CTX_04_03] The registry after a batch: tags of targets
 // an applied edit changed go (a range: any row of it), so do tags whose target
 // is not in the new rows and disposable tags whose replacement was in the
@@ -915,6 +959,7 @@ export function rebindTags(
     for (const id of t?.ids ?? []) editedIds.add(id)
   }
   const tried = new Set(batch.map(tagEditKey).filter(k => k !== undefined))
+  let survived: Map<number, number> | undefined
   const tags: Tag[] = []
   for (const tag of reg.tags) {
     const key = tagKey(tag)
@@ -928,9 +973,10 @@ export function rebindTags(
     if (isRange(t)) {
       const was = resolveTarget(before, t)
       if (was && was.some(i => editedRows.has(i))) continue
-      const now = resolveTarget(after, t)
+      const now = was ? rangeAfter(before, after, was, t, () => (survived ??= survivors(before, after, editedRows))) : resolveTarget(after, t)
       if (!now) continue
-      tags.push({ ...tag, target: { anchor: t.anchor, hint: now[0]!, toAnchor: t.toAnchor, toHint: now.at(-1)! } })
+      const [x, y] = [now[0]!, now.at(-1)!]
+      tags.push({ ...tag, target: { anchor: fingerprint(after[x]!), hint: x, toAnchor: fingerprint(after[y]!), toHint: y } })
       continue
     }
     const was = locate(before, t.anchor, t.hint)
@@ -942,8 +988,19 @@ export function rebindTags(
       continue
     }
     const now = locate(after, t.anchor, t.hint)
-    if (now < 0) continue
-    tags.push({ ...tag, target: { anchor: t.anchor, hint: now } })
+    if (now >= 0) {
+      tags.push({ ...tag, target: { anchor: t.anchor, hint: now } })
+      continue
+    }
+    // [SP_CTX_02_14] an untouched call row MergeCallRows joined with the other
+    // call rows of its response: the tag moves to the merged row, as a note
+    // does; one tag per row, and a pin wins
+    const merged = was >= 0 ? mergedCallRow(before[was]!, after) : -1
+    if (merged < 0) continue
+    const moved: Tag = { ...tag, target: { anchor: fingerprint(after[merged]!), hint: merged } }
+    const k = tags.findIndex(x => sameTarget(x.target, moved.target))
+    if (k < 0) tags.push(moved)
+    else if (tag.kind === 'pin') tags[k] = moved
   }
   return { ...reg, tags }
 }

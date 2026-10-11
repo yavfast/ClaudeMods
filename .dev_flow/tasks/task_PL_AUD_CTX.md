@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_PL_AUD_CTX`
 > **Created:** 2026-10-11 22:40
-> **Last updated:** 2026-10-11 22:40
+> **Last updated:** 2026-10-12 01:10
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-d5614704`
 > **Autonomy:** `full` — "Продовжуй автономно на свій вибір. Це технічні моменти, у яких я не розбираюсь, тож приймай рішення самостійно."
@@ -12,8 +12,8 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `plan` — [.dev_flow/audit/context-editor_20261011_182951.plan.md](../audit/context-editor_20261011_182951.plan.md) |
-| **Pipeline phase** | `implement` — Ф3 (CF-3…CF-5) і Ф4 (CF-6, CF-7) |
-| **Traceable ID** | `PL_AUD_CTX_P3`, `PL_AUD_CTX_P4` |
+| **Pipeline phase** | `implement` — Ф5 (CF-8, CF-9) |
+| **Traceable ID** | `PL_AUD_CTX_P5` |
 
 ## Intent
 
@@ -35,7 +35,7 @@
 - **Status:** in-progress
 - **Progress:**
   - [x] Ф1+Ф2 (CF-1, CF-2) — store.ts, крок фіксації; 545 тестів; живий /clear PASS (.dev_flow/cache/live-test/audit-p1-results.md); правила CONC-01, CONC-02
-  - [ ] Ф3+Ф4 (CF-3…CF-7)
+  - [x] Ф3+Ф4 (CF-3…CF-7) — якорі thinking-only, LocateSpan/RangeAfter, пін на злитому рядку, appendReport/keepOtherSteps, обмеження parseQueue; 559 тестів; живий прогін PASS (.dev_flow/cache/live-test/audit-p3-results.md); правило STRUCT-01
   - [ ] Ф5 (CF-8, CF-9)
   - [ ] Ф6 (CF-10…CF-14)
   - [ ] Ф7–Ф11 (CF-15…CF-23)
@@ -51,5 +51,6 @@
 
 ## Shared Activity Log
 
+- 2026-10-12 01:10 [claude-session-d5614704] Ф3+Ф4 закомічено; відступ від плану (CF-3): діапазон, що починається з рядка лише з thinking, не відхиляється — його знаходить LocateSpan від кінця (звіт закриття радить саме такий `a`); рев'ю WARNINGS (1 should, 4 prefer) виправлено й підтверджено механічно.
 - 2026-10-11 23:30 [claude-session-d5614704] Ф1+Ф2 закомічено; рев'ю WARNINGS (7 зауважень) виправлено; фоновий запис межі після фіксації — прийнятий ризик (мілісекунди до наступного ходу).
 - 2026-10-11 22:40 [claude-session-d5614704] задачу створено; повна автономія за словами розробника.

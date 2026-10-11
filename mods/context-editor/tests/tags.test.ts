@@ -1,11 +1,13 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, fingerprint, listRows, MARK, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, type QueuedEdit } from '../hooks/edits'
+import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MARK, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, touchedBy, type QueuedEdit } from '../hooks/edits'
+import { insertDeliveries } from '../hooks/deliveries'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue, type Read } from '../hooks/queue'
 import {
   activeReviews,
   appendFacts,
   applyRules,
+  applyTagRequests,
   autoTag,
   contextTag,
   countTurn,
@@ -20,6 +22,7 @@ import {
   markDuplicates,
   markStale,
   rebindTags,
+  resolveTarget,
   resultIds,
   SEARCH_TTL,
   stateRow,
@@ -867,4 +870,140 @@ test('MarkCall — R4 повторний запис: a pair already stale stays 
   const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', BIG)]
   const start = reg([{ kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 1 }], { turn: 5 })
   expect(markStale(start, r, '/f', 'w2')).toBe(start)
+})
+
+// ---- [SP_CTX_02_11] [SP_CTX_02_04] thinking-only rows (audit PL_AUD_CTX_P3, CF-3, CF-4)
+
+const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
+const say = (text: string): SessionMessage => ({ role: 'assistant', text, toolUses: [] })
+const ask = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+
+function thinkingRows(): SessionMessage[] {
+  return [ask('go'), think(), use('a', 'Read'), result('a', 'x'), say('done'), think(), use('b', 'Grep'), result('b', 'y'), say('end')]
+}
+
+test('context_tag — рядок лише з thinking: a pin, a disposable or a review on it alone is TARGET_NOT_FOUND; a remove finds no tag; a range may start there but not end there (BAD_RANGE)', async () => {
+  const list = thinkingRows()
+  for (const raw of [
+    { op: 'add', kind: 'pin', index: 1 },
+    { op: 'add', kind: 'disposable', index: 1, note: 'n' },
+    { op: 'add', kind: 'review', index: 5 },
+  ]) {
+    const out = applyTagRequests(reg([]), list, [raw])
+    expect(out.added).toBe(0)
+    expect(out.rejected[0]!.code).toBe('TARGET_NOT_FOUND')
+    expect(out.rejected[0]!.reason).toContain('cannot be tracked')
+  }
+  expect(applyTagRequests(reg([]), list, [{ op: 'remove', index: 1 }]).rejected[0]!.code).toBe('NO_TAG')
+  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }]).added).toBe(1)
+  // TSTX-6: the last row of a range holds only thinking
+  const end = applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 4, to: 5, note: 'n' }])
+  expect(end.rejected[0]!.code).toBe('BAD_RANGE')
+  expect(end.rejected[0]!.reason).toContain('holds only thinking')
+})
+
+test('LocateSpan — діапазон з thinking-початком: rows shifted by 3 with another thinking row at the old index: the range is found from its last row, not at the old index', async () => {
+  const list = thinkingRows()
+  const tag = applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }]).registry.tags[0]!
+  const shifted = [ask('earlier'), think(), say('before'), ...list]
+  // Locate alone would take #1 of `shifted`, another thinking row
+  expect(resolveTarget(shifted, tag.target)).toEqual([4, 5, 6, 7])
+  expect(rebindTags(reg([tag]), list, shifted, [], []).tags[0]!.target).toEqual({ anchor: fingerprint(think()), hint: 4, toAnchor: fingerprint(list[4]!), toHint: 7 })
+  // the row the length points at is no thinking row: the range is not found
+  expect(resolveTarget([ask('earlier'), ...list.slice(2)], tag.target)).toBeUndefined()
+})
+
+// [SP_CTX_02_14] review round 37, W1, for tags (CF-4)
+test('RebindTags — pin на паралельному виклику: a pin by index on the call row of b survives the summarize of a, whose response MergeCallRows joins into one row', async () => {
+  const before = [ask('p'), say('reading'), use('a', 'Read'), use('b', 'Read'), result('a', 'x'), result('b', 'y'), say('done')].map((r, i) => ({ ...r, handle: `h${i}` }))
+  const pinned = applyTagRequests(reg([]), before, [{ op: 'add', kind: 'pin', index: 3 }, { op: 'add', kind: 'review', index: 6 }]).registry
+  const edits = prepare(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }], undefined, pinnedTargets(before, pinned)).queued
+  expect(edits.length).toBe(1)
+  const out = applyEdits(before, edits, '/s/1.json')
+  expect(out.report.applied).toEqual(['summarize a'])
+  const k = out.rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === 'b'))
+  expect(out.rows[k]!.toolUses.length).toBe(2)
+  const next = rebindTags(pinned, before, out.rows, edits, edits)
+  expect(next.tags.map(t => t.kind)).toEqual(['pin', 'review'])
+  expect(next.tags[0]!.target).toEqual({ anchor: fingerprint(out.rows[k]!), hint: k })
+  expect(pinnedTargets(out.rows, next).rows.has(k)).toBe(true)
+})
+
+// ---- [SP_CTX_02_14] RebindTags of a range with a thinking-only first row (review of phase 3)
+
+const hThink = (h: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [], handle: h })
+const hSay = (t: string, h: string): SessionMessage => ({ role: 'assistant', text: t, toolUses: [], handle: h })
+const hAsk = (t: string, h: string): SessionMessage => ({ role: 'user', text: t, toolUses: [], handle: h })
+const hUse = (id: string, h: string): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: {} }], handle: h })
+const hRes = (id: string, h: string): SessionMessage => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'out ' + id, isError: false }], handle: h })
+
+function spanRows(): SessionMessage[] {
+  return [hAsk('go', 'h0'), hThink('h1'), hUse('x', 'h2'), hRes('x', 'h3'), hThink('h4'), hUse('y', 'h5'), hRes('y', 'h6'), hSay('end', 'h7'), hAsk('next', 'h8'), hThink('h9'), hUse('c', 'h10'), hRes('c', 'h11'), hSay('fin', 'h12')]
+}
+
+test('RebindTags — доставка всередині діапазону: a delivery row inserted inside an untouched range that starts on a thinking-only row; the range keeps its first row by identity and takes the delivery in', async () => {
+  const before = spanRows()
+  const added = applyTagRequests(reg([]), before, [{ op: 'add', kind: 'disposable', index: 1, to: 7, note: 'block' }])
+  expect(added.added).toBe(1)
+  const edits = prepare(before, [{ op: 'summarize', tool_use_id: 'c', summary: 'S' }]).queued
+  const applied = applyEdits(before, edits, '/a.json')
+  const item = { uuid: 'd1', anchor: ['x'], kind: 'person' as const, origin: 'composer', text: '<system-reminder>\nThe user sent a new message while you were working:\nhi\n</system-reminder>', cut: 0, media: 0, at: 1 }
+  const after = dropOwnCallsCounted(insertDeliveries(before, applied.rows, [item], applied.renamed, false).rows).rows
+  const delivery = after.findIndex(r => r.text.includes('hi'))
+  const end = after.findIndex(r => r.text === 'end')
+  // the delivery row stands inside the range, and the range's row count changed
+  expect(delivery > 1 && delivery < end).toBe(true)
+  expect(end).not.toBe(7)
+  expect(after[1]).toBe(before[1])
+  const rebound = rebindTags(added.registry, before, after, edits, edits).tags
+  expect(rebound.length).toBe(1)
+  expect(rebound[0]!.target).toEqual({ anchor: fingerprint(before[1]!), hint: 1, toAnchor: fingerprint(before[7]!), toHint: end })
+})
+
+test('RebindTags — перший рядок діапазону зник: the thinking-only first row is gone from the new rows; the range moves to its first row that survived, as a stage mark does', async () => {
+  const before = spanRows()
+  const tag = applyTagRequests(reg([]), before, [{ op: 'add', kind: 'disposable', index: 1, to: 7, note: 'block' }]).registry.tags[0]!
+  const after = before.filter((_, i) => i !== 1).map(r => ({ ...r }))
+  const rebound = rebindTags(reg([tag]), before, after, [], []).tags
+  expect(rebound.length).toBe(1)
+  expect(rebound[0]!.target).toEqual({ anchor: fingerprint(before[2]!), hint: 1, toAnchor: fingerprint(before[7]!), toHint: 6 })
+  // nothing of the range before its last row survived: the tag goes
+  const short = applyTagRequests(reg([]), before, [{ op: 'add', kind: 'disposable', index: 4, to: 7, note: 'n' }]).registry.tags[0]!
+  expect(rebindTags(reg([short]), before, before.filter((_, i) => i < 4 || i > 6), [], []).tags).toEqual([])
+})
+
+// [SP_CTX_02_14] (review of phase 3, item 4)
+test('RebindTags — два теги на одному злитому рядку: a review on call row b and a pin on call row c merge into one row: one tag stays, the pin; it guards the whole merged row, so b cannot be summarized now', async () => {
+  const before = [hAsk('p', 'h0'), hSay('reading', 'h1'), hUse('a', 'h2'), hUse('b', 'h3'), hUse('c', 'h4'), hRes('a', 'h5'), hRes('b', 'h6'), hRes('c', 'h7'), hSay('done', 'h8')]
+  const tagged = applyTagRequests(reg([]), before, [{ op: 'add', kind: 'review', index: 3 }, { op: 'add', kind: 'pin', index: 4 }]).registry
+  const edits = prepare(before, [{ op: 'summarize', tool_use_id: 'a', summary: 'A' }], undefined, pinnedTargets(before, tagged)).queued
+  const out = applyEdits(before, edits, '/s/1.json')
+  const k = out.rows.findIndex(r => r.toolUses.some(u => u.tool_use_id === 'b'))
+  expect(out.rows[k]!.toolUses.map(u => u.tool_use_id).slice(1)).toEqual(['b', 'c'])
+  const next = rebindTags(tagged, before, out.rows, edits, edits)
+  expect(next.tags.map(t => t.kind)).toEqual(['pin'])
+  expect(next.tags[0]!.target).toEqual({ anchor: fingerprint(out.rows[k]!), hint: k })
+  expect(prepare(out.rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'B' }], undefined, pinnedTargets(out.rows, next)).errors[0]).toContain('target is pinned')
+})
+
+// [SP_CTX_02_04] (review of phase 3, item 5)
+test('touchedBy і RebindTags — згортання з thinking-початком на зсунутих рядках: the collapse touches the shifted span only; a tag on the row before it stays, the tag of a pair inside goes', async () => {
+  const list = thinkingRows()
+  const edit = prepare(list, [{ op: 'collapse', from_index: 1, to_index: 4, summary: 'S' }]).queued
+  const shifted = [ask('earlier'), think(), say('before'), ...list].map((r, i) => ({ ...r, handle: `s${i}` }))
+  expect(touchedBy(shifted, edit[0]!)?.rows).toEqual([4, 5, 6, 7])
+  const tagged = applyTagRequests(reg([]), shifted, [{ op: 'add', kind: 'review', index: 2 }, { op: 'add', kind: 'review', tool_use_id: 'a' }]).registry
+  const out = applyEdits(shifted, edit, '/s/1.json')
+  expect(out.report.applied).toEqual(['collapse #1..#4'])
+  const next = rebindTags(tagged, shifted, out.rows, edit, edit)
+  expect(next.tags.map(t => t.target)).toEqual([{ anchor: fingerprint(shifted[2]!), hint: 2 }])
+})
+
+// [SP_CTX_02_11] (review of phase 3, item 2)
+test('context_tag — промпт людини з самих медіа: a pin by index on it and a range that ends on it are taken as before; only an assistant thinking-only row is refused', async () => {
+  const media: SessionMessage = { role: 'user', text: '', toolUses: [] }
+  const list = [say('hi'), media, say('seen')]
+  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'pin', index: 1 }]).added).toBe(1)
+  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 0, to: 1, note: 'n' }]).added).toBe(1)
+  expect(prepare(list, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).errors).toEqual([])
 })

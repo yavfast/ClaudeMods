@@ -1,11 +1,13 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { MAX_QUEUE_EDITS } from '../hooks/edits'
+import { MAX_QUEUE_EDITS, MAX_TEXT } from '../hooks/edits'
 import {
+  appendReport,
   contextEdit,
   DEFAULT_RESUME,
   deliverReport,
   EMPTY_QUEUE,
+  keepOtherSteps,
   MAX_QUEUE_BYTES,
   parseQueue,
   personRow,
@@ -45,6 +47,51 @@ test('parseQueue reads a good file and refuses bad JSON or a field of the wrong 
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [42] })).state).toBe('unreadable')
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a', anchors: [1] }] })).state).toBe('unreadable')
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a' }] })).state).toBe('ok')
+})
+
+// [SP_CTX_01_04] audit PL_AUD_CTX_P4, CF-7: the constraints, not only the types
+test('parseQueue — обмеження §01_04: a prompt text empty or past MAX_TEXT, more than MAX_QUEUE_EDITS edits, a report without its reportId or the other way round: unreadable', async () => {
+  const reasonOf = (q: object) => {
+    const r = parseQueue(JSON.stringify(q))
+    return r.state === 'unreadable' ? r.reason : 'ok'
+  }
+  expect(reasonOf({ ...EMPTY_QUEUE, resumePrompt: 'x'.repeat(MAX_TEXT + 1) })).toContain('resumePrompt')
+  expect(reasonOf({ ...EMPTY_QUEUE, resumePrompt: '' })).toContain('resumePrompt')
+  expect(reasonOf({ ...EMPTY_QUEUE, resumePrompt: 'x'.repeat(MAX_TEXT) })).toBe('ok')
+  expect(reasonOf({ ...EMPTY_QUEUE, reportPrompt: 'x'.repeat(MAX_TEXT + 1) })).toContain('reportPrompt')
+  const drop = { op: 'drop' as const, tool_use_id: 'a' }
+  expect(reasonOf({ ...EMPTY_QUEUE, edits: Array.from({ length: MAX_QUEUE_EDITS + 1 }, () => drop) })).toContain('edits')
+  expect(reasonOf({ ...EMPTY_QUEUE, edits: Array.from({ length: MAX_QUEUE_EDITS }, () => drop) })).toBe('ok')
+  expect(reasonOf({ ...EMPTY_QUEUE, report: 'r' })).toContain('reportId')
+  expect(reasonOf({ ...EMPTY_QUEUE, reportId: 5 })).toContain('reportId')
+  expect(reasonOf({ ...EMPTY_QUEUE, report: 'r', reportId: 5 })).toBe('ok')
+  const handoff = { mode: 'transcript', resume: true, resumePrompt: 'x'.repeat(MAX_TEXT + 1), by: 'agent', state: 'queued', at: 1 }
+  expect(reasonOf({ ...EMPTY_QUEUE, handoff })).toContain('handoff')
+})
+
+// [SP_CTX_01_04] audit PL_AUD_CTX_P4, CF-6
+test('KeepOtherSteps і AppendReport: the batch and its choices back to defaults; the optimization fields, a handoff and an undelivered report stay; a new report goes after it', async () => {
+  const handoff = { mode: 'transcript' as const, resume: true, resumePrompt: 'p', by: 'agent' as const, state: 'queued' as const, at: 1 }
+  const q: Queue = {
+    ...EMPTY_QUEUE,
+    edits: [{ op: 'drop', tool_use_id: 'a' }],
+    resume: false,
+    resumePrompt: 'mine',
+    resumeSet: true,
+    tagsOnly: true,
+    keepCache: true,
+    report: 'old',
+    reportId: 1,
+    reportResume: true,
+    reportPrompt: 'go',
+    optimizePrompted: true,
+    handoff,
+  }
+  expect(keepOtherSteps(q)).toEqual({ ...EMPTY_QUEUE, report: 'old', reportId: 1, reportResume: true, reportPrompt: 'go', optimizePrompted: true, handoff })
+  expect(keepOtherSteps(undefined)).toEqual(EMPTY_QUEUE)
+  const next = appendReport(keepOtherSteps(q), 'new', 2)
+  expect([next.report, next.reportId, next.reportResume, next.reportPrompt]).toEqual(['old\nnew', 2, false, DEFAULT_RESUME])
+  expect(appendReport(EMPTY_QUEUE, 'only', 3, true, 'p2')).toEqual({ ...EMPTY_QUEUE, report: 'only', reportId: 3, reportResume: true, reportPrompt: 'p2' })
 })
 
 test('queueEdits refuses empty lists, long resume prompts, a full queue and an oversized file', async () => {

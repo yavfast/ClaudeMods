@@ -26,9 +26,10 @@ import {
   type MediaRef,
   type QueuedEdit,
 } from './edits'
-import { DEFAULT_RESUME, MAX_DOCUMENT, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
+import { appendReport, DEFAULT_RESUME, keepOtherSteps, MAX_DOCUMENT, SUMMARY_OPENER, type HandoffRequest, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
+import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
@@ -52,8 +53,9 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+// [SP_CTX_01_04] A handoff's report never resumes the session by itself.
 function withReport(q: Queue, text: string, now: number): Queue {
-  return { ...q, report: q.report ? `${q.report}\n${text}` : text, reportId: now, reportResume: false }
+  return appendReport(q, text, now)
 }
 
 // ---- [SP_CTX_01_15] the request and the module's memory of it
@@ -185,7 +187,6 @@ export type SeedInput = {
   deliveries?: Read<Deliveries>
 }
 
-const REMINDER = '<system-reminder>'
 const WINDOW_FULL = `the conversation fills the host's ${ROW_WINDOW}-row window; its start may be cut`
 
 function stripped(s: string): string {
@@ -197,12 +198,13 @@ function results(r: SessionMessage) {
 }
 
 // [SP_CTX_02_22] The first message of the API form: its role, whether it holds
-// a tool_result, and its text blocks other than reminders, joined. Content
+// a tool_result, and its text blocks other than reminders (any
+// `<system-reminder …>`, REMINDER_PREFIX), joined. Content
 // given as a string is one text block.
 function firstApiMessage(msg: unknown): { role: unknown; hasResult: boolean; text: string } {
   const m = (msg ?? {}) as { role?: unknown; content?: unknown }
   const blocks = (typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : Array.isArray(m.content) ? m.content : []) as { type?: unknown; text?: unknown }[]
-  const texts = blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' && !b.text.trim().startsWith(REMINDER) ? [b.text] : []))
+  const texts = blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' && !b.text.trim().startsWith(REMINDER_PREFIX) ? [b.text] : []))
   return { role: m.role, hasResult: blocks.some(b => b.type === 'tool_result'), text: texts.join('\n\n') }
 }
 
@@ -600,10 +602,13 @@ async function once(run: Run, name: string, write: () => Promise<void>): Promise
   run.terminal = true
 }
 
-// [SP_CTX_02_21] HandedOff: the old queue no longer holds the request.
+// [SP_CTX_02_21] HandedOff: the old queue no longer holds the request, and
+// its batch went with the handoff: the edits and the batch's choices are reset
+// ([SP_CTX_01_04], KeepOtherSteps), so a later batch of the old session after
+// --resume does not inherit keep_cache or a continuation.
 function handedOff(run: Run, to: string, mode: HandoffRequest['mode']): Promise<void> {
   return once(run, 'HandedOff', () =>
-    updateOld(run, q => ({ ...withReport(q, `context-editor: this session was handed off to ${to} (${mode}).`, run.io.now()), edits: [], handoff: undefined })),
+    updateOld(run, q => ({ ...withReport(keepOtherSteps(q), `context-editor: this session was handed off to ${to} (${mode}).`, run.io.now()), handoff: undefined })),
   )
 }
 

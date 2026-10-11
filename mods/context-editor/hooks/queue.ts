@@ -67,7 +67,33 @@ export const EMPTY_QUEUE: Queue = {
   optimizePrompted: false,
 }
 
-// [SP_CTX_01_04] Every field of the file is checked by type; a wrong one
+// [SP_CTX_01_04] The queue once its batch is gone (applied, failed, handed
+// off): the edits and the batch's choices (`resume`, `resumePrompt`,
+// `resumeSet`, `tagsOnly`, `keepCache`) back to their defaults; the fields of
+// other steps (the optimization request, a handoff) and a report not yet
+// delivered stay as read. Every write that ends a batch goes through here, so
+// a new field of Queue is sorted into "batch" or "other step" once.
+export function keepOtherSteps(q: Queue | undefined): Queue {
+  if (!q) return { ...EMPTY_QUEUE }
+  return {
+    ...EMPTY_QUEUE,
+    ...(q.report !== undefined ? { report: q.report, reportId: q.reportId } : {}),
+    reportResume: q.reportResume,
+    reportPrompt: q.reportPrompt,
+    optimize: q.optimize,
+    optimizePrompted: q.optimizePrompted,
+    ...(q.handoff ? { handoff: q.handoff } : {}),
+  }
+}
+
+// [SP_CTX_01_04] A report added after any report not yet delivered; `id`
+// names the reports together, and the continuation is the new report's.
+export function appendReport(q: Queue, text: string, id: number, resume = false, prompt = DEFAULT_RESUME): Queue {
+  return { ...q, report: q.report ? `${q.report}\n${text}` : text, reportId: id, reportResume: resume, reportPrompt: prompt }
+}
+
+// [SP_CTX_01_04] Every field of the file is checked by type and by its
+// constraints (the prompt texts go to the model as a prompt); a wrong one
 // makes the whole file unreadable, never silently a default.
 export function parseQueue(text: string): Read<Queue> {
   let raw: unknown
@@ -79,16 +105,17 @@ export function parseQueue(text: string): Read<Queue> {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return { state: 'unreadable', reason: 'not an object' }
   const q = { ...EMPTY_QUEUE, ...(raw as Partial<Queue>) }
   const bad = [
-    !Array.isArray(q.edits) && 'edits',
+    (!Array.isArray(q.edits) || q.edits.length > MAX_QUEUE_EDITS) && 'edits',
     typeof q.resume !== 'boolean' && 'resume',
-    typeof q.resumePrompt !== 'string' && 'resumePrompt',
+    !isPrompt(q.resumePrompt) && 'resumePrompt',
     typeof q.resumeSet !== 'boolean' && 'resumeSet',
     typeof q.tagsOnly !== 'boolean' && 'tagsOnly',
     typeof q.keepCache !== 'boolean' && 'keepCache',
     q.report !== undefined && typeof q.report !== 'string' && 'report',
-    q.reportId !== undefined && typeof q.reportId !== 'number' && 'reportId',
+    // reportId names the report: one comes only with the other
+    (q.reportId !== undefined ? typeof q.reportId !== 'number' || q.report === undefined : q.report !== undefined) && 'reportId',
     typeof q.reportResume !== 'boolean' && 'reportResume',
-    typeof q.reportPrompt !== 'string' && 'reportPrompt',
+    (typeof q.reportPrompt !== 'string' || q.reportPrompt.length > MAX_TEXT) && 'reportPrompt',
     q.handoff !== undefined && !isHandoff(q.handoff) && 'handoff',
     typeof q.optimize !== 'boolean' && 'optimize',
     typeof q.optimizePrompted !== 'boolean' && 'optimizePrompted',
@@ -98,6 +125,11 @@ export function parseQueue(text: string): Read<Queue> {
   return badEdit >= 0 ? { state: 'unreadable', reason: `bad edit ${badEdit + 1}` } : { state: 'ok', value: q }
 }
 
+// A continuation text: it goes to the model as a prompt.
+function isPrompt(v: unknown): boolean {
+  return typeof v === 'string' && v.length > 0 && v.length <= MAX_TEXT
+}
+
 function isHandoff(raw: unknown): boolean {
   if (typeof raw !== 'object' || raw === null) return false
   const h = raw as Partial<HandoffRequest>
@@ -105,8 +137,7 @@ function isHandoff(raw: unknown): boolean {
     (h.mode === 'transcript' || h.mode === 'document') &&
     (h.document === undefined || (typeof h.document === 'string' && h.document.length > 0 && h.document.length <= MAX_DOCUMENT)) &&
     typeof h.resume === 'boolean' &&
-    typeof h.resumePrompt === 'string' &&
-    h.resumePrompt.length > 0 &&
+    isPrompt(h.resumePrompt) &&
     (h.by === 'agent' || h.by === 'person') &&
     (h.state === 'queued' || h.state === 'running') &&
     typeof h.at === 'number' &&

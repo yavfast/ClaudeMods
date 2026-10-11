@@ -910,3 +910,34 @@ test('FrozenPrefix — collapse і rewrite: the first row of a collapse span, th
   expect(r.prefix).toBe(13)
   for (let i = 0; i < 13; i++) expect(r.rows[i]).toBe(rows[i]!)
 })
+
+// ---- [SP_CTX_02_03] [SP_CTX_02_04] thinking-only rows as anchors (audit PL_AUD_CTX_P3, CF-3)
+
+const bare = (text: string, role: 'user' | 'assistant' = 'assistant'): SessionMessage => ({ role, text, toolUses: [] })
+
+test('PrepareEdits — рядок лише з thinking: a rewrite of it and a collapse that ends on it are refused; a collapse that starts on it is queued', async () => {
+  const list = [bare('task', 'user'), bare(''), use('a', 'Read', 'h2'), result('a', 'x', 'h3'), bare('done'), bare('')]
+  const { queued, errors } = prepare(list, [
+    { op: 'rewrite', index: 1, text: 't' },
+    { op: 'collapse', from_index: 4, to_index: 5, summary: 's' },
+    { op: 'collapse', from_index: 1, to_index: 4, summary: 's' },
+  ])
+  expect(errors).toEqual([
+    'rewrite #1: row #1 cannot be tracked (no text, no tool call); use a neighbouring row',
+    'collapse #4..#5: row #5 holds only thinking and cannot end a range; end it at a row with text or a tool call',
+  ])
+  expect(queued.map(e => e.op)).toEqual(['collapse'])
+})
+
+test('LocateSpan — згортання з thinking-початком на зсунутих рядках: the span is found from its last row; Locate alone would take the other thinking row at the old index', async () => {
+  const list = [bare('task', 'user'), bare(''), use('a', 'Read', 'h2'), result('a', 'x', 'h3'), bare('done'), bare('next', 'user')]
+  const edit = prepare(list, [{ op: 'collapse', from_index: 1, to_index: 4, summary: 'S' }]).queued
+  // the view the seed applies to after a summary: three rows before, one a thinking row at #1
+  const shifted = [bare('summary', 'user'), bare(''), bare('copy'), ...list].map((r, i) => ({ ...r, handle: `s${i}` }))
+  const out = applyEdits(shifted, edit, '/archive.json')
+  expect(out.report.applied).toEqual(['collapse #1..#4'])
+  // four rows become a carrier pair
+  expect(out.rows.length).toBe(shifted.length - 2)
+  expect(out.rows.slice(0, 4)).toEqual(shifted.slice(0, 4))
+  expect(out.report.originals[0]!.rows).toEqual(shifted.slice(4, 8))
+})

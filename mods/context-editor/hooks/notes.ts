@@ -15,6 +15,7 @@ import {
   NO_REFS,
   OWN_TOOLS,
   STALE_INDEXES,
+  mergedCallRow,
   touchedBy,
   type PageNote,
   type Produced,
@@ -343,11 +344,8 @@ export function rebindNotes(
     if (labels.size) return undefined
     const k = map.get(x)
     if (k !== undefined || changed.has(x)) return k
-    // an untouched call row MergeCallRows joined with the other call rows of
-    // its response: the merged row holds its first call (review round 37, W1)
-    const first = before[x]!.toolUses[0]?.tool_use_id
-    if (first === undefined) return undefined
-    const at = after.findIndex(r => r.role === 'assistant' && r.toolUses.some(u => u.tool_use_id === first))
+    // an untouched call row MergeCallRows joined with the other call rows of its response
+    const at = mergedCallRow(before[x]!, after)
     return at < 0 ? undefined : at
   }
   const rowTarget = (k: number): NoteTarget => ({ anchor: fingerprint(after[k]!), hint: k })

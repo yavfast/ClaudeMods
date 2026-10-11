@@ -109,6 +109,44 @@ export function fingerprint(row: SessionMessage): string {
   return `${row.role}|${ids}|${row.text.slice(0, 160)}`
 }
 
+// [SP_CTX_02_01] A row with no text, no calls and no results (thinking only,
+// or a prompt of media alone) has the fingerprint "<role>||", which tells no
+// rows apart: Locate finds it only at its old index.
+export function distinctive(row: SessionMessage): boolean {
+  return row.toolUses.length > 0 || (row.toolResults ?? []).length > 0 || row.text.length > 0
+}
+
+// [SP_CTX_02_03] [SP_CTX_02_11] An assistant row with no text and no calls: a
+// model's thinking. No target of a tag by index or of a rewrite, and no last
+// row of a range. (A person's prompt of media alone is not distinctive either,
+// but it keeps the old rules: no neighbouring row could stand in for it.)
+export function thinkingOnly(row: SessionMessage): boolean {
+  return row.role === 'assistant' && !distinctive(row)
+}
+
+// Whether an anchor is the fingerprint of a distinctive row.
+function distinctiveAnchor(anchor: string): boolean {
+  return anchor.slice(anchor.indexOf('|')) !== '||'
+}
+
+// [SP_CTX_02_04] LocateSpan: the first and last row of a range (a collapse, a
+// disposable range tag). Its last row is distinctive (PrepareEdits,
+// context_tag); a first row that is not (a response starts with a
+// thinking-only row) is found from the last row by the range's length, never
+// by a search that could pick another such row. Undefined when either end is
+// not found or the ends cross.
+export function locateSpan(
+  rows: readonly SessionMessage[],
+  from: { anchor: string; hint: number },
+  to: { anchor: string; hint: number },
+): { from: number; to: number } | undefined {
+  const y = locate(rows, to.anchor, to.hint)
+  if (y < 0) return undefined
+  const x = distinctiveAnchor(from.anchor) ? locate(rows, from.anchor, from.hint) : y - (to.hint - from.hint)
+  if (x < 0 || x > y || fingerprint(rows[x]!) !== from.anchor) return undefined
+  return { from: x, to: y }
+}
+
 // [SP_CTX_01_14] Where the current conversation starts: the head of the rows
 // the last compaction returned, and the host process that wrote it.
 export type Boundary = { head: string[]; count: number; host?: string }
@@ -697,9 +735,7 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit): { 
       return useAt < 0 || resAt < 0 ? undefined : { rows: [useAt, resAt], ids: [edit.tool_use_id] }
     }
     case 'collapse': {
-      const [a, b] = edit.anchors ?? []
-      const from = a ? locate(rows, a, edit.from_index) : edit.from_index
-      const to = b ? locate(rows, b, edit.to_index) : edit.to_index
+      const { from, to } = spanOf(rows, edit)
       if (from < 0 || to < from || to >= rows.length) return undefined
       const span = Array.from({ length: to - from + 1 }, (_, k) => from + k)
       const ids = span.flatMap(i => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...(rows[i]!.toolResults ?? []).map(r => r.tool_use_id)])
@@ -765,6 +801,11 @@ export function prepare(
   return { queued, errors }
 }
 
+// [SP_CTX_02_03] [SP_CTX_02_11] A thinking-only row cannot be told apart by its
+// anchor: no target of a rewrite or a tag by index, and no last row of a range.
+export const UNTRACKED_ROW = (i: number) => `row #${i} cannot be tracked (no text, no tool call); use a neighbouring row`
+export const UNTRACKED_END = (i: number) => `row #${i} holds only thinking and cannot end a range; end it at a row with text or a tool call`
+
 // [SP_CTX_02_03] The target rules of one well-formed edit; the queued edit or
 // the reason.
 function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (owner: MediaOwner) => boolean): QueuedEdit | string {
@@ -777,12 +818,16 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
     case 'collapse': {
       const { from_index: from, to_index: to } = edit
       if (!(from >= 0 && to >= from && to < rows.length)) return `indexes out of range (0..${rows.length - 1})`
+      // [SP_CTX_02_03] the last row anchors the range (LocateSpan)
+      if (thinkingOnly(rows[to]!)) return UNTRACKED_END(to)
       return pairingError(rows, from, to) ?? { ...edit, anchors: [fingerprint(rows[from]!), fingerprint(rows[to]!)] }
     }
     case 'rewrite': {
       const row = rows[edit.index]
       if (!row) return 'index out of range'
       if (row.role !== 'assistant' || row.toolUses.length > 0) return 'only an assistant text row can be rewritten; use collapse'
+      // [SP_CTX_02_03] a thinking-only row cannot be found again by its anchor
+      if (thinkingOnly(row)) return UNTRACKED_ROW(edit.index)
       return { ...edit, anchors: [fingerprint(row)] }
     }
     case 'describe': {
@@ -794,6 +839,14 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
       return { ...edit, anchors: [fingerprint(row)] }
     }
   }
+}
+
+// [SP_CTX_02_04] The rows a collapse names now: by its anchors (LocateSpan),
+// or by its indexes when it has none; -1 for an end not found.
+function spanOf(rows: readonly SessionMessage[], edit: Extract<Edit, { op: 'collapse' }> & { anchors?: string[] }): { from: number; to: number } {
+  const [a, b] = edit.anchors ?? []
+  if (a === undefined || b === undefined) return { from: edit.from_index, to: edit.to_index }
+  return locateSpan(rows, { anchor: a, hint: edit.from_index }, { anchor: b, hint: edit.to_index }) ?? { from: -1, to: -1 }
 }
 
 // [SP_CTX_02_04] Locate: the row an anchor names, at its old index if it is
@@ -1050,9 +1103,7 @@ export function applyEdits(
         break
       }
       case 'collapse': {
-        const [a, b] = edit.anchors ?? []
-        const from = a ? locate(rows, a, edit.from_index) : edit.from_index
-        const to = b ? locate(rows, b, edit.to_index) : edit.to_index
+        const { from, to } = spanOf(rows, edit)
         if (from < 0 || to < from || to >= rows.length) {
           report.failed.push(`${name}: the rows it named are no longer there`)
           continue
@@ -1356,6 +1407,15 @@ export function mergeCallRows(rows: readonly SessionMessage[], frozen: ReadonlyS
     out.push(r)
   }
   return out
+}
+
+// [SP_CTX_02_14] The row of `after` that holds an untouched call row MergeCallRows
+// joined with the other call rows of its response: the merged row holds its
+// first call (review round 37, W1). -1 for a row without calls or not found.
+export function mergedCallRow(row: SessionMessage, after: readonly SessionMessage[]): number {
+  const first = row.toolUses[0]?.tool_use_id
+  if (first === undefined) return -1
+  return after.findIndex(r => r.role === 'assistant' && r.toolUses.some(u => u.tool_use_id === first))
 }
 
 // [SP_CTX_01_05] FormatReport: the report as the model reads it. The size

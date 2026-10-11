@@ -273,7 +273,7 @@ Errors (рівень виклику позначено *, решта — рів�
 | DENIED_REGISTRY_WRITE* | реєстр не записався | нотатки цього виклику не додано і не знято |
 | BAD_OP | `op` не `add`/`remove` | — |
 | NOTE_TEXT_REQUIRED | `add` без коректного `text` | 1..MAX_NOTE символів |
-| TARGET_REQUIRED, UNKNOWN_REF, TARGET_NOT_FOUND, INDEXES_STALE | як у context_tag ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); крім того, TARGET_NOT_FOUND — `index` або `to` на рядку без тексту і без викликів чи результатів (рядок лише з thinking, відбиток `assistant||`): Locate не знаходить такого рядка однозначно, і перше ж застосування видалило б нотатку (рев'ю 37, W2) | для рядка без тексту — `this row cannot be tracked (no text, no tool call); note a neighbouring row` |
+| TARGET_REQUIRED, UNKNOWN_REF, TARGET_NOT_FOUND, INDEXES_STALE | як у context_tag ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); крім того, TARGET_NOT_FOUND — `index` або `to` на рядку без тексту і без викликів чи результатів (рядок лише з thinking, відбиток `assistant||`): Locate не знаходить такого рядка однозначно, і перше ж застосування видалило б нотатку (рев'ю 37, W2); для рядка асистента лише з thinking те саме правило діє для тегів за індексом ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)) і для цілі `rewrite` та кінця `collapse` (промпт людини з самих медіа там, на відміну від нотаток, ціллю бути може) ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) (аудит PL_AUD_CTX, CF-3) | для рядка без тексту — `this row cannot be tracked (no text, no tool call); note a neighbouring row` |
 | BAD_RANGE | `to` без `index` чи з `remove`; `to ≤ index` або поза межами | — |
 | BAD_REMIND | `remind_in_turns` не ціле в 1..MAX_REMIND або з `remove` | — |
 | NOTES_FULL | MAX_NOTES нотаток у реєстрі або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні нотатки |
@@ -534,3 +534,5 @@ Errors: відмов немає (чисті функції).
 | Date | Change |
 |------|--------|
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_27–02_38 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.stages.sp.md](./context_editor.stages.sp.md), якорі без змін |
+| 2026-10-11 | PL_AUD_CTX фаза 3 (CF-3): 02_32 — правило «рядок лише з thinking не ціль за індексом» спільне з тегами і правками `rewrite`/`collapse` (посилання) |
+| 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: 02_32 — правило стосується лише рядка асистента з одним thinking; підказка людини лише з медіа лишається ціллю тегів, `context_note` її, як і раніше, не приймає |

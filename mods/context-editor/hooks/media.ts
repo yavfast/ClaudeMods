@@ -13,7 +13,8 @@ import type { SessionMessage } from 'claude-code'
 // text starts so is left out the same way: one the mod inserted (a delivery
 // rendered as a reminder) or a host row of that kind.
 // `<system-reminder` without `>`: a subagent's report is `<system-reminder id="…">` (phase 20).
-export const PROMPT_DECORATIONS: readonly string[] = ['<system-reminder', '<local-command-caveat>', '[Image: source: ']
+export const REMINDER_PREFIX = '<system-reminder'
+export const PROMPT_DECORATIONS: readonly string[] = [REMINDER_PREFIX, '<local-command-caveat>', '[Image: source: ']
 // [SP_CTX_02_10] Rows of a slash command and of its output: never a media owner.
 const COMMAND_ROWS: readonly string[] = ['<command-name>', '<local-command-stdout>']
 

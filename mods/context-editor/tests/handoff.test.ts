@@ -47,7 +47,7 @@ import {
   type SeedInput,
   type SeedIO,
 } from '../hooks/handoff'
-import { EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
+import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue, type Read } from '../hooks/queue'
 import { EMPTY_REGISTRY, MAX_TAGS, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted } from '../hooks/turns'
 import type { QueuedDelivery } from '../hooks/deliveries'
@@ -225,6 +225,16 @@ test('BuildSeed — після вбудованої компактизації: 
   expect(JSON.stringify(seed.rows)).not.toContain(TRANSCRIPT_LINE)
   expect(seed.report.failed).toEqual(['summarize a: the model no longer sees this row'])
   expect(checkSeed(seed.rows)).toBeUndefined()
+})
+
+// [SP_CTX_02_22] audit PL_AUD_CTX_P3, CF-5: a reminder with attributes (a subagent's report, phase 20)
+test('BuildSeed — нагадування з атрибутами: a `<system-reminder id="…">` block before the summary in the first API message is left out, as a bare one is', async () => {
+  const rows = compacted()
+  const first = { role: 'user', content: [{ type: 'text', text: '<system-reminder id="r1">\nA subagent reported.\n</system-reminder>' }, { type: 'text', text: SUMMARY }] }
+  const seed = built((await seedOf({ rows, transcript: rows, api: compactedApi(first) })).out)
+  expect(seed.fromSummary).toBe(true)
+  expect(seed.rows[0]!.text.startsWith(SUMMARY_OPENER)).toBe(true)
+  expect(JSON.stringify(seed.rows)).not.toContain('system-reminder')
 })
 
 test('BuildSeed — підсумку немає (NO_SUMMARY): the first API message is the assistant\'s, holds a tool_result, or is a prompt without SUMMARY_OPENER', async () => {
@@ -828,6 +838,21 @@ test('RunHandoff — засів: the order is build, files in the old storage, c
   expect(s.tags.get('/s/new')!.tags.map(t => t.kind)).toEqual(['review', 'pin'])
   expect(s.mem.pending).toBeUndefined()
   expect(s.mem.inFlight).toBe(false)
+})
+
+// [SP_CTX_02_21] [SP_CTX_01_04] audit PL_AUD_CTX_P4, CF-6
+test('RunHandoff — HandedOff скидає вибори пакета: keepCache, resume, resumePrompt, resumeSet and tagsOnly of the old queue go back to their defaults; optimizePrompted and an undelivered report stay', async () => {
+  const { io, s, oldQueue } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  s.queues.set('/s/old', { ...oldQueue(), keepCache: true, resume: false, resumePrompt: 'custom', resumeSet: true, tagsOnly: true, optimizePrompted: true, report: 'earlier', reportId: 1 })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  const q = oldQueue()
+  expect(q.edits).toEqual([])
+  expect(q.handoff).toBeUndefined()
+  expect([q.keepCache, q.resume, q.resumePrompt, q.resumeSet, q.tagsOnly]).toEqual([false, true, DEFAULT_RESUME, false, false])
+  expect(q.optimizePrompted).toBe(true)
+  expect(q.report!.startsWith('earlier\ncontext-editor: this session was handed off to new (transcript)')).toBe(true)
+  expect(q.reportId).toBe(NOW)
+  expect(q.reportResume).toBe(false)
 })
 
 test('RunHandoff — закріплення підсумку: a seed with fromSummary pins its first row in the copied registry', async () => {

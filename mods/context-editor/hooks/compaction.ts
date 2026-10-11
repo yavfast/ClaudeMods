@@ -23,7 +23,7 @@ import {
 } from './edits'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { applyEntry, type JournalEntry } from './journal'
-import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_MARKER, MARKER, type Queue, type Read } from './queue'
+import { appendReport, HANDOFF_MARKER, keepOtherSteps, MARKER, type Queue, type Read } from './queue'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
 import { pinnedTargets, rebindTags, type TagRegistry } from './tags'
@@ -395,18 +395,9 @@ export async function archiveMedia(
 
 // The queue once a batch was handled: the batch cleared, its report added
 // after any report not yet delivered. [SP_CTX_01_04] The fields of other
-// steps (the optimization request, a handoff) stay as read.
+// steps (the optimization request, a handoff) stay as read (KeepOtherSteps).
 function reported(q: Queue, text: string, id: number): Queue {
-  return {
-    ...EMPTY_QUEUE,
-    report: q.report ? `${q.report}\n${text}` : text,
-    reportId: id,
-    reportResume: q.resume && !q.tagsOnly,
-    reportPrompt: q.resumePrompt,
-    optimize: q.optimize,
-    optimizePrompted: q.optimizePrompted,
-    ...(q.handoff ? { handoff: q.handoff } : {}),
-  }
+  return appendReport(keepOtherSteps(q), text, id, q.resume && !q.tagsOnly, q.resumePrompt)
 }
 
 // [SP_CTX_02_07] The failure branch's write of the queue it read on the
@@ -425,15 +416,6 @@ export function failureRecord(read: Read<Queue>, lastReported: number | undefine
 // [SP_CTX_02_07] The queue after the handler failed: batch dropped, a report
 // of the failure waits for the next prompt.
 export function failedQueue(q: Queue | undefined, reason: string, now: number): Queue {
-  return {
-    ...EMPTY_QUEUE,
-    report: `${q?.report ? q.report + '\n' : ''}context-editor: applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`,
-    reportId: now,
-    reportResume: false,
-    reportPrompt: DEFAULT_RESUME,
-    // [SP_CTX_01_04] the fields of other steps stay as read
-    optimize: q?.optimize ?? false,
-    optimizePrompted: q?.optimizePrompted ?? false,
-    ...(q?.handoff ? { handoff: q.handoff } : {}),
-  }
+  // [SP_CTX_01_04] the fields of other steps stay as read
+  return appendReport(keepOtherSteps(q), `context-editor: applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`, now)
 }
