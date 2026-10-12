@@ -2,6 +2,7 @@ import type { SessionMessage } from 'claude-code'
 import { pruneAliases, type AliasRegistry } from './aliases'
 import {
   applyEdits,
+  applyLine,
   boundaryOf,
   collectMedia,
   describeEdit,
@@ -129,9 +130,10 @@ export type CompactionIO = {
   // whole handler holds), and passes the chains held; absent: runs it as it is
   onRegistries?: <T>(work: (held?: Held) => Promise<T>) => Promise<T>
   // [SP_CTX_02_07] the report of this apply is in the queue and the dispatch
-  // was not abandoned when it was written: its id. The caller counts it only
-  // once the handler returned without an abandon.
-  reported?: (reportId: number) => void
+  // was not abandoned when it was written: its id, and [SP_CTX_02_43] the
+  // person's line (ApplyLine) when an edit applied. The caller counts them
+  // only once the handler returned without an abandon.
+  reported?: (reportId: number, line?: string) => void
   // [SP_CTX_02_18] best effort, never awaited: a failed write leaves the previous boundary
   writeBoundary: (b: Boundary) => Promise<void>
   // [SP_CTX_01_14] hostId if its read has ended, else absent: a compaction
@@ -301,7 +303,9 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
       await putBack()
       return undefined
     }
-    io.reported?.(id)
+    // [SP_CTX_02_43] the person's line goes out after the command (Flush), not from here
+    const line = applyLine(applied.report, ratio)
+    io.reported?.(id, line || undefined)
     return report
   })
   if (text === undefined) return ABANDONED

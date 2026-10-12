@@ -14,7 +14,22 @@ import {
   isEmptyRow,
   isPromptRow,
   isPromptRowStrict,
+  collapsedWords,
+  COLLAPSED_OPENER,
+  DESCRIBED,
+  isCollapseText,
+  isDescribedText,
+  isReplacementText,
+  LEGACY_COLLAPSED_OPENER,
+  LEGACY_DESCRIBED,
   MARK,
+  REPLACED,
+  REPLACEMENT_OPENERS,
+  TAG_COLLAPSED_OPENER,
+  TAG_REWRITTEN,
+  TAG_SUMMARIZED,
+  REWRITTEN,
+  SUMMARIZED,
   modText,
   PREFIX,
   sameText,
@@ -128,4 +143,39 @@ test('rows kernel: pair lookup by id, chars of a span, text whitespace aside, th
   expect(worthEditing('Read', 3999)).toBe(false)
   expect(worthEditing('Read', 4000)).toBe(true)
   expect(worthEditing('Grep', 1)).toBe(true)
+})
+
+// [SP_CTX_02_04] [SP_CTX_DEC_17] (A″, phase 28) The replacement texts open
+// with the agent's own context_edit call, without MARK; the openers of phases
+// 19–27 (MARK first) still count, since sessions applied before carry them.
+test('ReplacementText — тексти фази 28 і старі: the new openers have no MARK; isReplacementText, isCollapseText and isDescribedText take both forms; PersonText reads none as the person', () => {
+  expect(REPLACED).toBe('Later, your context_')
+  expect(SUMMARIZED).toBe('Later, your context_edit summarize call replaced the full output you had read here with your own summary')
+  expect(REWRITTEN).toBe('Later, your context_edit rewrite call replaced the text of this row with your own rewrite')
+  expect(DESCRIBED).toBe('Later, your context_edit describe call replaced the media you had seen here with your own description')
+  expect(collapsedWords(5, 'Read cfg.txt; Bash ls')).toBe('Later, your context_edit collapse call replaced these 5 rows you had read (Read cfg.txt; Bash ls) with your own note')
+  // [SP_CTX_02_13] a disposable tag's replacement names context_tag
+  expect(collapsedWords(3, '', 'tag')).toBe('Later, your context_tag disposable tag replaced these 3 rows you had read with your own note')
+  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER])
+  for (const t of REPLACEMENT_OPENERS) expect(t.startsWith(REPLACED) && !t.includes(MARK)).toBe(true)
+  const now = [`${SUMMARIZED}: s`, `${REWRITTEN}: s`, `${DESCRIBED}: d\n\nwhat is it?`, `${collapsedWords(2)}: s`, `${TAG_SUMMARIZED}: s`, `${TAG_REWRITTEN}: s`, `${collapsedWords(2, 'Read a', 'tag')}: s`]
+  const legacy = [
+    '[context-editor] you read the full output here, then replaced it with your summary: s',
+    '[context-editor] you rewrote this row: s',
+    `${LEGACY_DESCRIBED}: d\n\nwhat is it?`,
+    `${LEGACY_COLLAPSED_OPENER}2 rows, then collapsed them into your note: s`,
+    // before phase 19
+    '[context-editor] summarized (original: /s/1.json): s',
+  ]
+  for (const t of [...now, ...legacy]) {
+    expect(isReplacementText(t) ? t : `${t}: not a replacement`).toBe(t)
+    expect(personText(t)).toBe('')
+  }
+  expect([...now, ...legacy].map(isCollapseText)).toEqual([false, false, false, true, false, false, true, false, false, false, true, false])
+  expect([...now, ...legacy].map(isDescribedText)).toEqual([false, false, true, false, false, false, false, false, false, true, false, false])
+  // the person's words and a tool's output are none
+  // the whole opener, not its start: a person quoting the start back, or docs about it, is no replacement
+  for (const t of ['Later, your build failed', 'later, your context_edit summarize call', 'context_edit summarize', '', 'Later, your context_edit call looked odd', 'Later, your context_tag disposable tag replaced it?']) expect(isReplacementText(t)).toBe(false)
+  expect(personText('Later, your context_edit call looked odd')).toBe('Later, your context_edit call looked odd')
+  expect(personText('Later, your build failed')).toBe('Later, your build failed')
 })

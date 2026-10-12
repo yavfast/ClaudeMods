@@ -43,6 +43,12 @@ export type FlushIO = {
   // [SP_CTX_02_42] what the person must see in every host (the status line
   // may be invisible in VS Code / stream-json)
   toast: (text: string) => void
+  // [SP_CTX_02_43] the person's line in the chat, never sent to the model
+  // ($.ui.log); absent: no line
+  log?: (text: string) => void
+  // [SP_CTX_02_43] the line the apply with this report id left (ApplyLine),
+  // if this module instance's handler wrote that report; absent: none
+  appliedLine?: (reportId: number) => string | undefined
   now: () => number
   // [SP_CTX_02_42] the current session id
   sessionId: () => Promise<string>
@@ -257,6 +263,8 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       q = after.state === 'unreadable' ? undefined : after.value
       // the handler wrote the report of this application; a skip without one is no compaction
       compacted = q?.reportId !== undefined && q.reportId !== id0
+      // [SP_CTX_02_43] one line for the person per apply that changed something
+      if (compacted) logApplied(io, q!.reportId!)
     }
     if (!q) return { outcome, resume: 'none' }
     if (q.optimize) {
@@ -275,6 +283,18 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
         // a refused timer: nothing planned; the next turn end plans again
       }
     }
+  }
+}
+
+// [SP_CTX_02_43] LogApply: the person's line of the apply that wrote report
+// `id`, once the command returned; nothing without a line (no edit applied,
+// or another instance's handler). A failure only loses the line.
+export function logApplied(io: Pick<FlushIO, 'log' | 'appliedLine'>, id: number): void {
+  try {
+    const line = io.appliedLine?.(id)
+    if (line) io.log?.(line)
+  } catch {
+    // the line is for the person only; nothing depends on it
   }
 }
 

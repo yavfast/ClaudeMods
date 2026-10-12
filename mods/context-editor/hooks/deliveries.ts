@@ -10,7 +10,7 @@
 // (InsertDeliveries, [SP_CTX_02_36]). Pure logic behind a small port;
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
-import { isPlainUserRow, MARK, markerKind, PREFIX, resultsOf, rowChars } from './rows'
+import { isPlainUserRow, isReplacementText, markerKind, PREFIX, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import { isCount, jsonObject, trimOldest, type Read } from './store'
 
@@ -110,7 +110,8 @@ export function personText(raw: string): string {
     if (name === '/compact' && markerKind(args) !== undefined) return ''
     return args
   }
-  if (t.startsWith(MARK) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
+  // a replacement (of now or marked with MARK before phase 28) and the mod's own words
+  if (isReplacementText(t) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
   if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''
   return t
 }

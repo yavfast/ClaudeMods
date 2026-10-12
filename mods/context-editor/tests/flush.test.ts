@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MARKER } from '../hooks/compaction'
-import { afterTurn, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
+import { afterTurn, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, logApplied, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_RESUME_FRAME, queueEdits, RESUME_FRAME, resumeText, withoutReport, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
@@ -541,4 +541,40 @@ test('AfterTurn — Flush sees what DetectOptimize queued: the replacements of t
   await afterTurn(io, { aborted: false, answer: '' })
   expect(state.scheduled).toBe(true)
   expect(log.timers.length).toBe(1)
+})
+
+// ---- [SP_CTX_02_43] LogApply: the person's line after an apply (phase 28)
+
+test('LogApply — рядок людини після застосування: one line once the command returned, before the resume; none for an apply without a line, a skip, a refusal, another report', async () => {
+  const lines: string[] = []
+  const order: string[] = []
+  const line = 'applied 2 edit(s): freed ~41k tokens (~150k → ~109k)'
+  const over = (known: Record<number, string>): Partial<FlushIO> => ({
+    log: text => void (lines.push(text), order.push('log')),
+    appliedLine: id => known[id],
+    submit: async () => void order.push('submit'),
+  })
+  // the handler of this instance wrote report 7 with its line
+  const one = harness(ok({ edits: EDITS }), over({ 7: line }), applied)
+  expect((await flush(one.io, one.state, one.turns.turns)).outcome).toBe('compacted')
+  expect(lines).toEqual([line])
+  expect(order).toEqual(['log', 'submit'])
+  // no edit applied (the handler wrote a report without a line), or another instance's handler
+  lines.length = 0
+  const none = harness(ok({ edits: EDITS }), over({}), applied)
+  await flush(none.io, none.state, none.turns.turns)
+  expect(lines).toEqual([])
+  // the handler skipped without a report: no compaction, no line
+  const skipped = harness(ok({ edits: EDITS, report: 'old', reportId: 7 }), over({ 7: line }))
+  await flush(skipped.io, skipped.state, skipped.turns.turns)
+  expect(lines).toEqual([])
+  // the host refused the command
+  const refused = harness(ok({ edits: EDITS }), { ...over({ 7: line }), compact: async () => Promise.reject(new Error('busy')) })
+  expect((await flush(refused.io, refused.state, refused.turns.turns)).outcome).toBe('host-refused')
+  expect(lines).toEqual([])
+  // a log that throws loses only the line: the resume still goes
+  const throwing = harness(ok({ edits: EDITS }), { ...over({ 7: line }), log: () => { throw new Error('ui') } }, applied)
+  expect(await flush(throwing.io, throwing.state, throwing.turns.turns)).toEqual({ outcome: 'compacted', resume: 'submitted' })
+  // without the ports (an older binding): nothing
+  expect(() => logApplied({}, 7)).not.toThrow()
 })

@@ -13,7 +13,7 @@ import type { SessionMessage } from 'claude-code'
 import { aliasesById, aliasLine, type AliasRegistry } from './aliases'
 import { APPLY_MARGIN, breakEven, CACHE_LOOKBACK, cacheCost, cacheShape, costRatios, requestsSoFar, summaryTokens, verdictOf, type CacheCost, type CostRatios, type Verdict } from './cache'
 import { indexRows, REPRODUCIBLE_TOOLS, touchedBy, type QueuedEdit } from './edits'
-import { MARK, PLAIN_RATIO, resultsOf, rowChars, totalChars } from './rows'
+import { isReplacementText, PLAIN_RATIO, resultsOf, rowChars, totalChars } from './rows'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
 import { telemetry, tokensText, wholeOf, type RegistryUpdate, type UsageInfo } from './stages'
@@ -115,8 +115,8 @@ export function candidates(rows: readonly SessionMessage[], reg: TagRegistry, qu
       if (busyIds.has(id)) continue
       // a resolved pair: both rows are there
       const text = resultsOf(rows[ix.resultAt(id)]!).find(t => t.tool_use_id === id)?.text ?? ''
-      // a result already replaced by the mod is no candidate
-      if (text.startsWith(MARK)) continue
+      // a result already replaced is no candidate
+      if (isReplacementText(text)) continue
       const alias = aliases.get(id)
       const tool = rows[ix.useAt(id)]!.toolUses.find(u => u.tool_use_id === id)?.tool
       out.push({ ...(alias ? { alias } : {}), row: Math.min(...at), chars: text.length, reproducible: tool !== undefined && REPRODUCIBLE_TOOLS.includes(tool) })

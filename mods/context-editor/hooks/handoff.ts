@@ -9,6 +9,7 @@ import {
   describeEdit,
   dropOwnCallsCounted,
   fingerprint,
+  applyLine,
   formatReport,
   HEAD_ROWS,
   indexRows,
@@ -551,6 +552,9 @@ export type HandoffIO = {
   submit: (text: string) => Promise<void>
   toast: (text: string) => void
   status: (text?: string) => void
+  // [SP_CTX_02_43] the person's line in the chat, never sent to the model
+  // ($.ui.log); absent: no line
+  log?: (text: string) => void
 }
 
 export type HandoffOutcome = 'deferred' | 'nothing' | 'failed' | 'transcript' | 'document'
@@ -808,6 +812,18 @@ export function seedReportTail(s: Pick<HandoffSeed, 'report' | 'archive' | 'rati
   return text ? `\n${text}` : ''
 }
 
+// [SP_CTX_02_43] LogApply of a handoff: once the new session holds the seed,
+// one line for the person when the seed applied queued edits. A failure only
+// loses the line.
+export function logSeeded(io: Pick<HandoffIO, 'log'>, s: Pick<HandoffSeed, 'report' | 'ratio'>): void {
+  try {
+    const line = applyLine(s.report, s.ratio)
+    if (line) io.log?.(`handoff: ${line}`)
+  } catch {
+    // the line is for the person only
+  }
+}
+
 // [SP_CTX_02_21] Seed: /clear, then the seed compaction in the new session,
 // checked. Once seeded, nothing falls back: every later step is caught here.
 async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
@@ -859,6 +875,8 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
   const why = await awaitSeeded(io, s.rows, run.old, await io.sessionId())
   if (why) return afterClear(run, s, `the host did not keep the seeded conversation: ${why}`, turnsClear)
   mem.pending = undefined
+  // [SP_CTX_02_43] the person's line when the seed applied queued edits
+  logSeeded(io, s)
 
   // Seeded: from here on no other way, whatever fails; each step is caught
   // here and named in a toast, and the rest still run.

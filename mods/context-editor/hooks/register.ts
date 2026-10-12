@@ -94,8 +94,9 @@ import {
 const storage = newStorageMemory()
 // [SP_CTX_02_07] The id of the last report an apply of this instance wrote
 // and answered without an abandon, and the folder of the apply running now
-// (the failure branch writes there).
-const applies: { reported?: number; dir?: string } = {}
+// (the failure branch writes there). [SP_CTX_02_43] `line`: the person's
+// line of that report (ApplyLine), which Flush logs once its command returned.
+const applies: { reported?: number; dir?: string; line?: { id: number; text: string } } = {}
 // [SP_CTX_01_14] The identity of the host process, read once per module
 // instance. [SP_CTX_02_18] [SP_CTX_DEC_10] A boundary counts when this host
 // process wrote it, or this instance in this session (ownBoundary): one left
@@ -472,6 +473,9 @@ function flushIO($: EngineInterface): FlushIO {
     removeDelivered: delivered => removeDelivered($, delivered),
     status: text => $.ui.status(text),
     toast: text => $.ui.toast(text),
+    // [SP_CTX_02_43] a line in the chat for the person; the model never sees it
+    log: text => $.ui.log(text),
+    appliedLine: id => (applies.line?.id === id ? applies.line.text : undefined),
     now: () => Date.now(),
     sessionId: () => $.session.id(),
     turns,
@@ -652,6 +656,8 @@ function handoffIO($: EngineInterface): HandoffIO {
     // A refused prompt resolves with `drop`; the handoff treats it as a failure.
     submit: text => enteredOrThrow($.prompt.submit({ text })),
     toast: text => $.ui.toast(text),
+    // [SP_CTX_02_43] a line in the chat for the person; the model never sees it
+    log: text => $.ui.log(text),
     status: text => $.ui.status(text),
   }
 }
@@ -944,6 +950,7 @@ export const register: Register = on => {
     // returned without an abandon; set on the queue's chain, before the
     // failure branch's write queued behind it reads it
     let wrote: number | undefined
+    let line: string | undefined
     const s = stores($, dir)
     const outcome = await s.queue.onChain(async q => {
       const done = await handleCompaction(
@@ -964,7 +971,10 @@ export const register: Register = on => {
           // [SP_CTX_02_07] the commit holds the registry's chain, then the
           // alias registry's, inside the queue's: the order queue → tags → aliases
           onRegistries: work => s.tags.onChain(t => s.aliases.onChain(a => work(a), t), q),
-          reported: id => void (wrote = id),
+          reported: (id, text) => {
+            wrote = id
+            line = text
+          },
           writeBoundary: b => writeBoundaryAt($, dir, b),
           hostId: () => peekHostId(hostId),
           // [SP_CTX_02_07] the plain usage: no breakdown, no API request
@@ -979,7 +989,10 @@ export const register: Register = on => {
         },
         e.messages,
       )
-      if (wrote !== undefined && !next.signal.aborted) applies.reported = wrote
+      if (wrote !== undefined && !next.signal.aborted) {
+        applies.reported = wrote
+        applies.line = line !== undefined ? { id: wrote, text: line } : undefined
+      }
       return done
     })
     if ('messages' in outcome) noteCopies(outcome.messages)

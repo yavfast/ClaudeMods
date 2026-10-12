@@ -597,3 +597,12 @@ test('context_edit — keep_cache: default false; the last explicit value of the
   expect(old.state === 'ok' && old.value.keepCache).toBe(false)
   expect(parseQueue(JSON.stringify({ edits: [], keepCache: 'yes' })).state).toBe('unreadable')
 })
+
+// [SP_CTX_01_03] [SP_CTX_02_13] QueuedEdit.via: only 'tag' (a disposable
+// tag's replacement) is written; any other value makes the file unreadable.
+test('parseQueue — via: an edit with via "tag" reads; another via is a bad edit', async () => {
+  const edit = { op: 'summarize', tool_use_id: 'a', summary: 's' }
+  const read = parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ ...edit, via: 'tag' }] }))
+  expect(read.state === 'ok' && read.value.edits[0]!.via).toBe('tag')
+  expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ ...edit, via: 'edit' }] }))).toEqual({ state: 'unreadable', reason: 'bad edit 1' })
+})

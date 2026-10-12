@@ -2,7 +2,6 @@ import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction, type CompactionIO } from '../hooks/compaction'
 import { applyEdits, collectMedia, DESCRIBE_DROPS, formatReport, listRows, NO_MEDIA_NOW, ownerKey, prepare, replacedOwners } from '../hooks/edits'
-import { MARK } from '../hooks/rows'
 import { matchPrompts } from '../hooks/media'
 import { EMPTY_ALIASES } from '../hooks/aliases'
 import { buildSeed, SUMMARY_OPENER } from '../hooks/handoff'
@@ -185,7 +184,7 @@ test('ApplyEdits — describe: the row is rebuilt without handle, its text kept 
   const res = applyEdits(rows, queued, '/a.json', new Map([[key, ['/m/1.png']]]), new Set([key]))
   expect(res.report.applied).toEqual(['describe #0'])
   expect(res.rows[0]!.handle).toBeUndefined()
-  expect(res.rows[0]!.text.startsWith(`${MARK} you saw the media here, then replaced it with your description (original: /a.json, open with Read) (media: /m/1.png): a red square`)).toBe(true)
+  expect(res.rows[0]!.text.startsWith(`Later, your context_edit describe call replaced the media you had seen here with your own description (original: /a.json, open with Read) (media: /m/1.png): a red square`)).toBe(true)
   expect(res.rows[0]!.text.endsWith('\n\nsee this')).toBe(true)
   // the media was found but not archived: the reason names the archive, not a missing match
   const unarchived = applyEdits(rows, queued, '/a.json', new Map(), new Set([key]))

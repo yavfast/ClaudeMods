@@ -1,6 +1,6 @@
 ---
 name: context-stages
-description: Open this for a long or multi-stage task with the context-editor mod: when to open and close stages, how to compress a finished block, the optimization mark, the telemetry, and what a row marked [context-editor] means when one puzzles you.
+description: Open this for a long or multi-stage task with the context-editor mod: when to open and close stages, how to compress a finished block, the optimization mark, the telemetry, and what "Later, your context_…" or [context-editor] rows mean.
 ---
 
 # Managing your context in stages
@@ -83,11 +83,11 @@ Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagg
 
 Write about the content, not row numbers: indexes change after an apply. `context_list` shows `[n3]` on the rows, the full text below the page and `Notes elsewhere` for other pages; a stage close lists the notes in its block. A note moves to the row that replaced its row and goes with a removed row (the apply report names it). Remove one with `{"op":"remove","id":"n3"}`.
 
-## Rows marked [context-editor]
+## Compressed rows and mod texts
 
-Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. A replacement is your own work: you read the original, then compressed it to save context. It is no loss and nothing you made up.
+Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. It is no loss and nothing you made up.
 
-- `you read the full output here, then replaced it with your summary`, `you read these N rows (what they held), then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`: your `summarize`, `collapse` (its call's `collapsed` input lists the same), `rewrite`, `describe`; your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
+- `… summarize call replaced the full output …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours. Older ones read `[context-editor] you read …, then replaced …`.
 - `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
-- `context-editor: applied N edit(s): …`: the apply report. When it says your `context_*` calls were removed, what you quoted from their results did come from the mod. A `/compact` row whose args start with `context-editor:` is the mod's command.
+- Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command.
 - `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the optimization or `/compact` turn, a handoff's document: service texts of the mod.

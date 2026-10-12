@@ -27,6 +27,8 @@ export function harness(
     pruned?: ReadonlySet<string>
     journal: unknown[]
     reported?: number
+    // [SP_CTX_02_43] the person's line the apply left with its report
+    line?: string
     order: string[]
   } = { media: [], toasts: [], journal: [], order: [] }
   const io: CompactionIO = {
@@ -62,7 +64,10 @@ export function harness(
       written.aliases = reg
       written.order.push('aliases')
     },
-    reported: id => void (written.reported = id),
+    reported: (id, line) => {
+      written.reported = id
+      written.line = line
+    },
     writeBoundary: async b => {
       written.boundary = b
       written.order.push('boundary')

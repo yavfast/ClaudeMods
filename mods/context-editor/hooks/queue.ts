@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { checkShape, DESCRIBE_DROPS, describeEdit, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { personDelivered, personText, type QueuedDelivery } from './deliveries'
-import { isPlainUserRow, MARK, modText, PREFIX, resultsOf } from './rows'
+import { isPlainUserRow, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
 
 // [SP_CTX_01_12]
@@ -171,8 +171,9 @@ function isHandoff(raw: unknown): boolean {
 
 function isQueuedEdit(raw: unknown): boolean {
   if (typeof checkShape(raw) === 'string') return false
-  const anchors = (raw as { anchors?: unknown }).anchors
-  return anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))
+  const { anchors, via } = raw as { anchors?: unknown; via?: unknown }
+  // [SP_CTX_01_03] `via` names who asked for the replacement: only 'tag' is written
+  return (anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))) && (via === undefined || via === 'tag')
 }
 
 export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }

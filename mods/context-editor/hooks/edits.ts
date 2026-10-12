@@ -1,7 +1,7 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
 import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
-import { apiBlocks, BIG_ROW, errorText, findToolResult, findToolUse, isBig, isEmptyRow, isPlainUserRow, isPromptRow, MARK, modText, PLAIN_RATIO, resultsOf, rowChars, squash, totalChars } from './rows'
+import { apiBlocks, BIG_ROW, collapsedWords, DESCRIBED, errorText, findToolResult, findToolUse, isBig, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, PLAIN_RATIO, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, totalChars, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -12,7 +12,9 @@ export type Edit =
   | { op: 'describe'; index: number; description: string }
 
 // [SP_CTX_01_03] Index-based edits carry fingerprints of the rows they named.
-export type QueuedEdit = Edit & { anchors?: string[] }
+// [SP_CTX_01_03] `via: 'tag'`: the replacement of a disposable tag the mod
+// queued (QueueTagReplacements); its text names context_tag, not context_edit.
+export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' }
 
 // [SP_CTX_01_08] Whose media it is: a tool result or a person's prompt row.
 export type MediaOwner = { tool_use_id: string } | { row: number }
@@ -50,22 +52,10 @@ export type Produced = { edit: string; index: number; fingerprint: string }
 // describe). Rebuilding keeps both.
 export type Made = { edit: string; resultId?: string; text?: string }
 
-// [SP_CTX_02_04] [SP_CTX_DEC_17] (A') The words after MARK (rows.ts) in a replacement:
-// the agent read the original in this place and replaced it itself. A
-// replacement stands where the result was, right after the call, and the
-// agent's own context_edit call is gone, so without them it took its summary
-// for what the tool returned (live run of phase 18, F1). Changed rows are
-// still told apart by the MARK prefix alone.
-export const SUMMARIZED = 'you read the full output here, then replaced it with your summary'
-export const REWRITTEN = 'you rewrote this row'
-export const DESCRIBED = 'you saw the media here, then replaced it with your description'
-// [SP_CTX_02_04] [SP_CTX_DEC_29] The collapse words name what the span held
-// (CollapsedList, phase 27): without it the agent took the carrier for a call
-// it never made and the note for something it had not read (live run of phase 26).
-export const COLLAPSED_OPENER = 'you read these '
-export function collapsedWords(n: number, list = ''): string {
-  return `${COLLAPSED_OPENER}${n} rows${list ? ` (${list})` : ''}, then collapsed them into your note`
-}
+// [SP_CTX_02_04] [SP_CTX_DEC_17] (A″) The replacement texts and their
+// predicates live in rows.ts (STRUCT-01); re-exported for the modules and
+// tests that import them from here.
+export { COLLAPSED_OPENER, collapsedWords, DESCRIBED, REWRITTEN, SUMMARIZED, TAG_COLLAPSED_OPENER, TAG_REWRITTEN, TAG_SUMMARIZED } from './rows'
 // [SP_CTX_01_12] The carrier call's one input field (phase 27), and the
 // bounds of CollapsedList and of one key argument in it.
 export const COLLAPSED_KEY = 'collapsed'
@@ -500,8 +490,13 @@ export function oneLine(s: string, max: number): string {
   return (/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut) + '…'
 }
 
+// [SP_CTX_02_04] How the agent asked for this replacement (its text names it).
+function viaOf(edit: QueuedEdit): Via {
+  return edit.via === 'tag' ? 'tag' : 'edit'
+}
+
 function isEdited(row: SessionMessage): boolean {
-  return [row.text, ...resultsOf(row).map(r => r.text)].some(t => t.startsWith(MARK))
+  return [row.text, ...resultsOf(row).map(r => r.text)].some(isReplacementText)
 }
 
 // Media sizes per owner key, for the listing.
@@ -1015,7 +1010,7 @@ function stripResult(r: ToolResultSummary): ToolResultSummary {
 // (phase 27) or, from an older apply, empty. Pure.
 export function carrierIds(rows: readonly SessionMessage[]): Set<string> {
   const notes = new Set<string>()
-  for (const r of rows) for (const t of resultsOf(r)) if (isCollapseNote(t.text)) notes.add(t.tool_use_id)
+  for (const r of rows) for (const t of resultsOf(r)) if (isCollapseText(t.text)) notes.add(t.tool_use_id)
   const out = new Set<string>()
   for (const r of rows)
     for (const u of r.toolUses) {
@@ -1026,10 +1021,6 @@ export function carrierIds(rows: readonly SessionMessage[]): Set<string> {
       if (own && notes.has(u.tool_use_id)) out.add(u.tool_use_id)
     }
   return out
-}
-
-function isCollapseNote(text: string): boolean {
-  return text.startsWith(`${MARK} ${COLLAPSED_OPENER}`)
 }
 
 // [SP_CTX_02_04] [SP_CTX_DEC_29] CollapsedList(span): what a collapse span
@@ -1061,11 +1052,11 @@ export function collapsedList(span: readonly SessionMessage[]): string {
     }
     if (resultsOf(row).length) continue
     const text = row.text.trim()
-    if (text && isCollapseNote(text)) notes++
+    if (text && isCollapseText(text)) notes++
     else if (row.role === 'assistant') texts += text ? 1 : 0
     // a person's prompt keeps its words after a describe; a prompt of media
     // alone has no text but is the person's
-    else if (text ? text.startsWith(`${MARK} ${DESCRIBED}`) || personText(text) !== '' : isPromptRow(row)) person++
+    else if (text ? isDescribedText(text) || personText(text) !== '' : isPromptRow(row)) person++
   }
   const counts = [
     person ? `${person} of the person's messages` : '',
@@ -1351,7 +1342,7 @@ export function applyEdits(
                 rows[resAt] = plain(res, {
                   toolResults: resultsOf(res).map(r =>
                     r.tool_use_id === edit.tool_use_id
-                      ? { tool_use_id: id, isError: r.isError, text: `${MARK} ${SUMMARIZED}${note}${mediaNote([pair!])}: ${edit.summary}` }
+                      ? { tool_use_id: id, isError: r.isError, text: `${summarizedWords(viaOf(edit))}${note}${mediaNote([pair!])}: ${edit.summary}` }
                       : stripResult(r),
                   ),
                 })
@@ -1404,7 +1395,7 @@ export function applyEdits(
           const span = rows.slice(from, to + 1)
           report.originals.push({ edit: name, rows: span })
           const list = collapsedList(span)
-          const text = `${MARK} ${collapsedWords(span.length, list)}${note}${mediaNote(keys)}: ${edit.summary}`
+          const text = `${collapsedWords(span.length, list, viaOf(edit))}${note}${mediaNote(keys)}: ${edit.summary}`
           // The carrier keeps roles and pairing valid around the span; it is
           // never one of this plugin's own calls, which are dropped later. Its
           // name is a tool the session has; its input names what the span
@@ -1444,8 +1435,8 @@ export function applyEdits(
           report.originals.push({ edit: name, rows: [row] })
           const text =
             edit.op === 'rewrite'
-              ? `${MARK} ${REWRITTEN}${note}: ${edit.text}`
-              : `${MARK} ${DESCRIBED}${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
+              ? `${rewrittenWords(viaOf(edit))}${note}: ${edit.text}`
+              : `${DESCRIBED}${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
           rows[at] = plain(row, { text })
           made.push({ edit: name, text })
         }
@@ -1746,12 +1737,45 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   if (r.applied.some(a => a.startsWith('describe '))) parts.push(DESCRIBE_DROPS)
   // [SP_CTX_01_05] P13: the agent's own context_* calls left the conversation
   // when the returned list replaces it (a compaction with an applied edit; a seed always)
-  if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length))
-    parts.push(`Your own context-editor calls (${r.ownCallsRemoved}) were removed; tags and notes stay — see context_list.`)
+  if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length)) parts.push(ownCallsText(r.ownCallsRemoved, r.applied.length > 0))
   // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation
   if (r.deliveries && (kind === 'seed' || r.applied.length)) parts.push(deliveriesText(r.deliveries))
   const text = parts.filter(Boolean).join(' ')
   return !text || parts[0] ? text : modText(text)
+}
+
+// [SP_CTX_01_05] [SP_CTX_DEC_17] (A″) The report's sentence on the agent's
+// own context_* calls DropOwnCalls removed. It counts every own pair
+// (context_list, context_note, context_tag, context_edit); when an edit
+// applied, the calls that queued the replacements are among them (a
+// context_edit, or the context_tag of a disposable tag).
+export function ownCallsText(n: number, replaced: boolean): string {
+  return replaced
+    ? `Your context_* calls (${n}), including the ones that queued these replacements, were removed from the conversation; tags and notes stay — see context_list.`
+    : `Your context_* calls (${n}) were removed from the conversation; tags and notes stay — see context_list.`
+}
+
+// [SP_CTX_02_43] ApplyLine: the person's line after an apply ($.ui.log; the
+// model never sees it): the conversation's size before and after, then what
+// was freed. The report's estimate: Estimate's rounding (chars / ratio) by the
+// registry's calibrated ratio, PLAIN_RATIO and "approx." without one.
+// "" without an applied edit.
+export function applyLine(r: Pick<ApplyReport, 'applied' | 'failed' | 'charsBefore' | 'charsAfter'>, ratio?: number): string {
+  if (!r.applied.length) return ''
+  const per = ratio || PLAIN_RATIO
+  const tokens = (chars: number) => Math.max(0, Math.round(chars / per))
+  const freed = tokens(r.charsBefore - r.charsAfter)
+  const approx = ratio ? '' : 'approx.'
+  const head = `applied ${r.applied.length} edit(s)${r.failed.length ? `, ${r.failed.length} not applied` : ''}`
+  const notes = [approx, freed > 0 ? `freed ~${kilo(freed)}` : ''].filter(Boolean).join('; ')
+  return `${head}: conversation ~${kilo(tokens(r.charsBefore))} → ~${kilo(tokens(r.charsAfter))} tokens${notes ? ` (${notes})` : ''}`
+}
+
+// A token count for the person's line: 950, 4.2k, 41k.
+export function kilo(n: number): string {
+  if (n < 1000) return String(n)
+  if (n < 10_000) return `${(Math.round(n / 100) / 10).toFixed(1).replace(/\.0$/, '')}k`
+  return `${Math.round(n / 1000)}k`
 }
 
 // [SP_CTX_01_05] The report's sentence on the host's deliveries; "" when

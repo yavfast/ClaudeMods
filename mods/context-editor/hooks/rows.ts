@@ -8,7 +8,10 @@ import type { SessionMessage, ToolResultSummary } from 'claude-code'
 
 // ---- [SP_CTX_01_12] constants
 
-// The prefix of the text of a replaced row or result ([SP_CTX_DEC_17]).
+// The prefix of the mod's own lines among the rows and the call context: the
+// alias line, a note's reminder, CarryNote. Before phase 28 it also opened
+// the text of every replaced row or result ([SP_CTX_DEC_17], A′); the
+// replacements of now open with REPLACED instead (A″).
 export const MARK = '[context-editor]'
 // The prefix of the mod's own words: reports, frames, status lines, skip
 // reasons. PersonText ([SP_CTX_02_02]) reads a row starting with it as no
@@ -39,6 +42,65 @@ export const HANDOFF_MARKER = modText('seed the handed-off conversation (run aut
 // command an older instance of the module queued before a reload.
 export const LEGACY_MARKER = modText('apply queued edits')
 export const LEGACY_HANDOFF_MARKER = modText('seed the handed-off conversation')
+
+// ---- [SP_CTX_02_04] [SP_CTX_DEC_17] replacement texts
+
+// (A″, phase 28; spike context_editor_authorship, V6) A replacement's text is
+// the agent's own note in the place of what it had read: no MARK prefix
+// (haiku read `[context-editor]` as the plugin's words), the agent as the
+// subject, its own call named, and "Later" for when. Every replacement opens
+// with REPLACED; the full opener names the step and how the agent asked for
+// it: a context_edit call, or a disposable tag of context_tag the mod queued.
+export const REPLACED = 'Later, your context_'
+const BY_EDIT = `${REPLACED}edit `
+const BY_TAG = `${REPLACED}tag disposable tag replaced `
+// [SP_CTX_01_03] How the agent asked for a replacement: QueuedEdit.via
+export type Via = 'edit' | 'tag'
+export const SUMMARIZED = `${BY_EDIT}summarize call replaced the full output you had read here with your own summary`
+export const REWRITTEN = `${BY_EDIT}rewrite call replaced the text of this row with your own rewrite`
+export const DESCRIBED = `${BY_EDIT}describe call replaced the media you had seen here with your own description`
+export const TAG_SUMMARIZED = `${BY_TAG}the full output you had read here with your own note`
+export const TAG_REWRITTEN = `${BY_TAG}the text of this row with your own note`
+// [SP_CTX_DEC_29] The collapse words name what the span held (CollapsedList,
+// phase 27) in parentheses after the row count.
+export const COLLAPSED_OPENER = `${BY_EDIT}collapse call replaced these `
+export const TAG_COLLAPSED_OPENER = `${BY_TAG}these `
+export function collapsedWords(n: number, list = '', via: Via = 'edit'): string {
+  return `${via === 'tag' ? TAG_COLLAPSED_OPENER : COLLAPSED_OPENER}${n} rows you had read${list ? ` (${list})` : ''} with your own note`
+}
+export function summarizedWords(via: Via = 'edit'): string {
+  return via === 'tag' ? TAG_SUMMARIZED : SUMMARIZED
+}
+export function rewrittenWords(via: Via = 'edit'): string {
+  return via === 'tag' ? TAG_REWRITTEN : REWRITTEN
+}
+// Every full opener of phase 28: the test of a replacement is the whole
+// opener, not REPLACED alone (a person quoting the start back is no replacement).
+export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER]
+// [SP_CTX_01_12] The openers of phases 19–27 (A′): sessions applied before
+// phase 28 still carry them.
+export const LEGACY_DESCRIBED = `${MARK} you saw the media here, then replaced it with your description`
+export const LEGACY_COLLAPSED_OPENER = `${MARK} you read these `
+
+// [SP_CTX_02_04] The text of a replaced row or result: a full opener of
+// phase 28 (REPLACEMENT_OPENERS) or any text an apply before phase 28 marked
+// with MARK (A′ and the forms before it). The one test of "already replaced"
+// (the `*` flag, R5 (a), the hint's candidates, PersonText; rule STRUCT-01).
+export function isReplacementText(text: string): boolean {
+  return REPLACEMENT_OPENERS.some(o => text.startsWith(o)) || text.startsWith(MARK)
+}
+
+// [SP_CTX_02_04] The text of a collapse note, by context_edit or a tag, of
+// now or of phases 19–27.
+export function isCollapseText(text: string): boolean {
+  return text.startsWith(COLLAPSED_OPENER) || text.startsWith(TAG_COLLAPSED_OPENER) || text.startsWith(LEGACY_COLLAPSED_OPENER)
+}
+
+// [SP_CTX_02_04] A person's prompt after a describe (its words follow the
+// description), of now or of phases 19–27.
+export function isDescribedText(text: string): boolean {
+  return text.startsWith(DESCRIBED) || text.startsWith(LEGACY_DESCRIBED)
+}
 
 // [SP_CTX_01_12] [SP_CTX_02_07] Which of the mod's compactions a command's
 // args name, by the marks of now or before phase 25; exact text only.

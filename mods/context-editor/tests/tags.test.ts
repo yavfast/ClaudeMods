@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, touchedBy, type QueuedEdit } from '../hooks/edits'
-import { BIG_ROW, MARK } from '../hooks/rows'
+import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, TAG_REWRITTEN, TAG_SUMMARIZED, touchedBy, type QueuedEdit } from '../hooks/edits'
+import { BIG_ROW, isReplacementText } from '../hooks/rows'
 import { insertDeliveries } from '../hooks/deliveries'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
@@ -395,13 +395,21 @@ test('two disposable tags on an empty queue become two edits of a tags-only batc
   expect('queue' in after && after.queue.tagsOnly).toBe(false)
 })
 
-test('QueueTagReplacements — заміна з тегу називає автора: an applied disposable note reads as the agent\'s own replacement (phase 19)', async () => {
+test('QueueTagReplacements — заміна з тегу називає автора: an applied disposable note reads as the agent\'s own replacement made by its context_tag tag (phase 19; phase 28: via tag)', async () => {
   const { io, log } = harness(okRead(disposables))
   await queueTagReplacements(io)
+  expect(log.queue!.edits.every(e => e.via === 'tag')).toBe(true)
   const out = applyEdits(rows(), log.queue!.edits, '/s/1.json')
   expect(out.report.applied.length).toBe(2)
-  expect(out.rows[2]!.toolResults![0]!.text).toBe(`${MARK} ${SUMMARIZED} (original: /s/1.json, open with Read): file A: KEY_0042 = ff`)
-  expect(out.rows[3]!.text).toBe(`${MARK} ${REWRITTEN} (original: /s/1.json, open with Read): dead end`)
+  expect(out.rows[2]!.toolResults![0]!.text).toBe(`${TAG_SUMMARIZED} (original: /s/1.json, open with Read): file A: KEY_0042 = ff`)
+  expect(TAG_SUMMARIZED).toBe('Later, your context_tag disposable tag replaced the full output you had read here with your own note')
+  expect(out.rows[3]!.text).toBe(`${TAG_REWRITTEN} (original: /s/1.json, open with Read): dead end`)
+  expect(TAG_REWRITTEN).toBe('Later, your context_tag disposable tag replaced the text of this row with your own note')
+  // the same edits from context_edit name the call
+  const own = applyEdits(rows(), log.queue!.edits.map(({ via: _v, ...e }) => e), '/s/1.json')
+  expect(own.rows[2]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
+  expect(own.rows[3]!.text.startsWith(REWRITTEN)).toBe(true)
+  for (const t of [out.rows[2]!.toolResults![0]!.text, out.rows[3]!.text]) expect(isReplacementText(t)).toBe(true)
 })
 
 test('replacements join a non-empty queue without making it tags-only', async () => {
@@ -856,7 +864,7 @@ test('QueueTagReplacements — діапазон: a disposable range #8..#10 beco
   const { io, log } = harness(okRead(reg([range])), undefined, { rows: async () => r })
   const out = await queueTagReplacements(io)
   expect(out.queued).toBe(1)
-  expect(log.queue!.edits).toEqual([{ op: 'collapse', from_index: 8, to_index: 10, summary: 'N', anchors: [fingerprint(r[8]!), fingerprint(r[10]!)] }])
+  expect(log.queue!.edits).toEqual([{ op: 'collapse', from_index: 8, to_index: 10, summary: 'N', anchors: [fingerprint(r[8]!), fingerprint(r[10]!)], via: 'tag' }])
   // 2 + 5 + 10 chars of the three rows less the note's one
   expect(out.freed).toBe('~4 tokens (approx.)')
   // the replacement is keyed: queued once
@@ -871,11 +879,13 @@ test('QueueTagReplacements — слот стану в діапазоні: a stat
   expect(log.queue).toBeUndefined()
 })
 
-test('AutoTag — R5 стиснута раніша пара: an earlier Read of the same range already summarized (its text starts with MARK) is no duplicate', async () => {
+test('AutoTag — R5 стиснута раніша пара: an earlier Read of the same range already summarized (isReplacementText: the text of phase 28 or one marked with MARK) is no duplicate', async () => {
   const other = 'y'.repeat(5000)
   const r: SessionMessage[] = [
     readUse('a_ce1x', { file_path: '/f', offset: 10, limit: 50 }),
     result('a_ce1x', '[context-editor] you read the full output here, then replaced it with your summary (original: /s/1.json, open with Read): f lines 10..60 hold KEY'),
+    readUse('c_ce1x', { file_path: '/f', offset: 10, limit: 50 }),
+    result('c_ce1x', `${SUMMARIZED} (original: /s/2.json, open with Read): f lines 10..60 hold KEY`),
     readUse('b', { file_path: '/f', offset: 10, limit: 50 }),
     result('b', other),
   ]

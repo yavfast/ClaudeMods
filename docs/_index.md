@@ -27,6 +27,7 @@
 | [context_editor_efficiency.spike.md](context_editor_efficiency.spike.md) | concluded | Модель ефективності стиснення контексту |
 | [context_editor_cache.spike.md](context_editor_cache.spike.md) | concluded | Чому apply мода скидає кеш промпту всієї розмови |
 | [context_editor_host_attachments.spike.md](context_editor_host_attachments.spike.md) | concluded | Застарілі вкладення хоста (`instructions`, `skill_listing`) після застосувань |
+| [context_editor_authorship.spike.md](context_editor_authorship.spike.md) | concluded | Форма стиснутого рядка, у якій haiku і sonnet бачать своє авторство (заглушка + власний рядок, збережені виклики, тексти без префікса) |
 
 ## ID prefixes
 
@@ -38,7 +39,7 @@
 | `SP_CTX_02_01`–`02_10` (перегляд, правки, застосування, компактизація, медіа) | [context_editor.edits.sp.md](context_editor.edits.sp.md) |
 | `SP_CTX_02_11`–`02_18` (теги, псевдоніми, поточна розмова) | [context_editor.tags.sp.md](context_editor.tags.sp.md) |
 | `SP_CTX_02_19`–`02_26` (передача) | [context_editor.handoff.sp.md](context_editor.handoff.sp.md) |
-| `SP_CTX_02_27`–`02_38`, `02_42` (етапи, телеметрія, нотатки, доставки, нагадування, кеш, `/compact` людини) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
+| `SP_CTX_02_27`–`02_38`, `02_42`–`02_43` (етапи, телеметрія, нотатки, доставки, нагадування, кеш, `/compact` людини, рядок людини після застосування) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
 | `SP_CTX_02_39`–`02_41` (вкладення хоста) | [context_editor.hostattach.sp.md](context_editor.hostattach.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
 | `SP_CTX_05_01` (модульні очікування) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |

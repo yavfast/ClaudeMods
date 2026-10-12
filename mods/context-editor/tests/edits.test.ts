@@ -31,6 +31,10 @@ import {
   responseStart,
   ROW_WINDOW,
   SUMMARIZED,
+  REWRITTEN,
+  applyLine,
+  estimate,
+  kilo,
   carrierIds,
   collapsedList,
   collapsedWords,
@@ -40,7 +44,7 @@ import {
   MAX_COLLAPSED_ARG,
   MAX_COLLAPSED_LIST,
 } from '../hooks/edits'
-import { findToolResult, findToolUse, MARK } from '../hooks/rows'
+import { findToolResult, findToolUse, isReplacementText, MARK } from '../hooks/rows'
 import { emptyRowBetweenCalls, prompt, reply as replyRow, result, use as useRow } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
@@ -79,7 +83,7 @@ test('summarize rebuilds the pair under one fresh id and drops the copied result
   expect(id.startsWith('a_ce')).toBe(true)
   expect(out[2]!.toolUses[0]!.text).toBeUndefined()
   expect(out[3]!.toolResults![0]!.tool_use_id).toBe(id)
-  expect(out[3]!.toolResults![0]!.text.startsWith(MARK)).toBe(true)
+  expect(out[3]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
   expect(out[3]!.toolResults![0]!.text).toContain('found A')
   expect(out[0]!.handle).toBe('h0')
   // the text row before the rebuilt call, in the same stretch, is rebuilt too
@@ -95,7 +99,7 @@ test('collapse keeps one tool pair as the carrier of the summary', async () => {
   expect(report.applied).toEqual(['collapse #2..#5'])
   expect(out.length).toBe(7)
   expect(out[2]!.toolUses[0]!.tool_use_id.startsWith('a_ce')).toBe(true)
-  expect(out[3]!.toolResults![0]!.text).toContain('you read these 4 rows (WebSearch; WebFetch), then collapsed them into your note')
+  expect(out[3]!.toolResults![0]!.text).toContain('Later, your context_edit collapse call replaced these 4 rows you had read (WebSearch; WebFetch) with your own note')
   // the next row keeps its content; after the inserted carrier in the same
   // stretch it is rebuilt without its handle ([SP_CTX_02_04], pitfall 30)
   expect(out[4]!.text).toBe('Conclusion: X is true.')
@@ -245,7 +249,7 @@ test('a collapse starting with an own call keeps its summary after the own calls
 
 test('a collapse of text rows only becomes one text row', async () => {
   const { rows: out } = run([{ op: 'collapse', from_index: 0, to_index: 1, summary: 'intro' }])
-  expect(out[0]!.text).toContain("you read these 2 rows (1 of the person's messages; 1 of your texts), then collapsed them into your note")
+  expect(out[0]!.text).toContain("Later, your context_edit collapse call replaced these 2 rows you had read (1 of the person's messages; 1 of your texts) with your own note")
   expect(out[0]!.toolUses.length).toBe(0)
   expect(out.length).toBe(8)
 })
@@ -283,7 +287,7 @@ test('prepare reports unknown ids, bad indexes, split ranges and wrong targets',
 
 test('rewrite replaces an assistant text row and marks it', async () => {
   const { rows: out } = run([{ op: 'rewrite', index: 6, text: 'X turned out false.' }])
-  expect(out[6]!.text.startsWith(MARK)).toBe(true)
+  expect(out[6]!.text.startsWith(REWRITTEN)).toBe(true)
   expect(out[6]!.text).toContain('X turned out false.')
 })
 
@@ -549,6 +553,7 @@ test('CollapsedList — групи і ключові аргументи: calls b
     prompt('context-editor: applied 1 edit(s)'),
     prompt('and the second file'),
     prompt('[context-editor] you saw the media here, then replaced it with your description: a chart\n\nwhat does it show?'),
+    prompt('Later, your context_edit describe call replaced the media you had seen here with your own description: a map\n\nand this one?'),
     prompt('<ide_opened_file>The user opened /w/a.ts</ide_opened_file> look at this'),
     prompt('<command-name>/review</command-name><command-args>pr 5</command-args>'),
     { role: 'user', text: '', toolUses: [], handle: 'media-only' },
@@ -556,7 +561,7 @@ test('CollapsedList — групи і ключові аргументи: calls b
   ]
   expect(collapsedList(span)).toBe(
     'Read ×3: cfg.txt, big1.txt; Bash ×2: ls, wc; Grep "KEY_"; WebFetch docs.example.com; Agent "find the parser"; ' +
-      "6 of the person's messages; 1 of your texts",
+      "7 of the person's messages; 1 of your texts",
   )
 })
 
@@ -617,8 +622,8 @@ test('oneLine — a cut never splits a surrogate pair: an emoji right at the bou
 })
 
 test('collapsedWords — the list in parentheses after the row count; none without a list', async () => {
-  expect(collapsedWords(12, 'Read cfg.txt')).toBe('you read these 12 rows (Read cfg.txt), then collapsed them into your note')
-  expect(collapsedWords(2)).toBe('you read these 2 rows, then collapsed them into your note')
+  expect(collapsedWords(12, 'Read cfg.txt')).toBe('Later, your context_edit collapse call replaced these 12 rows you had read (Read cfg.txt) with your own note')
+  expect(collapsedWords(2)).toBe('Later, your context_edit collapse call replaced these 2 rows you had read with your own note')
 })
 
 test('carrierIds — a call whose input is the one collapsed field, or an empty input whose result is a collapse note (before phase 27); a real call with an empty input is none', async () => {
@@ -633,10 +638,13 @@ test('carrierIds — a call whose input is the one collapsed field, or an empty 
     result('q', `${MARK} you read these 2 rows, then collapsed them into your note: s`),
     call('r', 'mcp__x__fold', { [COLLAPSED_KEY]: 'all' }),
     result('r', 'folded'),
+    // [SP_CTX_DEC_17] (A″) the carrier of phase 28: the note opens with the agent's call
+    call('s', 'Grep', { [COLLAPSED_KEY]: 'Grep "x"' }),
+    result('s', `${collapsedWords(3, 'Grep "x"')}: s`),
   ]
-  expect([...carrierIds(rows)]).toEqual(['n', 'o'])
+  expect([...carrierIds(rows)]).toEqual(['n', 'o', 's'])
   // a collapse over an earlier carrier names it as a note, not as a call
-  expect(collapsedList(rows)).toBe('mcp__x__ping; mcp__x__fold ×2; 2 of your earlier notes')
+  expect(collapsedList(rows)).toBe('mcp__x__ping; mcp__x__fold ×2; 3 of your earlier notes')
 })
 
 test('listRows — a collapse carrier gets no reproducible flag', async () => {
@@ -645,7 +653,8 @@ test('listRows — a collapse carrier gets no reproducible flag', async () => {
   expect(page).toContain('tool_use Read id=c_ce')
   expect(page).not.toContain('tool_use Read~ id=c_ce')
   expect(page).toContain('input="{"collapsed":"Read"}"')
-  expect(/tool_result id=c_ce\S+ "\[context-editor\] you read these 2 rows \(Read\)/.test(page)).toBe(true)
+  // the preview (70 chars) shows the opener of the agent's own call
+  expect(/tool_result id=c_ce\S+ "Later, your context_edit collapse call replaced these 2 rows you/.test(page)).toBe(true)
 })
 
 test('the plugin own calls are dropped with their results', async () => {
@@ -722,7 +731,7 @@ test('ApplyEdits — примітка оригіналу: the replacement says w
     { role: 'assistant', text: 'wrong', toolUses: [] },
   ]
   const out = applyEdits(input, prepare(input, [{ op: 'rewrite', index: 1, text: 'right' }]).queued, '/s/1.json')
-  expect(out.rows[1]!.text).toBe('[context-editor] you rewrote this row (original: /s/1.json, open with Read): right')
+  expect(out.rows[1]!.text).toBe('Later, your context_edit rewrite call replaced the text of this row with your own rewrite (original: /s/1.json, open with Read): right')
   expect(out.report.produced).toEqual([{ edit: 'rewrite #1', index: 1, fingerprint: fingerprint(out.rows[1]!) }])
 })
 
@@ -894,20 +903,43 @@ test('FormatReport — NowIndex без запису: no produced entry leaves th
 
 test('FormatReport — власні виклики (P13): applied with 2 removed / 0 removed / no edit applied / a seed without edits with 1 removed', async () => {
   const base = { applied: ['drop c'], failed: [], charsBefore: 100, charsAfter: 60, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 2, mediaFiles: [] }
-  const sentence = 'Your own context-editor calls (2) were removed; tags and notes stay — see context_list.'
+  // [SP_CTX_DEC_17] (A″) tied to the replacements the calls made
+  const sentence = 'Your context_* calls (2), including the ones that queued these replacements, were removed from the conversation; tags and notes stay — see context_list.'
   expect(formatReport(base, '', 'compaction').endsWith(` ${sentence}`)).toBe(true)
-  expect(formatReport({ ...base, ownCallsRemoved: 0 }, '', 'compaction')).not.toContain('Your own')
-  expect(formatReport({ ...base, applied: [], failed: ['x'] }, '', 'compaction')).not.toContain('Your own')
+  expect(formatReport({ ...base, ownCallsRemoved: 0 }, '', 'compaction')).not.toContain('context_* calls')
+  expect(formatReport({ ...base, applied: [], failed: ['x'] }, '', 'compaction')).not.toContain('context_* calls')
+  // a seed without an applied edit made no replacement
   expect(formatReport({ ...base, applied: [], ownCallsRemoved: 1 }, '', 'seed')).toBe(
-    'context-editor: Your own context-editor calls (1) were removed; tags and notes stay — see context_list.',
+    'context-editor: Your context_* calls (1) were removed from the conversation; tags and notes stay — see context_list.',
   )
+  expect(formatReport({ ...base, ownCallsRemoved: 1 }, '', 'seed')).toContain('Your context_* calls (1), including the ones that queued these replacements, were removed')
   // after the notes dropped
   expect(formatReport({ ...base, notesDropped: ['n2'] }, '', 'compaction')).toContain(`Notes dropped (their rows were removed): n2. ${sentence}`)
 })
 
-// ---- [SP_CTX_02_04] [SP_CTX_DEC_17] (A') who wrote a replacement, and when (phase 19)
+// ---- [SP_CTX_02_43] ApplyLine: the person's line after an apply (phase 28)
 
-test('ApplyEdits — хто написав заміну: each replacement says the agent read the original here and replaced it itself; MARK still marks it', async () => {
+test('ApplyLine — рядок людини: applied count, freed tokens and sizes by the calibrated ratio or PLAIN_RATIO; failures counted; "" without an applied edit', async () => {
+  const base = { applied: ['summarize a', 'collapse #2..#9', 'drop c'], failed: [] as string[], charsBefore: 600_000, charsAfter: 436_000 }
+  // what is measured first, then what was freed
+  expect(applyLine(base, 4)).toBe('applied 3 edit(s): conversation ~150k → ~109k tokens (freed ~41k)')
+  // no ratio: PLAIN_RATIO (4 chars per token) and "approx.", as the report's estimate
+  expect(applyLine(base)).toBe('applied 3 edit(s): conversation ~150k → ~109k tokens (approx.; freed ~41k)')
+  expect(applyLine({ ...base, failed: ['drop z: call or result not found'] }, 3)).toBe('applied 3 edit(s), 1 not applied: conversation ~200k → ~145k tokens (freed ~55k)')
+  // nothing freed (a describe adds words for the media it removes)
+  expect(applyLine({ ...base, applied: ['describe #0'], charsAfter: 600_400 }, 4)).toBe('applied 1 edit(s): conversation ~150k → ~150k tokens')
+  expect(applyLine({ ...base, applied: ['describe #0'], charsAfter: 600_400 })).toBe('applied 1 edit(s): conversation ~150k → ~150k tokens (approx.)')
+  // freed rounds as the report's Estimate does (chars / ratio), not as a difference of rounded sizes
+  const r = { applied: ['drop a'], failed: [], charsBefore: 7, charsAfter: 1 }
+  expect(applyLine(r, 4)).toBe('applied 1 edit(s): conversation ~2 → ~0 tokens (freed ~2)')
+  expect(estimate(6, 4)).toBe('~2 tokens')
+  expect(applyLine({ ...base, applied: [], failed: ['x'] }, 4)).toBe('')
+  expect([kilo(0), kilo(950), kilo(4210), kilo(9960), kilo(41_000), kilo(150_400)]).toEqual(['0', '950', '4.2k', '10k', '41k', '150k'])
+})
+
+// ---- [SP_CTX_02_04] [SP_CTX_DEC_17] (A″) who wrote a replacement, and when (phase 19; phase 28: agent-first, no MARK)
+
+test('ApplyEdits — хто написав заміну: each replacement opens with the agent\'s own context_edit call, without MARK; the listing still flags it', async () => {
   const input: SessionMessage[] = [
     { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
     { role: 'assistant', text: 'wrong', toolUses: [], handle: 'h1' },
@@ -926,11 +958,12 @@ test('ApplyEdits — хто написав заміну: each replacement says t
   const out = applyEdits(input, queued, '/s/1.json')
   expect(out.report.applied.length).toBe(3)
   const note = ' (original: /s/1.json, open with Read): '
-  expect(out.rows[1]!.text).toBe(`${MARK} you rewrote this row${note}right`)
-  expect(out.rows[3]!.toolResults![0]!.text).toBe(`${MARK} ${SUMMARIZED}${note}A holds K`)
-  expect(SUMMARIZED).toBe('you read the full output here, then replaced it with your summary')
-  expect(out.rows[5]!.toolResults![0]!.text).toBe(`${MARK} you read these 4 rows (Read ×2), then collapsed them into your note${note}B and C`)
-  // the listing still flags every replaced row by the MARK prefix
+  expect(out.rows[1]!.text).toBe(`Later, your context_edit rewrite call replaced the text of this row with your own rewrite${note}right`)
+  expect(out.rows[3]!.toolResults![0]!.text).toBe(`${SUMMARIZED}${note}A holds K`)
+  expect(SUMMARIZED).toBe('Later, your context_edit summarize call replaced the full output you had read here with your own summary')
+  expect(out.rows[5]!.toolResults![0]!.text).toBe(`Later, your context_edit collapse call replaced these 4 rows you had read (Read ×2) with your own note${note}B and C`)
+  for (const t of [out.rows[1]!.text, out.rows[3]!.toolResults![0]!.text, out.rows[5]!.toolResults![0]!.text]) expect(t.startsWith(MARK)).toBe(false)
+  // the listing still flags every replaced row (isReplacementText)
   const page = listRows(out.rows, 0, 20)
   for (const i of [1, 3, 5]) expect(page).toContain(`#${i}*`)
 })
@@ -1037,7 +1070,7 @@ test('FrozenPrefix — неглибока правка: rows before the response
   // the response of the edit is rebuilt: its thinking row went, the pair has the fresh id
   expect(out.rows[10]!.handle).toBeUndefined()
   expect(out.rows[10]!.toolUses[0]!.tool_use_id.startsWith('c_ce')).toBe(true)
-  expect(out.rows[11]!.toolResults![0]!.text.startsWith(MARK)).toBe(true)
+  expect(out.rows[11]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
   expect(out.rows[12]!.handle).toBeUndefined()
   expect(out.rows.length).toBe(13)
   // DropOwnCalls keeps the own pair of the frozen prefix
@@ -1123,7 +1156,7 @@ test('LocateSpan — згортання з thinking-початком на зсу
 
 // ---- [PL_AUD_CTX_P6] safety tests before the refactoring (CF-10, CF-14)
 
-const hasMark = (list: readonly SessionMessage[]) => list.some(r => r.text.startsWith(MARK) || (r.toolResults ?? []).some(t => t.text.startsWith(MARK)))
+const hasMark = (list: readonly SessionMessage[]) => list.some(r => isReplacementText(r.text) || (r.toolResults ?? []).some(t => isReplacementText(t.text)))
 
 // TST-14
 test('ApplyEdits — collapse, якорі зникли: a queued collapse whose first row changed since it was queued fails "the rows it named are no longer there"; nothing is spliced', async () => {

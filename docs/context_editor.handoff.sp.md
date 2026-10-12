@@ -159,6 +159,7 @@ Processing logic (pseudocode):
         why = AwaitSeeded(s.rows, old, session id)                           # SP_CTX_02_24: опитування до SEED_WAIT (F2)
         IF why: RETURN AfterClear(s, "the host did not keep the seeded conversation: " + why, turnsClear)
         pending seed = none
+        LogSeeded(s)                                                          # SP_CTX_02_43: рядок людини "handoff: "+ApplyLine(s.report, s.ratio), лише коли засів застосував правки; модель його не бачить
         # засіяно: далі жодного переходу на інший спосіб, хоч би що впало; кожен крок нижче захищений тут же,
         # і обробник винятку RunHandoff не бачить жодного збою після цієї точки
         step HandedOff: HandedOff(new, transcript)                          # спершу: стара черга більше не тримає запит running
@@ -458,3 +459,4 @@ Errors:
 | 2026-10-11 | PL_AUD_CTX фаза 6a, рев'ю: KeepDocument — окрема функція; відхилений хостом промпт документа теж пише копію і називає її (Deliver `refused`); AfterClear з ходом у новій сесії (TURN_IN_NEW) копіює документ агента і називає копію в повідомленні про збій; DOCUMENT_NOT_DELIVERED розширено (02_21) |
 | 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19): 02_21 — розбір переліку тек засіву (лише назви з цифр) — ParseSeedNames (`hooks/handoff.ts`) з тестом; опис `context_handoff` і команди `/handoff` — у `hooks/tools.ts` (CF-20). Без зміни поведінки |
 | 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): 02_20 — третій текст `/handoff cancel`: `a handoff is running; it cannot be cancelled`, коли цей екземпляр веде запит поточної сесії; звіт зняття `handoff cancelled (cancelled by the person).` |
+| 2026-10-12 | Фаза 28: 02_21 — LogSeeded після засіяної сесії: рядок людини `handoff: applied N edit(s): …` ([SP_CTX_02_43](./context_editor.stages.sp.md#SP_CTX_02_43)); звіт засіву — OwnCallsText ([SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)) |

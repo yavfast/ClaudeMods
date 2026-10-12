@@ -30,7 +30,7 @@ import {
   type BoundaryMemory,
   type QueuedEdit,
 } from '../hooks/edits'
-import { totalChars } from '../hooks/rows'
+import { isReplacementText, REWRITTEN, SUMMARIZED, totalChars } from '../hooks/rows'
 import { COMMAND_NOTE, EMPTY_QUEUE, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, withCommandNote, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
@@ -122,8 +122,8 @@ test('media that cannot be written blocks the edit and keeps the media row', asy
   if (!('messages' in kept)) throw new Error(kept.skip)
   const media = kept.messages.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'a'))!
   expect(media).toBe(rows[4])
-  expect(kept.messages.filter(r => r.text.includes('[context-editor]') || (r.toolResults ?? []).some(t => t.text.includes('[context-editor]'))).map(r => r.text)).toEqual([
-    '[context-editor] you rewrote this row (original: /s/1000.json, open with Read): short',
+  expect(kept.messages.filter(r => isReplacementText(r.text) || (r.toolResults ?? []).some(t => isReplacementText(t.text))).map(r => r.text)).toEqual([
+    'Later, your context_edit rewrite call replaced the text of this row with your own rewrite (original: /s/1000.json, open with Read): short',
   ])
   expect(mixed.written.queue!.report).toContain('applied 1 edit(s): rewrite #5')
   expect(mixed.written.queue!.report).toContain('summarize a: media could not be archived')
@@ -451,6 +451,22 @@ test('HandleCompaction — жодної правки: every edit of the batch fa
   expect(written.boundary).toBeUndefined()
 })
 
+// [SP_CTX_02_43] The handler leaves the person's line with its report id;
+// Flush logs it once the command returned. None without an applied edit.
+test('ApplyLine — з обробника: an apply passes its report id and the line; an apply without an edit passes the id alone', async () => {
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]))
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.reported).toBe(1000)
+  expect(/^applied 1 edit\(s\): conversation ~\S+ → ~\S+ tokens \((approx\.; )?freed ~\S+\)$/.test(written.line ?? '')).toBe(true)
+  // the line is for the person: neither the report nor the rows carry it
+  expect(written.queue!.report).not.toContain(written.line!)
+  const gone = harness(okRead({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'gone' }] }))
+  await handleCompaction(gone.io, conversation())
+  expect(gone.written.reported).toBe(1000)
+  expect(gone.written.line).toBeUndefined()
+})
+
 test('HandleCompaction — правки застосовано: the report carries the size line', async () => {
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]))
   const out = await handleCompaction(io, conversation())
@@ -549,8 +565,8 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   // two own pairs went: the rewritten row is #3, the summarized result #2
-  expect(out.messages[3]!.text).toContain('[context-editor] you rewrote this row')
-  expect(out.messages[2]!.toolResults![0]!.text).toContain('[context-editor] you read the full output here, then replaced it with your summary')
+  expect(out.messages[3]!.text).toContain(REWRITTEN)
+  expect(out.messages[2]!.toolResults![0]!.text).toContain(SUMMARIZED)
   expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #3); summarize a (now #2).')
   // the stage marks still follow the edits matched by their plain descriptions
   expect(written.tags).toBeDefined()
@@ -648,7 +664,7 @@ test('HandleCompaction — P13 and the journal: the own call removed is counted 
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), { journal: e => void entries.push(e) })
   const out = await handleCompaction(io, conversation())
   if (!('messages' in out)) throw new Error(out.skip)
-  expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed; tags and notes stay — see context_list.')
+  expect(written.queue!.report).toContain('Your context_* calls (1), including the ones that queued these replacements, were removed from the conversation; tags and notes stay — see context_list.')
   expect(entries).toEqual([{ kind: 'apply', at: 1000, edits: 1, archive: '/s/1000.json', compressed: [] }])
   // a batch whose edits all fail: no journal entry, no sentence
   const failed: unknown[] = []
@@ -822,13 +838,13 @@ test('HandleCompaction — заморожений префікс (keep_cache): t
   expect(out.messages.some(r => r.text === REPORTED)).toBe(false)
   // from the response of b on: its thinking went, the pair rebuilt, the delivery behind b inserted, the final text rebuilt
   expect(out.messages[7]!.toolUses[0]!.tool_use_id.startsWith('b_ce')).toBe(true)
-  expect(out.messages[8]!.toolResults![0]!.text.startsWith('[context-editor] you read the full output here')).toBe(true)
+  expect(out.messages[8]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
   expect(out.messages[9]!.text).toBe(DELIVERED)
   expect(out.messages[10]!.text).toBe('done')
   expect(out.messages[10]!.handle).toBeUndefined()
   expect(out.messages.length).toBe(11)
   // the own call before the first change stays: nothing is said about removed calls
-  expect(written.queue!.report).not.toContain('Your own context-editor calls')
+  expect(written.queue!.report).not.toContain('Your context_* calls')
   expect(written.queue!.report).toContain('Messages delivered during your tool calls: 1 now stand as rows.')
   expect(pruned).toEqual([['d2']])
 })
@@ -842,7 +858,7 @@ test('HandleCompaction — префікс без API-повідомлень: wit
   expect(out.messages.some(r => r.handle === 't1' || r.handle === 't2')).toBe(false)
   expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
   expect(out.messages.some(r => r.text === REPORTED)).toBe(true)
-  expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed')
+  expect(written.queue!.report).toContain('Your context_* calls (1), including the ones that queued these replacements, were removed')
 })
 
 test('HandleCompaction — без keep_cache (типово): the API form at hand, yet the stretch is rebuilt as before phase 23: thinking gone, own pair removed, result rows rebuilt (DEC_02), the delivery behind a a row', async () => {
@@ -858,7 +874,7 @@ test('HandleCompaction — без keep_cache (типово): the API form at han
   expect(out.messages[ra]!.handle).toBeUndefined()
   expect(out.messages[ra + 1]!.text).toBe(REPORTED)
   expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
-  expect(written.queue!.report).toContain('Your own context-editor calls (1) were removed')
+  expect(written.queue!.report).toContain('Your context_* calls (1), including the ones that queued these replacements, were removed')
   // the queue after the batch: keepCache back to false
   expect(written.queue!.keepCache).toBe(false)
 })

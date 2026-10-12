@@ -46,7 +46,7 @@ import {
 } from './stages'
 import { badNoteFields, type Note } from './notes'
 import { bytes, isCount, jsonObject, storageRefusal, type Read } from './store'
-import { findToolResult, findToolUse, isBig, isPlainUserRow, isSearchTool, MARK, resultsOf, rowChars, squash } from './rows'
+import { findToolResult, findToolUse, isBig, isPlainUserRow, isReplacementText, isSearchTool, resultsOf, rowChars, squash } from './rows'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
@@ -704,7 +704,7 @@ const READ_FIELDS = ['file_path', 'offset', 'limit', 'pages']
 // BIG_ROW chars or more marks the earlier pairs of the current conversation
 // with the same text, or (a Read) with the same file_path, offset, limit and
 // pages, `review` `duplicate`; it replaces a review `big` or `search` only.
-// An earlier result already compressed (its text starts with MARK) is no
+// An earlier result already compressed (isReplacementText) is no
 // duplicate. The tool is the one of each result's own call. Pure.
 export function markDuplicates(reg: TagRegistry, rows: readonly SessionMessage[], results: readonly { id: string; text: string }[]): TagRegistry {
   const big = results.filter(r => isBig(r.text.length))
@@ -723,7 +723,7 @@ export function markDuplicates(reg: TagRegistry, rows: readonly SessionMessage[]
     }
     for (let i = 0; i < stop; i++)
       for (const t of resultsOf(rows[i]!)) {
-        if (t.tool_use_id === r.id || t.text.startsWith(MARK)) continue
+        if (t.tool_use_id === r.id || isReplacementText(t.text)) continue
         if (t.text !== r.text && !sameRead(t.tool_use_id)) continue
         if (!calls.has(t.tool_use_id)) continue
         add.put({ kind: 'review', reason: 'duplicate', target: { tool_use_id: t.tool_use_id }, created_turn: reg.turn }, reviewOf('big', 'search'))
@@ -938,7 +938,9 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const fresh = { ...tags.value, tags: tags.value.tags.filter(t => !inQueue.has(tagKey(t) ?? '')) }
   const rows = await io.rows()
   const ix = indexRows(rows)
-  const { queued } = prepare(rows, tagEdits(rows, fresh, ix), undefined, pinnedTargets(rows, tags.value, ix))
+  const prepared = prepare(rows, tagEdits(rows, fresh, ix), undefined, pinnedTargets(rows, tags.value, ix)).queued
+  // [SP_CTX_02_13] the replacement's text names the agent's tag, not a context_edit call
+  const queued: QueuedEdit[] = prepared.map(e => ({ ...e, via: 'tag' as const }))
   if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return NOTHING
   const next: Queue = { ...q, edits: [...q.edits, ...queued], tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
   if (bytes(next) > MAX_QUEUE_BYTES) return NOTHING

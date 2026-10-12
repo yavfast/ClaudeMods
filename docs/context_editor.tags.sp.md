@@ -121,7 +121,7 @@ Processing logic (pseudocode):
                     call = the call with r.tool_use_id in rows; IF absent OR call.tool starts with OWN_TOOLS: CONTINUE   # інструмент — з власного виклику результату, не з походження рядка
                     earlier = the pairs of rows before the row of r whose result text = r.text
                               + (call.tool = Read ? the earlier Read pairs whose call has equal file_path, offset, limit, pages : none)
-                              − pairs whose result text starts with MARK                   # уже стиснута пара — не дублікат
+                              − pairs whose result text is ReplacementText                 # уже стиснута пара — не дублікат; ReplacementText = повний відкривач фази 28 чи MARK на початку (SP_CTX_01_12)
                     FOR e IN earlier: tag e { review, reason duplicate } unless e has a tag other than review big/search
             # R5 (b) — у backlog (проба фази 15, SP_CTX_01_11): гілки немає, двері tool-message і attachment відсікає перевірка вище
             write TagRegistry if changed
@@ -158,6 +158,7 @@ Processing logic (pseudocode):
             { anchor } without range AND Locate finds the row → rewrite(index, tag.note)
             range AND Locate finds both ends, from < to → collapse(from, to, tag.note)
         (queued, errors) = PrepareEdits(rows, edits, reg, checkListedKey = false)   # pin, state, пари діапазону — як для правок агента; без перевірки listedKey
+        queued = [e with via = tag FOR e IN queued]          # фаза 28: текст заміни називає тег агента (`Later, your context_tag disposable tag replaced …`), а не виклик context_edit (SP_CTX_02_04)
         IF queued empty OR len(q.edits) + len(queued) > MAX_QUEUE_EDITS OR the file would exceed MAX_QUEUE_BYTES: RETURN { 0, 0 }
         IF len(q.edits) == 0: q.tagsOnly = true
         q.edits += queued; write Queue (a write failure → RETURN { 0, 0 })
@@ -377,3 +378,5 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 12, рев'ю: 02_18 — після гарячого перезавантаження з першим читанням `hostId`, повільнішим за HOST_ID_WAIT_MS, CurrentRows — увесь транскрипт до кінця читання, потім `Key()` змінюється один раз (одна відмова STALE_INDEXES) |
 | 2026-10-12 | Фаза 24: 02_18 — спостерігач компактизації, що стоїть, запускає ClearAttachments ([SP_CTX_02_41](./context_editor.hostattach.sp.md#SP_CTX_02_41)) |
 | 2026-10-12 | Фаза 25: 02_18 — спостерігач не пише межі для MarkerKind (нові мітки і тексти до фази 25, [SP_CTX_DEC_26](./context_editor.sp.md#SP_CTX_DEC_26)) |
+| 2026-10-12 | Фаза 28: 02_16 R5 (а) — уже стиснута пара за ReplacementText (тексти замін фази 28 без MARK і старі з MARK; [SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17), A″) |
+| 2026-10-12 | Фаза 28, рев'ю: 02_13 — правки з тегів несуть `via: 'tag'`, їхній текст називає `context_tag` ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) |

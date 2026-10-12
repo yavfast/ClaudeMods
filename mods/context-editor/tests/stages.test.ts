@@ -730,12 +730,12 @@ test('RebindTags — межа на переписаному рядку / на з
   const rw = apply(before, [{ op: 'rewrite', index: 9, text: 'found it' }])
   const out = relocate(before, reg({ lastClosed: { name: 'A', after: mark(before, 3), end: mark(before, 9), turn: 0 } }), rw)
   expect(out.lastClosed!.end).toEqual(mark(rw.after, 9))
-  expect(rw.after[9]!.text).toContain('you rewrote this row')
+  expect(rw.after[9]!.text).toContain('rewrite call replaced the text of this row')
   const co = apply(before, [{ op: 'collapse', from_index: 4, to_index: 7 + 1, summary: 'S' }])
   const moved = relocate(before, reg({ stage: { name: 'S', after: mark(before, 6), openedTurn: 0 } }), co)
   // the carrier's result row
   expect(moved.stage!.after).toEqual(mark(co.after, 5))
-  expect(co.after[5]!.toolResults![0]!.text).toContain('), then collapsed them into your note')
+  expect(co.after[5]!.toolResults![0]!.text).toContain(') with your own note')
 })
 
 test('RebindTags — закриття, стискання і новий етап: the result row of the last pair of A (#11), summarized: both marks on the FreshId result row', async () => {

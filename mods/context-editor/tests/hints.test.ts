@@ -320,7 +320,7 @@ test('SoftHint — назви: at most HINT_NAMES aliases, largest first; the re
 
 test('Candidates — черга, стиснуті, неактивні: queued, replaced and not yet active reviews are no candidates; a Read is reproducible', async () => {
   const w = world({ n: 3 })
-  w.rows[6] = result('a3', '[context-editor] you read the full output here, then replaced it with your summary: s')
+  w.rows[6] = result('a3', 'Later, your context_edit summarize call replaced the full output you had read here with your own summary: s')
   w.rows.push(use('g', 'Grep'), result('g', 'z'.repeat(OUT)))
   const tags: Tag[] = [...w.tags, { kind: 'review', reason: 'search', target: { tool_use_id: 'g' }, ttl_turns: 3, created_turn: 0 }, { kind: 'pin', target: { anchor: 'x', hint: 0 }, created_turn: 0 }]
   const queued = [{ op: 'summarize' as const, tool_use_id: 'a1', summary: 'done' }]

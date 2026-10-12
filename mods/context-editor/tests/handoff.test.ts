@@ -40,6 +40,7 @@ import {
   SEED_POLL_MS,
   SEED_ROOM,
   SEED_WAIT_MS,
+  logSeeded,
   seedReportTail,
   startHandoff,
   SUMMARY_OPENER,
@@ -158,7 +159,7 @@ test('BuildSeed — доставки в засіві: behind an untouched pair a
 // [SP_CTX_01_05] phase 18
 test('BuildSeed — NowIndex у засіві: the report names the summarized pair by its result row in the seeded list', async () => {
   const seed = built((await seedOf({}, [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }])).out)
-  const k = seed.rows.findIndex(r => (r.toolResults ?? []).some(t => t.text.includes('then replaced it with your summary')))
+  const k = seed.rows.findIndex(r => (r.toolResults ?? []).some(t => t.text.includes('summarize call replaced the full output')))
   expect(k).toBeGreaterThan(0)
   expect(seed.report.produced.map(p => p.index)).toEqual([k])
   expect(seedReportTail({ report: seed.report, archive: '/s/old/1.json' })).toContain(`applied 1 edit(s): summarize a (now #${k}).`)
@@ -408,13 +409,13 @@ test('BuildSeed — засів без правок: an empty queue, or every edi
   expect(await runHandoff(empty.io, empty.s.mem, 0)).toBe('transcript')
   // [SP_CTX_01_05] P13: a seed always replaces the conversation, so the removed own calls are named
   expect(empty.s.submitted[0]).toBe(
-    'context-editor: this session continues old (transcript).\ncontext-editor: Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ncontext-editor: the resume prompt you set before the handoff: go on',
+    'context-editor: this session continues old (transcript).\ncontext-editor: Your context_* calls (2) were removed from the conversation; tags and notes stay — see context_list.\n\ncontext-editor: the resume prompt you set before the handoff: go on',
   )
   const failing = host({ rows, api: listingApi() })
   failing.s.queues.set('/s/old', { ...failing.oldQueue(), edits: [{ op: 'drop', tool_use_id: 'gone' }] })
   expect(await runHandoff(failing.io, failing.s.mem, 0)).toBe('transcript')
   expect(failing.s.submitted[0]).toBe(
-    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found. Your own context-editor calls (2) were removed; tags and notes stay — see context_list.\n\ncontext-editor: the resume prompt you set before the handoff: go on',
+    'context-editor: this session continues old (transcript).\ncontext-editor: no queued edit was applied. Not applied: drop gone: call or result not found. Your context_* calls (2) were removed from the conversation; tags and notes stay — see context_list.\n\ncontext-editor: the resume prompt you set before the handoff: go on',
   )
   for (const text of [empty.s.submitted[0]!, failing.s.submitted[0]!]) {
     expect(text).not.toContain('Conversation ~')
@@ -702,6 +703,8 @@ function host(o: HostOpts = {}) {
     commands: [] as string[],
     submitted: [] as string[],
     toasts: [] as string[],
+    // [SP_CTX_02_43] the person's lines ($.ui.log)
+    logs: [] as string[],
     timers: [] as { ms: number; fn: () => void }[],
     sleeps: [] as number[],
     statuses: [] as (string | undefined)[],
@@ -808,6 +811,7 @@ function host(o: HostOpts = {}) {
       s.submitted.push(body)
     },
     toast: body => void s.toasts.push(body),
+    log: line => void s.logs.push(line),
     status: text => void s.statuses.push(text),
   }
   return { io, s, handler, oldQueue: () => s.queues.get('/s/old')!, queueOf: (id: string) => s.queues.get(`/s/${id}`) }
@@ -836,6 +840,10 @@ test('RunHandoff — засів: the order is build, files in the old storage, c
   expect(s.submitted[0]).toContain('context-editor: this session continues old (transcript).')
   expect(s.submitted[0]).toContain('applied 1 edit(s)')
   expect(s.submitted[0]!.endsWith(`\n\ncontext-editor: the resume prompt you set before the handoff: go on`)).toBe(true)
+  // [SP_CTX_02_43] the person's line: the seed applied an edit; the prompt does not carry it
+  expect(s.logs.length).toBe(1)
+  expect(/^handoff: applied 1 edit\(s\): conversation ~\S+ → ~\S+ tokens( \((approx\.; )?freed ~\S+\)| \(approx\.\))?$/.test(s.logs[0]!)).toBe(true)
+  expect(s.submitted[0]).not.toContain(s.logs[0]!)
   expect(oldQueue().edits).toEqual([])
   expect(oldQueue().handoff).toBeUndefined()
   expect(oldQueue().report).toContain('this session was handed off to new (transcript)')
@@ -2123,4 +2131,20 @@ test('RunHandoff — lastApply of the old session does not reach the new one', a
 test('ParseSeedNames — only all-digit folder names count, spaces trimmed, in listing order', async () => {
   expect(parseSeedNames('3\n 12 \n\nabc\n4x\n-1\n7\n')).toEqual([3, 12, 7])
   expect(parseSeedNames('')).toEqual([])
+})
+
+// [SP_CTX_02_43] LogApply of a handoff: a line only when the seed applied an edit
+test('LogApply — передача: "handoff: " and ApplyLine when the seed applied edits; nothing without one; a failing log loses only the line', async () => {
+  const logs: string[] = []
+  const report = { applied: ['summarize a'], failed: [], charsBefore: 8000, charsAfter: 2000, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }
+  logSeeded({ log: l => void logs.push(l) }, { report, ratio: 2 })
+  expect(logs).toEqual(['handoff: applied 1 edit(s): conversation ~4k → ~1k tokens (freed ~3k)'])
+  logSeeded({ log: l => void logs.push(l) }, { report: { ...report, applied: [] } })
+  expect(logs.length).toBe(1)
+  expect(() => logSeeded({ log: () => { throw new Error('ui') } }, { report })).not.toThrow()
+  expect(() => logSeeded({}, { report })).not.toThrow()
+  // a handoff without edits: no line
+  const { io, s } = host()
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.logs).toEqual([])
 })
