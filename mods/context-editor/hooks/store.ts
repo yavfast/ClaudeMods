@@ -198,12 +198,12 @@ export function trimOldest<I>(items: I[], maxItems: number, maxBytes: number, fr
 // [SP_CTX_02] One serial chain per kind of storage file: no two
 // read-modify-writes of one file overlap. A chain is shared by the storages
 // of every session.
-export type ChainKey = 'queue' | 'tags' | 'aliases' | 'deliveries' | 'journal'
+export type ChainKey = 'queue' | 'tags' | 'aliases' | 'deliveries' | 'journal' | 'hostattach'
 
 // [SP_CTX_02] The lock order: a chain nests only inside chains of a lower
-// rank, queue → tags → aliases → deliveries | journal (deliveries and the
-// journal never nest in each other).
-export const CHAIN_RANK: Readonly<Record<ChainKey, number>> = { queue: 1, tags: 2, aliases: 3, deliveries: 4, journal: 4 }
+// rank, queue → tags → aliases → deliveries | journal | hostattach (the
+// three of rank 4 never nest in each other).
+export const CHAIN_RANK: Readonly<Record<ChainKey, number>> = { queue: 1, tags: 2, aliases: 3, deliveries: 4, journal: 4, hostattach: 4 }
 
 // The chains a piece of work holds while it runs, and where an order problem
 // of a chain nested in it goes.
@@ -221,7 +221,7 @@ export function lockOrder(key: ChainKey, within: Held): string | undefined {
   let top: ChainKey | undefined
   for (const k of within.keys) if (top === undefined || CHAIN_RANK[k] >= CHAIN_RANK[top]) top = k
   if (top === undefined || CHAIN_RANK[key] > CHAIN_RANK[top]) return undefined
-  return modText(`chain order: "${key}" (rank ${CHAIN_RANK[key]}) entered inside "${top}" (rank ${CHAIN_RANK[top]}); the order is queue → tags → aliases → deliveries | journal`)
+  return modText(`chain order: "${key}" (rank ${CHAIN_RANK[key]}) entered inside "${top}" (rank ${CHAIN_RANK[top]}); the order is queue → tags → aliases → deliveries | journal | hostattach`)
 }
 
 // Runs `work` once every earlier work on the chain `key` settled; it gets

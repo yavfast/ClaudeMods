@@ -29,6 +29,19 @@ import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QU
 import { adviceFor, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { modText } from './rows'
+import {
+  attachmentAnswer,
+  attachPort,
+  clearedAnswers,
+  emptyHostAttach,
+  newAttachMemory,
+  parseHostAttach,
+  resetPass,
+  verifyPredictions,
+  voidAnswers,
+  type AttachIO,
+  type HostAttachState,
+} from './hostattach'
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
 import {
@@ -105,9 +118,14 @@ const copied = new Set<string>()
 const anchorMem = newAnchorMemory()
 // [SP_CTX_02_37] The request size of the last size check without a hint.
 const hintMemo = newHintMemo()
-// [SP_CTX_01_07] [PL_AUD_CTX_P11] The cache of the tag and alias registries:
+// [SP_CTX_01_07] [PL_AUD_CTX_P11] The cache of the tag and alias registries (and [SP_CTX_01_23] hostattach.json):
 // a new epoch each time a storage is published (a session start or switch).
 const fileCache = newFileCache()
+// [SP_CTX_02_39] The host attachments asked since the last pass began, and the
+// sections that matched their files when first seen.
+const attachMem = newAttachMemory()
+// [SP_CTX_02_39] The session the catalog belongs to: a pass begins only on a real switch.
+const attachSession: { id?: string } = {}
 
 function noteCopies(rows: readonly SessionMessage[] | undefined): void {
   copied.clear()
@@ -136,7 +154,14 @@ function chainOf($: EngineInterface, key: ChainKey): Lock {
   return (work, within) => serial(key, work, { ...(within ? { within } : {}), report: text => $.ui.log(text, { to: 'debug' }) })
 }
 
-type Stores = { queue: Store<Queue>; tags: Store<TagRegistry>; aliases: Store<AliasRegistry>; deliveries: Store<Deliveries>; journal: Store<Journal> }
+type Stores = {
+  queue: Store<Queue>
+  tags: Store<TagRegistry>
+  aliases: Store<AliasRegistry>
+  deliveries: Store<Deliveries>
+  journal: Store<Journal>
+  hostattach: Store<HostAttachState>
+}
 
 // [SP_CTX_01_07] The storage files of the session whose storage is `dir`,
 // each on its chain. The status line follows the current session's queue only.
@@ -153,6 +178,45 @@ function stores($: EngineInterface, dir: string): Stores {
     aliases: jsonFile(fs, `${dir}/aliases.json`, () => ({ ...EMPTY_ALIASES, map: {} }), parseAliases, { lock: chainOf($, 'aliases'), cache: fileCache }),
     deliveries: jsonFile(fs, `${dir}/deliveries.json`, (): Deliveries => ({ items: [] }), parseDeliveries, { lock: chainOf($, 'deliveries') }),
     journal: jsonFile(fs, `${dir}/journal.json`, () => ({ ...EMPTY_JOURNAL, entries: [] }), parseJournal, { lock: chainOf($, 'journal') }),
+    // [SP_CTX_01_23] read by the prompt.attachment hook through the cache
+    hostattach: jsonFile(fs, `${dir}/hostattach.json`, emptyHostAttach, parseHostAttach, { lock: chainOf($, 'hostattach'), cache: fileCache }),
+  }
+}
+
+// [SP_CTX_02_39] [SP_CTX_02_40] A file a section of an instructions
+// attachment names; undefined when missing or unreadable.
+async function readFileText($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return (await $.fs.exists(path)) ? await $.fs.read(path) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// [SP_CTX_02_40] VerifyPredictions bound to the host, in the storage the
+// turn ended in; never awaited.
+function verifyAttachments($: EngineInterface, at: Promise<string | undefined>): void {
+  if (!attachMem.verify) return
+  void (async () => {
+    const dir = await at
+    if (!dir) return
+    await verifyPredictions(attachMem, {
+      update: change => updateOf(stores($, dir).hostattach)(change),
+      invalidate: () => $.ui.invalidate('prompt.attachment'),
+    })
+  })().catch(() => undefined)
+}
+
+// [SP_CTX_02_39] The prompt.attachment hook bound to the host: the decisions
+// of the current session's storage, through the cache.
+function attachIO($: EngineInterface): AttachIO {
+  return {
+    decisions: async () => {
+      const dir = await storageDir($)
+      return dir ? stores($, dir).hostattach.cached() : undefined
+    },
+    readFile: path => readFileText($, path),
+    now: () => Date.now(),
   }
 }
 
@@ -301,6 +365,10 @@ function prepareIO($: EngineInterface, inCompaction: boolean): PrepareIO {
       listed.key = undefined
       // [SP_CTX_01_07] no cached read crosses into another session
       dropFileCache(fileCache)
+      // [SP_CTX_02_39] another conversation (a real switch, not a first or
+      // repeated publication of the same session): its attachments are asked anew
+      if (attachSession.id !== undefined && attachSession.id !== storage.sessionId) resetPass(attachMem)
+      attachSession.id = storage.sessionId
     },
     status: text => $.ui.status(text),
   }
@@ -628,6 +696,11 @@ function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
     setListed: key => {
       listed.key = key
     },
+    // [SP_CTX_02_28] a view: the cache
+    hostAttach: async dir => {
+      const read = await stores($, dir).hostattach.cached()
+      return read.state === 'unreadable' ? undefined : read.value.left
+    },
   }
 }
 
@@ -787,6 +860,8 @@ export const register: Register = on => {
       },
       { aborted: e.isAborted, answer: e.answer },
     ).catch(() => undefined)
+    // [SP_CTX_02_40] the first turn end after an apply that predicted new copies
+    verifyAttachments($, storageNow($))
     return done
   }).catch(($, e, next) => next(e))
 
@@ -806,6 +881,8 @@ export const register: Register = on => {
           storage: () => storageDir($, true),
           writeBoundary: (dir, b) => writeBoundaryAt($, dir, b),
           updateTags: dir => updateOf(stores($, dir).tags),
+          // [SP_CTX_02_41] a compaction that stands replaced the attachments
+          attachments: { passed: () => voidAnswers(attachMem), clear: dir => updateOf(stores($, dir).hostattach)(clearedAnswers) },
         },
         e,
         done,
@@ -814,7 +891,11 @@ export const register: Register = on => {
     }
     if (route === 'seed') {
       const seeded = await handleSeed(seedIO($), handoff, e.messages)
-      if ('messages' in seeded) noteCopies(seeded.messages)
+      if ('messages' in seeded) {
+        noteCopies(seeded.messages)
+        // [SP_CTX_02_39] the seeded session's attachments are asked anew
+        resetPass(attachMem)
+      }
       return seeded
     }
     applies.dir = undefined
@@ -844,7 +925,7 @@ export const register: Register = on => {
           writeAliases: s.aliases.write,
           // [SP_CTX_02_07] the commit holds the registry's chain, then the
           // alias registry's, inside the queue's: the order queue → tags → aliases
-          onRegistries: work => s.tags.onChain(t => s.aliases.onChain(() => work(), t), q),
+          onRegistries: work => s.tags.onChain(t => s.aliases.onChain(a => work(a), t), q),
           reported: id => void (wrote = id),
           writeBoundary: b => writeBoundaryAt($, dir, b),
           hostId: () => peekHostId(hostId),
@@ -855,6 +936,8 @@ export const register: Register = on => {
           // [SP_CTX_02_07] [SP_CTX_02_36] on the deliveries' chain
           readDeliveries: () => s.deliveries.onChain(() => s.deliveries.read(), q),
           pruneDeliveries: done => void s.deliveries.onChain(() => pruneDeliveries(s.deliveries, done), q).catch(() => undefined),
+          // [SP_CTX_02_40] the host attachments' decisions of this apply
+          attachments: attachPort(attachMem, { store: s.hostattach, readFile: path => readFileText($, path) }),
         },
         e.messages,
       )
@@ -907,6 +990,23 @@ export const register: Register = on => {
     // the registry's chain with R4)
     afterCall($, String(e.tool), e as unknown as Record<string, unknown>, facts.tool_use_id!, done.isError === true)
     return withContext(done, lines)
+  }).catch(($, e, next) => next(e))
+
+  // [SP_CTX_02_39] The host's copies of instruction files and skill listings
+  // in the main loop, answered from the decisions in force; every other
+  // attachment (a `*_delta`, hook context) has no hook here. A failure keeps
+  // the attachment.
+  on('prompt.attachment', { type: 'instructions' }, async ($, e, next) => {
+    const a = await attachmentAnswer(attachMem, attachIO($), e)
+    return 'keep' in a ? next(e) : a.text === null ? { text: null } : next({ ...e, text: a.text })
+  }).catch(($, e, next) => next(e))
+  on('prompt.attachment', { type: 'nested_memory' }, async ($, e, next) => {
+    const a = await attachmentAnswer(attachMem, attachIO($), e)
+    return 'keep' in a ? next(e) : a.text === null ? { text: null } : next({ ...e, text: a.text })
+  }).catch(($, e, next) => next(e))
+  on('prompt.attachment', { type: 'skill_listing' }, async ($, e, next) => {
+    const a = await attachmentAnswer(attachMem, attachIO($), e)
+    return 'keep' in a ? next(e) : a.text === null ? { text: null } : next({ ...e, text: a.text })
   }).catch(($, e, next) => next(e))
 
   // [SP_CTX_02_08] [SP_CTX_02_27] The next prompt of the person (or another

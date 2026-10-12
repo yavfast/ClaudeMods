@@ -1,7 +1,7 @@
 # Архітектурна карта: context-editor
 
 > **Status:** active
-> **Updated:** 2026-10-11 (`/dev-flow audit code`, прогін 20261011_182951)
+> **Updated:** 2026-10-12 (фаза 24 PL_CTX: `hostattach` у шарах і стані — на прохання ініціатора фази; `/dev-flow audit code`, прогін 20261011_182951)
 >
 > Жива карта шарів мода `mods/context-editor` — огляд і посилання, не правила. Деталі й обов'язкові обмеження живуть у джерелах нижче; ця карта їх не повторює. Підтримують її лише `onboard` і `audit code`, не фічі.
 
@@ -26,21 +26,21 @@
 | L0 | `rows` (ядро рядків: предикати, пошук пари, розміри, префікси тексту мода), `turns` | — |
 | L1 | `media`, `store` | rows |
 | L2 | `edits`, `deliveries` | edits: media, rows; deliveries: media, rows, store |
-| L3 | `cache`, `queue`, `aliases` | cache: edits, rows; queue: deliveries, edits, rows, store; aliases: edits, rows, store (з Ф9 не імпортує `tags`; з Ф10 його імпортує `stages` — `aliasesById` для переліку) |
+| L3 | `cache`, `hostattach`, `queue`, `aliases` | cache: edits, rows; hostattach (вкладення хоста, Ф24 PL_CTX): edits, rows, store; queue: deliveries, edits, rows, store; aliases: edits, rows, store (з Ф9 не імпортує `tags`; з Ф10 його імпортує `stages` — `aliasesById` для переліку) |
 | L4 | `journal` | edits, queue, store |
 | L5 | `tags` ⇄ `stages` ⇄ `notes` (цикл значень) | edits, rows, store; stages також aliases, cache; tags також queue; t: deliveries, journal, queue |
 | L6 | `tools` (статичні метадані інструментів, Ф10) | edits, notes, queue, rows, stages, tags |
-| L7 | `hints`, `compaction` | hints: aliases, cache, edits, rows, stages, tags; t: queue, store; compaction: aliases, deliveries, edits, journal, notes, queue, rows, stages, tags; t: store |
+| L7 | `hints`, `compaction` | hints: aliases, cache, edits, rows, stages, tags; t: queue, store; compaction: aliases, deliveries, edits, hostattach, journal, notes, queue, rows, stages, tags; t: store |
 | L8 | `flush`, `handoff` (оркестратори) | flush: compaction, queue, rows, stages, turns; t: store, tags; handoff: aliases, compaction, deliveries, edits, media, notes, queue, rows, stages, store, tags, turns |
-| L9 | `register` | 16 з 18: усі, крім cache і media |
+| L9 | `register` | 17 з 19: усі, крім cache і media |
 
 Хаби за fan-in (значення й типи): `rows` (16), `store` і `edits` (по 12), `queue` (9), `tags` і `stages` (по 8). Відомі відхилення від шарів — цикл L5 через агрегат реєстру в `tags.ts`, `queue.ts` як «спільне ядро» (тип `Read<T>`, маркери, детекція людини), реекспорти (`stages` → `distinctive`, `estimate`; `compaction` → `MARKER`, `HANDOFF_MARKER`; `handoff` → `ROW_WINDOW`, `SUMMARY_OPENER`).
 
 ## Де живе стан
 
-- **Диск, на сесію:** `$HOME/.claude/context-editor/<session_id>/` (700): `pending.json` (черга), `tags.json` (реєстр: теги, етапи, нотатки, підказка, `lastApply` — один файл за [C_CTX_DEC_07](./context_editor.concept.md#C_CTX_DEC_07), [C_CTX_DEC_20](./context_editor.concept.md#C_CTX_DEC_20)), `aliases.json`, `boundary.json` (довіра — [SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)), `journal.json`, `deliveries.json`, архіви замінених оригіналів і медіа, файли засіву. Структури — [SP_CTX_01](./context_editor.structures.sp.md).
-- **Пам'ять інстансу модуля** (`register.ts`): опублікована пара сесія + тека сховища і підготовки в польоті (`store.ts`), id останнього звіту застосування, ідентичність хост-процесу, власна межа, ключ останнього перегляду, лічильник ходів, стан Flush і передачі, скопійовані id результатів, якір доставки, мемо підказки, ланцюги `serial` на файл.
-- **Порядок RMW:** один ланцюг `serial` на вид файлу, типізовані ключі з рангами (`CHAIN_RANK` у `store.ts`): queue (1) → tags (2) → aliases (3) → deliveries | journal (4); вкладення лише queue → tags → aliases (крок фіксації компактизації), queue → deliveries, tags → deliveries; вкладення нижчого чи того самого рангу з явно переданим тримачем → налагоджувальний журнал.
+- **Диск, на сесію:** `$HOME/.claude/context-editor/<session_id>/` (700): `pending.json` (черга), `tags.json` (реєстр: теги, етапи, нотатки, підказка, `lastApply` — один файл за [C_CTX_DEC_07](./context_editor.concept.md#C_CTX_DEC_07), [C_CTX_DEC_20](./context_editor.concept.md#C_CTX_DEC_20)), `aliases.json`, `boundary.json` (довіра — [SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)), `journal.json`, `deliveries.json`, `hostattach.json` (рішення про вкладення хоста, Ф24), архіви замінених оригіналів і медіа, файли засіву. Структури — [SP_CTX_01](./context_editor.structures.sp.md).
+- **Пам'ять інстансу модуля** (`register.ts`): опублікована пара сесія + тека сховища і підготовки в польоті (`store.ts`), id останнього звіту застосування, ідентичність хост-процесу, власна межа, ключ останнього перегляду, лічильник ходів, стан Flush і передачі, скопійовані id результатів, якір доставки, мемо підказки, каталог вкладень хоста з останнього проходу (`hostattach.ts`, AttachMemory), ланцюги `serial` на файл.
+- **Порядок RMW:** один ланцюг `serial` на вид файлу, типізовані ключі з рангами (`CHAIN_RANK` у `store.ts`): queue (1) → tags (2) → aliases (3) → deliveries | journal | hostattach (4); вкладення лише queue → tags → aliases (крок фіксації компактизації), queue → deliveries, tags → deliveries; вкладення нижчого чи того самого рангу з явно переданим тримачем → налагоджувальний журнал.
 
 ## Кандидати абстракцій (з аудиту)
 

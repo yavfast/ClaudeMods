@@ -21,10 +21,11 @@ import {
   type QueuedEdit,
 } from './edits'
 import { insertDeliveries, type Deliveries } from './deliveries'
+import { frozenAttachments, type AttachPort } from './hostattach'
 import { applyEntry, type JournalEntry } from './journal'
 import { appendReport, HANDOFF_MARKER, keepOtherSteps, MARKER, type Queue } from './queue'
 import { modText, resultsOf, totalChars } from './rows'
-import type { ChangeFn, Read, Update } from './store'
+import type { ChangeFn, Held, Read, Update } from './store'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, pinnedTargets, rebindTags, type TagRegistry } from './tags'
@@ -125,8 +126,8 @@ export type CompactionIO = {
   writeAliases: (reg: AliasRegistry) => Promise<void>
   // [SP_CTX_02_07] [SP_CTX_02_14] runs the commit holding the registry's
   // serial chain, then the alias registry's (inside the queue's, which the
-  // whole handler holds); absent: runs it as it is
-  onRegistries?: <T>(work: () => Promise<T>) => Promise<T>
+  // whole handler holds), and passes the chains held; absent: runs it as it is
+  onRegistries?: <T>(work: (held?: Held) => Promise<T>) => Promise<T>
   // [SP_CTX_02_07] the report of this apply is in the queue and the dispatch
   // was not abandoned when it was written: its id. The caller counts it only
   // once the handler returned without an abandon.
@@ -148,6 +149,10 @@ export type CompactionIO = {
   // [SP_CTX_02_07] in the background, on the deliveries' chain: the items
   // this apply no longer needs go; never awaited
   pruneDeliveries?: (done: ReadonlySet<string>) => void
+  // [SP_CTX_02_40] the decisions on the host's attachments: the files read
+  // before the commit, the state file written inside it, the catalog started
+  // over once the compaction stands; absent: attachments untouched
+  attachments?: AttachPort
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -235,6 +240,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const done = edits.filter(e => names.has(describeEdit(e)))
   const after = done.length ? rows : messages
   const produced = applied.report.produced
+  // [SP_CTX_02_40] the files the attachments' sections name, read before the
+  // commit; only an apply that changes the conversation decides (the host
+  // asks every attachment again after it). With keep_cache the frozen prefix
+  // keeps the attachments it holds as they are sent.
+  const attach = done.length ? io.attachments : undefined
+  const disk = attach ? await attach.disk().catch(() => undefined) : undefined
+  const frozenAttach = disk && q.keepCache ? frozenAttachments(messages, api, applied.prefix) : undefined
   // [SP_CTX_02_31] [SP_CTX_02_18] what the steps after the commit need, made
   // before it: nothing after the queue's write can throw
   const entry = applyEntry(id, applied.report, archived, messages, edits)
@@ -249,8 +261,8 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // written once the host abandoned the dispatch. The registries go first,
   // the queue last: its write is the commit point. If it fails, or the
   // dispatch was abandoned before it, the registries are put back as read.
-  const onRegistries = io.onRegistries ?? (<T>(work: () => Promise<T>) => work())
-  const text = await onRegistries(async (): Promise<string | undefined> => {
+  const onRegistries = io.onRegistries ?? (<T>(work: (held?: Held) => Promise<T>) => work())
+  const text = await onRegistries(async (held?: Held): Promise<string | undefined> => {
     const tagsNow = await io.readTags().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: String(err) }))
     const aliasesNow = await io.readAliases().catch((err): Read<AliasRegistry> => ({ state: 'unreadable', reason: String(err) }))
     const tags = tagsNow.state === 'unreadable' ? undefined : { before: tagsNow.value, ...rebind(tagsNow.value) }
@@ -263,16 +275,20 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
     const tagsWritten = tags ? await io.writeTags(tags.registry).then(() => true, () => false) : false
     if (tags && tagsWritten) applied.report.notesDropped = tags.dropped
     const aliasesWritten = aliases && !io.isAborted() ? await io.writeAliases(aliases.next).then(() => true, () => false) : false
+    // [SP_CTX_02_40] the attachments' decisions; a failure leaves the ones in force
+    const attached = attach && disk && !io.isAborted() ? await attach.commit(disk, frozenAttach, ratio, held).catch(() => undefined) : undefined
     const putBack = async () => {
       if (tags && tagsWritten) await io.writeTags(tags.before).catch(() => undefined)
       if (aliases && aliasesWritten) await io.writeAliases(aliases.before).catch(() => undefined)
+      if (attach && attached?.written) await attach.putBack(attached).catch(() => undefined)
     }
     if (io.isAborted()) {
       await putBack()
       return undefined
     }
     // [SP_CTX_01_05] without an applied edit: "not changed", no size line
-    const report = formatReport(applied.report, archived, 'compaction', ratio)
+    // [SP_CTX_01_05] [SP_CTX_02_40] the attachments newly left out, after the rest
+    const report = [formatReport(applied.report, archived, 'compaction', ratio), attached?.text ?? ''].filter(Boolean).join(' ')
     try {
       await io.writeQueue(reported(q, report, id))
     } catch (err) {
@@ -315,6 +331,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
     } catch {
       // the journal is no part of the application
     }
+  // [SP_CTX_02_40] the compaction stands: the host asks every attachment again
+  if (attach)
+    try {
+      attach.passed()
+    } catch {
+      // the catalog only lags
+    }
   return { messages: rows }
 }
 
@@ -353,6 +376,9 @@ export type ObserveIO = {
   writeBoundary: (dir: string, b: Boundary) => Promise<void>
   // [SP_CTX_01_10] the registry's Update port in `dir`, never awaited
   updateTags: (dir: string) => Update<TagRegistry>
+  // [SP_CTX_02_41] the compaction stands: the catalog of attachments starts
+  // over, and the answers in `dir` go (never awaited); absent: none
+  attachments?: { passed: () => void; clear: (dir: string) => Promise<unknown> }
 }
 
 // [SP_CTX_02_18] [SP_CTX_02_12] [SP_CTX_01_10] ON compaction that is not the
@@ -365,10 +391,12 @@ export async function observeCompaction(io: ObserveIO, e: CompactionEvent, done:
   if (!e.agentId && done.skip === undefined) io.copies(done.messages)
   try {
     const b = observedBoundary(e, done, io.hostId())
+    if (b) io.attachments?.passed()
     const dir = b && (await io.storage())
     if (b && dir) {
       await io.writeBoundary(dir, b)
       void io.updateTags(dir)(reg => (reg.lastApply ? dropLastApply(reg) : undefined)).catch(() => undefined)
+      if (io.attachments) void io.attachments.clear(dir).catch(() => undefined)
     }
   } catch {
     // the previous boundary stays

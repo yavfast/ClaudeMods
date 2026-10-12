@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-11
+> **Updated:** 2026-10-12
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_27–02_38 специфікації [SP_CTX](./context_editor.sp.md): контракти SessionIntro, Telemetry, StageBlock, DetectOptimize, Journal, `context_note`, NoteReminders, Estimate, RecordDelivery, InsertDeliveries, SoftHint, CacheCost. Читати перед зміною `hooks/stages.ts`, `notes.ts`, `journal.ts`, `deliveries.ts`, `hints.ts` або `cache.ts`.
@@ -105,6 +105,7 @@ Processing logic (pseudocode):
         unknown:     "Context: size unknown yet (no model response since the session start or the last compaction); window <window>"
         unavailable: "Context: size unavailable (<error>)"
         cache:       right after the size line, without rows omitted: (start = len(rows)) "Cache: an apply rewrites the whole conversation once; even the last response is beyond the API's ~20-position cache lookback, so \"keep_cache\" would not help" | (start = 0) "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true only the rows from its earliest edit (the whole conversation is within the API's ~20-position cache lookback)" | "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true, an earliest edit from #<start> on (within the API's ~20-position cache lookback) rewrites only the rows from it (at most ~<tokensText(cache.tokens)> tokens" + (cache.approx ? " (approx.)" : "") + ") if your turn ends soon: edits apply at its end, and each call until then pushes them deeper"
+        hostAttach:  right after the cache line, also without a readable registry, only when t.hostAttach.copies > 0 (context_list only): "Host attachments: <copies> stale cop(y|ies) of instruction files and skill listings left out of each request (<Estimate(chars, t.ratio)>)"   # фаза 24, SP_CTX_02_40: HostAttachState.left через кеш
         stage:       "Stage \"<name>\" open from #<first> (opened <turnsAgo> turn(s) ago), <Estimate(chars, t.ratio)>" + (lost ? "; its start row is gone, so it runs from #0" : "") | "No open stage"
         lastClosed:  "Last block \"<name>\" | (no stage) #<start>..#<end> (<Estimate(chars, t.ratio)>)" | (end null or start > end) "...: it is empty" | (end lost) "Last block \"<name>\" | (no stage) from #<start>: its end row is gone"; + (startLost ? "; its start row is gone, so it runs from #0" : "") — line omitted without lastClosed; a lost end is never shown as an empty block
         candidates:  "Candidates: review <total> (<reason> <n>: #<i>, …; reasons with 0 omitted; the group none is named \"no reason\"; ≤ MAX_BLOCK_INDEXES rows per reason, then +<n> more); disposable <n>"
@@ -579,3 +580,4 @@ Errors: відмов немає (чисті функції).
 | 2026-10-11 | PL_AUD_CTX фаза 12, рев'ю: 02_38 — голий псевдонім `opus` / `opus[1m]` теж має співвідношення Opus 5.5 (псевдонім іде за поточним Opus; переглянути, коли він зміниться) |
 | 2026-10-12 | Калібрування бачить вкладення хоста (беклог, сесія d5614704): 02_34 — Calibrate ділить символи API-подання (ApiChars) на Whole, без подання лишає збережене відношення; 02_28 — `t.attached`, `t.chars`, Whole, `cache.tokens` за TailTokens, Telemetry бере `cache = false`; 02_37 — Measure калібрує за API-поданням і повертає `whole`, Propose передає його в CacheCost і BreakEven; 02_38 — ApiTailChars, TailTokens, глибокий запис = Whole − freed |
 | 2026-10-12 | Калібрування бачить вкладення хоста, рев'ю і живий прогін (сесія ac285189: відношення 2,43 при істині ≈2,38, після трьох застосувань 2,73 при ≈2,58, стара формула ≈1,49 і падала; «freed» −20…+10 % від виміряного, нагадування в межах ~5 %): 02_28 — рядок розміру називає вкладення першого повідомлення окремо від незмінної частини (`fixed part (system prompt, tools) ~<fixed − attached>; attached in the first message … ~<attached>`), хвіст рядка `Cache` — тисячами (tokensText), ApiCut замість `len < ROW_WINDOW`; 02_37 — запис застосування названо «all the request's messages» |
+| 2026-10-12 | Фаза 24: 02_28 — рядок `Host attachments` телеметрії `context_list` (HostAttachState.left; [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) |

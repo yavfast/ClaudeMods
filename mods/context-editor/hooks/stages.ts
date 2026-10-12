@@ -284,6 +284,9 @@ export type Telemetry = {
   // an apply whose earliest edit is from there keeps the prompt cache up to
   // it; absent without rows
   cache?: { start: number; tokens: number; approx: boolean; rows: number }
+  // [SP_CTX_01_20] [SP_CTX_02_40] the host's attachments the answers in force
+  // leave out of each request (HostAttachState.left); absent: none or not read
+  hostAttach?: { copies: number; chars: number }
 }
 
 // [SP_CTX_02_28] Whole(t): the tokens the request's messages hold, the
@@ -503,6 +506,9 @@ export function telemetryText(t: Telemetry): string {
   }
   const cache = cacheLine(t)
   if (cache) lines.push(cache)
+  // [SP_CTX_02_28] only when something is left out
+  if (t.hostAttach?.copies)
+    lines.push(`Host attachments: ${t.hostAttach.copies} stale cop${t.hostAttach.copies === 1 ? 'y' : 'ies'} of instruction files and skill listings left out of each request (${estimate(t.hostAttach.chars, t.ratio)})`)
   if (!t.registry) return lines.join('\n')
   const startGone = '; its start row is gone, so it runs from #0'
   lines.push(
@@ -565,6 +571,9 @@ export type ListIO = {
   dueLines: () => Promise<string[]>
   // [SP_CTX_02_18] listedKey = key
   setListed: (key: string) => void
+  // [SP_CTX_02_28] [SP_CTX_02_40] what the host attachments' answers in `dir`
+  // leave out; absent or undefined: no line
+  hostAttach?: (dir: string) => Promise<{ copies: number; chars: number } | undefined>
 }
 
 export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown }
@@ -621,6 +630,8 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
     // they are delivered only once the listing is built (a failure keeps them)
     const update = dir ? io.updateTags(dir) : undefined
     const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), io.usage, update, dir ? await io.journal(dir) : undefined, io.api)
+    const left = dir && io.hostAttach ? await io.hostAttach(dir).catch(() => undefined) : undefined
+    if (left) t.hostAttach = left
     tele = telemetryText(t)
     size = headerSize(t, t.chars ?? totalChars(rows))
   } catch (err) {

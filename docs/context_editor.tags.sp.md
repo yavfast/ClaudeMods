@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-11
+> **Updated:** 2026-10-12
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_11–02_18 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_tag`, AutoTag, QueueTagReplacements, RebindTags, PrepareStorage, MarkCall, ResolveRef, CurrentRows. Читати перед зміною `hooks/tags.ts`, `aliases.ts` або межі поточної розмови в `edits.ts`.
@@ -335,7 +335,7 @@ Processing logic (pseudocode):
            OR trigger = precompute                  # нічого не встановлює; стоїть лише при використанні через manual/auto
            OR instructions IN (MARKER, HANDOFF_MARKER)   # власну межу пишуть HandleCompaction і HandleSeed, за будь-якого trigger
            OR result is skip: RETURN result
-        RecordBoundary(result.messages); remove TagRegistry.lastApply (on its chain); RETURN result   # SP_CTX_01_10: інша компактизація — не застосування мода
+        RecordBoundary(result.messages); remove TagRegistry.lastApply (on its chain); ClearAttachments (SP_CTX_02_41); RETURN result   # SP_CTX_01_10: інша компактизація — не застосування мода; фаза 24: рішення про вкладення хоста йдуть разом із розмовою
 
     FUNCTION CurrentRows():
         await hostId (at most HOST_ID_WAIT_MS from the read's start)   # шлях інструментів і промптів: очікування дозволене; тайм-аут не запам'ятовується (SP_CTX_DEC_24)
@@ -375,3 +375,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 11 (аудит коду, CF-21…CF-23): 02_18 — знімок розмови на подію чи виклик інструмента (CurrentRows, Key() і API-подання не більше ніж по разу; закриття етапу через `context_tag` читає розмову один раз), індекс рядків для цілей тегів і нотаток; 02_12 — AutoTagNeeded: рядок, який жодне правило не змінить (малий результат не пошукового інструмента), не йде на ланцюжок реєстру і не читає його; 02_16 — витіснення псевдоніма за O(1) (вікно останніх MAX_ALIASES номерів), ворота нагадувань у пам'яті |
 | 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-24, CF-25): 02_11 — тексти відмов рівня виклику, DENIED_EMPTY і для списку, довшого за MAX_TAGS; 02_15, 02_18 — очікування `hostId` не довше HOST_ID_WAIT_MS від початку читання, тайм-аут не запам'ятовується ([SP_CTX_DEC_24](./context_editor.sp.md#SP_CTX_DEC_24)) |
 | 2026-10-11 | PL_AUD_CTX фаза 12, рев'ю: 02_18 — після гарячого перезавантаження з першим читанням `hostId`, повільнішим за HOST_ID_WAIT_MS, CurrentRows — увесь транскрипт до кінця читання, потім `Key()` змінюється один раз (одна відмова STALE_INDEXES) |
+| 2026-10-12 | Фаза 24: 02_18 — спостерігач компактизації, що стоїть, запускає ClearAttachments ([SP_CTX_02_41](./context_editor.hostattach.sp.md#SP_CTX_02_41)) |

@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-11
+> **Updated:** 2026-10-12
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_01–02_10 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_list`, `context_edit`, PrepareEdits, ApplyEdits, DropOwnCalls, Flush, HandleCompaction, DeliverReport, Nudge (вилучено), CollectMedia. Читати перед зміною `hooks/edits.ts`, `queue.ts`, `compaction.ts`, `flush.ts` або `media.ts`.
@@ -433,6 +433,7 @@ Processing logic (pseudocode):
         report.produced = Produced(rows, applied steps)                # SP_CTX_02_04: індекси в кінцевому списку
         IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned; the batch stays queued"   # пакет лишається в черзі
         entry = JournalEntry(id, report, archive, messages, edits); boundary = Boundary(rows)   # усе, що потрібне після точки фіксації, — до неї: після запису черги ніщо не кидає
+        IF some edit applied AND the attachments port: disk = the files the catalog's sections name; frozen = q.keepCache ? FrozenAttachments(messages, api, prefix) : none   # SP_CTX_02_40, фаза 24: читання без побічних дій, до фіксації
         COMMIT, holding the registry's chain, then the alias registry's (inside the queue's: порядок queue → tags → aliases):
             reg = read TagRegistry; aliases = read AliasRegistry          # як вони є тепер, коли очікування ланцюжків скінчилось
             (reg', dropped) = RebindTags(reg, rows, report)               # SP_CTX_02_14: теги, межі етапів, слот стану, нотатки; lastApply — нижче
@@ -440,8 +441,9 @@ Processing logic (pseudocode):
             IF the dispatch was abandoned: RETURN skip "compaction abandoned; the batch stays queued"   # нічого не записано
             IF reg readable: write reg' (failure → registry as it was, report names no dropped notes); IF written: report.notesDropped = dropped
             IF aliases readable AND aliases' ≠ aliases AND NOT abandoned: write aliases' (failure → as it was)
-            IF the dispatch was abandoned: put back the registries written (reg, aliases as read); RETURN skip "compaction abandoned; the batch stays queued"
-            text = FormatReport(report, archive, compaction)               # SP_CTX_01_05: без правок — «not changed», без рядка розміру
+            IF disk AND NOT abandoned: attached = CommitAttachments(disk, frozen) on the hostattach chain (failure → decisions as they were)   # SP_CTX_02_40
+            IF the dispatch was abandoned: put back the registries written (reg, aliases as read; the attachments' decisions as read); RETURN skip "compaction abandoned; the batch stays queued"
+            text = FormatReport(report, archive, compaction) + attached.text   # SP_CTX_01_05: без правок — «not changed», без рядка розміру; AttachText останнім
             write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
                           report: (q.report ? q.report + "\n" : "") + text, reportId: id,
                           reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt,
@@ -455,6 +457,7 @@ Processing logic (pseudocode):
         lastApply: the request size read before the apply (plain $.session.usage().context.tokens, 1–3 ms, no breakdown, bounded by USAGE_WAIT_MS (SP_CTX_01_12) — the handler never waits longer; absent or late → nothing) goes into TagRegistry.lastApply = { at: id, tokensBefore } with RebindTags   # SP_CTX_02_28: виміряна зміна
         IF NOT abandoned, in the background, on the deliveries chain, IF done not empty: re-read QueuedDeliveries; IF not unreadable: remove the items whose uuid is in done; write   # SP_CTX_02_36: вставлені, згорнуті й зниклі записи йдуть, записані тим часом лишаються; збій запису — повторну вставку відсікає перевірка «уже рядок»
         IF NOT abandoned, in the background, on the journal chain: JournalApply(entry)   # SP_CTX_02_31; не затримує відповіді
+        IF the attachments port: ResetPass   # SP_CTX_02_39: компактизація стоїть, хост зараз перепитає всі вкладення
         RETURN { messages: rows }
 
     ON handler failure:                                                  # CompactionFailed (`compactionFailed` у hooks/compaction.ts) за портом FailureIO
@@ -605,3 +608,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 10, рев'ю: 02_03 — звідки PrepareEdits бере закріплення: PinsFrom (`hooks/tags.ts`) з прочитаного реєстру тегів, нечитабельний — без закріплень. Без зміни поведінки |
 | 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): тексти коду дослівно — 02_02 відмови `context_edit` (DENIED_EMPTY і для списку, довшого за MAX_QUEUE_EDITS), 02_03 відмови PrepareEdits і ScreenPinned, 02_04 причини `failed` ApplyEdits, 02_07 `compaction abandoned; the batch stays queued`, звіт збою `… and the batch was dropped.`, префікс PREFIX у текстах `skip`, `lastApply` обмежено USAGE_WAIT_MS |
 | 2026-10-12 | Калібрування бачить вкладення хоста, рев'ю: 02_04 — Responses повертає й `message` (індекс повідомлення API-подання рядка асистента; поведінка не змінилась), CacheShape не має власного зіставлення; ApiCut — один предикат обрізаного подання для CollectMedia і калібрування |
+| 2026-10-12 | Фаза 24: 02_07 — крок рішень про вкладення хоста (читання файлів до фіксації, CommitAttachments у кроці фіксації після реєстрів і перед чергою з поверненням при покинутій диспетчеризації, AttachText останнім реченням звіту, ResetPass після відповіді рядками; [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) |
