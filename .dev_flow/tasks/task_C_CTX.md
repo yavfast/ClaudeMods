@@ -42,6 +42,23 @@
 
 ---
 
+### Subtask: Фаза 32 — ремонт після відновлення
+> Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 — Status: `in-progress` — Phase: `design`
+> Autonomy: full (фаза 32) — «Так, без зупинок (Recommended)» (розробник, погодження дизайну 2026-10-12: SP_CTX_DEC_32 A, DEC_33 A, DEC_34 D, DEC_35 A)
+> Вибір розробника (після спайку context_editor_resume): «Ремонт після відновлення (Recommended)» — застосування в сесії як є (рядки з `handle`, `keep_cache` дозволено), а після відновлення в новому процесі хоста мод один раз, до першого запиту, ремонтує завантажену розмову.
+
+Пункти backlog плану «Ремонт після відновлення» (взято), «Правки компактизації командою після `--resume` (K)» і «Збереження правок після `claude --resume`» (частково); CF-46 і CF-51 аудиту PL_AUD_CTX. Код у `mods/` — лише після погодження дизайну з розробником і після злиття фаз 29–31 (ті самі `compaction.ts`, `edits.ts`, `flush.ts`, `register.ts`).
+
+- [x] Спайк [context_editor_resume](../../docs/context_editor_resume.spike.md) (concluded): дублікати дає будь-який рядок асистента з `handle`, і без `keep_cache`; ремонт `repair-twin` з `session.start` чистий (cr2/cr3); `tool_reference` у перебудованому рядку не передати
+- [x] Дизайн (субагент, документи без коду): новий дочірній файл `docs/context_editor.resume.sp.md` — 02_44 RecordInputs (журнал входу `ledger.json`), 02_45 DropPulled (оригінал з журнальним `handle` прибирається лише з двійником; залишкове правило за ідентифікаторами), 02_46 ScheduleRepair/RunRepair (`session.start` → `$.clock.after(REPAIR_DELAY_MS)` → `$.command.run('compact', REPAIR_MARKER)`; `/resume` у процесі — після першого ходу), 02_47 HandleRepair (рядки асистента і результатів без `handle`, промпти з `handle`, медіа файлом, доставки, CheckPairs), 02_48 ToolRefText (CF-51); SP_CTX_DEC_22 виправлено (CF-46); [SP_CTX_DEC_32](../../docs/context_editor.sp.md#SP_CTX_DEC_32)–[SP_CTX_DEC_35](../../docs/context_editor.sp.md#SP_CTX_DEC_35) proposed (рекомендації A, A, D, A); 01_05, 01_07, 01_12, 01_24; 02_02, 02_04, 02_07, 02_10, 02_22; 05_01, 05_03, 05_04; план — фаза 32 [PL_CTX_P32](../../docs/context_editor.plan.md#PL_CTX_P32)
+- [ ] Погодження дизайну розробником: SP_CTX_DEC_32–35
+- [ ] Код і тести фази 32, рев'ю, живі сценарії 05_03 (stream-json і термінал, `/resume` у процесі, передача), тексти `keep_cache` (tools.ts, навичка, CLAUDE.md), commit sign-off
+
+**Activity:**
+- 2026-10-12 — дизайн фази 32 записано в docs/ (без коду, без коміту)
+
+---
+
 ### Завершені підзадачі (архів)
 
 Блоки перенесено в [session_2026-10-11](../session_history/session_2026-10-11.md) (audit 2026-10-11):

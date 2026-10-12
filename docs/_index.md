@@ -8,7 +8,7 @@
 |------|----|--------|-------|
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): філософія, доменна модель, інтеграція, рішення C_CTX_DEC_*; механізми — у дочірньому файлі |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, рішення SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
-| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План: фази 1–28 виконані; фази 29–31 (калібрування перед застосуванням, теги зниклих рядків, дрібні вади CF-43/52/53) — дизайн; backlog наступної роботи |
+| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План: фази 1–28 виконані; фази 29–31 (калібрування перед застосуванням, теги зниклих рядків, дрібні вади CF-43/52/53) — дизайн; фаза 32 (ремонт після відновлення, CF-46/51) — дизайн; backlog наступної роботи |
 
 ## Maps
 
@@ -28,6 +28,7 @@
 | [context_editor_cache.spike.md](context_editor_cache.spike.md) | concluded | Чому apply мода скидає кеш промпту всієї розмови |
 | [context_editor_host_attachments.spike.md](context_editor_host_attachments.spike.md) | concluded | Застарілі вкладення хоста (`instructions`, `skill_listing`) після застосувань |
 | [context_editor_authorship.spike.md](context_editor_authorship.spike.md) | concluded | Форма стиснутого рядка, у якій haiku і sonnet бачать своє авторство (заглушка + власний рядок, збережені виклики, тексти без префікса) |
+| [context_editor_resume.spike.md](context_editor_resume.spike.md) | concluded | Дублікати відповідей після `--resume` сесії із застосуваннями мода (злиття за `message.id`, ремонт після відновлення, ToolSearch) |
 
 ## ID prefixes
 
@@ -41,6 +42,7 @@
 | `SP_CTX_02_19`–`02_26` (передача) | [context_editor.handoff.sp.md](context_editor.handoff.sp.md) |
 | `SP_CTX_02_27`–`02_38`, `02_42`–`02_43` (етапи, телеметрія, нотатки, доставки, нагадування, кеш, `/compact` людини, рядок людини після застосування) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
 | `SP_CTX_02_39`–`02_41` (вкладення хоста) | [context_editor.hostattach.sp.md](context_editor.hostattach.sp.md) |
+| `SP_CTX_02_44`–`02_48` (ремонт після відновлення: журнал входу, DropPulled, ремонт, ToolRefText) | [context_editor.resume.sp.md](context_editor.resume.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
 | `SP_CTX_05_01` (модульні очікування) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |
 | `SP_CTX_05_02`–`05_04` (інваріанти, сценарії, граничні випадки) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |

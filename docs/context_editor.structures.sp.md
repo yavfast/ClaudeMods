@@ -6,11 +6,11 @@
 > **Updated:** 2026-10-12
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
-> §01 Data Structures (01_01–01_23) специфікації [SP_CTX](./context_editor.sp.md): структури: рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила, константи (01_12), псевдоніми, межа, запит передачі, засів, етап і позначки рядків, журнал, телеметрія, нотатка, доставка, рішення про вкладення хоста, доставка хоста. Читати перед зміною будь-якої структури даних або константи мода.
+> §01 Data Structures (01_01–01_24) специфікації [SP_CTX](./context_editor.sp.md): структури: рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила, константи (01_12), псевдоніми, межа, запит передачі, засів, етап і позначки рядків, журнал, телеметрія, нотатка, доставка, рішення про вкладення хоста, доставка хоста. Читати перед зміною будь-якої структури даних або константи мода.
 
 ## Contents
 
-- [01. Data Structures](#SP_CTX_01) — рядки, правки, черга, звіт, архів, сховище, медіа, теги, константи, псевдоніми, межа, передача, етапи, журнал, телеметрія, нотатки, доставки, рішення про вкладення хоста
+- [01. Data Structures](#SP_CTX_01) — рядки, правки, черга, звіт, архів, сховище, медіа, теги, константи, псевдоніми, межа, передача, етапи, журнал, телеметрія, нотатки, доставки, рішення про вкладення хоста, журнал входу застосувань
 
 ## 01. Data Structures  {#SP_CTX_01}
 
@@ -120,6 +120,7 @@ Invariants:
 | ownCallsRemoved | int | ≥ 0. Скільки власних викликів мода (пар) прибрав DropOwnCalls ([SP_CTX_02_05](./context_editor.edits.sp.md#SP_CTX_02_05)) у списку, який замінює розмову; 0 — не прибрано жодного |
 | mediaFiles | list<string> | ≤ кількості медіа-блоків у видимому вікні (≤ ROW_WINDOW повідомлень). Шляхи медіа-файлів, збережених цим застосуванням; для засіву ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) — і медіа замінених пар, і медіа, перенесеного файлами |
 | deliveries | `{ inserted: int, removed: int, unreadable: string? }` | `inserted`, `removed` ≥ 0. Доставки хоста посеред ходу ([SP_CTX_01_22](#SP_CTX_01_22)), які InsertDeliveries ([SP_CTX_02_36](./context_editor.stages.sp.md#SP_CTX_02_36)) вставило рядками (`inserted`) і які пішли разом із рядком-якорем, що його правка прибрала чи згорнула (`removed`); `unreadable` — причина, коли файл доставок не прочитався і вставок не було. Заповнюється після ApplyEdits (фаза 20) |
+| pulledDropped | int | ≥ 0 (фаза 32). Скільки підтягнутих після `--resume` оригіналів застосування прибрало DropPulled перед правками ([SP_CTX_02_45](./context_editor.resume.sp.md#SP_CTX_02_45)); 0 — у тому самому процесі завжди. Коли > 0, FormatReport дописує речення PULLED_TEXT останнім перед CommandNote |
 
 Текстовий звіт — `FormatReport(report, archive, kind)`, `kind` = `compaction` | `seed`; форма залежить від того, чи застосовано хоч одну правку:
 - `applied` непорожній: `context-editor: applied N edit(s): <applied with NowIndex>. Not applied: <failed>. Conversation ~<before> -> ~<after> chars (estimate: <Estimate(before − after, ratio)> freed; context_list telemetry shows the measured change after the next response). Originals archived at <path>. Media archived: <paths>.` Число звіту — оцінка за символами; справжню зміну вимірює телеметрія (`Last apply`, [SP_CTX_02_28](./context_editor.stages.sp.md#SP_CTX_02_28)): прогін на копії сесії дав оцінку на 46 % вищу за виміряну зміну (рев'ю 39)
@@ -150,7 +151,7 @@ CommandNote ([SP_CTX_DEC_26](./context_editor.sp.md#SP_CTX_DEC_26), фаза 25)
 | state | `ready` \| `unavailable` | `ready` — каталог існує і доступний лише власникові |
 | reason | string? | Чому `unavailable` |
 
-Файли каталогу: `pending.json` (Queue), `tags.json` (TagRegistry), `aliases.json` (AliasRegistry), `boundary.json` (Boundary), `journal.json` (Journal, [SP_CTX_01_19](#SP_CTX_01_19)), `deliveries.json` (доставки хоста посеред ходу, [SP_CTX_01_22](#SP_CTX_01_22); фаза 20), `hostattach.json` (рішення про вкладення хоста, [SP_CTX_01_23](#SP_CTX_01_23); фаза 24), архіви й медіа-файли застосувань і передач ([SP_CTX_01_06](#SP_CTX_01_06)), перенесені вбік черги `pending.json.bad-<ms>`, файли доставок `deliveries.json.bad-<ms>` і файли рішень `hostattach.json.bad-<ms>`. Файли стану (`pending.json`, `tags.json`, `aliases.json`, `boundary.json`, `journal.json`, `deliveries.json`, `hostattach.json`) лежать у каталозі 700 і власних прав не потребують: `$.fs.write` прав не задає (новий файл — 644, навичка plugin-hooks, пункт 9), але інші користувачі до файлів у каталозі 700 не дістаються. Архіви й медіа-файли, як і раніше, пише команда хоста з `umask 077` (600). Запис кожного файлу стану командою хоста (пункт (d) фази 17) відкинуто: `tags.json` пишеться майже на кожен виклик інструменту, а процес на кожен запис — зайва затримка без виграшу в захисті. Файлу готовності немає: компактизацію запускає той самий модуль, що її обробляє ([C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09)). Файл `editor-ready`, лишений версією з двома розширеннями, мод не читає і не пише.
+Файли каталогу: `pending.json` (Queue), `tags.json` (TagRegistry), `aliases.json` (AliasRegistry), `boundary.json` (Boundary), `journal.json` (Journal, [SP_CTX_01_19](#SP_CTX_01_19)), `deliveries.json` (доставки хоста посеред ходу, [SP_CTX_01_22](#SP_CTX_01_22); фаза 20), `hostattach.json` (рішення про вкладення хоста, [SP_CTX_01_23](#SP_CTX_01_23); фаза 24), `ledger.json` (журнал входу застосувань, [SP_CTX_01_24](#SP_CTX_01_24); фаза 32), архіви й медіа-файли застосувань і передач ([SP_CTX_01_06](#SP_CTX_01_06)), перенесені вбік черги `pending.json.bad-<ms>`, файли доставок `deliveries.json.bad-<ms>` і файли рішень `hostattach.json.bad-<ms>`. Файли стану (`pending.json`, `tags.json`, `aliases.json`, `boundary.json`, `journal.json`, `deliveries.json`, `hostattach.json`) лежать у каталозі 700 і власних прав не потребують: `$.fs.write` прав не задає (новий файл — 644, навичка plugin-hooks, пункт 9), але інші користувачі до файлів у каталозі 700 не дістаються. Архіви й медіа-файли, як і раніше, пише команда хоста з `umask 077` (600). Запис кожного файлу стану командою хоста (пункт (d) фази 17) відкинуто: `tags.json` пишеться майже на кожен виклик інструменту, а процес на кожен запис — зайва затримка без виграшу в захисті. Файлу готовності немає: компактизацію запускає той самий модуль, що її обробляє ([C_CTX_DEC_09](./context_editor.concept.md#C_CTX_DEC_09)). Файл `editor-ready`, лишений версією з двома розширеннями, мод не читає і не пише.
 
 **Порт сховища** (аудит PL_AUD_CTX, фаза 7, CF-15). Кожен JSON-файл стану (`pending.json`, `tags.json`, `aliases.json`, `journal.json`, `deliveries.json`, `hostattach.json`) читається і пишеться через один порт файлу з однаковою семантикою; модуль хуків прив'язує його до файлової системи хоста один раз.
 
@@ -339,7 +340,7 @@ Invariants:
 | HUMAN | `composer`, `bridge`, `sdk`, `unclassified` | Походження промпту, яке правило R1 вважає людиною (stream-json пише промпти людини як `unclassified`; [SP_CTX_01_11](#SP_CTX_01_11)) |
 | REVIEW_REASONS / REVIEW_GROUPS | `big`, `search`, `stale`, `duplicate`, `agent` / ці ж і `none` | Допустимі причини тегу `review` / групи кандидатів телеметрії й звіту закриття за причиною, `none` — `review` без причини ([SP_CTX_02_28](./context_editor.stages.sp.md#SP_CTX_02_28), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) |
 | KINDS (`deliveries.ts`) | `person`, `agent`, `task`, `other` | Допустимі види доставки ([SP_CTX_01_22](#SP_CTX_01_22)); інше — файл доставок `unreadable` |
-| CHAIN_RANK | `queue` 1, `tags` 2, `aliases` 3, `deliveries` 4, `journal` 4, `hostattach` 4 | Ранг ланцюжка файлу: вкладений ланцюжок має бути старшого рангу, інакше рядок у налагоджувальному журналі ([SP_CTX_01_07](#SP_CTX_01_07), преамбула [SP_CTX_02](./context_editor.sp.md#SP_CTX_02)) |
+| CHAIN_RANK | `queue` 1, `tags` 2, `aliases` 3, `deliveries` 4, `journal` 4, `hostattach` 4, `ledger` 4 (фаза 32) | Ранг ланцюжка файлу: вкладений ланцюжок має бути старшого рангу, інакше рядок у налагоджувальному журналі ([SP_CTX_01_07](#SP_CTX_01_07), преамбула [SP_CTX_02](./context_editor.sp.md#SP_CTX_02)) |
 | RANK | `not-yet` 0, `borderline` 1, `worth` 2 | Порядок вердиктів, за яким пропозиція порівнює варіант з `keep_cache` і без нього ([SP_CTX_02_37](./context_editor.stages.sp.md#SP_CTX_02_37)) |
 | ATTACH_TYPES | `instructions`, `nested_memory`, `skill_listing` | Типи вкладень хоста, на які відповідає хук ([SP_CTX_02_39](./context_editor.hostattach.sp.md#SP_CTX_02_39)); інші (`*_delta`, контекст хуків) він не бачить |
 | PREAMBLE_HEAD | `Codebase and user instructions are shown below.` | Початок преамбули першої копії `instructions`; копія з нею ніколи не прибирається цілком |
@@ -352,6 +353,14 @@ Invariants:
 | MAX_ATTACH_ANSWERS | 200 | Найбільше рішень у `hostattach.json` ([SP_CTX_01_23](#SP_CTX_01_23)) |
 | MAX_ATTACH_KEYS | 400 | Найбільше ключів у `matched` і в `stale` одного рішення |
 | MAX_ATTACH_PATHS | 100 | Найбільше шляхів у `predicted` і `uncomparable` |
+| REPAIR_MARKER | `context-editor: repair the resumed conversation (run automatically by the mod: resuming loaded some answers twice; not by the person)` | Аргумент вбудованої команди компактизації, якою мод ремонтує завантажену після `--resume` розмову ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46), [SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47); фаза 32); будується з PREFIX (ModText), тож PersonText його відкидає; MarkerKind → `repair`; видимий моделі в рядку команди і, як MARKER, каже автора ([SP_CTX_DEC_26](./context_editor.sp.md#SP_CTX_DEC_26)); дім — `hooks/rows.ts` |
+| REPAIR_DELAY_MS | 1500 | Затримка `$.clock.after` від `session.start` (чи кінця ходу після перемикання) до RunRepair; значення спайку resume (cr2: команда виконалась до першого промпту) |
+| MAX_LEDGER_HANDLES | 50 000 | Найбільше `handle` в ApplyLedger разом ([SP_CTX_01_24](#SP_CTX_01_24)); ~40 байт на `handle` — ~2 МБ, менше за MAX_QUEUE_BYTES; найстаріші записи йдуть першими |
+| REPAIR_REFUSED | `context-editor: could not repair the resumed conversation: ` | Рядок стану, коли хост відхилив команду ремонту; далі — текст відмови ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)) |
+| REPAIR_LINE | `repaired the resumed conversation: dropped <n> row(s) loaded twice` (+ `; media of <m> result(s) carried as files`) | Рядок людини `$.ui.log` після ремонту (LogRepair); спливне повідомлення обробника — `context-editor: repaired the resumed conversation (<n> rows loaded twice)` |
+| REPAIR_SKIPS | `storage unavailable`, `handoff running`, `ledger unreadable`, `nothing to repair`, `media could not be written`, `repair would break pairs: <reason>`, `compaction abandoned`, `repair failed` | Тексти `skip` обробника ремонту, з PREFIX ([SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47)) |
+| PULLED_TEXT | ` <n> row(s) that resuming the session had loaded a second time were dropped first.` | Речення звіту застосування, коли DropPulled у HandleCompaction щось прибрав (`pulledDropped` > 0, [SP_CTX_01_05](#SP_CTX_01_05)) |
+| TOOLREF_TEXT | `[context-editor] ToolSearch loaded: <names>. A rebuilt result cannot carry the loaded schemas: call these tools by name, or search again if a call fails.` | Текст перебудованого без `handle` результату ToolSearch, що був порожнім (ToolRefText, [SP_CTX_02_48](./context_editor.resume.sp.md#SP_CTX_02_48); CF-51); службовий рядок мода, тож з MARK |
 
 Не перелічені окремими рядками (правило повноти таблиці, аудит PL_AUD_CTX фаза 12): порожні значення і сторожі, що не несуть поведінки — EMPTY_QUEUE, EMPTY_REGISTRY, EMPTY_ALIASES, EMPTY_DELIVERIES, EMPTY_JOURNAL (порожній стан файлу: значення за замовчуванням полів 01_04, 01_10, 01_13, 01_22, 01_19), NO_PINS, NO_REFS, NO_LOCK, NOT_HELD, NOTHING, NONE_FROZEN; готові відповіді, зібрані з текстів цієї таблиці — ABANDONED (skip `compaction abandoned; the batch stays queued`, [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)); збірки рядків цієї таблиці — TOOLS (рядок метаданих `tools.ts`), COST_RATIOS (рядок CostRatios). Кожна інша константа верхнього рівня `hooks/*.ts` має тут рядок.
 
@@ -593,6 +602,26 @@ Invariants:
 - Копія з преамбулою (PREAMBLE_HEAD) ніколи не пропускається цілком; вкладення, яке розбір не розуміє, і тип поза ATTACH_TYPES не мають рішення.
 - Файл належить сесії; передача його не переносить (нова сесія має свої вкладення).
 
+### 01_24. ApplyLedger  {#SP_CTX_01_24}
+
+Журнал входу застосувань (фаза 32; спайк [context_editor_resume](./context_editor_resume.spike.md)): `handle` рядків, які застосування мода отримало на вхід і які після `--resume` хост може повернути оригіналами (оригінал до межі несе `handle`, що дорівнює його uuid, тобто `handle` рядка входу). Файл `<storage>/ledger.json`, ланцюжок `ledger` (ранг 4); пише HandleCompaction у фоні після точки фіксації (RecordInputs, [SP_CTX_02_44](./context_editor.resume.sp.md#SP_CTX_02_44)) і HandleRepair, що очищує його після ремонту ([SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47)); читають NeedsRepair, HandleRepair, HandleCompaction і BuildSeed (DropPulled, [SP_CTX_02_45](./context_editor.resume.sp.md#SP_CTX_02_45)). Стани читання — як у черги; `unreadable` запис переносить убік (карантин, [SP_CTX_01_07](#SP_CTX_01_07)) і починає новий журнал; читачі вважають його порожнім.
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| entries | list<LedgerEntry> | yes | `[]` | Σ `handles` ≤ MAX_LEDGER_HANDLES; серіалізований файл ≤ MAX_QUEUE_BYTES — коли запис перевищив би межу, найстаріші записи видаляються, доки не вміститься | Записи від найстарішого |
+
+LedgerEntry:
+
+| Field | Type | Required | Constraints | Description |
+|-------|------|----------|-------------|-------------|
+| at | int | yes | мс від епохи | `reportId` застосування |
+| handles | list<string> | yes | 1..ROW_WINDOW, без повторів | `handle` рядків асистента і рядків з результатами входу застосування (промпти й інші рядки `user` без результатів не записуються — вони нічого не тягнуть) |
+
+Invariants:
+- Журнал належить сесії; передача його не переносить (засіяні рядки не мають `handle`).
+- Після ремонту, що стоїть, журнал порожній: жоден рядок асистента чи результатів розмови не має `handle`, тож старі оригінали більше не підтягнуться.
+- Журнал без запису не забороняє ремонту: залишкове правило DropPulled працює і без нього, якщо сесія мала застосування (запис `apply` журналу ефекту, [SP_CTX_01_19](#SP_CTX_01_19)).
+
 ## Changelog
 
 | Date | Change |
@@ -622,3 +651,4 @@ Invariants:
 | 2026-10-12 | Фаза 28 ([SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17), A″; спайк context_editor_authorship): 01_05 — речення про прибрані власні виклики прив'язане до замін (OwnCallsText); 01_12 — REPLACED, нові SUMMARIZED/REWRITTEN/DESCRIBED/`collapsedWords`/COLLAPSED_OPENER без MARK, LEGACY_COLLAPSED_OPENER і LEGACY_DESCRIBED, MARK лише для службових рядків мода, ReplacementText |
 | 2026-10-12 | Фаза 28, рев'ю: 01_03 — QueuedEdit `via: "tag"`; 01_05 — OwnCallsText «including the ones that queued these replacements»; 01_12 — REPLACED = `Later, your context_`, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, REPLACEMENT_OPENERS, ReplacementText за повним відкривачем |
 | 2026-10-12 | Дизайн фаз 29–31: 01_10 — теги зниклих цілей прибирає й спостерігач чужої компактизації, повний реєстр видно рядком `Tags:` ([SP_CTX_DEC_31](./context_editor.sp.md#SP_CTX_DEC_31)); 01_11 — R3 без результатів-помилок (CF-52); 01_12 — CALIB_TOKENS 5 000 ([SP_CTX_DEC_30](./context_editor.sp.md#SP_CTX_DEC_30), proposed), CALIB_WAIT_MS, TAG_ROOM, TAGS_FULL_LINE, HANDOFF_PROMPT з автором (CF-43), ALIAS_GONE (CF-53), WorthEditing без помилок пошуку; 01_20 — поле `tagsFull` |
+| 2026-10-12 | Дизайн фази 32 — ремонт після відновлення (спайк context_editor_resume): 01_24 ApplyLedger (`ledger.json`, LedgerEntry); 01_05 — поле `pulledDropped` і речення PULLED_TEXT; 01_07 — файл у переліку сховища; 01_12 — REPAIR_MARKER, REPAIR_DELAY_MS, MAX_LEDGER_HANDLES, REPAIR_REFUSED, REPAIR_LINE, REPAIR_SKIPS, PULLED_TEXT, TOOLREF_TEXT (CF-51), `ledger` у CHAIN_RANK |
