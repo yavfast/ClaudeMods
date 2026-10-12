@@ -867,7 +867,7 @@ test('ResponseStart — текст після викликів (PL_AUD_CTX_P8): 
   // the latest message of the run alone ("next") would start at "and so" and split the response of call a
   expect(responseStart(rows, 5, api)).toBe(1)
   expect(responseStart(rows, 3, api)).toBe(1)
-  expect(responses(rows, api)).toEqual({ start: [0, 1, 1, 1, 1, 1], known: [true, true, true, true, true, true], floor: [0, 1, 1, 1, 1, 1] })
+  expect(responses(rows, api)).toEqual({ start: [0, 1, 1, 1, 1, 1], known: [true, true, true, true, true, true], floor: [0, 1, 1, 1, 1, 1], message: [undefined, 1, undefined, 1, undefined, 3] })
 })
 
 test('ResponseStart — порожній рядок без handle (PL_AUD_CTX_P8): no prompt, so the API message joins the calls on both sides of it; the stretch goes on', async () => {

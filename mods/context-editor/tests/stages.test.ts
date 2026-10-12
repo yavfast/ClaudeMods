@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
+import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, ROW_WINDOW, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import type { AliasRegistry } from '../hooks/aliases'
@@ -45,7 +45,7 @@ import {
   type UsageInfo,
 } from '../hooks/stages'
 import { contextTag, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
-import { prompt, reg, reply, result, use as callRow, missingRead, okRead, unreadableRead } from './row-fixtures'
+import { apiOf, prompt, reg, reply, result, use as callRow, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
 // every call here reads its own file: the block reports count reproducible pairs by path
@@ -836,30 +836,77 @@ const messagesUsage = (conversation: number): UsageInfo => ({
   context: { tokens: conversation + 40_000, window: 1_000_000, breakdown: { categories: [{ name: MESSAGES_ROW, tokens: conversation, kind: 'used' }], totalTokens: conversation + 40_000, rawMaxTokens: 1_000_000, autoCompactThreshold: 900_000 } },
 })
 
-test('Calibrate — калібрування: messages 268 000, 482 400 chars: ratio 1.8, written', async () => {
+test('Calibrate — калібрування: messages 268 000, 482 400 chars of the API form: ratio 1.8, written', async () => {
   const saved: number[] = []
-  const r = await calibrate(big(482_400), { measure: 'messages', conversation: 268_000 }, {}, async v => void saved.push(v))
+  const r = await calibrate(482_400, { measure: 'messages', conversation: 268_000 }, {}, async v => void saved.push(v))
   expect(r).toBe(1.8)
   expect(saved).toEqual([1.8])
-  // through the telemetry
-  const t = await telemetry(big(482_400), reg(), async () => messagesUsage(268_000), async change => void saved.push(change(reg()).charsPerToken!))
+  // through the telemetry, from the API form it reads
+  const rows = big(482_400)
+  const t = await telemetry(rows, reg(), async () => messagesUsage(268_000), async change => void saved.push(change(reg()).charsPerToken!), undefined, async () => apiOf(rows))
+  expect(t.chars).toBe(482_400)
   expect(t.ratio).toBe(1.8)
   expect(saved.length).toBe(2)
 })
 
-test('Calibrate — без калібрування: request / too small / within 5 % of the stored one: the stored ratio; nothing written', async () => {
+test('Calibrate — без калібрування: request / too small / within 5 % of the stored one / no API chars: the stored ratio; nothing written', async () => {
   const saved: number[] = []
   const save = async (v: number) => void saved.push(v)
-  expect(await calibrate(big(482_400), { measure: 'request' }, { charsPerToken: 2.5 }, save)).toBe(2.5)
-  expect(await calibrate(big(3000), { measure: 'messages', conversation: CALIB_TOKENS - 1 }, { charsPerToken: 2.5 }, save)).toBe(2.5)
-  expect(await calibrate(big(482_400), { measure: 'messages', conversation: 268_000 }, { charsPerToken: 1.75 }, save)).toBe(1.8)
+  expect(await calibrate(482_400, { measure: 'request' }, { charsPerToken: 2.5 }, save)).toBe(2.5)
+  expect(await calibrate(3000, { measure: 'messages', conversation: CALIB_TOKENS - 1 }, { charsPerToken: 2.5 }, save)).toBe(2.5)
+  expect(await calibrate(482_400, { measure: 'messages', conversation: 268_000 }, { charsPerToken: 1.75 }, save)).toBe(1.8)
+  expect(await calibrate(undefined, { measure: 'messages', conversation: 268_000 }, { charsPerToken: 2.5 }, save)).toBe(2.5)
   expect(saved).toEqual([])
-  expect(await calibrate(big(100), { measure: 'unknown' }, {}, save)).toBeUndefined()
+  expect(await calibrate(100, { measure: 'unknown' }, {}, save)).toBeUndefined()
 })
 
 test('Calibrate — межі: 0.5 and 12 chars per token are held to 1.0 and 8.0', async () => {
-  expect(await calibrate(big(20_000), { measure: 'messages', conversation: 40_000 }, {})).toBe(CALIB_MIN)
-  expect(await calibrate(big(480_000), { measure: 'messages', conversation: 40_000 }, {})).toBe(CALIB_MAX)
+  expect(await calibrate(20_000, { measure: 'messages', conversation: 40_000 }, {})).toBe(CALIB_MIN)
+  expect(await calibrate(480_000, { measure: 'messages', conversation: 40_000 }, {})).toBe(CALIB_MAX)
+})
+
+// [SP_CTX_02_34] session d5614704 (2026-10-12): the rows held ~186k chars, the
+// host's attachments (CLAUDE.md copies, listings, hook context) ~250k more,
+// the Messages row ~206k tokens: by the rows the ratio fell to CALIB_MIN and
+// every estimate came out ~3× too high
+test('Calibrate — вкладення хоста: the API form\'s chars with the attachments the rows lack, over the Messages row with the fixed part\'s rows that lie in the messages', async () => {
+  const rows = [prompt('p'), reply('x'.repeat(186_000))]
+  const api = apiOf(rows, i => (i === 0 ? ['<system-reminder>' + 'm'.repeat(249_983)] : []))
+  const usage = (attached: { name: string; tokens: number }[]): (() => Promise<UsageInfo>) => async () => {
+    const u = messagesUsage(206_000)
+    const b = u.context.breakdown!
+    return { context: { ...u.context, breakdown: { ...b, categories: [...b.categories, ...attached.map(a => ({ ...a, kind: 'used' }))] } } }
+  }
+  const plain = await telemetry(rows, reg(), usage([]), undefined, undefined, async () => api)
+  expect(plain.chars).toBe(436_001)
+  expect(plain.ratio).toBe(436_001 / 206_000)
+  // the rows alone would have held the ratio at CALIB_MIN
+  expect(186_001 / 206_000).toBeLessThan(CALIB_MIN)
+  // memory files and the skill listing lie in the first user message, the breakdown counts them in the fixed part
+  const t = await telemetry(rows, reg(), usage([{ name: 'Memory files', tokens: 5_000 }, { name: 'Skills', tokens: 10_000 }, { name: 'System tools', tokens: 20_000 }]), undefined, undefined, async () => api)
+  expect(t.attached).toBe(15_000)
+  expect(t.ratio).toBe(436_001 / 221_000)
+  // the header names the attached rows apart from the fixed part (40k − 15k), one line
+  expect(telemetryText(t).split('\n')[0]).toBe('Context: conversation ~206k tokens; fixed part (system prompt, tools) ~25k; attached in the first message (memory, skills, MCP instructions, agents) ~15k; window 1000k; auto-compaction in ~654k')
+})
+
+test('Calibrate — без API-подання: no form, a failed read or a form at its window (4096 or 4095 messages): the stored ratio stays, nothing is written', async () => {
+  const rows = big(482_400)
+  const saved: number[] = []
+  const update = async (change: (r: TagRegistry) => TagRegistry) => void saved.push(change(reg()).charsPerToken!)
+  const failed = async (): Promise<unknown[]> => {
+    throw new Error('no api')
+  }
+  const full = async () => Array.from({ length: ROW_WINDOW }, () => ({ role: 'user', content: 'x'.repeat(200) }))
+  // the host trims a cut window to open on a user message: 4095 messages are cut too (ApiCut, as CollectMedia)
+  const trimmed = async () => Array.from({ length: ROW_WINDOW - 1 }, () => ({ role: 'user', content: 'x'.repeat(200) }))
+  for (const api of [undefined, failed, full, trimmed]) {
+    const t = await telemetry(rows, reg({ charsPerToken: 2.5 }), async () => messagesUsage(268_000), update, undefined, api)
+    expect(t.chars).toBeUndefined()
+    expect(t.ratio).toBe(2.5)
+  }
+  expect((await telemetry(rows, reg(), async () => messagesUsage(268_000), update)).ratio).toBeUndefined()
+  expect(saved).toEqual([])
 })
 
 test('Estimate — форми: 9000 chars, ratio 1.8 / none', async () => {
@@ -927,6 +974,8 @@ test('BlockReport — one ratio: the block size uses the calibration the same re
     readTags: async () => okRead(reg()),
     media: async () => new Map(),
     usage: async () => messagesUsage(30_000),
+    // [SP_CTX_02_34] the calibration's chars come from the API form
+    api: async () => apiOf(list),
     setListed: () => undefined,
   }
   const text = await blockReport(io, { name: 'A', after: mark(list, 0), end: mark(list, 3), turn: 0 })

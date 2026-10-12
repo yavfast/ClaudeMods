@@ -26,6 +26,7 @@
 | [context_editor_media.spike.md](context_editor_media.spike.md) | concluded | Медіа в промптах людини і межі вікон трьох подань |
 | [context_editor_efficiency.spike.md](context_editor_efficiency.spike.md) | concluded | Модель ефективності стиснення контексту |
 | [context_editor_cache.spike.md](context_editor_cache.spike.md) | concluded | Чому apply мода скидає кеш промпту всієї розмови |
+| [context_editor_host_attachments.spike.md](context_editor_host_attachments.spike.md) | concluded | Застарілі вкладення хоста (`instructions`, `skill_listing`) після застосувань |
 
 ## ID prefixes
 

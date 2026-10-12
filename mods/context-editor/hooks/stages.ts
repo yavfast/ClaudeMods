@@ -9,6 +9,7 @@
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, type AliasRegistry } from './aliases'
 import {
+  apiCut,
   collectMedia,
   describeEdit,
   distinctive,
@@ -30,8 +31,8 @@ import {
   type RowIndex,
   type Snapshot,
 } from './edits'
-import { CACHE_LOOKBACK, cacheShape, lookbackStart } from './cache'
-import { charsOf, errorText, findToolUse, modText, resultsOf, totalChars } from './rows'
+import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
+import { apiChars, charsOf, errorText, findToolUse, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -44,6 +45,11 @@ export const OPTIMIZE_MARK = '[context-editor: optimize]'
 // the breakdown row with the conversation's rows without the fixed part
 // (plugin-hooks pitfall 37); found by name, as it has no `kind` of its own
 export const MESSAGES_ROW = 'Messages'
+// [SP_CTX_02_28] [SP_CTX_02_34] the breakdown rows of the fixed part whose
+// text lies in the messages (the first user message's attachments), found by
+// name like MESSAGES_ROW: the request's messages hold their tokens beside the
+// Messages row's (probe on 2.1.296, 2026-10-12)
+export const FIXED_IN_MESSAGES: readonly string[] = ['Memory files', 'Skills', 'MCP server instructions', 'Custom agents']
 export const MAX_STAGE_NAME = 80
 export const SKILL = 'context-stages'
 // [SP_CTX_02_34] the bounds of chars per token, and the least conversation
@@ -240,6 +246,9 @@ export type UsageInfo = {
 export type Telemetry = {
   measure: 'messages' | 'request' | 'unknown' | 'unavailable'
   conversation?: number
+  // [SP_CTX_02_28] with `messages`: the tokens of the FIXED_IN_MESSAGES rows,
+  // part of `fixed` though their text lies in the messages
+  attached?: number
   fixed?: number
   request?: number
   window?: number
@@ -261,30 +270,45 @@ export type Telemetry = {
   state: { row: number } | 'none' | 'lost'
   // [SP_CTX_02_34] the chars per token the estimates of this telemetry use; absent: approx.
   ratio?: number
+  // [SP_CTX_02_34] the chars of the API form (ApiChars), the text the
+  // request's messages hold; absent without the form or when it may be cut
+  // at its window
+  chars?: number
   // [SP_CTX_01_21] the notes of the registry and how many wait for a reminder
   notes: { count: number; reminders: number }
   // [SP_CTX_02_28] the measured change of the request since the last apply,
   // shown once after the first model response after it
   measuredFreed?: number
-  // [SP_CTX_01_20] [SP_CTX_02_38] LookbackStart of the rows and the chars from
-  // it on: an apply whose earliest edit is from there keeps the prompt cache
-  // up to it; absent without rows
-  cache?: { start: number; chars: number; rows: number }
+  // [SP_CTX_01_20] [SP_CTX_02_38] LookbackStart of the rows and the tokens of
+  // the request from it on (TailTokens; `approx`: by PLAIN_RATIO, no ratio):
+  // an apply whose earliest edit is from there keeps the prompt cache up to
+  // it; absent without rows
+  cache?: { start: number; tokens: number; approx: boolean; rows: number }
 }
 
-// [SP_CTX_02_34] Calibrate: chars of the current conversation per token of
-// its rows from the telemetry, when the conversation is large enough to
-// trust; the stored ratio otherwise. `save` is asked only when the ratio moved
-// by more than 5 %. Pure but for `save`.
+// [SP_CTX_02_28] Whole(t): the tokens the request's messages hold, the
+// Messages row with the fixed part's rows that lie in the messages; absent
+// without the Messages row.
+export function wholeOf(t: Pick<Telemetry, 'measure' | 'conversation' | 'attached'>): number | undefined {
+  return t.measure === 'messages' && t.conversation !== undefined ? t.conversation + (t.attached ?? 0) : undefined
+}
+
+// [SP_CTX_02_34] Calibrate: the chars of the request's messages (`chars`, the
+// API form with the host's attachments, which the rows lack) per token they
+// hold (Whole: the Messages row with the fixed part's rows that lie in the
+// messages), when the conversation is large enough to trust; the stored
+// ratio otherwise, also without the API form (rows alone would put the
+// attachments' tokens on the rows' chars). `save` is asked only when the
+// ratio moved by more than 5 %. Pure but for `save`.
 export async function calibrate(
-  rows: readonly SessionMessage[],
-  t: Pick<Telemetry, 'measure' | 'conversation'>,
+  chars: number | undefined,
+  t: Pick<Telemetry, 'measure' | 'conversation' | 'attached'>,
   reg: Pick<TagRegistry, 'charsPerToken'>,
   save?: (ratio: number) => Promise<void>,
 ): Promise<number | undefined> {
-  const c = totalChars(rows)
-  if (t.measure !== 'messages' || (t.conversation ?? 0) < CALIB_TOKENS || c <= 0) return reg.charsPerToken
-  const r = Math.min(CALIB_MAX, Math.max(CALIB_MIN, c / t.conversation!))
+  const whole = wholeOf(t)
+  if (whole === undefined || t.conversation! < CALIB_TOKENS || !chars || chars <= 0) return reg.charsPerToken
+  const r = Math.min(CALIB_MAX, Math.max(CALIB_MIN, chars / whole))
   const old = reg.charsPerToken
   // a failed write: this call uses the new ratio, the next ones the old
   if (save && (old === undefined || Math.abs(r - old) > 0.05 * old)) await save(r).catch(() => undefined)
@@ -292,7 +316,8 @@ export async function calibrate(
 }
 
 // [SP_CTX_02_01] The one size of the listing's header: the conversation's
-// tokens from the telemetry, else an Estimate of its chars.
+// tokens from the telemetry, else an Estimate of its chars (the API form's,
+// `t.chars`, when the caller has them: the rows lack the attachments).
 export function headerSize(t: Pick<Telemetry, 'measure' | 'conversation' | 'ratio'>, chars: number): string {
   if (t.measure === 'messages' && t.conversation !== undefined) return `~${tokensText(t.conversation)} tokens`
   return t.ratio ? `${estimate(chars, t.ratio)} (calibrated estimate)` : estimate(chars)
@@ -313,9 +338,12 @@ export async function telemetry(
   update?: RegistryUpdate,
   // [SP_CTX_02_31] the journal's summary, read by the caller
   journal?: JournalSummary,
-  // [SP_CTX_02_38] the API form for the Cache line (ResponseStart); absent or
-  // failed: without it, only stretch starts count
+  // [SP_CTX_02_38] the API form for the Cache line (ResponseStart) and
+  // [SP_CTX_02_34] the calibration's chars; absent or failed: without it,
+  // only stretch starts count and the stored ratio stays
   api?: () => Promise<readonly unknown[]>,
+  // [SP_CTX_02_37] `cache: false`: no Cache line (SoftHint needs none)
+  opts: { cache?: boolean } = {},
 ): Promise<Telemetry> {
   let tokensNow: number | undefined
   const t: Telemetry = {
@@ -347,6 +375,8 @@ export async function telemetry(
       t.measure = 'messages'
       t.conversation = row.tokens
       t.fixed = Math.max(0, b.totalTokens - row.tokens)
+      const attached = b.categories.filter(c => c.kind === 'used' && FIXED_IN_MESSAGES.includes(c.name)).reduce((n, c) => n + c.tokens, 0)
+      if (attached > 0) t.attached = attached
     } else {
       t.measure = 'request'
       t.request = u.context.tokens
@@ -360,14 +390,19 @@ export async function telemetry(
     t.measure = 'unavailable'
     t.error = errorText(err)
   }
-  if (rows.length) {
-    const form = api ? await api().catch((): readonly unknown[] => []) : []
-    const start = lookbackStart(cacheShape(rows, form))
-    t.cache = { start, chars: charsOf(rows, start, rows.length - 1), rows: rows.length }
+  const form = api ? await api().catch((): readonly unknown[] => []) : []
+  // a form at its window may have lost its oldest messages: no chars then
+  if (form.length > 0 && !apiCut(form)) t.chars = apiChars(form)
+  if (reg) {
+    const save = update ? async (ratio: number) => void (await update(r => ({ ...r, charsPerToken: ratio }))) : undefined
+    t.ratio = await calibrate(t.chars, t, reg, save)
+  }
+  if (rows.length && opts.cache !== false) {
+    const shape = cacheShape(rows, form)
+    const start = lookbackStart(shape)
+    t.cache = { start, tokens: tailTokens(shape, start, t.ratio ?? PLAIN_RATIO, wholeOf(t)), approx: t.ratio === undefined, rows: rows.length }
   }
   if (!reg) return t
-  const save = update ? async (ratio: number) => void (await update(r => ({ ...r, charsPerToken: ratio }))) : undefined
-  t.ratio = await calibrate(rows, t, reg, save)
   // the first model response after an apply: the request now against the one before it
   const last = reg.lastApply
   if (last && (t.measure === 'messages' || t.measure === 'request') && tokensNow !== undefined && tokensNow !== last.tokensBefore) {
@@ -439,7 +474,7 @@ function cacheLine(t: Telemetry): string {
   const lookback = `the API's ~${CACHE_LOOKBACK}-position cache lookback`
   if (c.start >= c.rows) return `${head}; even the last response is beyond ${lookback}, so "keep_cache" would not help`
   if (c.start === 0) return `${head}; with "keep_cache": true only the rows from its earliest edit (the whole conversation is within ${lookback})`
-  return `${head}; with "keep_cache": true, an earliest edit from #${c.start} on (within ${lookback}) rewrites only the rows from it (at most ${estimate(c.chars, t.ratio)}) if your turn ends soon: edits apply at its end, and each call until then pushes them deeper`
+  return `${head}; with "keep_cache": true, an earliest edit from #${c.start} on (within ${lookback}) rewrites only the rows from it (at most ~${tokensText(c.tokens)} tokens${c.approx ? ' (approx.)' : ''}) if your turn ends soon: edits apply at its end, and each call until then pushes them deeper`
 }
 
 // [SP_CTX_02_28] TelemetryText(t): one line per part.
@@ -449,7 +484,12 @@ export function telemetryText(t: Telemetry): string {
   const window = t.window !== undefined ? tokensText(t.window) : '?'
   switch (t.measure) {
     case 'messages':
-      lines.push(`Context: conversation ~${tokensText(t.conversation ?? 0)} tokens; fixed part (system prompt, tools, skills, memory) ~${tokensText(t.fixed ?? 0)}; window ${window}${auto}`)
+      // [SP_CTX_02_28] the FIXED_IN_MESSAGES rows lie in the first message: named apart from the fixed part
+      if (t.attached)
+        lines.push(
+          `Context: conversation ~${tokensText(t.conversation ?? 0)} tokens; fixed part (system prompt, tools) ~${tokensText(Math.max(0, (t.fixed ?? 0) - t.attached))}; attached in the first message (memory, skills, MCP instructions, agents) ~${tokensText(t.attached)}; window ${window}${auto}`,
+        )
+      else lines.push(`Context: conversation ~${tokensText(t.conversation ?? 0)} tokens; fixed part (system prompt, tools, skills, memory) ~${tokensText(t.fixed ?? 0)}; window ${window}${auto}`)
       break
     case 'request':
       lines.push(`Context: last request ~${tokensText(t.request ?? 0)} tokens, the fixed part (system prompt, tools, skills, memory) included; window ${window}${auto}`)
@@ -582,7 +622,7 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
     const update = dir ? io.updateTags(dir) : undefined
     const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), io.usage, update, dir ? await io.journal(dir) : undefined, io.api)
     tele = telemetryText(t)
-    size = headerSize(t, totalChars(rows))
+    size = headerSize(t, t.chars ?? totalChars(rows))
   } catch (err) {
     tele = `Context: size unavailable (${errorText(err)})`
   }

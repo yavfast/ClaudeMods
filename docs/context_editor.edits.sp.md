@@ -180,7 +180,7 @@ Input:
 | mediaOwners | set<owner> | yes | усі власники медіа в розмові ([SP_CTX_02_10](#SP_CTX_02_10)) |
 | knownResults | set<string> | yes | `tool_use_id` результатів, які видно в API-поданні ([SP_CTX_02_10](#SP_CTX_02_10)) |
 | unmatchedPromptMedia | int | yes | ≥ 0; кількість повідомлень людини з медіа, не зіставлених з рядками |
-| apiTruncated | bool | yes | API-подання обрізане вікном: `len(api) ≥ ROW_WINDOW − 1` ([SP_CTX_02_10](#SP_CTX_02_10)); тоді рядки до першого відомого результату можуть лежати поза поданням |
+| apiTruncated | bool | yes | API-подання обрізане вікном: ApiCut(api) = `len(api) ≥ ROW_WINDOW − 1` ([SP_CTX_02_10](#SP_CTX_02_10); один предикат з калібруванням, [SP_CTX_02_34](./context_editor.stages.sp.md#SP_CTX_02_34)); тоді рядки до першого відомого результату можуть лежати поза поданням |
 | freeze | `{ api: list<json> }`? | no | передає лише HandleCompaction ([SP_CTX_02_07](#SP_CTX_02_07)) і лише для пакета з `keepCache`; засів — ні | заморожений префікс (фаза 23, [SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22)): `api` — API-подання тієї самої розмови, з якого ResponseStart бачить межі відповідей |
 | newId | `(id) → string`? | no | фабрика FreshId для змінених викликів (`summarize`, носій `collapse`); без неї — FreshId; передають лише тести, щоб ідентифікатори були детерміновані (аудит PL_AUD_CTX, CF-14) |
 
@@ -237,8 +237,8 @@ Processing logic (pseudocode):
     PromptRow(r) = r is a user row without toolResults AND (r has a handle OR r is not empty)   # рядок результату, який drop лишив порожнім, — не промпт; один предикат для KeepResponsesWhole, Responses, FrozenPrefix і CacheCost (SP_CTX_02_38)
     # PromptRow, EmptyRow («порожній»: без тексту, викликів і результатів) і пошук пари за id мають один дім — L0-модуль `hooks/rows.ts` (PL_AUD_CTX фаза 9, CF-17); ResolveLast (SP_CTX_02_17) бере варіант PromptRowStrict — текст лише з пробілів без handle там не промпт
 
-    FUNCTION Responses(rows, api) → (start, known, floor):   # відповіді рядків одним проходом (PL_AUD_CTX фаза 8: одне джерело для ResponseStart і CacheCost)
-        message(r) = for an assistant row: the assistant message of api that holds a tool_use id of r, or else the non-empty text of r (whitespace removed); none otherwise
+    FUNCTION Responses(rows, api) → (start, known, floor, message):   # відповіді рядків одним проходом (PL_AUD_CTX фаза 8: одне джерело для ResponseStart і CacheCost)
+        message(r) = for an assistant row: the index in api of the assistant message that holds a tool_use id of r, or else the non-empty text of r (whitespace removed); none otherwise   # повертається й сам: CacheShape читає з нього хвіст API-подання (SP_CTX_02_38, 2026-10-12)
         FOR i IN 0..len(rows)−1:
             floor[i] = the index after the last PromptRow before i (0 without one)       # відповідь не перетинає промпту
             assistant row: start[i] = start[i−1] if rows[i−1] is an assistant row else i   # рядки асистента поспіль — одна відповідь
@@ -604,3 +604,4 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19, CF-20): 02_01 — логіка `context_list` — ContextList за портом ListIO (`hooks/stages.ts`), мітки — ListLabels, псевдоніми — ListAliases; правило «`count: 0` і `full` не оновлюють `listedKey`» має тести; опис і схема — у `hooks/tools.ts`; 02_06 — порядок кінця ходу — AfterTurn за портом TurnEndIO (`hooks/flush.ts`); 02_07 — гілка збою обробника — CompactionFailed за портом FailureIO. Без зміни поведінки |
 | 2026-10-11 | PL_AUD_CTX фаза 10, рев'ю: 02_03 — звідки PrepareEdits бере закріплення: PinsFrom (`hooks/tags.ts`) з прочитаного реєстру тегів, нечитабельний — без закріплень. Без зміни поведінки |
 | 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): тексти коду дослівно — 02_02 відмови `context_edit` (DENIED_EMPTY і для списку, довшого за MAX_QUEUE_EDITS), 02_03 відмови PrepareEdits і ScreenPinned, 02_04 причини `failed` ApplyEdits, 02_07 `compaction abandoned; the batch stays queued`, звіт збою `… and the batch was dropped.`, префікс PREFIX у текстах `skip`, `lastApply` обмежено USAGE_WAIT_MS |
+| 2026-10-12 | Калібрування бачить вкладення хоста, рев'ю: 02_04 — Responses повертає й `message` (індекс повідомлення API-подання рядка асистента; поведінка не змінилась), CacheShape не має власного зіставлення; ApiCut — один предикат обрізаного подання для CollectMedia і калібрування |

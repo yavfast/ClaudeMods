@@ -1,6 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import {
+  apiTailChars,
   APPLY_MARGIN,
   breakEven,
   CACHE_LOOKBACK,
@@ -11,10 +12,11 @@ import {
   lookbackStart,
   requestsSoFar,
   summaryTokens,
+  tailTokens,
   verdictOf,
 } from '../hooks/cache'
 import { applyEdits, prepare, responses, responseStart } from '../hooks/edits'
-import { emptyRowBetweenCalls } from './row-fixtures'
+import { apiOf, emptyRowBetweenCalls } from './row-fixtures'
 import { MESSAGES_ROW, telemetry, telemetryText, type UsageInfo } from '../hooks/stages'
 import { EMPTY_REGISTRY } from '../hooks/tags'
 
@@ -30,15 +32,6 @@ function sequential(n: number, size = 3): SessionMessage[] {
   for (let k = 1; k <= n; k++) rows.push(use(`c${k}`), result(`c${k}`, 'x'.repeat(size)))
   rows.push(say('done'))
   return rows
-}
-
-// the API form of rows: one message per row, as the host sends rows it has not merged
-function apiOf(rows: readonly SessionMessage[]): unknown[] {
-  return rows.map(r =>
-    r.role === 'assistant'
-      ? { role: 'assistant', content: [...(r.text ? [{ type: 'text', text: r.text }] : []), ...r.toolUses.map(u => ({ type: 'tool_use', id: u.tool_use_id, name: u.tool, input: {} }))] }
-      : { role: 'user', content: r.toolResults?.length ? r.toolResults.map(t => ({ type: 'tool_result', tool_use_id: t.tool_use_id, content: t.text })) : r.text },
-  )
 }
 
 // ---- [SP_CTX_02_38] Positions
@@ -104,6 +97,35 @@ test('CacheCost — вікно: an edit within the lookback rewrites the rows fr
   expect(CACHE_LOOKBACK).toBe(20)
 })
 
+// [SP_CTX_02_34] [SP_CTX_02_38] the rewrite counts what the request holds: the
+// host's attachments the rows lack (session d5614704, 2026-10-12)
+test('CacheCost — вкладення хоста: the tail by the API form\'s chars, attachments in; a deep apply the whole the messages hold; rows alone would understate both', async () => {
+  const rows = [...sequential(15, 4000).slice(0, -1), prompt('next'), say('done')]
+  const last = rows.length - 2
+  // a reminder of 6000 chars before the last prompt, which the rows do not carry
+  const api = apiOf(rows, i => (i === last ? ['<system-reminder>' + 'r'.repeat(5983)] : []))
+  const shape = cacheShape(rows, api)
+  // call 14 (index 27) to the end: 8004 chars of rows + 'next' and 'done', 6000 of the reminder
+  const rowsTail = 8004 + 4 + 4
+  const near = cacheCost(shape, 27, 0, 100_000, 2)
+  expect(near.within).toBe(true)
+  expect(near.rewrite).toBe(Math.round((rowsTail + 6000) / 2))
+  expect(near.rewrite).toBeGreaterThan(Math.round(rowsTail / 2))
+  expect(apiTailChars(shape, 27)).toBe(rowsTail + 6000)
+  // a prompt at the start takes the user message the host puts it in, with its attachments
+  expect(apiTailChars(shape, last)).toBe(6000 + 4 + 4)
+  expect(tailTokens(shape, last, 2)).toBe(3004)
+  // deep: the whole the request's messages hold, not the rows by the ratio
+  const deep = cacheCost(shape, 3, 1000, 100_000, 2)
+  expect(deep.rewrite).toBe(99_000)
+  // without the API form: the rows' tail at the whole's tokens per row char (the attachments on average), at most the whole
+  const bare = cacheShape(rows)
+  const all = rows.reduce((n, r) => n + r.text.length + r.toolUses.length * 2 + (r.toolResults ?? []).reduce((k, t) => k + t.text.length, 0), 0)
+  expect(tailTokens(bare, last, 2, 100_000)).toBe(Math.round((8 * 100_000) / all))
+  expect(tailTokens(bare, 0, 2, 1000)).toBe(1000)
+  expect(tailTokens(bare, last, 2)).toBe(4)
+})
+
 test('Requests — відповіді: runs of assistant rows count as one request each; at least 1', async () => {
   expect(requestsSoFar(cacheShape(sequential(3)))).toBe(4)
   expect(requestsSoFar(cacheShape([prompt('task'), think('1'), say('a'), use('x'), result('x'), say('b')]))).toBe(2)
@@ -146,7 +168,8 @@ test('Telemetry — рядок Cache: the first row within the lookback and what
   const api = async () => apiOf(rows)
   const text = telemetryText(await telemetry(rows, { ...EMPTY_REGISTRY }, async () => USAGE, undefined, undefined, api))
   // by default an apply rewrites the whole conversation; keep_cache keeps the cache before an edit from #13 on
-  expect(text).toContain('Cache: an apply rewrites the whole conversation once; with "keep_cache": true, an earliest edit from #13 on (within the API\'s ~20-position cache lookback) rewrites only the rows from it (at most ~')
+  expect(text).toContain('Cache: an apply rewrites the whole conversation once; with "keep_cache": true, an earliest edit from #13 on (within the API\'s ~20-position cache lookback) rewrites only the rows from it (at most ~12k tokens) if your turn ends soon')
+  // the ratio from the API form: 60 038 chars over 20 000 tokens; the tail from #13: 36 022 chars, ~12 000 tokens, in thousands as every count
   expect(text).toContain('if your turn ends soon: edits apply at its end, and each call until then pushes them deeper')
   // the line follows the size line
   expect(text.split('\n')[1]!.startsWith('Cache: ')).toBe(true)

@@ -31,6 +31,19 @@ export function reg(extra: Partial<TagRegistry> = {}): TagRegistry {
   return { ...EMPTY_REGISTRY, tags: [], notes: [], ...extra }
 }
 
+// [SP_CTX_02_34] [SP_CTX_02_38] The API form of rows: one message per row, as
+// the host sends rows it has not merged. `attach(i)`: the text blocks the host
+// puts before the blocks of a user row i (reminders, memory files, hook
+// context), which the rows do not carry.
+export function apiOf(rows: readonly SessionMessage[], attach: (i: number) => string[] = () => []): unknown[] {
+  return rows.map((r, i) => {
+    if (r.role === 'assistant')
+      return { role: 'assistant', content: [...(r.text ? [{ type: 'text', text: r.text }] : []), ...r.toolUses.map(u => ({ type: 'tool_use', id: u.tool_use_id, name: u.tool, input: u.input ?? {} }))] }
+    const own = r.toolResults?.length ? r.toolResults.map(t => ({ type: 'tool_result', tool_use_id: t.tool_use_id, content: t.text })) : [{ type: 'text', text: r.text }]
+    return { role: 'user', content: [...attach(i).map(text => ({ type: 'text', text })), ...own] }
+  })
+}
+
 export function okRead<T>(value: T): Read<T> {
   return { state: 'ok', value }
 }

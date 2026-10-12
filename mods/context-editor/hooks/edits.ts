@@ -69,6 +69,14 @@ export const MAX_QUEUE_EDITS = 200
 export const HEAD_ROWS = 8
 // The most rows a read of the conversation gives, and the most messages of its API form.
 export const ROW_WINDOW = 4096
+
+// [SP_CTX_02_10] [SP_CTX_02_34] ApiCut(api): the API form may have lost its
+// oldest messages: it reached its window, which the host trims to open on a
+// user message, so a cut form holds ROW_WINDOW − 1 messages or more
+// (plugin-hooks 49). One predicate for CollectMedia and the calibration.
+export function apiCut(api: readonly unknown[]): boolean {
+  return api.length >= ROW_WINDOW - 1
+}
 // [SP_CTX_01_14] How long after a read of the identity starts its readers
 // wait for it; after that a reader takes it as absent (the read goes on).
 export const HOST_ID_WAIT_MS = 2000
@@ -1064,7 +1072,7 @@ export function collectMedia(
     if (row === undefined) unmatchedPromptMedia += 1
     else for (const block of blocks) if (isMediaBlock(block)) add(ownerKey({ row }), block)
   })
-  return { found, knownResults, unmatchedPromptMedia, apiTruncated: api.length >= ROW_WINDOW - 1 }
+  return { found, knownResults, unmatchedPromptMedia, apiTruncated: apiCut(api) }
 }
 
 function mediaRef(block: Record<string, unknown>): MediaRef {
@@ -1361,14 +1369,19 @@ export function applyEdits(
 // its call never; an empty user row only once a response pulled it in, as
 // that response is). `floor[i]`: the start of the stretch, the row after the
 // last prompt row before rows[i] (rows[i] itself excluded for a prompt). Pure.
-export type Responses = { start: readonly number[]; known: readonly boolean[]; floor: readonly number[] }
+// `message[i]`: the index in `api` of the assistant message that holds the
+// assistant row rows[i] (by a call id, else by its text), undefined for
+// another row or none; CacheShape reads the API form's tail from it
+// ([SP_CTX_02_38]).
+export type Responses = { start: readonly number[]; known: readonly boolean[]; floor: readonly number[]; message: readonly (number | undefined)[] }
 
 export function responses(rows: readonly SessionMessage[], api: readonly unknown[] = []): Responses {
+  // by the message's index in `api`: only its identity groups rows, and
+  // CacheShape reads the form's tail from it
   const byId = new Map<string, number>()
   const byText = new Map<string, number>()
-  let n = 0
-  for (const msg of api) {
-    if ((msg as { role?: unknown } | null)?.role !== 'assistant') continue
+  api.forEach((msg, n) => {
+    if ((msg as { role?: unknown } | null)?.role !== 'assistant') return
     for (const b of apiBlocks(msg)) {
       if (b.type === 'tool_use' && typeof b.id === 'string') byId.set(b.id, n)
       if (b.type === 'text' && typeof b.text === 'string') {
@@ -1376,8 +1389,7 @@ export function responses(rows: readonly SessionMessage[], api: readonly unknown
         if (t) byText.set(t, n)
       }
     }
-    n++
-  }
+  })
   // the API message of each assistant row, and whether its run has one
   const message = rows.map(r => {
     if (r.role !== 'assistant') return undefined
@@ -1432,7 +1444,7 @@ export function responses(rows: readonly SessionMessage[], api: readonly unknown
   for (let i = rows.length - 1; i > 0; i--) if (start[i]! < i && start[i - 1]! > start[i]!) start[i - 1] = start[i]!
   for (let i = 0; i < rows.length; i++) start[i] = start[start[i]!]!
   for (const i of loose) if (start[i]! < i) known[i] = known[start[i]!]!
-  return { start, known, floor }
+  return { start, known, floor, message }
 }
 
 // [SP_CTX_02_04] ResponseStart(rows, at, api): the first row of the model

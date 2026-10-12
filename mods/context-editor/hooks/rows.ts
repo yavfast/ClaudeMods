@@ -98,6 +98,25 @@ export function charsOf(rows: readonly SessionMessage[], from: number, to: numbe
   return n
 }
 
+// [SP_CTX_02_34] The chars of one API message by the measure of rowChars:
+// text blocks (the host's attachments among them: reminders, memory files,
+// listings, hook context), call inputs and the text of results; thinking and
+// media add none, as they add none to a row.
+export function apiMessageChars(msg: unknown): number {
+  let n = 0
+  for (const b of apiBlocks(msg)) {
+    if (b.type === 'text' && typeof b.text === 'string') n += b.text.length
+    else if (b.type === 'tool_use') n += JSON.stringify(b.input ?? {}).length
+    else if (b.type === 'tool_result') for (const c of apiBlocks(b)) if (c.type === 'text' && typeof c.text === 'string') n += c.text.length
+  }
+  return n
+}
+
+// [SP_CTX_02_34] The chars of the API form, the request's messages.
+export function apiChars(api: readonly unknown[]): number {
+  return api.reduce((n: number, m) => n + apiMessageChars(m), 0)
+}
+
 // ---- [SP_CTX_02_16] [SP_CTX_01_11] which outputs are worth editing
 
 export function isBig(size: number): boolean {

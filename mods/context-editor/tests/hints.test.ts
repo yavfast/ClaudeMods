@@ -27,9 +27,9 @@ import {
 import { costRatios } from '../hooks/cache'
 import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
-import { MESSAGES_ROW, type UsageInfo } from '../hooks/stages'
+import { MESSAGES_ROW, tokensText, type UsageInfo } from '../hooks/stages'
 import { EMPTY_REGISTRY, parseRegistry, type HintState, type Tag, type TagRegistry } from '../hooks/tags'
-import { emptyRowBetweenCalls, missingRead, okRead, unreadableRead } from './row-fixtures'
+import { apiOf, emptyRowBetweenCalls, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const OUT = 40_000 // chars of one big output: 10k tokens at 4 chars per token
 
@@ -164,7 +164,7 @@ test('SoftHint — розмір, вигідно: a line of its own names the act
   expect(out.outcome).toBe('hint')
   // the default apply rewrites the whole conversation (borderline); with keep_cache the tail alone (worth it): the line names the option
   expect(out.line).toBe(
-    `${SUGGESTION} summarize c1, c2, c3, c4, c5 by ref in one context_edit with "keep_cache": true: frees ~38k of the ~200k conversation; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~13k) if you end the turn within a few calls (edits apply when it ends; the earliest is ~10 positions back now, and past ~20 the API finds no cache); pays back after ~53 requests, this conversation has made ~155 → worth it now. Without keep_cache: the whole conversation (~163k), pays back after ~209 → borderline: worth it only if the work goes on that long; with it, a later --resume may show earlier answers twice.`,
+    `${SUGGESTION} summarize c1, c2, c3, c4, c5 by ref in one context_edit with "keep_cache": true: frees ~38k of the ~200k conversation; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~13k) if you end the turn within a few calls (edits apply when it ends; the earliest is ~10 positions back now, and past ~20 the API finds no cache); pays back after ~53 requests, this conversation has made ~155 → worth it now. Without keep_cache: all the request's messages (~163k), pays back after ~209 → borderline: worth it only if the work goes on that long; with it, a later --resume may show earlier answers twice.`,
   )
   // the state of this suggestion: the request now and the alias count
   expect(log.reg.hint).toEqual({ tokens: 240_000, marks: 6, proposed: 37_500 })
@@ -173,7 +173,9 @@ test('SoftHint — розмір, вигідно: a line of its own names the act
 
 test('SoftHint — калібрування у фоні: a new calibration is queued on the registry chain, and the hint never waits for it ([PL_AUD_CTX_P7])', async () => {
   let asked = 0
-  const { io } = harness(setup(WORTH), {
+  const s = setup(WORTH)
+  const { io } = harness(s, {
+    api: async () => apiOf(s.rows),
     updateTags: () => {
       asked++
       return new Promise<never>(() => undefined)
@@ -183,10 +185,45 @@ test('SoftHint — калібрування у фоні: a new calibration is qu
   expect(asked).toBe(1)
 })
 
+// [SP_CTX_02_34] [SP_CTX_02_37] session d5614704 (2026-10-12): the host's
+// attachments lie in the request but not in the rows; calibrated by the rows,
+// the ratio fell and every gain came out too high
+test('SoftHint — вкладення хоста: the gain by the ratio of the API form; a deep rewrite counts the fixed part\'s rows that lie in the messages', async () => {
+  const s = setup(WORTH)
+  const rowChars = totalChars(s.rows)
+  // attachments of half the rows' chars before the task prompt, which the rows do not carry
+  const attach = (i: number) => (i === 0 ? ['<system-reminder>' + 'a'.repeat(rowChars / 2 - 17)] : [])
+  const usage = (conversation: number, extra: { name: string; tokens: number; kind: string }[] = []) => async (): Promise<UsageInfo> => ({
+    context: {
+      tokens: s.tokens,
+      window: 1_000_000,
+      breakdown: { categories: [{ name: MESSAGES_ROW, tokens: conversation, kind: 'used' }, ...extra], totalTokens: conversation + 40_000, rawMaxTokens: 1_000_000, autoCompactThreshold: 900_000, apiUsage: {} },
+    },
+  })
+  // the attachments in the Messages row: 4 chars per token over rows and attachments alike
+  const inRow = Math.round((rowChars * 1.5) / 4)
+  const counted = harness(s, { api: async () => apiOf(s.rows, attach), usage: usage(inRow) })
+  const line = (await softHint(counted.io, newHintMemo())).line!
+  // rows alone would have given 2.67 chars per token and ~56k freed
+  expect(counted.log.reg.charsPerToken).toBe(4)
+  expect(line).toContain(`frees ~38k of the ~${tokensText(inRow)} conversation`)
+  expect(counted.log.reg.hint!.proposed).toBe(37_500)
+  expect(line).toContain(`(~${tokensText(inRow - 37_500)})`)
+  // the attachments in the fixed part (a skill listing): the conversation stays the rows', the deep rewrite holds them too
+  const conv = rowChars / 4
+  const skills = rowChars / 8
+  const listed = harness(s, { api: async () => apiOf(s.rows, attach), usage: usage(conv, [{ name: 'Skills', tokens: skills, kind: 'used' }]) })
+  const text = (await softHint(listed.io, newHintMemo())).line!
+  expect(listed.log.reg.charsPerToken).toBe(4)
+  expect(text).toContain(`frees ~38k of the ~${tokensText(conv)} conversation`)
+  expect(text).toContain(`all the request's messages (~${tokensText(conv + skills - 37_500)})`)
+  expect(tokensText(conv + skills - 37_500)).not.toBe(tokensText(conv - 37_500))
+})
+
 test('SoftHint — глибоко: an earliest output beyond the lookback rewrites the whole conversation; the verdict weighs that', async () => {
   const { io } = harness(setup({ ...WORTH, after: 15 }))
   const out = await softHint(io, newHintMemo())
-  expect(out.line).toContain('rewrites the prompt cache of the whole conversation once (~163k): its earliest row is ~40 positions back, beyond the ~20 the API looks back;')
+  expect(out.line).toContain('rewrites the prompt cache of all the request\'s messages once (~163k): its earliest row is ~40 positions back, beyond the ~20 the API looks back;')
   expect(out.line!.endsWith('→ borderline: worth it only if the work goes on that long.')).toBe(true)
 })
 
@@ -195,7 +232,7 @@ test('SoftHint — невигідно: early in the session the line says so bri
   const out = await softHint(io, newHintMemo())
   // keep_cache would not make it worth it either: the default line
   expect(out.line).toBe(
-    `${SUGGESTION} not worth it yet: to summarize c1, c2, c3, c4, c5 by ref would free ~38k of the ~200k conversation but would rewrite the prompt cache of the whole conversation once (~162k); pays back after ~208 requests, this conversation has made ~5. Batch more, or compress at the end of a stage.`,
+    `${SUGGESTION} not worth it yet: to summarize c1, c2, c3, c4, c5 by ref would free ~38k of the ~200k conversation but would rewrite the prompt cache of all the request's messages once (~162k); pays back after ~208 requests, this conversation has made ~5. Batch more, or compress at the end of a stage.`,
   )
 })
 
@@ -344,19 +381,19 @@ const KEEP = { cost: { start: 40, positions: 5, within: true, rewrite: 9_000 }, 
 
 test('SuggestionText — рядок: the default (whole conversation), the keep_cache form when it makes the verdict better, the turn form, not yet, no names', async () => {
   expect(suggestionText(proposal({}))).toBe(
-    '[context-editor: suggestion] summarize c3, c9 +1 more (see context_list) by ref in one context_edit: frees ~24k of the ~180k conversation; rewrites the prompt cache of the whole conversation once (~156k); pays back after ~31 requests, this conversation has made ~210 → worth it now.',
+    '[context-editor: suggestion] summarize c3, c9 +1 more (see context_list) by ref in one context_edit: frees ~24k of the ~180k conversation; rewrites the prompt cache of all the request\'s messages once (~156k); pays back after ~31 requests, this conversation has made ~210 → worth it now.',
   )
   expect(suggestionText(proposal({ rStar: 400, verdict: 'borderline', keep: KEEP }))).toBe(
-    '[context-editor: suggestion] summarize c3, c9 +1 more (see context_list) by ref in one context_edit with "keep_cache": true: frees ~24k of the ~180k conversation; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~9k) if you end the turn within a few calls (edits apply when it ends; the earliest is ~5 positions back now, and past ~20 the API finds no cache); pays back after ~12 requests, this conversation has made ~210 → worth it now. Without keep_cache: the whole conversation (~156k), pays back after ~400 → borderline: worth it only if the work goes on that long; with it, a later --resume may show earlier answers twice.',
+    '[context-editor: suggestion] summarize c3, c9 +1 more (see context_list) by ref in one context_edit with "keep_cache": true: frees ~24k of the ~180k conversation; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~9k) if you end the turn within a few calls (edits apply when it ends; the earliest is ~5 positions back now, and past ~20 the API finds no cache); pays back after ~12 requests, this conversation has made ~210 → worth it now. Without keep_cache: all the request\'s messages (~156k), pays back after ~400 → borderline: worth it only if the work goes on that long; with it, a later --resume may show earlier answers twice.',
   )
   expect(suggestionText(proposal({ rStar: 900, verdict: 'not-yet', keep: KEEP }))).toContain('pays back after ~900 → not worth it yet; with it,')
   expect(suggestionText(proposal({ channel: 'turn', stage: 'research', rStar: 300, verdict: 'borderline' }))).toBe(
-    '[context-editor: suggestion] before you go on: close stage "research" with context_tag and summarize c3, c9 +1 more (see context_list) by ref in one context_edit? It frees ~24k of the ~180k conversation; rewrites the prompt cache of the whole conversation once (~156k): edits queued now apply when this turn ends, beyond the ~20 positions the API looks back; pays back after ~300 requests, this conversation has made ~210 → borderline: worth it only if the work goes on that long. Your call: nothing runs unless you do it.',
+    '[context-editor: suggestion] before you go on: close stage "research" with context_tag and summarize c3, c9 +1 more (see context_list) by ref in one context_edit? It frees ~24k of the ~180k conversation; rewrites the prompt cache of all the request\'s messages once (~156k): edits queued now apply when this turn ends, beyond the ~20 positions the API looks back; pays back after ~300 requests, this conversation has made ~210 → borderline: worth it only if the work goes on that long. Your call: nothing runs unless you do it.',
   )
-  expect(suggestionText(proposal({ cost: { start: 3, positions: 64, within: false, rewrite: 156_000 } }))).toContain('rewrites the prompt cache of the whole conversation once (~156k): its earliest row is ~64 positions back, beyond the ~20 the API looks back;')
+  expect(suggestionText(proposal({ cost: { start: 3, positions: 64, within: false, rewrite: 156_000 } }))).toContain('rewrites the prompt cache of all the request\'s messages once (~156k): its earliest row is ~64 positions back, beyond the ~20 the API looks back;')
   expect(suggestionText(proposal({ channel: 'turn', verdict: 'worth' }))).toContain('before you go on: summarize c3, c9 +1 more (see context_list) by ref in one context_edit? It frees')
   expect(suggestionText(proposal({ named: [], more: 3, verdict: 'not-yet', rStar: 250_000, rHat: 40 }))).toBe(
-    '[context-editor: suggestion] not worth it yet: to compress 3 candidates (see context_list) would free ~24k of the ~180k conversation but would rewrite the prompt cache of the whole conversation once (~156k); pays back after ~100000+ requests, this conversation has made ~40. Batch more, or compress at the end of a stage.',
+    '[context-editor: suggestion] not worth it yet: to compress 3 candidates (see context_list) would free ~24k of the ~180k conversation but would rewrite the prompt cache of all the request\'s messages once (~156k); pays back after ~100000+ requests, this conversation has made ~40. Batch more, or compress at the end of a stage.',
   )
 })
 
@@ -369,7 +406,7 @@ test('TurnSuggestion — межа ходу: after a run of HINT_RUN outputs the 
   const out = await turnSuggestion(io, newHintMemo())
   expect(out.outcome).toBe('hint')
   expect(out.line!.startsWith(`${SUGGESTION} before you go on: close stage "read" with context_tag and summarize c1, c2, c3, c4, c5 by ref in one context_edit? It frees ~38k`)).toBe(true)
-  expect(out.line).toContain('rewrites the prompt cache of the whole conversation once (~163k): edits queued now apply when this turn ends')
+  expect(out.line).toContain('rewrites the prompt cache of all the request\'s messages once (~163k): edits queued now apply when this turn ends')
   expect(out.line!.endsWith('→ worth it now. Your call: nothing runs unless you do it.')).toBe(true)
   expect(log.reg.hint).toEqual({ tokens: 240_000, marks: 6, proposed: 37_500 })
   expect((await turnSuggestion(io, newHintMemo())).outcome).toBe('short-run')
@@ -620,6 +657,6 @@ test('Propose — ціни моделі: the break-even follows the cost ratios 
   // the binding: softHint asks the model; on Sonnet the default apply is worth it already, so the line does not name keep_cache
   const sonnet = harness(s, { model: async () => 'claude-sonnet-5-5' })
   const line = (await softHint(sonnet.io, newHintMemo())).line!
-  expect(line).toContain('rewrites the prompt cache of the whole conversation once (~163k); pays back after ~105 requests, this conversation has made ~155 → worth it now.')
+  expect(line).toContain('rewrites the prompt cache of all the request\'s messages once (~163k); pays back after ~105 requests, this conversation has made ~155 → worth it now.')
   expect(line).not.toContain('keep_cache')
 })

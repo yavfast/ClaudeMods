@@ -11,7 +11,7 @@
 // The break-even of an edit weighs that rewrite against the reads it saves. Pure.
 import type { SessionMessage } from 'claude-code'
 import { responses, responseStart, type Responses } from './edits'
-import { charsOf, isPlainUserRow, isPromptRow, resultsOf } from './rows'
+import { apiMessageChars, charsOf, isPlainUserRow, isPromptRow, resultsOf, totalChars } from './rows'
 
 // ---- [SP_CTX_01_12] constants
 
@@ -76,11 +76,56 @@ const runs = (k: Kind | undefined): boolean => k === 'use' || k === 'result'
 // FrozenPrefix uses) and their positions, computed once for every estimate
 // over the same rows and API form. Without the API form, parallel calls
 // written "call, result, call" are separate responses.
-export type CacheShape = { rows: readonly SessionMessage[]; api: readonly unknown[]; responses: Responses; pos: readonly number[] }
+// `tail[m]`: the chars of api[m..] (ApiMessageChars); the API message of
+// each assistant row comes from Responses (`responses.message`).
+export type CacheShape = {
+  rows: readonly SessionMessage[]
+  api: readonly unknown[]
+  responses: Responses
+  pos: readonly number[]
+  tail: readonly number[]
+}
 
 export function cacheShape(rows: readonly SessionMessage[], api: readonly unknown[] = []): CacheShape {
   const shape = responses(rows, api)
-  return { rows, api, responses: shape, pos: positions(rows, shape.start) }
+  const tail = new Array<number>(api.length + 1).fill(0)
+  for (let m = api.length - 1; m >= 0; m--) tail[m] = tail[m + 1]! + apiMessageChars(api[m])
+  return { rows, api, responses: shape, pos: positions(rows, shape.start), tail }
+}
+
+// [SP_CTX_02_38] ApiTailChars(shape, start): the chars of the API form from
+// the message of rows[start] on, the host's attachments in it included: the
+// first assistant row from `start` on that an API message holds gives that
+// message; a user row at `start` (a prompt) is the user message right before
+// it, where the host puts the prompt with its attachments. Undefined when no
+// assistant row from `start` on is in the API form (no form, a tail of user
+// rows alone).
+export function apiTailChars(shape: CacheShape, start: number): number | undefined {
+  const { rows, api, tail } = shape
+  const { message } = shape.responses
+  for (let k = Math.max(0, start); k < rows.length; k++) {
+    const m = message[k]
+    if (m === undefined) continue
+    const user = rows[start]!.role !== 'assistant' && m > 0 && (api[m - 1] as { role?: unknown } | null)?.role === 'user'
+    return tail[user ? m - 1 : m]!
+  }
+  return undefined
+}
+
+// [SP_CTX_02_38] TailTokens(shape, start, ratio, whole): the tokens of the
+// request from rows[start] on, what an apply that keeps the cache up to
+// there rewrites. The API form's chars from there by the ratio, as the
+// calibration counts ([SP_CTX_02_34]); without them, the rows' chars from
+// there at the tokens per row char of the whole (`whole` over the rows'
+// chars: the attachments the rows lack, on average), or by the ratio when
+// `whole` is unknown. At most `whole`.
+export function tailTokens(shape: CacheShape, start: number, ratio: number, whole?: number): number {
+  const { rows } = shape
+  const fromApi = apiTailChars(shape, start)
+  const all = totalChars(rows)
+  const chars = charsOf(rows, start, rows.length - 1)
+  const t = fromApi !== undefined ? fromApi / ratio : whole !== undefined && all > 0 ? (chars * whole) / all : chars / ratio
+  return Math.round(whole !== undefined ? Math.min(t, whole) : t)
 }
 
 // [SP_CTX_02_38] Positions(rows, start): `pos[i]` is the number of API positions
@@ -134,18 +179,19 @@ export function lookbackStart(shape: CacheShape): number {
 // [SP_CTX_02_04], the row FrozenPrefix keeps the cache up to; `positions`
 // from that start to the end, now; `within` the lookback once `margin` more
 // positions come before the apply (Infinity: deep in any case); `rewrite`,
-// the tokens the next request after the apply writes: the rows from that
-// start (within) or the whole conversation (deeper), less what the edits free.
+// the tokens the next request after the apply writes: the request from that
+// start (within, TailTokens) or all its messages (deeper: `whole`, the
+// Messages row with the fixed part's rows that lie in the messages,
+// [SP_CTX_02_28]), less what the edits free.
 export type CacheCost = { start: number; positions: number; within: boolean; rewrite: number }
 
-export function cacheCost(shape: CacheShape, first: number, freed: number, conversation: number, ratio: number, margin = 0): CacheCost {
+export function cacheCost(shape: CacheShape, first: number, freed: number, whole: number, ratio: number, margin = 0): CacheCost {
   const { rows } = shape
   const start = responseStart(rows, first, shape.api, shape.responses)
   const positions = shape.pos[start] ?? 0
   const within = positions + margin <= CACHE_LOOKBACK
-  const chars = charsOf(rows, start, rows.length - 1)
-  const tail = Math.min(Math.round(chars / ratio), conversation)
-  return { start, positions, within, rewrite: Math.max(0, (within ? tail : conversation) - freed) }
+  const tail = within ? tailTokens(shape, start, ratio, whole) : whole
+  return { start, positions, within, rewrite: Math.max(0, tail - freed) }
 }
 
 // [SP_CTX_02_38] Requests(rows, api): the model requests of this conversation

@@ -16,7 +16,7 @@ import { indexRows, REPRODUCIBLE_TOOLS, touchedBy, type QueuedEdit } from './edi
 import { MARK, PLAIN_RATIO, resultsOf, rowChars, totalChars } from './rows'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
-import { telemetry, tokensText, type RegistryUpdate, type UsageInfo } from './stages'
+import { telemetry, tokensText, wholeOf, type RegistryUpdate, type UsageInfo } from './stages'
 import { dropLastApply, isActive, resolveTarget, type HintState, type TagRegistry } from './tags'
 
 // ---- [SP_CTX_01_12] constants
@@ -152,7 +152,11 @@ const RANK: Record<Verdict, number> = { 'not-yet': 0, borderline: 1, worth: 2 }
 export type ProposeContext = {
   ratio: number
   conversation: number
-  // the last request's tokens; absent: the conversation
+  // [SP_CTX_02_28] the tokens the request's messages hold (the conversation
+  // with the fixed part's rows that lie in the messages): what a deep apply
+  // rewrites; absent: the conversation
+  whole?: number
+  // the last request's tokens; absent: the whole
   request?: number
   channel: Proposal['channel']
   stage?: string
@@ -180,16 +184,17 @@ export function propose(rows: readonly SessionMessage[], found: readonly Candida
   }
   const first = found.length ? Math.min(...found.map(c => c.row)) : rows.length
   const ratios = ctx.ratios ?? costRatios(undefined)
-  const request = ctx.request ?? ctx.conversation
+  const whole = ctx.whole ?? ctx.conversation
+  const request = ctx.request ?? whole
   // the responses and positions of the rows, once for every estimate below
   const shape = cacheShape(rows, ctx.api)
   const rHat = requestsSoFar(shape)
-  const cost = cacheCost(shape, first, freed, ctx.conversation, ctx.ratio, Infinity)
+  const cost = cacheCost(shape, first, freed, whole, ctx.ratio, Infinity)
   const rStar = breakEven({ rewrite: cost.rewrite, freed, summary, request }, ratios)
   const verdict = verdictOf(rStar, rHat)
   let keep: Proposal['keep']
   if (ctx.channel === 'size') {
-    const k = cacheCost(shape, first, freed, ctx.conversation, ctx.ratio, APPLY_MARGIN)
+    const k = cacheCost(shape, first, freed, whole, ctx.ratio, APPLY_MARGIN)
     const kStar = breakEven({ rewrite: k.rewrite, freed, summary, request }, ratios)
     const kVerdict = verdictOf(kStar, rHat)
     if (k.within && RANK[kVerdict] > RANK[verdict]) keep = { cost: k, rStar: kStar, verdict: kVerdict }
@@ -223,11 +228,11 @@ export function suggestionText(p: Proposal): string {
   const gain = `~${tokensText(p.freed)} of the ~${tokensText(p.conversation)} conversation`
   if (p.keep) {
     const k = p.keep
-    const without = `Without keep_cache: the whole conversation (~${tokensText(p.cost.rewrite)}), pays back after ~${requestsText(p.rStar)} → ${p.verdict === 'not-yet' ? 'not worth it yet' : said(p.verdict)}; with it, a later --resume may show earlier answers twice.`
+    const without = `Without keep_cache: all the request's messages (~${tokensText(p.cost.rewrite)}), pays back after ~${requestsText(p.rStar)} → ${p.verdict === 'not-yet' ? 'not worth it yet' : said(p.verdict)}; with it, a later --resume may show earlier answers twice.`
     return `${SUGGESTION} ${what} in one context_edit with "keep_cache": true: frees ${gain}; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~${tokensText(k.cost.rewrite)}) if you end the turn within a few calls (edits apply when it ends; the earliest is ~${k.cost.positions} positions back now, and past ~${CACHE_LOOKBACK} the API finds no cache); ${pays(k.rStar)} → ${said(k.verdict)}. ${without}`
   }
   const verb = p.verdict === 'not-yet' ? 'would rewrite' : 'rewrites'
-  const whole = `${verb} the prompt cache of the whole conversation once (~${tokensText(p.cost.rewrite)})`
+  const whole = `${verb} the prompt cache of all the request's messages once (~${tokensText(p.cost.rewrite)})`
   const cache =
     p.channel === 'turn'
       ? `${whole}: edits queued now apply when this turn ends, beyond the ~${CACHE_LOOKBACK} positions the API looks back`
@@ -331,12 +336,19 @@ async function costContext(io: HintIO): Promise<{ api: readonly unknown[]; ratio
   return { api, ratios: costRatios(model) }
 }
 
-// The conversation by the breakdown (the Messages row), else by the rows; the ratio.
-async function measure(io: HintIO, rows: readonly SessionMessage[], reg: TagRegistry): Promise<{ conversation: number; ratio: number }> {
-  // [SP_CTX_02_28] the Messages row; lastApply stays for the agent's own telemetry
-  const t = await telemetry(rows, dropLastApply(reg), io.usage, inBackground(io.updateTags))
+// The conversation by the breakdown (the Messages row) and the whole the
+// request's messages hold (Whole); without the Messages row both by the API
+// form's chars (the attachments in), else by the rows'; the ratio.
+async function measure(io: HintIO, rows: readonly SessionMessage[], reg: TagRegistry): Promise<{ conversation: number; whole: number; ratio: number }> {
+  // [SP_CTX_02_28] the Messages row; [SP_CTX_02_34] the calibration over the
+  // API form (read once per event by the snapshot, costContext reuses it);
+  // lastApply stays for the agent's own telemetry
+  const t = await telemetry(rows, dropLastApply(reg), io.usage, inBackground(io.updateTags), undefined, io.api, { cache: false })
   const ratio = t.ratio ?? reg.charsPerToken ?? PLAIN_RATIO
-  return { conversation: t.measure === 'messages' ? t.conversation! : Math.round(totalChars(rows) / ratio), ratio }
+  const whole = wholeOf(t)
+  if (whole !== undefined) return { conversation: t.conversation!, whole, ratio }
+  const estimated = Math.round((t.chars ?? totalChars(rows)) / ratio)
+  return { conversation: estimated, whole: estimated, ratio }
 }
 
 // [SP_CTX_02_34] A calibration the hint does not wait for: queued on the
@@ -398,9 +410,9 @@ async function sizeCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outco
   }
   const { rows, found } = await batch(io, reg, aliases)
   if (roughFreed(found, reg.charsPerToken ?? PLAIN_RATIO) < HINT_CANDIDATES) return settle('few-candidates')
-  const { conversation, ratio } = await measure(io, rows, reg)
+  const { conversation, whole, ratio } = await measure(io, rows, reg)
   if (conversation < threshold) return settle('small-conversation')
-  const p = propose(rows, found, { ratio, conversation, request: tokens, channel: 'size', ...(await costContext(io)) })
+  const p = propose(rows, found, { ratio, conversation, whole, request: tokens, channel: 'size', ...(await costContext(io)) })
   if (p.freed < Math.max(HINT_CANDIDATES, HINT_BATCH * conversation)) return settle('small-batch')
   const line = suggestionText(p)
   if (d.expired) return settle('expired')
@@ -426,9 +438,9 @@ async function turnCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outco
   }
   const { rows, found } = await batch(io, reg, aliases)
   if (roughFreed(found, reg.charsPerToken ?? PLAIN_RATIO) < HINT_CANDIDATES) return settle('few-candidates')
-  const { conversation, ratio } = await measure(io, rows, reg)
+  const { conversation, whole, ratio } = await measure(io, rows, reg)
   const req = await io.request()
-  const ctx = { ratio, conversation, ...(req.tokens !== undefined ? { request: req.tokens } : {}), channel: 'turn' as const, ...(reg.stage ? { stage: reg.stage.name } : {}) }
+  const ctx = { ratio, conversation, whole, ...(req.tokens !== undefined ? { request: req.tokens } : {}), channel: 'turn' as const, ...(reg.stage ? { stage: reg.stage.name } : {}) }
   const p = propose(rows, found, { ...ctx, ...(await costContext(io)) })
   if (p.freed < Math.max(HINT_CANDIDATES, HINT_BATCH * conversation)) return settle('small-batch')
   // the batch the agent was offered and left: again only once it grew by a
