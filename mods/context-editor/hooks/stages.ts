@@ -37,7 +37,7 @@ import { apiChars, charsOf, errorText, findToolUse, modText, PLAIN_RATIO, result
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
-import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
+import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
 import { afterReminders, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
 
 // ---- [SP_CTX_01_12] constants
@@ -54,7 +54,9 @@ export const FIXED_IN_MESSAGES: readonly string[] = ['Memory files', 'Skills', '
 export const MAX_STAGE_NAME = 80
 export const SKILL = 'context-stages'
 // [SP_CTX_02_34] the bounds of chars per token, and the least conversation
-// size in tokens a calibration is trusted at
+// size in tokens a calibration is trusted at ([SP_CTX_DEC_30] A after the
+// live check of phase 29: the host's breakdown overcounts system and tools by
+// 13-25k tokens, so the Messages row of a small conversation is far too small)
 export const CALIB_MIN = 1.0
 export const CALIB_MAX = 8.0
 export const CALIB_TOKENS = 20_000
@@ -288,6 +290,8 @@ export type Telemetry = {
   // [SP_CTX_01_20] [SP_CTX_02_40] the host's attachments the answers in force
   // leave out of each request (HostAttachState.left); absent: none or not read
   hostAttach?: { copies: number; chars: number }
+  // [SP_CTX_01_20] RegistryFull of the tag registry: its tags and KB (phase 30)
+  tagsFull?: { tags: number; kb: number }
 }
 
 // [SP_CTX_02_28] Whole(t): the tokens the request's messages hold, the
@@ -295,6 +299,70 @@ export type Telemetry = {
 // without the Messages row.
 export function wholeOf(t: Pick<Telemetry, 'measure' | 'conversation' | 'attached'>): number | undefined {
   return t.measure === 'messages' && t.conversation !== undefined ? t.conversation + (t.attached ?? 0) : undefined
+}
+
+// [SP_CTX_02_28] [SP_CTX_02_34] Measure(u): what one usage read with the
+// breakdown says of the size, shared by Telemetry and CalibrateBeforeApply.
+// Pure.
+export type Measured = Pick<Telemetry, 'measure' | 'conversation' | 'attached' | 'fixed' | 'request' | 'window' | 'autoCompactLeft' | 'autoCompactOff'>
+
+export function measure(u: UsageInfo): Measured {
+  const t: Measured = { measure: 'unknown', autoCompactOff: false }
+  const b = u.context.breakdown
+  const row = b?.categories.find(c => c.kind === 'used' && c.name === MESSAGES_ROW)
+  // no response yet in the live window (a fresh session, just after a
+  // compaction): `tokens` is absent, or it is still the last request before
+  // the compaction while the breakdown has no API usage and its Messages row
+  // is a bare estimate (live verify of phase 14, D2)
+  if (u.context.tokens === undefined || b?.apiUsage === null) t.measure = 'unknown'
+  // just after the host's own compaction the breakdown overestimates the
+  // fixed part beyond the whole request and clamps the Messages row to a few
+  // tokens (live re-verify of phase 14, D2): the request is the honest
+  // figure then. A total above the request alone is normal (rows estimated
+  // after the last response), so only an impossible fixed part counts.
+  else if (b && row && b.totalTokens - row.tokens <= u.context.tokens) {
+    t.measure = 'messages'
+    t.conversation = row.tokens
+    t.fixed = Math.max(0, b.totalTokens - row.tokens)
+    const attached = b.categories.filter(c => c.kind === 'used' && FIXED_IN_MESSAGES.includes(c.name)).reduce((n, c) => n + c.tokens, 0)
+    if (attached > 0) t.attached = attached
+  } else {
+    t.measure = 'request'
+    t.request = u.context.tokens
+  }
+  t.window = b ? b.rawMaxTokens : u.context.window
+  if (b) {
+    if (b.autoCompactThreshold !== undefined) t.autoCompactLeft = b.autoCompactThreshold - b.totalTokens
+    else t.autoCompactOff = true
+  }
+  return t
+}
+
+// [SP_CTX_02_34] What CalibrateBeforeApply reads; register.ts binds it to `$`
+// in the storage Flush took. `readTags`: the registry's view (the cache);
+// `updateTags`: the Update contract on the registry's chain.
+export type CalibrateIO = {
+  usage: () => Promise<UsageInfo>
+  api: () => Promise<readonly unknown[]>
+  readTags: () => Promise<Read<TagRegistry>>
+  updateTags: RegistryUpdate
+}
+
+// [SP_CTX_02_34] CalibrateBeforeApply (phase 29): Flush calibrates before
+// the compaction command, so the apply's report and the person's line take
+// this conversation's ratio. Reads no rows of the conversation. Any failure:
+// nothing, the apply takes the ratio stored already. The ratio, if any.
+export async function calibrateBeforeApply(io: CalibrateIO): Promise<number | undefined> {
+  try {
+    const t = measure(await io.usage())
+    const form = await io.api().catch((): readonly unknown[] => [])
+    const chars = form.length > 0 && !apiCut(form) ? apiChars(form) : undefined
+    const reg = await io.readTags()
+    if (reg.state !== 'ok') return undefined
+    return await calibrate(chars, t, reg.value, async ratio => void (await io.updateTags(r => ({ ...r, charsPerToken: ratio }))))
+  } catch {
+    return undefined
+  }
 }
 
 // [SP_CTX_02_34] Calibrate: the chars of the request's messages (`chars`, the
@@ -363,33 +431,7 @@ export async function telemetry(
   try {
     const u = await usage()
     tokensNow = u.context.tokens
-    const b = u.context.breakdown
-    const row = b?.categories.find(c => c.kind === 'used' && c.name === MESSAGES_ROW)
-    // no response yet in the live window (a fresh session, just after a
-    // compaction): `tokens` is absent, or it is still the last request before
-    // the compaction while the breakdown has no API usage and its Messages row
-    // is a bare estimate (live verify of phase 14, D2)
-    if (u.context.tokens === undefined || b?.apiUsage === null) t.measure = 'unknown'
-    // just after the host's own compaction the breakdown overestimates the
-    // fixed part beyond the whole request and clamps the Messages row to a few
-    // tokens (live re-verify of phase 14, D2): the request is the honest
-    // figure then. A total above the request alone is normal (rows estimated
-    // after the last response), so only an impossible fixed part counts.
-    else if (b && row && b.totalTokens - row.tokens <= u.context.tokens) {
-      t.measure = 'messages'
-      t.conversation = row.tokens
-      t.fixed = Math.max(0, b.totalTokens - row.tokens)
-      const attached = b.categories.filter(c => c.kind === 'used' && FIXED_IN_MESSAGES.includes(c.name)).reduce((n, c) => n + c.tokens, 0)
-      if (attached > 0) t.attached = attached
-    } else {
-      t.measure = 'request'
-      t.request = u.context.tokens
-    }
-    t.window = b ? b.rawMaxTokens : u.context.window
-    if (b) {
-      if (b.autoCompactThreshold !== undefined) t.autoCompactLeft = b.autoCompactThreshold - b.totalTokens
-      else t.autoCompactOff = true
-    }
+    Object.assign(t, measure(u))
   } catch (err) {
     t.measure = 'unavailable'
     t.error = errorText(err)
@@ -444,6 +486,9 @@ export async function telemetry(
   t.state = slot === undefined ? 'none' : slot < 0 ? 'lost' : { row: slot }
   t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target, ix)).length
   t.notes = { count: reg.notes.length, reminders: reg.notes.filter(n => n.remindAt !== undefined).length }
+  // [SP_CTX_02_28] phase 30 (CF-34): the automatic rules add nothing to a full registry
+  const full = registryFull(reg)
+  if (full) t.tagsFull = full
   return t
 }
 
@@ -545,6 +590,7 @@ export function telemetryText(t: Telemetry): string {
   if (t.state === 'lost') lines.push('State slot: its row is no longer in the conversation')
   else if (t.state !== 'none') lines.push(`State slot: #${t.state.row}`)
   if (t.notes.count) lines.push(`Notes: ${t.notes.count} (${t.notes.reminders} with a reminder pending)`)
+  if (t.tagsFull) lines.push(tagsFullLine(t.tagsFull))
   if (t.measuredFreed !== undefined)
     lines.push(`Last apply: ~${tokensText(t.measuredFreed)} tokens freed (measured: request before it − request now; net of the rows added since)`)
   return lines.join('\n')

@@ -27,7 +27,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, calibrateBeforeApply, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { modText } from './rows'
 import {
@@ -466,6 +466,15 @@ function flushIO($: EngineInterface): FlushIO {
     compact: async args => {
       await $.command.run({ command: 'compact', args })
     },
+    // [SP_CTX_02_34] CalibrateBeforeApply in the storage taken once, the
+    // registry's view from the cache, its change on the registry's chain
+    calibrate: async () => {
+      const dir = await storageDir($)
+      if (!dir) return
+      const s = stores($, dir)
+      await calibrateBeforeApply({ usage: () => usageInfo($), api: () => apiMessages($), readTags: s.tags.cached, updateTags: updateOf(s.tags) })
+    },
+    sleep: ms => $.clock.sleep(ms),
     // a timer the host refuses at once throws here, to the planner
     after: (ms, fn) => void $.clock.after(ms, fn),
     // A refused prompt resolves with `drop`; Flush treats it as a failure.

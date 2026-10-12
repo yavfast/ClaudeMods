@@ -17,6 +17,10 @@ export const FLUSH_DELAY_MS = 300
 // planning counts as lost (the host may refuse a timer silently): the next
 // planning goes ahead instead of waiting on it forever.
 export const FLUSH_STALE_MS = 10_000
+// [SP_CTX_01_12] [SP_CTX_02_34] The longest Flush waits for
+// CalibrateBeforeApply before the command; later, the apply takes the ratio
+// stored already (phase 29).
+export const CALIB_WAIT_MS = 1000
 
 export type FlushIO = {
   // the queue of the current session; `unreadable` too when there is no storage
@@ -30,6 +34,11 @@ export type FlushIO = {
   readTags: () => Promise<Read<TagRegistry>>
   // runs the built-in /compact with `args`, once; rejects with the host's text
   compact: (args: string) => Promise<void>
+  // [SP_CTX_02_34] CalibrateBeforeApply in the current session's storage,
+  // before the command of a batch with edits (phase 29); absent: none
+  calibrate?: () => Promise<unknown>
+  // a pause of `ms`: the bound of `calibrate` (CALIB_WAIT_MS); absent: no bound
+  sleep?: (ms: number) => Promise<unknown>
   // a deferred action; register.ts creates it from the hook that called, never
   // from a tool.call or prompt.submit hook (the host refuses commands there).
   // A throw (the host refused the timer at once) reaches the planner.
@@ -234,6 +243,10 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     if (read.state === 'unreadable') return { outcome: 'queue-unreadable', resume: 'none' }
     if (!read.value.edits.length && !read.value.optimize) return { outcome: 'nothing-queued', resume: 'none' }
     if (read.value.handoff) return { outcome: 'handoff-pending', resume: 'none' }
+    // [SP_CTX_02_34] the report and the person's line take this
+    // conversation's ratio; before the turn check, so this pause never puts
+    // the command behind a new turn
+    if (read.value.edits.length) await calibrateWithin(io)
     // PERSON_MOVED: a turn started since planning; no command queued behind it.
     // A turn that runs plans Flush when it ends; one that already ended
     // normally gives no new planning, so plan again now; after an interrupted
@@ -284,6 +297,26 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       }
     }
   }
+}
+
+// [SP_CTX_02_34] CalibrateBeforeApply, at most CALIB_WAIT_MS: a failure or a
+// timeout only leaves the ratio stored already.
+async function calibrateWithin(io: Pick<FlushIO, 'calibrate' | 'sleep'>): Promise<void> {
+  if (!io.calibrate) return
+  let work: Promise<unknown>
+  try {
+    work = io.calibrate().catch(() => undefined)
+  } catch {
+    return
+  }
+  let bound: Promise<unknown> | undefined
+  try {
+    bound = io.sleep?.(CALIB_WAIT_MS).catch(() => undefined)
+  } catch {
+    // a pause refused at once: no wait at all, the command never hangs on it
+    return
+  }
+  await (bound ? Promise.race([work, bound]) : work)
 }
 
 // [SP_CTX_02_43] LogApply: the person's line of the apply that wrote report

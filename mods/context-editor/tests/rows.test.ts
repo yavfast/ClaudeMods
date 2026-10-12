@@ -143,6 +143,10 @@ test('rows kernel: pair lookup by id, chars of a span, text whitespace aside, th
   expect(worthEditing('Read', 3999)).toBe(false)
   expect(worthEditing('Read', 4000)).toBe(true)
   expect(worthEditing('Grep', 1)).toBe(true)
+  // phase 31 (CF-52): a search tool's error counts by its size only
+  expect(worthEditing('Grep', 1, true)).toBe(false)
+  expect(worthEditing('Grep', 5000, true)).toBe(true)
+  expect(worthEditing('Read', 5000, true)).toBe(true)
 })
 
 // [SP_CTX_02_04] [SP_CTX_DEC_17] (A″, phase 28) The replacement texts open

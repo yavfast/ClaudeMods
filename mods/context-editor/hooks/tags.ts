@@ -592,8 +592,9 @@ export async function contextTag(
 }
 
 // [SP_CTX_02_12] What AutoTag reads from one appended row; `results`: the
-// text of each tool result in it, for R5.
-export type AppendFacts = { door: string; origin: string; tool?: string; ids: string[]; size: number; text: string; results: { id: string; text: string }[] }
+// text of each tool result in it, for R5, and whether the block is an error
+// (`is_error: true`; R3 skips it, phase 31, CF-52).
+export type AppendFacts = { door: string; origin: string; tool?: string; ids: string[]; size: number; text: string; results: { id: string; text: string; isError?: boolean }[] }
 
 type AppendEvent = {
   door: string
@@ -610,7 +611,7 @@ function blockText(content: unknown): string {
 export function appendFacts(e: AppendEvent): AppendFacts {
   const blocks = e.message.content ?? []
   const text = blocks.flatMap(b => (b.type === 'text' && typeof b.text === 'string' ? [b.text] : [])).join('\n')
-  const results = blocks.filter(b => b.type === 'tool_result').map(b => ({ id: String(b.tool_use_id), text: blockText(b.content) }))
+  const results = blocks.filter(b => b.type === 'tool_result').map(b => ({ id: String(b.tool_use_id), text: blockText(b.content), ...(b.is_error === true ? { isError: true } : {}) }))
   return {
     door: e.door,
     origin: e.origin.kind,
@@ -674,9 +675,11 @@ export function applyRules(reg: TagRegistry, f: AppendFacts, prompt?: { anchor: 
     firstPromptPinned = true
   }
   if (f.door === 'tool-result' && f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS)) {
+    // [SP_CTX_01_11] R3 only for a result that is no error (phase 31, CF-52); R2 by the row's size
+    const failed = new Set(f.results.filter(r => r.isError).map(r => r.id))
     for (const id of f.ids) {
       if (isBig(f.size)) add.put({ kind: 'review', reason: 'big', target: { tool_use_id: id }, created_turn: reg.turn })
-      if (isSearchTool(f.tool)) add.put({ kind: 'review', reason: 'search', target: { tool_use_id: id }, ttl_turns: SEARCH_TTL, created_turn: reg.turn })
+      if (isSearchTool(f.tool) && !failed.has(id)) add.put({ kind: 'review', reason: 'search', target: { tool_use_id: id }, ttl_turns: SEARCH_TTL, created_turn: reg.turn })
     }
   }
   if (!add.changed() && firstPromptPinned === reg.firstPromptPinned) return reg
@@ -800,7 +803,8 @@ export function autoTagNeeded(f: AppendFacts, copy = false): boolean {
   if (isPluginRow(f) || copy) return false
   if (f.door === 'prompt') return HUMAN.includes(f.origin)
   if (f.door !== 'tool-result') return false
-  if (f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS) && f.ids.length && (isBig(f.size) || isSearchTool(f.tool))) return true
+  // [SP_CTX_02_12] phase 31 (CF-52): a search tool's error is no search output
+  if (f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS) && f.ids.length && (isBig(f.size) || (isSearchTool(f.tool) && f.results.some(r => !r.isError)))) return true
   return f.results.some(r => isBig(r.text.length))
 }
 
@@ -1076,4 +1080,37 @@ export function rebindTags(
     else if (tag.kind === 'pin') tags[k] = moved
   }
   return { ...reg, tags }
+}
+
+// [SP_CTX_02_18] [SP_CTX_DEC_31] B (phase 30, CF-34): PruneDeadTags after a
+// compaction that is not the mod's apply: a tag goes only when its target
+// was in the rows the compaction took (`before`, e.messages) and is not in
+// the rows it returned (`after`); a tag on a row appended since (a mid-turn
+// compaction) or outside its input stays, so does the state slot (the
+// telemetry says its row is gone until the next apply). Stage marks, notes
+// and the other fields stay as they are; the same registry when nothing
+// goes. Pure.
+export function pruneDeadTags(reg: TagRegistry, before: readonly SessionMessage[], after: readonly SessionMessage[]): TagRegistry {
+  if (!reg.tags.length || !before.length) return reg
+  const was = indexRows(before)
+  const now = indexRows(after)
+  const tags = reg.tags.filter(tag => tag.kind === 'state' || resolveTarget(before, tag.target, was) === undefined || resolveTarget(after, tag.target, now) !== undefined)
+  return tags.length === reg.tags.length ? reg : { ...reg, tags }
+}
+
+// [SP_CTX_01_12] RegistryFull leaves this room below MAX_REGISTRY_BYTES: an
+// automatic tag (at most ~200 bytes) would no longer fit (phase 30).
+export const TAG_ROOM = 512
+
+// [SP_CTX_02_28] [SP_CTX_01_11] RegistryFull: the automatic rules add no tag
+// to it; the tag count and the file's size in KB, or undefined (phase 30).
+export function registryFull(reg: TagRegistry): { tags: number; kb: number } | undefined {
+  const size = bytes(reg)
+  if (reg.tags.length < MAX_TAGS && size <= MAX_REGISTRY_BYTES - TAG_ROOM) return undefined
+  return { tags: reg.tags.length, kb: Math.ceil(size / 1024) }
+}
+
+// [SP_CTX_01_12] TAGS_FULL_LINE: the telemetry's line for a full registry.
+export function tagsFullLine(full: { tags: number; kb: number }): string {
+  return `Tags: the registry is full (${full.tags} tags, ${full.kb} KB): automatic review tags have stopped; remove tags you no longer need with context_tag "remove"`
 }

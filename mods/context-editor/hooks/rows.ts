@@ -210,9 +210,10 @@ export function isSearchTool(tool: string): boolean {
 }
 
 // An output is worth editing when it is big or comes from a search tool: the
-// condition of an alias mark and, rule by rule, of R2 and R3.
-export function worthEditing(tool: string, size: number): boolean {
-  return isBig(size) || isSearchTool(tool)
+// condition of an alias mark and, rule by rule, of R2 and R3. A search
+// tool's error is no search output (phase 31, CF-52): only its size counts.
+export function worthEditing(tool: string, size: number, isError = false): boolean {
+  return isBig(size) || (isSearchTool(tool) && !isError)
 }
 
 // ---- text

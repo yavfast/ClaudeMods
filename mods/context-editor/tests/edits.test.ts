@@ -937,6 +937,13 @@ test('ApplyLine — рядок людини: applied count, freed tokens and siz
   expect([kilo(0), kilo(950), kilo(4210), kilo(9960), kilo(41_000), kilo(150_400)]).toEqual(['0', '950', '4.2k', '10k', '41k', '150k'])
 })
 
+// [SP_CTX_02_43] phase 29: the size by the API form, the host's attachments included
+test('ApplyLine — розмова за API-поданням: 150 000 → 50 000 row chars, ratio 2.5, 250 000 API chars: ~100k → ~60k; without the API chars by the rows', async () => {
+  const r = { applied: ['summarize a'], failed: [] as string[], charsBefore: 150_000, charsAfter: 50_000 }
+  expect(applyLine(r, 2.5, 250_000)).toBe('applied 1 edit(s): conversation ~100k → ~60k tokens (freed ~40k)')
+  expect(applyLine(r, 2.5)).toBe('applied 1 edit(s): conversation ~60k → ~20k tokens (freed ~40k)')
+})
+
 // ---- [SP_CTX_02_04] [SP_CTX_DEC_17] (A″) who wrote a replacement, and when (phase 19; phase 28: agent-first, no MARK)
 
 test('ApplyEdits — хто написав заміну: each replacement opens with the agent\'s own context_edit call, without MARK; the listing still flags it', async () => {

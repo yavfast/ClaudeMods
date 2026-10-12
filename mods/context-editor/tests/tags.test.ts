@@ -16,8 +16,13 @@ import {
   countTurn,
   EMPTY_REGISTRY,
   isPluginRow,
+  MAX_REGISTRY_BYTES,
   MAX_TAGS,
   parseRegistry,
+  pruneDeadTags,
+  registryFull,
+  TAG_ROOM,
+  tagsFullLine,
   pinnedTargets,
   queueTagReplacements,
   callFollowUp,
@@ -1181,4 +1186,104 @@ test('PinsFrom — an unreadable registry gives no pins; a readable one its pinn
   const r = reg([{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }])
   expect(pinsFrom(okRead(r), rows)).toEqual(pinnedTargets(rows, r))
   expect([...pinsFrom(okRead(r), rows).ids]).toEqual(['a'])
+})
+
+// ---- [SP_CTX_02_12] [SP_CTX_01_11] phase 31 (CF-52): a search tool's error is no search output
+
+test('AutoTag — R3 помилка: a Grep error gets no tag; a Grep without one review search; a 5000-char Read error review big; of two Glob results only the one without an error', async () => {
+  const errorRow = (ids: string[], text: string, tool: string, failed: string[]) =>
+    appendFacts({
+      door: 'tool-result',
+      origin: { kind: 'tool', tool },
+      message: { content: ids.map(id => ({ type: 'tool_result', tool_use_id: id, content: text, ...(failed.includes(id) ? { is_error: true } : {}) })) },
+    })
+  const grepError = errorRow(['g'], 'Error: bad regex', 'Grep', ['g'])
+  expect(grepError.results[0]!.isError).toBe(true)
+  const none = harness(empty())
+  await autoTag(none.io, grepError)
+  expect(none.log.tagWrites).toBe(0)
+  const ok = harness(empty())
+  await autoTag(ok.io, errorRow(['g'], 'match list', 'Grep', []))
+  expect(ok.log.tags!.tags.map(t => t.reason)).toEqual(['search'])
+  const read = harness(empty())
+  await autoTag(read.io, errorRow(['r'], BIG, 'Read', ['r']))
+  expect(read.log.tags!.tags.map(t => t.reason)).toEqual(['big'])
+  const two = harness(empty())
+  await autoTag(two.io, errorRow(['x', 'y'], 'paths', 'Glob', ['x']))
+  expect(two.log.tags!.tags).toEqual([{ kind: 'review', reason: 'search', target: { tool_use_id: 'y' }, ttl_turns: SEARCH_TTL, created_turn: 0 }])
+})
+
+test('AutoTagNeeded — помилка пошуку: a 200-char Grep error needs no rule (no wait for the registry chain); one without an error does', async () => {
+  const grep = fact({ door: 'tool-result', origin: 'tool', tool: 'Grep', ids: ['g'], size: 200, results: [{ id: 'g', text: 'e'.repeat(200), isError: true }] })
+  expect(autoTagNeeded(grep)).toBe(false)
+  expect(autoTagNeeded({ ...grep, results: [{ id: 'g', text: 'e'.repeat(200) }] })).toBe(true)
+})
+
+// ---- [SP_CTX_02_18] [SP_CTX_DEC_31] PruneDeadTags and RegistryFull (phase 30, CF-34)
+
+test('PruneDeadTags — чужа компактизація: the pin and review big of the gone pair a go; review search on b, the state slot on a gone row and a range whose ends stay remain', async () => {
+  const r = rows()
+  const kept = [r[0]!, r[4]!, r[5]!, r[6]!]
+  const range = { anchor: fingerprint(r[4]!), hint: 4, toAnchor: fingerprint(r[6]!), toHint: 6 }
+  const before = reg(
+    [
+      { kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'pin', target: anchorOf(3), created_turn: 0 },
+      { kind: 'review', reason: 'search', target: { tool_use_id: 'b' }, ttl_turns: SEARCH_TTL, created_turn: 0 },
+      { kind: 'state', target: anchorOf(3), created_turn: 0 },
+      { kind: 'disposable', target: range, note: 'n', created_turn: 0 },
+    ],
+    { lastApply: { at: 1, tokensBefore: 9 }, turn: 4 },
+  )
+  const after = pruneDeadTags(before, r, kept)
+  expect(after.tags.map(t => t.kind)).toEqual(['review', 'state', 'disposable'])
+  expect(after.tags[0]!.reason).toBe('search')
+  // the other fields stay; lastApply is the observer's to drop
+  expect(after.lastApply).toEqual({ at: 1, tokensBefore: 9 })
+  expect(after.turn).toBe(4)
+})
+
+test('PruneDeadTags — нічого прибирати: every target in the rows, or no tags: the same registry', async () => {
+  const all = reg([
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'pin', target: anchorOf(0), created_turn: 0 },
+  ])
+  expect(pruneDeadTags(all, rows(), rows())).toBe(all)
+  const none = reg([])
+  expect(pruneDeadTags(none, rows(), [])).toBe(none)
+  // no input rows of the compaction: nothing is known gone
+  expect(pruneDeadTags(all, [], [])).toBe(all)
+})
+
+// review fix: a mid-turn compaction returns the rows of its input only; a row
+// appended after it started is no target the compaction took
+test('PruneDeadTags — рядок після компактизації: a tag on a pair outside the compaction\'s input stays; one on a pair it took and left out goes', async () => {
+  const r = rows()
+  const input = r.slice(0, 3)
+  const tags = reg([
+    { kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', reason: 'search', target: { tool_use_id: 'b' }, ttl_turns: SEARCH_TTL, created_turn: 0 },
+  ])
+  const after = pruneDeadTags(tags, input, [r[0]!])
+  expect(after.tags.map(t => t.reason)).toEqual(['search'])
+})
+
+test('RegistryFull: 1000 tags / 999 tags and a small file / 10 tags in a file above MAX_REGISTRY_BYTES − TAG_ROOM', async () => {
+  const tag = (i: number, note = 'n'): Tag => ({ kind: 'disposable', target: { tool_use_id: `t${i}` }, note, created_turn: 0 })
+  const full = reg(Array.from({ length: MAX_TAGS }, (_, i) => tag(i)))
+  const at = registryFull(full)!
+  expect(at.tags).toBe(1000)
+  expect(tagsFullLine(at)).toBe(`Tags: the registry is full (1000 tags, ${at.kb} KB): automatic review tags have stopped; remove tags you no longer need with context_tag "remove"`)
+  expect(registryFull(reg(Array.from({ length: MAX_TAGS - 1 }, (_, i) => tag(i))))).toBeUndefined()
+  const heavy = reg(Array.from({ length: 10 }, (_, i) => tag(i, 'x'.repeat(Math.ceil((MAX_REGISTRY_BYTES - TAG_ROOM) / 10)))))
+  expect(registryFull(heavy)).toEqual({ tags: 10, kb: Math.ceil(new TextEncoder().encode(JSON.stringify(heavy)).length / 1024) })
+})
+
+test('AutoTag — повний реєстр: 1000 tags; a Grep result and a 5000-char Read result add no tag, nothing is written', async () => {
+  const full = reg(Array.from({ length: MAX_TAGS }, (_, i): Tag => ({ kind: 'pin', target: { tool_use_id: `t${i}` }, created_turn: 0 })), { firstPromptPinned: true })
+  const { io, log } = harness(okRead(full))
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Grep', ids: ['b'], size: 10, results: [{ id: 'b', text: 'match list' }] }))
+  await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 5000, results: [{ id: 'a', text: BIG }] }))
+  expect(log.tagWrites).toBe(0)
 })
