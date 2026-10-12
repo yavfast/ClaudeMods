@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** draft
 > **Created:** 2026-10-12
-> **Updated:** 2026-10-12 (дизайн фази 32)
+> **Updated:** 2026-10-12 (код фази 32)
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_44–02_48 специфікації [SP_CTX](./context_editor.sp.md): журнал входу застосувань (RecordInputs), розпізнавання підтягнутих оригіналів (DropPulled), виявлення і запуск ремонту в новому процесі хоста (ScheduleRepair, RunRepair), обробник компактизації ремонту (HandleRepair), результат ToolSearch, перебудований без `handle` (ToolRefText). Читати перед зміною `hooks/repair.ts`, гілки ремонту в `hooks/compaction.ts`, зв'язування `session.start` у `hooks/register.ts` або перебудови результатів у `hooks/edits.ts`.
@@ -22,7 +22,7 @@
 
 Навіщо (спайк [context_editor_resume](./context_editor_resume.spike.md); навичка plugin-hooks, пункти 63–66). Застосування мода повертає незачеплені відповіді з `handle` — і типово, і з `keep_cache` ([SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22), переглянуто). Хост пише копії після межі з новими uuid, але рядок з `handle` — це оригінальне повідомлення з тим самим `message.id`. Після `claude --resume` чи `/resume` завантажувач, пройшовши ланцюжок від листа, вставляє поруч з кожним рядком асистента рядки **всього файлу** з тим самим `message.id` разом з їхніми результатами (шлях 7(б)), не зважаючи на межу; копія рядка результату з `handle` ще й має батька до межі, і обхід від неї йде оригіналами (шлях 7(а)). Модель бачить подвоєні тексти й thinking, кожен запит пише `ensureToolResultPairing`, перелік показує подвоєні рядки, а передача `transcript` відмовляє «repeated call id» (CF-46, CF-51 аудиту PL_AUD_CTX). Застосування в сесії мод не змінює — кеш промпту в робочій сесії не страждає. Натомість у новому процесі хоста (чи після перемикання сесії в процесі) мод один раз, до першого запиту, перебудовує завантажену розмову своєю компактизацією: прибирає підтягнуті оригінали, що мають двійника, і повертає рядки асистента і результатів без `handle`, щоб наступне відновлення було чистим ([SP_CTX_DEC_32](./context_editor.sp.md#SP_CTX_DEC_32)–[SP_CTX_DEC_35](./context_editor.sp.md#SP_CTX_DEC_35); рішення розробника — напрям «Ремонт після відновлення (Recommended)»).
 
-Факти, на яких стоїть ремонт (спайк, Entries 3–5; 2.1.296, stream-json): (1) у відновленому процесі і `$.session.messages()`, і `e.messages` обробника компактизації — завантажений ланцюжок з дублікатами, а вставлений оригінал несе `handle`, що дорівнює його uuid до межі, тобто `handle` рядка входу того застосування, яке його повернуло (спайк звіряв його з uuid рядків JSONL до межі; що `handle` рядка входу обробника в процесі застосування — той самий uuid, перевіряє перший крок живого сценарію «Ремонт після `--resume`», 05_03); вміст оригіналу і копії однаковий, тож відбитки їх не розрізняють; (2) рядок без `handle` нічого не тягне, копія промпту з `handle` теж безпечна — тягнуть лише рядки асистента (за `message.id`) і рядки результатів (батько до межі); (3) прибирання всіх рядків до межі без перевірки двійника губить рядки, копій яких у ланцюжку немає (перший промпт після обходу через межу, сесія b); (4) компактизація мода, запланована з `session.start` через `$.clock.after`, виконується до першого промпту (stream-json; термінал і `/resume` у процесі — не перевірено, сценарії 05_03).
+Факти, на яких стоїть ремонт (спайк, Entries 3–5; 2.1.296, stream-json): (1) у відновленому процесі і `$.session.messages()`, і `e.messages` обробника компактизації — завантажений ланцюжок з дублікатами, але `handle` несуть лише рядки `e.messages` (тип хоста: `handle` «absent on `$.session.messages()`»; жива перевірка фази 32 — усі рядки читання в сесії 26ed3e59 без нього); вставлений оригінал несе `handle`, що дорівнює його uuid до межі, тобто `handle` рядка входу того застосування, яке його повернуло (перевірено наживо 2026-10-12, сесія `26ed3e59-2ecf-49ef-8bdc-7628b3ac430b`: 21 `handle` входу застосування = 21 uuid рядків JSONL до межі, а 7 оригіналів у вході обробника відновленого процесу несуть саме ці `handle`; дані — `.dev_flow/cache/live-test/phase32-precheck/`); вміст оригіналу і копії однаковий, тож відбитки їх не розрізняють; (2) рядок без `handle` нічого не тягне, копія промпту з `handle` теж безпечна — тягнуть лише рядки асистента (за `message.id`) і рядки результатів (батько до межі); (3) прибирання всіх рядків до межі без перевірки двійника губить рядки, копій яких у ланцюжку немає (перший промпт після обходу через межу, сесія b); (4) компактизація мода, запланована з `session.start` через `$.clock.after`, виконується до першого промпту (stream-json; термінал і `/resume` у процесі — не перевірено, сценарії 05_03).
 
 Пам'ять модуля (скидається перезавантаженням модуля): `repair = { session: string?, state: none | planned | running | done | failed }` — ремонт сесії `session` у цьому екземплярі (одна спроба на сесію); `repairAtTurnEnd: bool` (false) — перемикання сесії в процесі чекає кінця ходу; `compactedHere: string?` — сесія, для якої цей екземпляр уже обробив власну компактизацію (застосування, засів чи ремонт), відколи її сховище опубліковано; `lastRepair: { session, dropped, rows, media }?` — підсумок останнього ремонту, який обробник лишає для рядка людини (як `appliedLine` застосування, [SP_CTX_02_43](./context_editor.stages.sp.md#SP_CTX_02_43)).
 
@@ -37,6 +37,7 @@ Input: `messages` обробника HandleCompaction ([SP_CTX_02_07](./context_
     RecordInputs(messages, id):                                      # HandleCompaction, після точки фіксації, у фоні на ланцюжку `ledger` (як JournalApply), лише коли обробник повертає рядки і диспетчеризацію не покинуто
         handles = [r.handle FOR r IN messages IF r.handle present AND (r.role = assistant OR r has toolResults)]   # промпти й інші рядки `user` без результатів не тягнуть нічого (спайк, Q2)
         IF handles empty: RETURN
+        IF len(handles) > MAX_LEDGER_HANDLES: keep the newest MAX_LEDGER_HANDLES   # `e.messages` не має межі ROW_WINDOW (навичка plugin-hooks, пункт 49), тож запис обмежує загальна межа журналу
         Update ledger: entries += { at: id, handles }; WHILE Σ len(entries[k].handles) > MAX_LEDGER_HANDLES OR serialized > MAX_QUEUE_BYTES: drop entries[0]   # найстаріші першими
         unreadable → перенести файл убік (карантин, SP_CTX_01_07) і почати новий журнал з цього запису   # старі оригінали тоді розпізнає лише залишкове правило DropPulled
 
@@ -62,17 +63,22 @@ Input: `rows: list<Row>`, `ledger: ApplyLedger` (стан `missing` — поро
             IF ids(r) not empty:
                 IF every id IN ids(r) is carried(id, r.role): drop += i                      # (1) двійник за ідентифікаторами: копія, зокрема змінена правкою (summarize), виграє
             ELSE IF trimmed r.text = "": drop += i                                          # (2) лише thinking: без handle він однаково порожній і зникає
-            ELSE IF some q with NOT own(q), q.role = r.role, q.text = r.text, seg(q) = seg(i): drop += i   # (3) текстова відповідь і її копія в тому самому відрізку
+            ELSE IF an unused q with NOT own(q), q.role = r.role, q.text = r.text, seg(q) = seg(i): drop += i; q used   # (3) текстова відповідь і її копія в тому самому відрізку; кожна копія — двійник лише одного оригіналу (рев'ю фази 32)
         IF applied:                                                                         # (4) залишкове правило: журнал обрізано, втрачено чи сесія старша за фазу 32
             FOR each group G of rows ∉ drop, same role, with a shared id in ids:            # повтори одного виклику чи результату
-                IF exactly one row of G has ReplacementText text (SP_CTX_02_04): drop += G − that row   # правка мода — копія
+                IF exactly one row m of G has ReplacementText text (SP_CTX_02_04): drop += rows of G − m whose ids all are in ids(m)   # правка мода — копія; рядок з ідентифікатором, якого m не має, лишається (рев'ю фази 32: оригінал [a,b] поруч з копіями a і b)
                 ELSE IF every row of G has the same role, text and ids: drop += G − last row of G
                 ELSE: nothing                                                               # неоднозначно — лишити, хост і далі лагодить пари
+        PairsWhole: WHILE some id had a call before a result in rows but not among rows without drop: drop −= rows that hold that id   # прибирання ніколи не лишає виклик без результату чи результат без виклику (рев'ю фази 32)
         RETURN { kept = rows without drop, dropped = sorted drop, residual = count added by (4) }
 
 Чому рядок з ідентифікаторами порівнюється без тексту: ідентифікатор виклику й результату унікальний, тож рядок поза журналом з тим самим ідентифікатором — копія того самого виклику; якщо копію змінила правка (підсумок `summarize`), прибрати треба саме оригінал — так правка переживає відновлення. Текстовий рядок без ідентифікаторів такого ключа не має, тож двійника шукаємо лише в його відрізку і з тим самим текстом; рядок, що змінила `rewrite`, двійника не знайде й лишиться (обмеження нижче). Рядок без двійника — рядок, який хост завантажив лише оригіналом (обхід через межу, шлях 7(а)): його прибирання загубило б частину розмови (сесія b спайку — перший промпт).
 
+Медіа результату, який завантажений ланцюжок показує двічі (оригінал і копія), CollectMedia лічить один раз — з першого блоку `tool_result` цього ідентифікатора (живий прогін фази 32, (г): одна картинка давала два однакові файли).
+
 Обмеження (05_04): (а) правки до рядка, через який обхід перетнув межу (результат з медіа, повернений з `handle`; префікс `keep_cache` правок не має), після `--resume` втрачено — копій у ланцюжку немає, і ремонт лишає оригінали; (б) оригінал, копію якого прибрала правка `drop`, `collapse` чи змінила `rewrite`, двійника не має і лишається — так буває лише, коли хост підтягнув його через інший рядок тієї самої відповіді, а KeepResponsesWhole і ResponseStart цього не допускають; (в) залишкове правило не бачить текстових повторів без ідентифікаторів.
+
+Де є `handle`. Правила (1)–(3) спираються на `handle`, а його несуть лише рядки події компактизації: HandleCompaction і HandleRepair розпізнають оригінали за журналом; BuildSeed бере рядки читання розмови (CurrentRows), де `handle` немає, тож там діє лише залишкове правило (4) (фаза 32, код; [SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)).
 
 Errors: немає (чиста функція). Порожній журнал і `applied = false` → нічого не прибрано.
 
@@ -109,13 +115,20 @@ Purpose: у новому процесі хоста чи після переми�
         dir = EnsureStorage; IF none: RETURN false
         ledger = read ApplyLedger; journal = read Journal; applied = ledger has entries OR journal has an `apply` entry
         IF NOT applied: RETURN false                                           # мод у цій сесії нічого не застосовував
+        IF ledger.clean: RETURN false                                          # ремонт уже відповів «nothing to repair» після останнього застосування: повтори — не підтягнуті оригінали (той самий текст двічі в ході); RecordInputs вердикт знімає
         b = read Boundary; IF b present AND Trusted(b) (SP_CTX_02_18, await hostId ≤ HOST_ID_WAIT_MS): RETURN false   # той самий процес: межа довірена, читання — оригінали + копії, ремонт не потрібен
-        rows = read main conversation rows (≤ ROW_WINDOW)                       # у новому процесі — завантажений ланцюжок, який бачить модель
-        RETURN DropPulled(rows, ledger, applied).dropped not empty
+        rows = read main conversation rows (≤ ROW_WINDOW)                       # у новому процесі — завантажений ланцюжок, який бачить модель; рядки читання без handle
+        RETURN Repeats(rows)                                                   # точне рішення за handle — в обробнику (DropPulled); без повторів команди немає
+
+    Repeats(rows):                                                             # фаза 32, код: читання розмови не дає handle, тож DropPulled тут нічого не розпізнав би
+        some call or result id in two rows of the same role
+        OR some assistant text (whitespace aside, non-empty) twice in the same stretch between prompt rows
 
     LogRepair(r):                                                              # з RunRepair, після команди: рядок лягає після компактизації (як LogApply)
         line = "repaired the resumed conversation: dropped " + r.dropped + " row(s) loaded twice" + (r.media ? "; media of " + r.media + " result(s) carried as files" : "")
         $.ui.log(line)                                                         # спливне повідомлення вже дав обробник; $.ui.notify для VS Code (пункт 62: там видно лише його) — опція, не в цій фазі
+
+Чому Repeats, а не DropPulled (відхилення коду від дизайну, жива перевірка фази 32): `$.session.messages()` не несе `handle`, тож за дизайном NeedsRepair завжди давав би `false`. Repeats бачить те, що завантажувач додає (подвоєні виклики, результати й тексти відповіді в одному відрізку); хибна тривога (той самий текст двічі в ході) коштує одну компактизацію, яка відповідає `skip nothing to repair` (у stream-json лишається рядок команди).
 
 Хости. stream-json: компактизація з `session.start` виконується до першого промпту (спайк, cr2). Термінал з `claude --resume`: `session.start` теж є; якщо людина встигне надіслати промпт за REPAIR_DELAY_MS, команда чекає кінця ходу — перший запит тоді йде з дублікатами (живий сценарій). `/resume` у процесі: `session.start` немає, перемикання бачить PrepareStorage; ремонт іде після першого ходу (хук `command.run` на `resume` як ранній тригер — лише якщо живий прогін покаже, що він спрацьовує і повертається після перемикання; SP_CTX_DEC_32). Разовий `claude -p --resume <id> "<prompt>"`: команда, поставлена посеред єдиного ходу, після нього відхиляється («no session is bound») — рядок стану, сесія як є.
 
@@ -140,7 +153,7 @@ Input: подія компактизації з MarkerKind(`instructions`) = `re
         IF handoffInFlight: RETURN skip "handoff running"                       # передача засіє нову сесію; BuildSeed сам бере DropPulled
         ledger = read ApplyLedger (unreadable → RETURN skip "ledger unreadable"); applied = as in NeedsRepair
         (kept, dropped, residual) = DropPulled(messages, ledger, applied)
-        IF dropped empty: RETURN skip "nothing to repair"
+        IF dropped empty: IF NOT abandoned: in the background, on the ledger chain: ledger.clean = true; RETURN skip "nothing to repair"   # вердикт для NeedsRepair наступних процесів
         api = read main conversation in Messages API form
         (found, knownResults, unmatched, apiTruncated, toolRefs) = CollectMedia(api, kept)       # SP_CTX_02_10; toolRefs — 02_48
         id = now; n = 0; paths = {}
@@ -161,7 +174,7 @@ Input: подія компактизації з MarkerKind(`instructions`) = `re
         COMMIT (tags chain, then aliases — as in SP_CTX_02_07): reg' = RebindTags(reg, rows, report without applied edits); aliases' = PruneAliases(aliases, rows); abandoned before or during → put back as read; RETURN skip "compaction abandoned"
         after the handler returned, IF NOT abandoned: compactedHere = session; lastRepair = { session, dropped: len(dropped), rows: len(rows), media: count of results with CarryNote }
         toast "context-editor: repaired the resumed conversation (" + len(dropped) + " rows loaded twice)"
-        in the background: RecordBoundary(rows) (SP_CTX_02_18); on the ledger chain: entries = []   # жоден повернений рядок асистента чи результату не має handle — старі оригінали більше не підтягнуться
+        in the background, each only IF NOT abandoned right before it (CONC-02): RecordBoundary(rows) (SP_CTX_02_18); on the ledger chain: entries = []   # жоден повернений рядок асистента чи результату не має handle — старі оригінали більше не підтягнуться
         in the background, on the deliveries chain: remove done (як у SP_CTX_02_07)
         IF the attachments port: ResetPass                                         # SP_CTX_02_39: хост перепитає вкладення; рішення лишаються
         RETURN { messages: rows }
@@ -207,3 +220,5 @@ Errors: немає. Поза вікном API (`toolRefs` не знає викл
 | Date | Change |
 |------|--------|
 | 2026-10-12 | Новий дочірній файл (дизайн фази 32; спайк [context_editor_resume](./context_editor_resume.spike.md); рішення розробника «Ремонт після відновлення (Recommended)»): 02_44 RecordInputs, 02_45 DropPulled, 02_46 ScheduleRepair і RunRepair, 02_47 HandleRepair, 02_48 ToolRefText (CF-51); [SP_CTX_DEC_32](./context_editor.sp.md#SP_CTX_DEC_32)–[SP_CTX_DEC_35](./context_editor.sp.md#SP_CTX_DEC_35) proposed |
+| 2026-10-12 | Код фази 32 (`hooks/repair.ts`): перший крок живого сценарію — `handle` рядка входу застосування = uuid рядка JSONL до межі = `handle` вставленого оригіналу у відновленому процесі (сесія 26ed3e59, `.dev_flow/cache/live-test/phase32-precheck/`); преамбула — `$.session.messages()` не несе `handle`; 02_46 — NeedsRepair перевіряє Repeats(rows) замість DropPulled (відхилення: без `handle` DropPulled нічого не розпізнає); 02_44 — запис входу ≤ MAX_LEDGER_HANDLES (`e.messages` без межі ROW_WINDOW); 02_45 — «Де є `handle`»: у BuildSeed діє лише залишкове правило |
+| 2026-10-12 | Рев'ю і живий прогін фази 32 (`.dev_flow/cache/live-test/phase32-results.md`): 02_45 — правило (3) за кількістю (копія — двійник одного оригіналу), залишкове правило прибирає рядок лише коли заміна має всі його ідентифікатори, PairsWhole (прибирання не розриває пар); 02_46 — вердикт `ApplyLedger.clean` після «nothing to repair» глушить NeedsRepair до наступного застосування; HandleCompaction не читає журнал, коли `compactedHere` = сесія; 02_47 — записи після фіксації лише без покинутої диспетчеризації (CONC-02); CollectMedia — медіа і `tool_reference` результату один раз за ідентифікатором |

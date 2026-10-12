@@ -42,6 +42,23 @@ export const HANDOFF_MARKER = modText('seed the handed-off conversation (run aut
 // command an older instance of the module queued before a reload.
 export const LEGACY_MARKER = modText('apply queued edits')
 export const LEGACY_HANDOFF_MARKER = modText('seed the handed-off conversation')
+// [SP_CTX_01_12] [SP_CTX_02_46] The mark of the repair after a resume (phase
+// 32): the mod rebuilds a conversation the host loaded with originals beside
+// their copies.
+export const REPAIR_MARKER = modText('repair the resumed conversation (run automatically by the mod: resuming loaded some answers twice; not by the person)')
+
+// [SP_CTX_01_12] [SP_CTX_02_48] TOOLREF_TEXT: the text of a ToolSearch result
+// rebuilt without its handle, which would be empty (CF-51): a rebuilt row
+// cannot carry tool_reference blocks. A service line of the mod, so MARK.
+export function toolRefWords(names: readonly string[]): string {
+  return `${MARK} ToolSearch loaded: ${names.join(', ')}. A rebuilt result cannot carry the loaded schemas: call these tools by name, or search again if a call fails.`
+}
+
+// [SP_CTX_01_05] [SP_CTX_01_12] PULLED_TEXT: the report's sentence when the
+// apply first dropped originals a resume had loaded beside their copies.
+export function pulledWords(n: number): string {
+  return `${n} row(s) that resuming the session had loaded a second time were dropped first.`
+}
 
 // ---- [SP_CTX_02_04] [SP_CTX_DEC_17] replacement texts
 
@@ -104,9 +121,13 @@ export function isDescribedText(text: string): boolean {
 
 // [SP_CTX_01_12] [SP_CTX_02_07] Which of the mod's compactions a command's
 // args name, by the marks of now or before phase 25; exact text only.
-export function markerKind(text: string | undefined): 'apply' | 'seed' | undefined {
+// [SP_CTX_02_47] `repair`: the repair after a resume (phase 32).
+export type MarkerKind = 'apply' | 'seed' | 'repair'
+
+export function markerKind(text: string | undefined): MarkerKind | undefined {
   if (text === MARKER || text === LEGACY_MARKER) return 'apply'
   if (text === HANDOFF_MARKER || text === LEGACY_HANDOFF_MARKER) return 'seed'
+  if (text === REPAIR_MARKER) return 'repair'
   return undefined
 }
 
@@ -121,6 +142,13 @@ export function resultsOf(row: SessionMessage): ToolResultSummary[] {
 // media alone, or a result row a drop left empty.
 export function isEmptyRow(row: SessionMessage): boolean {
   return !row.text && row.toolUses.length === 0 && !resultsOf(row).length
+}
+
+// [SP_CTX_02_22] Blank: EmptyRow, except that text of whitespace alone
+// counts as none too: a seed and a repair drop such rows, and CheckPairs
+// refuses them.
+export function isBlankRow(row: SessionMessage): boolean {
+  return !row.text.trim() && row.toolUses.length === 0 && !resultsOf(row).length
 }
 
 // A user row without results: a prompt, a delivery, a command's row, or a

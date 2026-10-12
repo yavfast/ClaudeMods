@@ -80,7 +80,7 @@ const EDIT_SCHEMA = {
     keep_cache: {
       type: 'boolean',
       description:
-        'Keep the prompt cache up to the first edit (default false): cheaper when the earliest edit is within your last few calls and you end the turn soon; but if this session is later resumed (--resume, reopening it), earlier answers may show twice.',
+        'Keep the prompt cache up to the first edit (default false): cheaper when the earliest edit is within your last few calls and you end the turn soon.',
     },
   },
   required: ['edits'],

@@ -1,7 +1,7 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
 import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
-import { apiBlocks, BIG_ROW, collapsedWords, DESCRIBED, errorText, findToolResult, findToolUse, isBig, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, PLAIN_RATIO, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, totalChars, type Via } from './rows'
+import { apiBlocks, BIG_ROW, collapsedWords, DESCRIBED, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -41,6 +41,10 @@ export type ApplyReport = {
   // back as rows, and those that went with a replaced anchor; `unreadable`:
   // the deliveries file could not be read, so none was inserted
   deliveries?: { inserted: number; removed: number; unreadable?: string }
+  // [SP_CTX_01_05] [SP_CTX_02_45] the originals a resume had loaded beside
+  // their copies, which DropPulled removed before the edits (phase 32); 0 or
+  // absent in the process that applied
+  pulledDropped?: number
 }
 
 // [SP_CTX_01_05] One entry of ApplyReport.produced.
@@ -733,6 +737,51 @@ function pairingError(rows: readonly SessionMessage[], from: number, to: number)
     : undefined
 }
 
+// [SP_CTX_02_23] [SP_CTX_02_47] CheckPairs: the first broken rule of the
+// rows' pairs and ids as the reason, or undefined. Each row: no handle
+// (`handles` false: CheckSeed; true: a repair, whose prompts keep theirs),
+// not blank (a row with a handle may be: the host builds it from its
+// original), calls only in assistant rows and results only in user rows, no
+// call or result id twice, each call answered in a later row before the next
+// prompt row, each result after its call. Pure.
+export function checkPairs(rows: readonly SessionMessage[], handles: boolean): string | undefined {
+  const calls = new Set<string>()
+  const answers = new Set<string>()
+  // [PL_AUD_CTX_P11] index maps, built once (CF-23): the first row of each
+  // call and of each result, and for each row the next prompt row after it
+  const ix = indexRows(rows)
+  const nextPrompt: number[] = new Array(rows.length)
+  for (let i = rows.length - 1, p = rows.length; i >= 0; i--) {
+    nextPrompt[i] = p
+    if (isPlainUserRow(rows[i]!)) p = i
+  }
+  for (const [i, r] of rows.entries()) {
+    if (!handles && r.handle !== undefined) return `row ${i}: holds a handle`
+    if (r.handle === undefined && isBlankRow(r)) return `row ${i}: empty`
+    if (r.role === 'user' && r.toolUses.length) return `row ${i}: tool_use in a user row`
+    if (r.role === 'assistant' && resultsOf(r).length) return `row ${i}: tool_result in an assistant row`
+    for (const u of r.toolUses) {
+      if (calls.has(u.tool_use_id)) return `row ${i}: repeated call id ${u.tool_use_id}`
+      calls.add(u.tool_use_id)
+    }
+    for (const t of resultsOf(r)) {
+      if (answers.has(t.tool_use_id)) return `row ${i}: repeated result id ${t.tool_use_id}`
+      answers.add(t.tool_use_id)
+    }
+    // its result, in a later row, before any prompt row (a user row without
+    // results); no result of it stands before row i, or that row failed first
+    for (const u of r.toolUses) {
+      const res = ix.resultAt(u.tool_use_id)
+      if (res <= i || res >= nextPrompt[i]!) return `row ${i}: call ${u.tool_use_id} has no result before the next prompt`
+    }
+    for (const t of resultsOf(r)) {
+      const call = ix.useAt(t.tool_use_id)
+      if (call < 0 || call >= i) return `row ${i}: result ${t.tool_use_id} answers no call`
+    }
+  }
+  return undefined
+}
+
 export function describeEdit(edit: Edit): string {
   switch (edit.op) {
     case 'summarize':
@@ -1184,6 +1233,19 @@ export function replacedOwners(rows: readonly SessionMessage[], edits: readonly 
 // [SP_CTX_01_08]
 export type MediaRef = { mediaType: string; bytes: number; data?: string }
 
+const EXT: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'application/pdf': 'pdf',
+}
+
+// [SP_CTX_01_06] The file extension of a media file by its media type.
+export function mediaExt(mediaType: string): string {
+  return EXT[mediaType] ?? 'bin'
+}
+
 // [SP_CTX_02_10] What the Messages API form of the conversation holds beyond
 // the rows: media by owner key (tool results by id; a person's prompt row by
 // its index in `rows` once PromptMatch ties it, [SP_CTX_DEC_06]), the
@@ -1201,27 +1263,60 @@ export function collectMedia(
   knownResults: Set<string>
   unmatchedPromptMedia: number
   apiTruncated: boolean
+  toolRefs: Map<string, string[]>
 } {
   const found = new Map<string, MediaRef[]>()
   const knownResults = new Set<string>()
+  // [SP_CTX_02_48] the tools a ToolSearch result loaded, by its call id
+  const toolRefs = new Map<string, string[]>()
   let unmatchedPromptMedia = 0
   const add = (key: string, block: Record<string, unknown>) => found.set(key, [...(found.get(key) ?? []), mediaRef(block)])
   const owners = matchPrompts(api, rows)
+  // [SP_CTX_02_47] a loaded chain shows a result twice (original and copy):
+  // its media and tool references count once, from the first
+  const seen = new Set<string>()
   api.forEach((msg, at) => {
     const blocks = apiBlocks(msg)
     for (const block of blocks) {
       if (block.type !== 'tool_result') continue
       const id = String(block.tool_use_id)
       knownResults.add(id)
+      if (seen.has(id)) continue
+      seen.add(id)
       if (!Array.isArray(block.content)) continue
-      for (const inner of block.content as Record<string, unknown>[]) if (isMediaBlock(inner)) add(ownerKey({ tool_use_id: id }), inner)
+      for (const inner of block.content as Record<string, unknown>[]) {
+        if (isMediaBlock(inner)) add(ownerKey({ tool_use_id: id }), inner)
+        else if (inner?.type === 'tool_reference' && typeof inner.tool_name === 'string') toolRefs.set(id, [...(toolRefs.get(id) ?? []), inner.tool_name])
+      }
     }
     if ((msg as { role?: unknown } | null)?.role !== 'user' || !blocks.some(isMediaBlock)) return
     const row = owners.get(at)
     if (row === undefined) unmatchedPromptMedia += 1
     else for (const block of blocks) if (isMediaBlock(block)) add(ownerKey({ row }), block)
   })
-  return { found, knownResults, unmatchedPromptMedia, apiTruncated: apiCut(api) }
+  return { found, knownResults, unmatchedPromptMedia, apiTruncated: apiCut(api), toolRefs }
+}
+
+// [SP_CTX_02_48] ToolRefText: the text of a result row the mod returns
+// without its handle and leaves unchanged. A ToolSearch result is empty as a
+// row (its tool_reference blocks are no text), so it names the tools it
+// loaded (TOOLREF_TEXT); any other result, or one the API form does not show,
+// keeps its text. Pure.
+export function toolRefText(t: ToolResultSummary, toolRefs: ReadonlyMap<string, readonly string[]> | undefined): string {
+  const names = toolRefs?.get(t.tool_use_id)
+  return t.text.trim() !== '' || !names?.length ? t.text : toolRefWords(names)
+}
+
+// [SP_CTX_02_22] [SP_CTX_02_47] CarryNote: the media of an untouched pair, as
+// files (a seed and a repair rebuild every result row without its handle).
+export function carryNote(refs: readonly MediaRef[], paths: readonly (string | undefined)[]): string {
+  const items = refs.map((ref, k) => (paths[k] ? `${ref.mediaType} ${paths[k]}` : `${ref.mediaType} (not carried: no inline data)`))
+  return `${MARK} media carried as files (open them with Read): ${items.join(', ')}`
+}
+
+// [SP_CTX_02_22] A result's text with its CarryNote after it.
+export function withCarryNote(text: string, refs: readonly MediaRef[], paths: readonly (string | undefined)[]): string {
+  return `${text}${text.trim() ? '\n\n' : ''}${carryNote(refs, paths)}`
 }
 
 function mediaRef(block: Record<string, unknown>): MediaRef {
@@ -1250,6 +1345,9 @@ export type ApplyOptions = {
   freeze?: { api: readonly unknown[] }
   // [SP_CTX_02_04] FreshId of an edited call; tests pass a deterministic one
   newId?: (id: string) => string
+  // [SP_CTX_02_48] CollectMedia's toolRefs: a ToolSearch result rebuilt
+  // without its handle names the tools it loaded (ToolRefText)
+  toolRefs?: ReadonlyMap<string, readonly string[]>
 }
 
 // [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
@@ -1493,7 +1591,7 @@ export function applyEdits(
     if (frozen.has(r) || r.handle === undefined || results.length === 0) return r
     if (results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id })))) return r
     if (known && !results.every(t => known.has(t.tool_use_id))) return r
-    return plain(r, {})
+    return plain(r, { toolResults: results.map(t => ({ ...stripResult(t), text: toolRefText(t, options.toolRefs) })) })
   })
   const out = mergeCallRows(
     rebuildSplitResponses(relinked, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmptyRow(r)),
@@ -1740,6 +1838,8 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length)) parts.push(ownCallsText(r.ownCallsRemoved, r.applied.length > 0))
   // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation
   if (r.deliveries && (kind === 'seed' || r.applied.length)) parts.push(deliveriesText(r.deliveries))
+  // [SP_CTX_01_05] [SP_CTX_02_45] last: the originals a resume loaded twice, when the list replaces the conversation
+  if ((r.pulledDropped ?? 0) > 0 && r.applied.length) parts.push(pulledWords(r.pulledDropped!))
   const text = parts.filter(Boolean).join(' ')
   return !text || parts[0] ? text : modText(text)
 }

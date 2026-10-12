@@ -25,8 +25,8 @@ import {
   type RowIndex,
 } from './edits'
 import { MARK } from './rows'
-import { distinctive, survivors } from './stages'
-import { MAX_REGISTRY_BYTES, type TagDeny, type TagIO, type TagRegistry } from './tags'
+import { distinctive, relocateStageMarks, survivors } from './stages'
+import { MAX_REGISTRY_BYTES, rebindTags, type TagDeny, type TagIO, type TagRegistry } from './tags'
 import { bytes, isCount, storageRefusal, type Read } from './store'
 
 // ---- [SP_CTX_01_12] constants
@@ -313,6 +313,21 @@ export async function contextNote(
 }
 
 // ---- [SP_CTX_02_14] RelocateNote
+
+// [SP_CTX_02_14] [SP_CTX_02_07] [SP_CTX_02_47] The registry after a list
+// replaced the conversation (an apply, a repair): its tags (RebindTags), the
+// stage marks (RelocateStageMarks) and the notes (RebindNotes), and the
+// notes that went. Pure.
+export function rebindAfter(
+  reg: TagRegistry,
+  before: readonly SessionMessage[],
+  after: readonly SessionMessage[],
+  applied: readonly QueuedEdit[],
+  batch: readonly QueuedEdit[],
+  produced: readonly Produced[],
+): { registry: TagRegistry; dropped: string[] } {
+  return rebindNotes(relocateStageMarks(rebindTags(reg, before, after, applied, batch, produced), before, after, applied, produced), before, after, applied, produced)
+}
 
 // RelocateNote for every note of the registry after an apply or a seed: a
 // note on a row an applied edit replaced moves to the last row that edit

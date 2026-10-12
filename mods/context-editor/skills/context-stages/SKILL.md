@@ -35,7 +35,7 @@ Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: s
 
 Usually keep verbatim: the person's messages, the rules and skills still in force, and the conclusions you need next. A `[pin]` target cannot be edited (the person's first prompt is pinned for you).
 
-Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt` (in an optimization turn only with `"resume": true`). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line), but a later resume may show earlier answers twice. Your `context_*` calls leave the conversation; tags and notes stay. `{"index":i,"full":true}` in `context_list` shows a row whole.
+Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt` (in an optimization turn only with `"resume": true`). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line). Your `context_*` calls leave the conversation; tags and notes stay.
 
 ## Dead ends
 
@@ -89,5 +89,5 @@ Text opening with `Later, your context_edit` (or `context_tag`) is your own repl
 
 - `… summarize call replaced the full output …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours. Older ones read `[context-editor] you read …, then replaced …`.
 - `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
-- Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command.
+- Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command; `… repair the resumed conversation …`: the mod dropped answers a resume had loaded twice; earlier thinking is gone.
 - `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the optimization or `/compact` turn, a handoff's document: service texts of the mod.

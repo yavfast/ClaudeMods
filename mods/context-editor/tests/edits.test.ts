@@ -44,7 +44,8 @@ import {
   MAX_COLLAPSED_ARG,
   MAX_COLLAPSED_LIST,
 } from '../hooks/edits'
-import { findToolResult, findToolUse, isReplacementText, MARK } from '../hooks/rows'
+import { findToolResult, findToolUse, isReplacementText, MARK, pulledWords, toolRefWords } from '../hooks/rows'
+import { checkPairs, toolRefText } from '../hooks/edits'
 import { emptyRowBetweenCalls, prompt, reply as replyRow, result, use as useRow } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
@@ -1391,4 +1392,52 @@ test('Snapshot — одне читання на подію: CurrentRows, Key() a
   await snap.api()
   await snap.api()
   expect(reads).toEqual({ view: 2, api: 1 })
+})
+
+// ---- [SP_CTX_02_48] phase 32: ToolRefText; [SP_CTX_01_05] PULLED_TEXT
+
+const toolSearchApi = (id: string, names: string[]) => [
+  { role: 'user', content: 'go' },
+  { role: 'assistant', content: [{ type: 'tool_use', id, name: 'ToolSearch', input: { query: 'select:WebFetch' } }] },
+  { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: names.map(tool_name => ({ type: 'tool_reference', tool_name })) }] },
+]
+
+test('ToolRefText — ToolSearch: an empty result names the tools the API form shows; a text stays; a call outside the API form stays empty', () => {
+  const { toolRefs } = collectMedia(toolSearchApi('ts', ['WebFetch']), [])
+  expect([...toolRefs]).toEqual([['ts', ['WebFetch']]])
+  expect(toolRefText({ tool_use_id: 'ts', text: '', isError: false }, toolRefs)).toBe(toolRefWords(['WebFetch']))
+  expect(toolRefWords(['WebFetch', 'Grep'])).toBe(`${MARK} ToolSearch loaded: WebFetch, Grep. A rebuilt result cannot carry the loaded schemas: call these tools by name, or search again if a call fails.`)
+  expect(toolRefText({ tool_use_id: 'ts', text: 'No tools found', isError: false }, toolRefs)).toBe('No tools found')
+  expect(toolRefText({ tool_use_id: 'other', text: '', isError: false }, toolRefs)).toBe('')
+})
+
+test('ApplyEdits — результат ToolSearch: an untouched ToolSearch result rebuilt by rule SP_CTX_DEC_02 gets TOOLREF_TEXT, no edit needed', () => {
+  const rows: SessionMessage[] = [
+    prompt('go', 'p'),
+    useRow('ts', 'ToolSearch', 'h1'),
+    result('ts', '', 'h2'),
+    useRow('a', 'Read', 'h3'),
+    result('a', 'x'.repeat(5000), 'h4'),
+  ]
+  const api = [...toolSearchApi('ts', ['WebFetch']), { role: 'assistant', content: [{ type: 'tool_use', id: 'a', name: 'Read', input: {} }] }, { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'a', content: 'x' }] }]
+  const { knownResults, toolRefs } = collectMedia(api, rows)
+  const out = applyEdits(rows, [{ op: 'summarize', tool_use_id: 'a', summary: 's' }], '/a.json', new Map(), new Set(), { knownResults, toolRefs })
+  const ts = out.rows.find(r => r.toolResults?.some(t => t.tool_use_id === 'ts'))!
+  expect(ts.handle).toBeUndefined()
+  expect(ts.toolResults![0]!.text).toBe(toolRefWords(['WebFetch']))
+})
+
+test('FormatReport — PULLED_TEXT: last, only when an edit applied', () => {
+  const base = { applied: ['summarize a'], failed: [], charsBefore: 100, charsAfter: 50, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }
+  expect(formatReport({ ...base, pulledDropped: 3 }, '', 'compaction').endsWith(pulledWords(3))).toBe(true)
+  expect(pulledWords(3)).toBe('3 row(s) that resuming the session had loaded a second time were dropped first.')
+  expect(formatReport({ ...base, applied: [], pulledDropped: 3 }, '', 'compaction')).not.toContain('resuming')
+  expect(formatReport(base, '', 'compaction')).not.toContain('resuming')
+})
+
+test('CheckPairs — ремонт: a row with a handle may be blank or hold a handle; without handles allowed, a handle refuses', () => {
+  const rows = [prompt('', 'p'), useRow('a', 'Bash'), result('a', 'out')]
+  expect(checkPairs(rows, true)).toBeUndefined()
+  expect(checkPairs(rows, false)).toBe('row 0: holds a handle')
+  expect(checkPairs([prompt('go'), useRow('a', 'Bash'), prompt('next'), result('a', 'out')], true)).toBe('row 1: call a has no result before the next prompt')
 })

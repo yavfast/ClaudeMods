@@ -5,6 +5,7 @@ import {
   applyEdits,
   boundaryAt,
   boundaryOf,
+  checkPairs,
   collectMedia,
   describeEdit,
   dropOwnCallsCounted,
@@ -12,7 +13,6 @@ import {
   applyLine,
   formatReport,
   HEAD_ROWS,
-  indexRows,
   mergeCallRows,
   MAX_TEXT,
   ownerKey,
@@ -20,10 +20,11 @@ import {
   rebuild,
   replacedOwners,
   ROW_WINDOW,
+  toolRefText,
   touchedBy,
+  withCarryNote,
   type ApplyReport,
   type Boundary,
-  type MediaRef,
   type QueuedEdit,
 } from './edits'
 import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
@@ -33,7 +34,8 @@ import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
-import { apiBlocks, errorText, isPlainUserRow, MARK, modText, resultsOf, squash, totalChars } from './rows'
+import { apiBlocks, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
+import { dropPulled, type Pulled } from './repair'
 import { storageRefusal, type ChangeFn, type Read, type StorageState } from './store'
 
 export { ROW_WINDOW }
@@ -189,6 +191,8 @@ export type SeedInput = {
   writeMedia: (path: string, base64: string) => Promise<boolean>
   // [SP_CTX_01_22] the old session's recorded deliveries; absent: none
   deliveries?: Read<Deliveries>
+  // [SP_CTX_02_45] the old session's ledger and whether it had an apply; absent: none
+  pulled?: Pulled
 }
 
 const WINDOW_FULL = `the conversation fills the host's ${ROW_WINDOW}-row window; its start may be cut`
@@ -204,17 +208,8 @@ function firstApiMessage(msg: unknown): { role: unknown; hasResult: boolean; tex
   return { role, hasResult: blocks.some(b => b.type === 'tool_result'), text: texts.join('\n\n') }
 }
 
-// [SP_CTX_02_22] CarryNote: the media of an untouched pair, as files.
-export function carryNote(refs: readonly MediaRef[], paths: readonly (string | undefined)[]): string {
-  const items = refs.map((ref, k) => (paths[k] ? `${ref.mediaType} ${paths[k]}` : `${ref.mediaType} (not carried: no inline data)`))
-  return `${MARK} media carried as files (open them with Read): ${items.join(', ')}`
-}
-
-// Blank: EmptyRow (rows.ts), except that text of whitespace alone counts as
-// none too: the seed drops such rows and CheckSeed refuses them.
-function isBlank(r: SessionMessage): boolean {
-  return !r.text.trim() && r.toolUses.length === 0 && resultsOf(r).length === 0
-}
+// [SP_CTX_02_22] CarryNote lives in edits.ts (a repair rebuilds results too).
+export { carryNote } from './edits'
 
 // [SP_CTX_02_22] Until nothing changes: no leading assistant rows, no result
 // without an earlier call, no call without a later result, no empty row.
@@ -245,7 +240,7 @@ function normalize(seed: SessionMessage[]): SessionMessage[] {
       }
     }
     const before = rows.length
-    rows = rows.filter(r => !isBlank(r))
+    rows = rows.filter(r => !isBlankRow(r))
     if (rows.length !== before) changed = true
   }
   return rows
@@ -254,7 +249,19 @@ function normalize(seed: SessionMessage[]): SessionMessage[] {
 // [SP_CTX_02_22] The rows of the new session from what the model sees and
 // the queued edits. Pure but for writing media files through `writeMedia`.
 export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse: SeedRefusal; reason: string }> {
-  const { transcript, rows, api } = input
+  const { api } = input
+  // [SP_CTX_02_45] after --resume the read holds originals beside their copies
+  // (the repair refused or not run yet): the recognized ones go first, from
+  // CurrentRows and the transcript alike
+  let { transcript, rows } = input
+  if (input.pulled) {
+    const out = dropPulled(rows, input.pulled.ledger, input.pulled.applied)
+    if (out.dropped.length) {
+      const gone = new Set(out.dropped.map(i => rows[i]!))
+      rows = out.kept
+      transcript = transcript.filter(r => !gone.has(r))
+    }
+  }
   // the window alone: prompt media is matched below, on the visible rows
   const { knownResults, apiTruncated } = collectMedia(api, [])
   const hidden =
@@ -295,7 +302,7 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   }
   const screened = screenPinned(visible, edits, input.tags)
   // [SP_CTX_02_10] prompt rows by their index in `visible`, which ends where the API form ends
-  const { found, unmatchedPromptMedia: unmatched } = collectMedia(api, visible)
+  const { found, unmatchedPromptMedia: unmatched, toolRefs } = collectMedia(api, visible)
   // a prompt's media goes to a file only for an edit that replaces it; the rest is not carried
   const willReplace = replacedOwners(visible, screened.edits)
 
@@ -345,16 +352,17 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   report.charsAfter = totalChars(kept) - put.added
   const carried: string[] = []
   let seed = kept.map(r => {
-    const carries = resultsOf(r).some(t => found.has(ownerKey({ tool_use_id: t.tool_use_id })) && !replaced.has(ownerKey({ tool_use_id: t.tool_use_id })))
-    if (!carries) return rebuild(r)
+    if (!resultsOf(r).length) return rebuild(r)
     return {
       ...rebuild(r),
       toolResults: resultsOf(r).map(t => {
         const key = ownerKey({ tool_use_id: t.tool_use_id })
         const refs = found.get(key)
-        if (!refs || replaced.has(key)) return { tool_use_id: t.tool_use_id, text: t.text, isError: t.isError }
+        // [SP_CTX_02_48] a ToolSearch result names the tools it loaded
+        const text = toolRefText(t, toolRefs)
+        if (!refs || replaced.has(key)) return { tool_use_id: t.tool_use_id, text, isError: t.isError }
         carried.push(t.tool_use_id)
-        return { tool_use_id: t.tool_use_id, isError: t.isError, text: `${t.text}${t.text.trim() ? '\n\n' : ''}${carryNote(refs, items.get(key) ?? [])}` }
+        return { tool_use_id: t.tool_use_id, isError: t.isError, text: withCarryNote(text, refs, items.get(key) ?? []) }
       }),
     }
   })
@@ -385,41 +393,7 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
 export function checkSeed(rows: readonly SessionMessage[]): string | undefined {
   if (!rows.length) return 'no rows to carry over'
   if (rows[0]!.role !== 'user') return "the first row is not the person's"
-  const calls = new Set<string>()
-  const answers = new Set<string>()
-  // [PL_AUD_CTX_P11] index maps, built once (CF-23): the first row of each
-  // call and of each result, and for each row the next prompt row after it
-  const ix = indexRows(rows)
-  const nextPrompt: number[] = new Array(rows.length)
-  for (let i = rows.length - 1, p = rows.length; i >= 0; i--) {
-    nextPrompt[i] = p
-    if (isPlainUserRow(rows[i]!)) p = i
-  }
-  for (const [i, r] of rows.entries()) {
-    if (r.handle !== undefined) return `row ${i}: holds a handle`
-    if (isBlank(r)) return `row ${i}: empty`
-    if (r.role === 'user' && r.toolUses.length) return `row ${i}: tool_use in a user row`
-    if (r.role === 'assistant' && resultsOf(r).length) return `row ${i}: tool_result in an assistant row`
-    for (const u of r.toolUses) {
-      if (calls.has(u.tool_use_id)) return `row ${i}: repeated call id ${u.tool_use_id}`
-      calls.add(u.tool_use_id)
-    }
-    for (const t of resultsOf(r)) {
-      if (answers.has(t.tool_use_id)) return `row ${i}: repeated result id ${t.tool_use_id}`
-      answers.add(t.tool_use_id)
-    }
-    // its result, in a later row, before any prompt row (a user row without
-    // results); no result of it stands before row i, or that row failed first
-    for (const u of r.toolUses) {
-      const res = ix.resultAt(u.tool_use_id)
-      if (res <= i || res >= nextPrompt[i]!) return `row ${i}: call ${u.tool_use_id} has no result before the next prompt`
-    }
-    for (const t of resultsOf(r)) {
-      const call = ix.useAt(t.tool_use_id)
-      if (call < 0 || call >= i) return `row ${i}: result ${t.tool_use_id} answers no call`
-    }
-  }
-  return undefined
+  return checkPairs(rows, false)
 }
 
 // ---- [SP_CTX_02_24] CheckSeeded
@@ -533,6 +507,9 @@ export type HandoffIO = {
   readTags: (dir: string) => Promise<Read<TagRegistry>>
   // [SP_CTX_01_22] the deliveries recorded in `dir`, on their chain; absent: none
   readDeliveries?: (dir: string) => Promise<Read<Deliveries>>
+  // [SP_CTX_02_45] the ledger of the applies' inputs in `dir` and whether that
+  // session had an apply (BuildSeed's DropPulled); absent: none
+  readLedger?: (dir: string) => Promise<Pulled>
   // the same for the tag registry in `dir`
   changeTags: (dir: string, change: ChangeFn<TagRegistry>) => Promise<boolean>
   // ids of the folders `<dir>/<id>` that hold a seed.json
@@ -713,7 +690,8 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
     const api = await io.readApi()
     const tags = await io.readTags(run.oldDir)
     const deliveries = io.readDeliveries ? await io.readDeliveries(run.oldDir).catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
-    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia, deliveries })
+    const pulled = io.readLedger ? await io.readLedger(run.oldDir).catch(() => undefined) : undefined
+    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia, deliveries, ...(pulled ? { pulled } : {}) })
     if ('refuse' in built) {
       await clean(false)
       return { reason: built.reason }

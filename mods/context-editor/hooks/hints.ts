@@ -228,7 +228,7 @@ export function suggestionText(p: Proposal): string {
   const gain = `~${tokensText(p.freed)} of the ~${tokensText(p.conversation)} conversation`
   if (p.keep) {
     const k = p.keep
-    const without = `Without keep_cache: all the request's messages (~${tokensText(p.cost.rewrite)}), pays back after ~${requestsText(p.rStar)} → ${p.verdict === 'not-yet' ? 'not worth it yet' : said(p.verdict)}; with it, a later --resume may show earlier answers twice.`
+    const without = `Without keep_cache: all the request's messages (~${tokensText(p.cost.rewrite)}), pays back after ~${requestsText(p.rStar)} → ${p.verdict === 'not-yet' ? 'not worth it yet' : said(p.verdict)}.`
     return `${SUGGESTION} ${what} in one context_edit with "keep_cache": true: frees ${gain}; that keeps the prompt cache up to the earliest and rewrites only the rows from it (~${tokensText(k.cost.rewrite)}) if you end the turn within a few calls (edits apply when it ends; the earliest is ~${k.cost.positions} positions back now, and past ~${CACHE_LOOKBACK} the API finds no cache); ${pays(k.rStar)} → ${said(k.verdict)}. ${without}`
   }
   const verb = p.verdict === 'not-yet' ? 'would rewrite' : 'rewrites'

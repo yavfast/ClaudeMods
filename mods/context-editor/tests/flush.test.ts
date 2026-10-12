@@ -635,3 +635,12 @@ test('Flush — калібрування без правок: an optimization re
     expect(h.log.compacts).toEqual([])
   }
 })
+
+test('AfterTurn — ремонт після перемикання: its step runs after the turn count and before Flush; a failure stops nothing', async () => {
+  const { io, calls } = turnEnd({ repair: async () => void calls.push('repair') })
+  await afterTurn(io, { aborted: false, answer: '' })
+  expect(steps(calls)).toEqual(['storage', 'detect /s false ""', 'count /s', 'repair', 'flush false'])
+  const failing = turnEnd({ repair: async () => Promise.reject(new Error('x')) })
+  await afterTurn(failing.io, { aborted: false, answer: '' })
+  expect(steps(failing.calls)).toEqual(['storage', 'detect /s false ""', 'count /s', 'flush false'])
+})

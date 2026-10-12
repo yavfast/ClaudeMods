@@ -5,11 +5,13 @@ import {
   afterPrepare,
   collectMedia,
   HOST_ID_WAIT_MS,
+  isTrustedBoundary,
   kickHostId,
   newHostIdMemo,
   newHostToken,
   NO_REFS,
   OWN_TOOLS,
+  parseBoundary,
   parseHostId,
   peekHostId,
   readView,
@@ -29,7 +31,25 @@ import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandof
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
 import { adviceFor, calibrateBeforeApply, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
-import { modText } from './rows'
+import { modText, REPAIR_MARKER } from './rows'
+import {
+  cleanLedger,
+  emptyLedger,
+  handleRepair,
+  needsRepair,
+  newRepairMemory,
+  parseLedger,
+  pulledOf,
+  recordInputs,
+  repairAtTurnEnd,
+  repairSwitched,
+  REPAIR_SKIP,
+  scheduleRepair,
+  type ApplyLedger,
+  type NeedsIO,
+  type Pulled,
+  type RepairIO,
+} from './repair'
 import {
   attachmentAnswer,
   attachPort,
@@ -128,6 +148,10 @@ const fileCache = newFileCache()
 const attachMem = newAttachMemory()
 // [SP_CTX_02_39] The session the catalog belongs to: a pass begins only on a real switch.
 const attachSession: { id?: string } = {}
+// [SP_CTX_02_46] The repair after a resume: one attempt per session in this
+// instance, the switch that waits for a turn end, the session this instance
+// compacted itself, and the last repair's summary for the person's line.
+const repairMem = newRepairMemory()
 
 function noteCopies(rows: readonly SessionMessage[] | undefined): void {
   copied.clear()
@@ -163,6 +187,7 @@ type Stores = {
   deliveries: Store<Deliveries>
   journal: Store<Journal>
   hostattach: Store<HostAttachState>
+  ledger: Store<ApplyLedger>
 }
 
 // [SP_CTX_01_07] The storage files of the session whose storage is `dir`,
@@ -182,6 +207,58 @@ function stores($: EngineInterface, dir: string): Stores {
     journal: jsonFile(fs, `${dir}/journal.json`, () => ({ ...EMPTY_JOURNAL, entries: [] }), parseJournal, { lock: chainOf($, 'journal') }),
     // [SP_CTX_01_23] read by the prompt.attachment hook through the cache
     hostattach: jsonFile(fs, `${dir}/hostattach.json`, emptyHostAttach, parseHostAttach, { lock: chainOf($, 'hostattach'), cache: fileCache }),
+    // [SP_CTX_01_24] the applies' inputs (phase 32)
+    ledger: jsonFile(fs, `${dir}/ledger.json`, emptyLedger, parseLedger, { lock: chainOf($, 'ledger') }),
+  }
+}
+
+// [SP_CTX_02_45] The ledger and the journal of effect in `dir`, read without
+// their chains (a reader only); a failed read counts as unreadable.
+async function pulledAt($: EngineInterface, dir: string): Promise<Pulled> {
+  const s = stores($, dir)
+  const ledger = await s.ledger.read().catch((err): Read<ApplyLedger> => ({ state: 'unreadable', reason: String(err) }))
+  const journal = await s.journal.read().catch((err): Read<Journal> => ({ state: 'unreadable', reason: String(err) }))
+  return pulledOf(ledger, journal)
+}
+
+// [SP_CTX_02_44] RecordInputs on the ledger's chain in `dir`, in the
+// background; an unreadable ledger goes aside and a new one starts.
+function recordInputsAt($: EngineInterface, dir: string, messages: readonly SessionMessage[], id: number): void {
+  void stores($, dir)
+    .ledger.update(read => recordInputs(read.value, messages, id), { onUnreadable: 'quarantine' })
+    .catch(() => undefined)
+}
+
+// [SP_CTX_02_46] NeedsRepair bound to the host: the current session's
+// storage, its boundary trusted by this host process or this instance.
+function needsIO($: EngineInterface): NeedsIO {
+  return {
+    sessionId: () => $.session.id(),
+    storage: () => storageDir($),
+    pulled: dir => pulledAt($, dir),
+    trusted: async dir => {
+      const raw = await readBoundaryText($, dir)
+      const b = raw === undefined ? undefined : parseBoundary(raw)
+      return !!b && isTrustedBoundary(b, raw!, await hostIdOf($), ownBoundary.own)
+    },
+    rows: () => $.session.messages(),
+  }
+}
+
+// [SP_CTX_02_46] ScheduleRepair and RunRepair bound to the host. The timer
+// comes from session.start or turn.complete only.
+function repairIO($: EngineInterface): RepairIO {
+  return {
+    sessionId: () => $.session.id(),
+    after: (ms, fn) => void $.clock.after(ms, fn),
+    needs: () => needsRepair(needsIO($), repairMem),
+    // one attempt; a refusal rejects with the host's text
+    command: async () => {
+      await $.command.run({ command: 'compact', args: REPAIR_MARKER })
+    },
+    status: text => $.ui.status(text),
+    log: text => $.ui.log(text),
+    debug: text => $.ui.log(text, { to: 'debug' }),
   }
 }
 
@@ -369,7 +446,11 @@ function prepareIO($: EngineInterface, inCompaction: boolean): PrepareIO {
       dropFileCache(fileCache)
       // [SP_CTX_02_39] another conversation (a real switch, not a first or
       // repeated publication of the same session): its attachments are asked anew
-      if (attachSession.id !== undefined && attachSession.id !== storage.sessionId) resetPass(attachMem)
+      // [SP_CTX_02_46] and its repair waits for the turn end
+      if (attachSession.id !== undefined && attachSession.id !== storage.sessionId) {
+        resetPass(attachMem)
+        if (storage.sessionId !== undefined) repairSwitched(repairMem, storage.sessionId)
+      }
       attachSession.id = storage.sessionId
     },
     status: text => $.ui.status(text),
@@ -642,6 +723,8 @@ function handoffIO($: EngineInterface): HandoffIO {
       const d = stores($, dir).deliveries
       return d.onChain(() => d.read())
     },
+    // [SP_CTX_02_45] BuildSeed's DropPulled
+    readLedger: dir => pulledAt($, dir),
     changeTags: (dir, change) => changeOf(stores($, dir).tags)(change),
     listSeeds: async dir =>
       parseSeedNames((await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])).stdout),
@@ -761,6 +844,9 @@ export const register: Register = on => {
     for (const tool of TOOLS) await $.tool.register(tool)
     await $.command.register(HANDOFF_COMMAND)
     await prepareStorage($)
+    // [SP_CTX_02_46] a new host process (--resume, a restart, an IDE opening
+    // the session): the repair's one attempt, from a deferred action
+    await scheduleRepair(repairIO($), repairMem).catch(() => undefined)
     return next(e)
   })
 
@@ -908,6 +994,7 @@ export const register: Register = on => {
         storage: () => storageDir($),
         detect: (dir, end) => detectOptimize(detectIO($, dir), end),
         countTurn: dir => stores($, dir).tags.onChain(() => countTurn(tagIO($, dir))),
+        repair: () => repairAtTurnEnd(repairIO($), repairMem),
         flush: aborted => flushAfterTurn(flushIO($), flushState, aborted),
         handoff: aborted => handoffAfterTurn(handoffIO($), handoff, aborted),
       },
@@ -948,13 +1035,57 @@ export const register: Register = on => {
         noteCopies(seeded.messages)
         // [SP_CTX_02_39] the seeded session's attachments are asked anew
         resetPass(attachMem)
+        // [SP_CTX_02_46] the seeded rows have no handle: nothing to repair here
+        if (!next.signal.aborted) repairMem.compactedHere = await $.session.id()
       }
       return seeded
+    }
+    if (route === 'repair') {
+      const dir = await storageDir($, true)
+      if (!dir) return { skip: REPAIR_SKIP.storage }
+      const session = await $.session.id()
+      const s = stores($, dir)
+      const done = await s.queue.onChain(q =>
+        handleRepair(
+          {
+            dir,
+            now: () => Date.now(),
+            handoffRunning: () => handoff.inFlight,
+            readLedger: s.ledger.read,
+            readJournal: s.journal.read,
+            readApi: () => apiMessages($),
+            writeMedia: (path, data) => writeMedia($, path, data),
+            readDeliveries: () => s.deliveries.onChain(() => s.deliveries.read(), q),
+            isAborted: () => next.signal.aborted,
+            toast: text => $.ui.toast(text),
+            readTags: s.tags.read,
+            writeTags: s.tags.write,
+            readAliases: s.aliases.read,
+            writeAliases: s.aliases.write,
+            onRegistries: work => s.tags.onChain(t => s.aliases.onChain(a => work(a), t), q),
+            hostId: () => peekHostId(hostId),
+            writeBoundary: b => writeBoundaryAt($, dir, b),
+            clearLedger: () => void s.ledger.update<'change'>(() => emptyLedger(), { onUnreadable: 'change' }).catch(() => undefined),
+            markClean: () => void s.ledger.update(read => cleanLedger(read.value)).catch(() => undefined),
+            pruneDeliveries: gone => void s.deliveries.onChain(() => pruneDeliveries(s.deliveries, gone), q).catch(() => undefined),
+          },
+          e.messages,
+        ),
+      )
+      if ('messages' in done.outcome && !next.signal.aborted) {
+        noteCopies(done.outcome.messages)
+        // [SP_CTX_02_39] the host asks every attachment again; the decisions stay
+        resetPass(attachMem)
+        repairMem.compactedHere = session
+        if (done.summary) repairMem.last = { session, ...done.summary }
+      }
+      return done.outcome
     }
     applies.dir = undefined
     const dir = await storageDir($, true)
     if (!dir) return { skip: modText('storage unavailable') }
     applies.dir = dir
+    const session = await $.session.id()
     // [SP_CTX_02_07] the report counts as the apply's only once the handler
     // returned without an abandon; set on the queue's chain, before the
     // failure branch's write queued behind it reads it
@@ -995,6 +1126,10 @@ export const register: Register = on => {
           pruneDeliveries: done => void s.deliveries.onChain(() => pruneDeliveries(s.deliveries, done), q).catch(() => undefined),
           // [SP_CTX_02_40] the host attachments' decisions of this apply
           attachments: attachPort(attachMem, { store: s.hostattach, readFile: path => readFileText($, path) }),
+          // [SP_CTX_02_45] [SP_CTX_02_44] the originals a resume put back, and this apply's inputs
+          readPulled: () => pulledAt($, dir),
+          compactedHere: () => repairMem.compactedHere === session,
+          recordInputs: (messages, id) => recordInputsAt($, dir, messages, id),
         },
         e.messages,
       )
@@ -1004,7 +1139,11 @@ export const register: Register = on => {
       }
       return done
     })
-    if ('messages' in outcome) noteCopies(outcome.messages)
+    if ('messages' in outcome) {
+      noteCopies(outcome.messages)
+      // [SP_CTX_02_46] this process now reads originals + copies
+      if (!next.signal.aborted) repairMem.compactedHere = session
+    }
     return outcome
   }).catch(($, e, next) => {
     // Never let a failure fall through to a real, summarizing compaction:

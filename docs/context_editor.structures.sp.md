@@ -608,6 +608,7 @@ Invariants:
 
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
+| clean | bool | no | — | лише `true` | Ремонт цієї сесії відповів «nothing to repair» після останнього застосування: NeedsRepair мовчить; RecordInputs і очищення після ремонту поле знімають (рев'ю фази 32) |
 | entries | list<LedgerEntry> | yes | `[]` | Σ `handles` ≤ MAX_LEDGER_HANDLES; серіалізований файл ≤ MAX_QUEUE_BYTES — коли запис перевищив би межу, найстаріші записи видаляються, доки не вміститься | Записи від найстарішого |
 
 LedgerEntry:
@@ -615,7 +616,7 @@ LedgerEntry:
 | Field | Type | Required | Constraints | Description |
 |-------|------|----------|-------------|-------------|
 | at | int | yes | мс від епохи | `reportId` застосування |
-| handles | list<string> | yes | 1..ROW_WINDOW, без повторів | `handle` рядків асистента і рядків з результатами входу застосування (промпти й інші рядки `user` без результатів не записуються — вони нічого не тягнуть) |
+| handles | list<string> | yes | 1..MAX_LEDGER_HANDLES, без повторів (фаза 32, код: `e.messages` не має межі ROW_WINDOW) | `handle` рядків асистента і рядків з результатами входу застосування (промпти й інші рядки `user` без результатів не записуються — вони нічого не тягнуть) |
 
 Invariants:
 - Журнал належить сесії; передача його не переносить (засіяні рядки не мають `handle`).
@@ -654,3 +655,5 @@ Invariants:
 | 2026-10-12 | Фази 29–31 реалізовано: 01_12 — CALIB_TOKENS 5 000 ([SP_CTX_DEC_30](./context_editor.sp.md#SP_CTX_DEC_30) B), CALIB_WAIT_MS (дім — `hooks/flush.ts`), TAG_ROOM і TAGS_FULL_LINE (дім — `hooks/tags.ts`; рядок — функція `tagsFullLine`, бо має підстановки), HANDOFF_PROMPT з рамкою автора, ALIAS_GONE (функція `aliasGone` поруч із LAST_TEXTS у `hooks/aliases.ts`) |
 | 2026-10-12 | Живий прогін фази 29: CALIB_TOKENS знову 20 000 ([SP_CTX_DEC_30](./context_editor.sp.md#SP_CTX_DEC_30) → A, похибка 36–51 %) |
 | 2026-10-12 | Дизайн фази 32 — ремонт після відновлення (спайк context_editor_resume): 01_24 ApplyLedger (`ledger.json`, LedgerEntry); 01_05 — поле `pulledDropped` і речення PULLED_TEXT; 01_07 — файл у переліку сховища; 01_12 — REPAIR_MARKER, REPAIR_DELAY_MS, MAX_LEDGER_HANDLES, REPAIR_REFUSED, REPAIR_LINE, REPAIR_SKIPS, PULLED_TEXT, TOOLREF_TEXT (CF-51), `ledger` у CHAIN_RANK |
+| 2026-10-12 | Код фази 32: 01_24 — `handles` запису 1..MAX_LEDGER_HANDLES (було ROW_WINDOW; вхід обробника компактизації не має межі вікна); розбір і обрізання журналу — у модулі ремонту, ланцюжок `ledger` — у порту сховища |
+| 2026-10-12 | Рев'ю фази 32: 01_24 — поле `clean` (вердикт «nothing to repair») |

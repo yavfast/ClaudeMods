@@ -28,22 +28,23 @@
 ## Subtasks
 
 ### Subtask: Фази 29–31 PL_CTX — калібрування перед застосуванням, теги зниклих рядків, дрібні вади (CF-34, CF-43, CF-52, CF-53)
-> Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 — Status: `in-progress` — Phase: `implement`
+> Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 18:25 — Status: `done` — Phase: `commit`
 > Autonomy: full (фази 29–31) — «Так, і без зупинок на коміти» (розробник, погодження дизайну 2026-10-12)
 
 Три стандартні зміни за пунктами backlog плану («Калібрування символів на токен не бачить вкладень хоста», «Калібрування малої розмови») і аудиту PL_AUD_CTX (CF-34, CF-43, CF-52, CF-53). Код у `mods/` — лише після погодження дизайну з розробником.
 
 - [x] Дизайн (субагент, документи без коду): фаза 29 — первісний дефект калібрування вже виправлено в 0f9e54f (реєстр d5614704: 2,45 замість 1,005); залишок — CalibrateBeforeApply у Flush, ApplyLine за ApiChars, CALIB_TOKENS ([SP_CTX_DEC_30](../../docs/context_editor.sp.md#SP_CTX_DEC_30) proposed, рекомендація B — 5 000); фаза 30 — CF-34 практично не справжній (мертві теги лише між застосуваннями, найбільший реєстр 62 з 1000), PruneDeadTags у спостерігачі чужої компактизації і рядок повного реєстру ([SP_CTX_DEC_31](../../docs/context_editor.sp.md#SP_CTX_DEC_31) proposed, рекомендація B); фаза 31 — рамка автора в HANDOFF_PROMPT, R3 і WorthEditing без `is_error`, ALIAS_GONE; спец 01_10, 01_11, 01_12, 01_20, 02_06, 02_07, 02_11, 02_12, 02_14, 02_16, 02_17, 02_18, 02_21, 02_28, 02_34, 02_43, 05_01, 05_03, 05_04; план [PL_CTX_P29](../../docs/context_editor.plan.md#PL_CTX_P29)–[P31](../../docs/context_editor.plan.md#PL_CTX_P31)
 - [x] Погодження дизайну розробником 2026-10-12: SP_CTX_DEC_30 B (CALIB_TOKENS 5 000), SP_CTX_DEC_31 B (спостерігач); коміти без окремого погодження
-- [ ] Код і тести фаз 29–31, рев'ю, живі сценарії 05_03 (калібрування перед застосуванням; мертві теги після `/compact host`; документ форку передачі), commit sign-off
+- [x] Код і тести фаз 29–31, рев'ю, живі сценарії 05_03 (калібрування перед застосуванням; мертві теги після `/compact host`; документ форку передачі), commit sign-off
 
 **Activity:**
+- 2026-10-12 18:25 — Фази 29–31 закомічено (2546d88, злиття 9c4b3a0): 773 тести; живий прогін — фази 30, 31 pass в обох хостах; фаза 29 — сценарій FAIL (розбивка хоста завищує system+tools на 13–25k), SP_CTX_DEC_30 → A, калібрування за різницею двох запитів → backlog
 - 2026-10-12 — дизайн фаз 29–31 записано в docs/ (без коду, без коміту)
 
 ---
 
 ### Subtask: Фаза 32 — ремонт після відновлення
-> Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 — Status: `in-progress` — Phase: `design`
+> Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 18:25 — Status: `done` — Phase: `commit`
 > Autonomy: full (фаза 32) — «Так, без зупинок (Recommended)» (розробник, погодження дизайну 2026-10-12: SP_CTX_DEC_32 A, DEC_33 A, DEC_34 D, DEC_35 A)
 > Вибір розробника (після спайку context_editor_resume): «Ремонт після відновлення (Recommended)» — застосування в сесії як є (рядки з `handle`, `keep_cache` дозволено), а після відновлення в новому процесі хоста мод один раз, до першого запиту, ремонтує завантажену розмову.
 
@@ -51,10 +52,11 @@
 
 - [x] Спайк [context_editor_resume](../../docs/context_editor_resume.spike.md) (concluded): дублікати дає будь-який рядок асистента з `handle`, і без `keep_cache`; ремонт `repair-twin` з `session.start` чистий (cr2/cr3); `tool_reference` у перебудованому рядку не передати
 - [x] Дизайн (субагент, документи без коду): новий дочірній файл `docs/context_editor.resume.sp.md` — 02_44 RecordInputs (журнал входу `ledger.json`), 02_45 DropPulled (оригінал з журнальним `handle` прибирається лише з двійником; залишкове правило за ідентифікаторами), 02_46 ScheduleRepair/RunRepair (`session.start` → `$.clock.after(REPAIR_DELAY_MS)` → `$.command.run('compact', REPAIR_MARKER)`; `/resume` у процесі — після першого ходу), 02_47 HandleRepair (рядки асистента і результатів без `handle`, промпти з `handle`, медіа файлом, доставки, CheckPairs), 02_48 ToolRefText (CF-51); SP_CTX_DEC_22 виправлено (CF-46); [SP_CTX_DEC_32](../../docs/context_editor.sp.md#SP_CTX_DEC_32)–[SP_CTX_DEC_35](../../docs/context_editor.sp.md#SP_CTX_DEC_35) proposed (рекомендації A, A, D, A); 01_05, 01_07, 01_12, 01_24; 02_02, 02_04, 02_07, 02_10, 02_22; 05_01, 05_03, 05_04; план — фаза 32 [PL_CTX_P32](../../docs/context_editor.plan.md#PL_CTX_P32)
-- [ ] Погодження дизайну розробником: SP_CTX_DEC_32–35
-- [ ] Код і тести фази 32, рев'ю, живі сценарії 05_03 (stream-json і термінал, `/resume` у процесі, передача), тексти `keep_cache` (tools.ts, навичка, CLAUDE.md), commit sign-off
+- [x] Погодження дизайну розробником 2026-10-12: SP_CTX_DEC_32 A, DEC_33 A, DEC_34 D, DEC_35 A
+- [x] Код і тести фази 32, рев'ю, живі сценарії 05_03 (stream-json і термінал, `/resume` у процесі, передача), тексти `keep_cache` (tools.ts, навичка, CLAUDE.md), commit sign-off
 
 **Activity:**
+- 2026-10-12 18:25 — Фаза 32 закомічено: репарація після відновлення, 813 тестів; рев'ю PASS with WARNINGS (4 should + 3 prefer виправлено), живий прогін 5 сценаріїв pass (stream-json, термінал --resume, /resume у процесі, передача після відновлення, регресія); медіа-результат з handle губить правку після --resume — відоме обмеження 05_04
 - 2026-10-12 — дизайн фази 32 записано в docs/ (без коду, без коміту)
 
 ---

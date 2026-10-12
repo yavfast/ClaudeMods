@@ -32,7 +32,8 @@ import {
   type BoundaryMemory,
   type QueuedEdit,
 } from '../hooks/edits'
-import { isReplacementText, REWRITTEN, SUMMARIZED, totalChars } from '../hooks/rows'
+import { isReplacementText, markerKind, pulledWords, REPAIR_MARKER, REWRITTEN, SUMMARIZED, totalChars } from '../hooks/rows'
+import type { Pulled } from '../hooks/repair'
 import { COMMAND_NOTE, EMPTY_QUEUE, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, withCommandNote, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
@@ -1041,4 +1042,87 @@ test('CompactionFailed — a compaction not the mod\'s passes; the seed skips wi
   const nowhere = failing(undefined, batch)
   expect('skip' in compactionFailed(nowhere.io, { trigger: 'manual', instructions: MARKER }, 'x')).toBe(true)
   expect(nowhere.log.changes).toEqual([])
+})
+
+// ---- [SP_CTX_02_45] [SP_CTX_02_44] [SP_CTX_02_47] phase 32: the repair after a resume
+
+test('MarkerKind — ремонт: REPAIR_MARKER repairs, MARKER applies, HANDOFF_MARKER seeds, other text none; a repair failure writes nothing', async () => {
+  expect(markerKind(REPAIR_MARKER)).toBe('repair')
+  expect(markerKind(MARKER)).toBe('apply')
+  expect(markerKind(HANDOFF_MARKER)).toBe('seed')
+  expect(markerKind('context-editor: repair')).toBeUndefined()
+  expect(compactionRoute({ trigger: 'manual', instructions: REPAIR_MARKER })).toBe('repair')
+  expect(compactionRoute({ trigger: 'precompute', instructions: REPAIR_MARKER })).toBe('pass')
+  expect(compactionRoute({ trigger: 'manual', instructions: REPAIR_MARKER, agentId: 'sub' })).toBe('pass')
+  expect(compactionFailure({ trigger: 'manual', instructions: REPAIR_MARKER })).toEqual({ skip: 'context-editor: repair failed', recordFailure: false })
+  // it says who ran it, with no quote a host might escape
+  expect(REPAIR_MARKER).toBe('context-editor: repair the resumed conversation (run automatically by the mod: resuming loaded some answers twice; not by the person)')
+  expect(/['"`]/.test(REPAIR_MARKER)).toBe(false)
+  // the observer of other compactions leaves the mod's repair alone
+  expect(observedBoundary({ trigger: 'manual', instructions: REPAIR_MARKER }, { messages: conversation() })).toBeUndefined()
+})
+
+const pulledLedger = (handles: string[]): Pulled => ({ ledger: { entries: [{ at: 1, handles }] }, applied: true, unreadable: false, clean: false })
+
+function loaded(): SessionMessage[] {
+  const [head, ...rest] = conversation()
+  return [
+    head!,
+    // the original of pair q (the ledger names it) beside its copy
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'q', tool: 'Bash', input: {} }], handle: 'o1' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'q', text: 'out q', isError: false }], handle: 'o2' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'q', tool: 'Bash', input: {} }], handle: 'c1' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'q', text: 'out q', isError: false }], handle: 'c2' },
+    ...rest,
+  ]
+}
+
+test('HandleCompaction — завантажений ланцюжок: the originals go before the edits; pulledDropped and PULLED_TEXT; the inputs recorded after the commit', async () => {
+  const recorded: { handles: (string | undefined)[]; id: number }[] = []
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
+    readPulled: async () => pulledLedger(['o1', 'o2']),
+    recordInputs: (messages, id) => {
+      recorded.push({ handles: messages.map(r => r.handle), id })
+      written.order.push('ledger')
+    },
+  })
+  const out = await handleCompaction(io, loaded())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(out.messages.filter(r => r.toolUses.some(u => u.tool_use_id === 'q')).length).toBe(1)
+  expect(out.messages.filter(r => r.toolResults?.some(t => t.tool_use_id === 'q')).length).toBe(1)
+  expect(written.queue!.report).toContain(pulledWords(2))
+  expect(written.order.at(-1)).toBe('ledger')
+  expect(written.order.indexOf('queue')).toBeLessThan(written.order.indexOf('ledger'))
+  expect(recorded).toEqual([{ handles: ['h0', 'c1', 'c2', 'h1', 'h2', 'h3', 'h4'], id: 1000 }])
+})
+
+test('HandleCompaction — той самий процес: no ledger handle in the input, nothing dropped, no sentence; no record on a skip', async () => {
+  const recorded: number[] = []
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
+    readPulled: async () => pulledLedger(['o1', 'o2']),
+    recordInputs: (_, id) => void recorded.push(id),
+  })
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.queue!.report).not.toContain('resuming the session')
+  expect(recorded).toEqual([1000])
+  const skipped = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
+    writeArchive: async () => false,
+    recordInputs: (_, id) => void recorded.push(id),
+  })
+  await handleCompaction(skipped.io, conversation())
+  expect(recorded).toEqual([1000])
+})
+
+test('HandleCompaction — уже компактизовано тут: the ledger is not read and nothing is dropped, even with ledger handles in the input', async () => {
+  let reads = 0
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
+    readPulled: async () => (reads++, pulledLedger(['o1', 'o2'])),
+    compactedHere: () => true,
+  })
+  const out = await handleCompaction(io, loaded())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(reads).toBe(0)
+  expect(written.queue!.report).not.toContain('resuming the session')
+  expect(out.messages.filter(r => r.toolUses.some(u => u.tool_use_id === 'q')).length).toBe(2)
 })

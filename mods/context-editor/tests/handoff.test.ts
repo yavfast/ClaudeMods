@@ -14,7 +14,7 @@ import {
   type Boundary,
   type BoundaryMemory,
 } from '../hooks/edits'
-import { MARK, totalChars } from '../hooks/rows'
+import { MARK, toolRefWords, totalChars } from '../hooks/rows'
 import {
   awaitSeeded,
   buildSeed,
@@ -2162,4 +2162,43 @@ test('LogApply — передача: "handoff: " and ApplyLine when the seed app
   const { io, s } = host()
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
   expect(s.logs).toEqual([])
+})
+
+// ---- [SP_CTX_02_22] [SP_CTX_02_45] [SP_CTX_02_48] phase 32: BuildSeed after a resume
+
+// conversation() as the read of a resumed process gives it: no handles, and
+// the original of pair c the loader put back beside its copy
+function resumed(): SessionMessage[] {
+  const rows = conversation().map(({ handle: _, ...r }) => r)
+  const orig: SessionMessage[] = [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c', tool: 'Grep', input: { pattern: 'KEY' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'c', text: 'matches', isError: false }] },
+  ]
+  return [...rows.slice(0, 6), ...orig, ...rows.slice(6)]
+}
+
+test('BuildSeed — після відновлення: its rows have no handle (the read of the conversation), so the residual rule drops the repeat and CheckSeed accepts; without an apply in the session it refuses', async () => {
+  const plain = resumed()
+  const residual = built((await seedOf({ rows: plain, transcript: plain, pulled: { ledger: { entries: [] }, applied: true, unreadable: false, clean: false } })).out)
+  expect(residual.rows.filter(r => r.toolUses.some(u => u.tool_use_id === 'c')).length).toBe(1)
+  expect(checkSeed(residual.rows)).toBeUndefined()
+  const none = built((await seedOf({ rows: plain, transcript: plain, pulled: { ledger: { entries: [] }, applied: false, unreadable: false, clean: false } })).out)
+  expect(checkSeed(none.rows)).toBe('row 8: repeated call id c')
+})
+
+test('BuildSeed — результат ToolSearch: the seed names the tools it loaded (TOOLREF_TEXT)', async () => {
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'go', toolUses: [], handle: 'p' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'ts', tool: 'ToolSearch', input: { query: 'select:WebFetch' } }], handle: 'h1' },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'ts', text: '', isError: false }], handle: 'h2' },
+    { role: 'assistant', text: 'loaded', toolUses: [], handle: 'h3' },
+  ]
+  const seedApi = [
+    { role: 'user', content: 'go' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'ts', name: 'ToolSearch', input: {} }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'ts', content: [{ type: 'tool_reference', tool_name: 'WebFetch' }] }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'loaded' }] },
+  ]
+  const seed = built((await seedOf({ rows, transcript: rows, api: seedApi })).out)
+  expect(seed.rows.find(r => r.toolResults?.length)!.toolResults![0]!.text).toBe(toolRefWords(['WebFetch']))
 })

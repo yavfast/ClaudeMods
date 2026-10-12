@@ -8,6 +8,7 @@ import {
   describeEdit,
   dropOwnCallsCounted,
   formatReport,
+  mediaExt,
   ownerKey,
   OWN_TOOLS,
   PINNED,
@@ -25,24 +26,14 @@ import { insertDeliveries, type Deliveries } from './deliveries'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { applyEntry, type JournalEntry } from './journal'
 import { appendReport, keepOtherSteps, markerKind, withCommandNote, type Queue } from './queue'
+import { dropPulled, type Pulled } from './repair'
 import { apiChars, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
-import { rebindNotes } from './notes'
-import { relocateStageMarks } from './stages'
-import { dropLastApply, pinnedTargets, pruneDeadTags, rebindTags, type TagRegistry } from './tags'
+import { rebindAfter } from './notes'
+import { dropLastApply, pinnedTargets, pruneDeadTags, type TagRegistry } from './tags'
 
-const EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-  'application/pdf': 'pdf',
-}
-
-// [SP_CTX_01_06] The file extension of a media file by its media type.
-export function mediaExt(mediaType: string): string {
-  return EXT[mediaType] ?? 'bin'
-}
+// [SP_CTX_01_06] The file extension of a media file (its home: edits.ts).
+export { mediaExt } from './edits'
 
 // [SP_CTX_01_06] A base64 string this long under `base64` or `data` is media data.
 export const MEDIA_DATA = 256
@@ -64,7 +55,8 @@ type CompactionEvent = { agentId?: string; trigger: string; instructions?: strin
 // by `instructions` and no `agentId`, under any trigger but `precompute`: the
 // mod's command arrives as `manual`, as does the person's `/compact MARKER`.
 // The marks before phase 25 match too: a command queued before a reload.
-export type CompactionRoute = 'apply' | 'seed' | 'pass'
+// [SP_CTX_02_47] `repair`: the repair after a resume (phase 32).
+export type CompactionRoute = 'apply' | 'seed' | 'repair' | 'pass'
 
 export function compactionRoute(e: CompactionEvent): CompactionRoute {
   if (e.agentId || e.trigger === 'precompute') return 'pass'
@@ -81,6 +73,9 @@ export function compactionFailure(e: CompactionEvent): { pass: true } | { skip: 
       return { pass: true }
     case 'seed':
       return { skip: modText('seeding failed'), recordFailure: false }
+    // [SP_CTX_02_47] a repair writes nothing on its failure
+    case 'repair':
+      return { skip: modText('repair failed'), recordFailure: false }
     case 'apply':
       return { skip: modText('applying the edits failed'), recordFailure: true }
   }
@@ -155,6 +150,15 @@ export type CompactionIO = {
   // before the commit, the state file written inside it, the catalog started
   // over once the compaction stands; absent: attachments untouched
   attachments?: AttachPort
+  // [SP_CTX_02_45] the ledger of the applies' inputs and whether the session
+  // had an apply, read without a chain (unreadable: empty); absent: none
+  readPulled?: () => Promise<Pulled>
+  // [SP_CTX_02_46] this module instance already compacted the session (an
+  // apply, a seed or a repair): the read is originals + copies, no DropPulled
+  compactedHere?: () => boolean
+  // [SP_CTX_02_44] RecordInputs in the background, on the ledger's chain:
+  // never awaited, its failure changes nothing
+  recordInputs?: (messages: readonly SessionMessage[], id: number) => void
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -164,7 +168,7 @@ const ABANDONED: CompactionOutcome = { skip: modText('compaction abandoned; the 
 
 // [SP_CTX_02_07] Applies the queued batch to the compaction's rows. The
 // caller runs it on the queue's serial chain.
-export async function handleCompaction(io: CompactionIO, messages: readonly SessionMessage[]): Promise<CompactionOutcome> {
+export async function handleCompaction(io: CompactionIO, input: readonly SessionMessage[]): Promise<CompactionOutcome> {
   const read = await io.readQueue()
   if (read.state === 'unreadable') return { skip: modText('queue unreadable') }
   const q = read.value
@@ -172,13 +176,20 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
 
   if (q.handoff) return { skip: modText('handoff pending') }
 
+  // [SP_CTX_02_45] in a loaded chain (the repair refused or not yet run) the
+  // originals a resume put back beside their copies go first, so the apply
+  // never returns them again; in the process that applied, nothing goes
+  const pulled = io.readPulled && !io.compactedHere?.() ? await io.readPulled().catch(() => undefined) : undefined
+  const pulledOut = pulled ? dropPulled(input, pulled.ledger, pulled.applied) : undefined
+  const messages: readonly SessionMessage[] = pulledOut?.kept ?? input
+
   const tokensBefore = await (io.requestTokens?.() ?? Promise.resolve(undefined)).catch(() => undefined)
   const tagsRead = await io.readTags()
   const { edits, refused } = screenPinned(messages, q.edits, tagsRead)
   // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
   const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
   const api = await io.readApi()
-  const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(api, messages)
+  const { found, knownResults, unmatchedPromptMedia, apiTruncated, toolRefs } = collectMedia(api, messages)
   // [SP_CTX_02_43] the person's line sizes the conversation by the API form
   // read here (phase 29); none when it may be cut at its window
   const apiSize = api.length > 0 && !apiTruncated ? apiChars(api) : undefined
@@ -190,11 +201,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   // it ("keep_cache"): the rows before the response of the first change come
   // back as they came, so the prompt cache holds up to it; by default the
   // stretch is rebuilt as before, and --resume stays clean
-  const options = { knownResults, unmatchedPromptMedia, apiTruncated, ...(q.keepCache ? { freeze: { api } } : {}) }
+  const options = { knownResults, unmatchedPromptMedia, apiTruncated, toolRefs, ...(q.keepCache ? { freeze: { api } } : {}) }
   const archive = `${io.dir}/${id}.json`
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
   const frozen = new Set(messages.slice(0, applied.prefix))
   applied.report.failed.unshift(...refused)
+  // [SP_CTX_01_05] PULLED_TEXT in the report
+  if (pulledOut?.dropped.length) applied.report.pulledDropped = pulledOut.dropped.length
   // [C_CTX_01_01] Originals never vanish: without their archive nothing applies.
   if (applied.report.originals.length && !(await io.writeArchive(archive, archiveText(applied.report.originals, media)))) {
     if (io.isAborted()) return ABANDONED
@@ -257,7 +270,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const entry = applyEntry(id, applied.report, archived, messages, edits)
   const boundary = boundaryOf(rows, io.hostId())
   const rebind = (reg: TagRegistry) => {
-    const out = rebindNotes(relocateStageMarks(rebindTags(reg, messages, after, done, q.edits, produced), messages, after, done, produced), messages, after, done, produced)
+    const out = rebindAfter(reg, messages, after, done, q.edits, produced)
     // [SP_CTX_02_28] the telemetry measures what this apply freed
     return { registry: done.length && tokensBefore !== undefined ? { ...out.registry, lastApply: { at: id, tokensBefore } } : out.registry, dropped: out.dropped }
   }
@@ -337,6 +350,13 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
       io.journal(entry)
     } catch {
       // the journal is no part of the application
+    }
+  // [SP_CTX_02_44] RecordInputs: the input rows a later resume may put back
+  if (io.recordInputs && !io.isAborted())
+    try {
+      io.recordInputs(messages, id)
+    } catch {
+      // only the residual rule then recognizes this apply's originals
     }
   // [SP_CTX_02_40] the compaction stands: the host asks every attachment again
   if (attach)
