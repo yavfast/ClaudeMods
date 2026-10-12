@@ -1759,16 +1759,21 @@ export function ownCallsText(n: number, replaced: boolean): string {
 // model never sees it): the conversation's size before and after, then what
 // was freed. The report's estimate: Estimate's rounding (chars / ratio) by the
 // registry's calibrated ratio, PLAIN_RATIO and "approx." without one.
-// "" without an applied edit.
-export function applyLine(r: Pick<ApplyReport, 'applied' | 'failed' | 'charsBefore' | 'charsAfter'>, ratio?: number): string {
+// `apiChars` (phase 29): the chars of the API form the handler read, the
+// host's attachments included as in the calibration's numerator; the size
+// before is then those, the size after them less the chars freed; absent:
+// by the rows, as before phase 29. "" without an applied edit.
+export function applyLine(r: Pick<ApplyReport, 'applied' | 'failed' | 'charsBefore' | 'charsAfter'>, ratio?: number, apiChars?: number): string {
   if (!r.applied.length) return ''
   const per = ratio || PLAIN_RATIO
   const tokens = (chars: number) => Math.max(0, Math.round(chars / per))
   const freed = tokens(r.charsBefore - r.charsAfter)
+  const before = apiChars ?? r.charsBefore
+  const after = before - (r.charsBefore - r.charsAfter)
   const approx = ratio ? '' : 'approx.'
   const head = `applied ${r.applied.length} edit(s)${r.failed.length ? `, ${r.failed.length} not applied` : ''}`
   const notes = [approx, freed > 0 ? `freed ~${kilo(freed)}` : ''].filter(Boolean).join('; ')
-  return `${head}: conversation ~${kilo(tokens(r.charsBefore))} → ~${kilo(tokens(r.charsAfter))} tokens${notes ? ` (${notes})` : ''}`
+  return `${head}: conversation ~${kilo(tokens(before))} → ~${kilo(tokens(after))} tokens${notes ? ` (${notes})` : ''}`
 }
 
 // A token count for the person's line: 950, 4.2k, 41k.

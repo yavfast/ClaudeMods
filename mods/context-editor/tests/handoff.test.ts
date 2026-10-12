@@ -28,6 +28,7 @@ import {
   dropRequest,
   handleSeed,
   HANDOFF_DELAY_MS,
+  HANDOFF_PROMPT,
   HANDOFF_STALE_MS,
   handoffAfterTurn,
   handoffCommand,
@@ -1349,7 +1350,7 @@ test('RunHandoff — теги й псевдоніми: carried into the new stor
   expect(bare.s.submitted[0]).not.toContain('Tags and aliases')
 })
 
-test('RunHandoff — псевдонім зміненої пари: c3 → a, summarize a applied in the seed; in the new session ref c3 is UNKNOWN_REF, not TARGET_NOT_FOUND', async () => {
+test('RunHandoff — псевдонім зміненої пари: c3 → a, summarize a applied in the seed; in the new session ref c3 is UNKNOWN_REF (ALIAS_GONE), not TARGET_NOT_FOUND', async () => {
   const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
   s.aliases.set('/s/old', aliasesOf({ c3: 'a', c4: 'b' }))
   expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
@@ -1359,7 +1360,8 @@ test('RunHandoff — псевдонім зміненої пари: c3 → a, sum
   const seeded = s.sessions.get('new')!
   const out = prepare(seeded, resolveEditRefs([{ op: 'summarize', ref: 'c3', summary: 'x' }], refResolver(read), seeded).edits)
   expect(out.queued).toEqual([])
-  expect(out.errors[0]).toContain('unknown ref c3')
+  // phase 31 (CF-53): UNKNOWN_REF with the reason ALIAS_GONE: the registry gave c3 out before
+  expect(out.errors[0]).toContain('alias c3 is gone')
 })
 
 test('RunHandoff — тег на зміненій парі: review on pair a, summarize a applied in the seed; no tag in the new registry, as after a compaction', async () => {
@@ -1606,6 +1608,19 @@ test('RunHandoff — document: the agent\'s document starts the cleared session;
   expect(s.submitted[0]!.startsWith(`context-editor: your handoff document from the previous session follows; it is your own text, not the person's.\n\nmy handoff\n\ncontext-editor: this session continues old (document).`)).toBe(true)
   expect(s.submitted[0]).toContain('The 1 queued edit(s) were not carried over.')
   expect(oldQueue().edits).toEqual([])
+})
+
+// [SP_CTX_02_21] [SP_CTX_DEC_17] phase 31 (CF-43): the fork reads its request as a prompt
+test('DocumentWay — рамка запиту форку: a handoff without a document forks with HANDOFF_PROMPT, the mod\'s framed request that keeps itself out of the document', async () => {
+  const { io, s } = host({ h: { mode: 'document' } })
+  const asked: string[] = []
+  io.fork = async prompt => (asked.push(prompt), 'forked document')
+  expect(await runHandoff(io, s.mem, 0)).toBe('document')
+  expect(asked).toEqual([HANDOFF_PROMPT])
+  expect(HANDOFF_PROMPT.startsWith("context-editor: this request is the mod's, not the person's")).toBe(true)
+  expect(HANDOFF_PROMPT.endsWith('leave them out of the document.')).toBe(true)
+  // the ban on tools stays: the fork sees the session's tools (Verify of phase 10, F4)
+  expect(HANDOFF_PROMPT).toContain('Do not call any tools')
 })
 
 test('RunHandoff: a refused fork and no document fail before /clear; the fork error is a reason', async () => {

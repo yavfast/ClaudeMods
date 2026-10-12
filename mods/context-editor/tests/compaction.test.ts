@@ -21,10 +21,12 @@ import {
 import {
   boundaryOf,
   fingerprint,
+  kilo,
   newHostIdMemo,
   peekHostId,
   prepare,
   recordBoundary,
+  ROW_WINDOW,
   startHostId,
   type Boundary,
   type BoundaryMemory,
@@ -465,6 +467,23 @@ test('ApplyLine — з обробника: an apply passes its report id and the
   await handleCompaction(gone.io, conversation())
   expect(gone.written.reported).toBe(1000)
   expect(gone.written.line).toBeUndefined()
+})
+
+// [SP_CTX_02_43] phase 29: the handler's API form sizes the person's line;
+// one at its window does not (ApiCut), the rows do
+test('ApplyLine — API-подання з обробника: API chars above the rows\' size the line; a form at its window leaves the rows', async () => {
+  const edits = [{ op: 'summarize' as const, tool_use_id: 'a', summary: 's' }]
+  const tags = okRead({ ...EMPTY_REGISTRY, charsPerToken: 2 })
+  const rowsBefore = totalChars(conversation())
+  const base = harness(queued(edits), {}, tags).io.readApi
+  const big = harness(queued(edits), { readApi: async () => [{ role: 'user', content: 'x'.repeat(rowsBefore + 10_000) }, ...(await base())] }, tags)
+  const out = await handleCompaction(big.io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(big.written.line!.startsWith(`applied 1 edit(s): conversation ~${kilo(Math.round((rowsBefore + 10_000 + 'listing'.length) / 2))} → `)).toBe(true)
+  const cut = harness(queued(edits), { readApi: async () => [...Array.from({ length: ROW_WINDOW - 2 }, () => ({ role: 'user', content: 'x' })), ...(await base())] }, tags)
+  const kept = await handleCompaction(cut.io, conversation())
+  if (!('messages' in kept)) throw new Error(kept.skip)
+  expect(cut.written.line!.startsWith(`applied 1 edit(s): conversation ~${kilo(Math.round(rowsBefore / 2))} → `)).toBe(true)
 })
 
 test('HandleCompaction — правки застосовано: the report carries the size line', async () => {
@@ -938,6 +957,53 @@ test('ObserveCompaction — no boundary, lastApply kept: a subagent, precompute,
   const failed = observer(MEASURED, { writeBoundary: async () => Promise.reject(new Error('disk')) })
   await observeCompaction(failed.io, { trigger: 'auto' }, { messages: rows })
   expect(failed.log.tags.lastApply).toBeDefined()
+})
+
+// [SP_CTX_02_18] [SP_CTX_DEC_31] B (phase 30, CF-34)
+test('PruneDeadTags — чужа компактизація: the tags of pairs and rows the compaction left out go with lastApply in one change; review search on a kept pair, the state slot and a range that stays remain', async () => {
+  const all = conversation()
+  // the host's summary kept the task and the Read pair a, not the context_list pair z
+  const kept = [all[0]!, all[3]!, all[4]!]
+  const range = { anchor: fingerprint(all[3]!), hint: 3, toAnchor: fingerprint(all[4]!), toHint: 4 }
+  const start: TagRegistry = {
+    ...MEASURED,
+    tags: [
+      { kind: 'pin', target: { anchor: fingerprint(all[1]!), hint: 1 }, created_turn: 0 },
+      { kind: 'review', reason: 'big', target: { tool_use_id: 'z' }, created_turn: 0 },
+      { kind: 'review', reason: 'search', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'state', target: { anchor: fingerprint(all[2]!), hint: 2 }, created_turn: 0 },
+      { kind: 'disposable', target: range, note: 'n', created_turn: 0 },
+    ],
+  }
+  const { io, log } = observer(start)
+  await observeCompaction(io, { trigger: 'manual', messages: all }, { messages: kept })
+  expect(log.updates).toBe(1)
+  expect(log.tags.tags.map(t => `${t.kind}${t.reason ? ` ${t.reason}` : ''}`)).toEqual(['review search', 'state', 'disposable'])
+  expect(log.tags.lastApply).toBeUndefined()
+})
+
+test('PruneDeadTags — нічого прибирати: every target kept and no lastApply: no write; a skip, a subagent, the mod\'s markers and precompute leave the registry alone', async () => {
+  const rows = conversation()
+  const live: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 }] }
+  const same = observer(live)
+  await observeCompaction(same.io, { trigger: 'auto', messages: rows }, { messages: rows })
+  expect(same.log.tags).toBe(live)
+  // review fix: a pair appended after the compaction took its input (mid-turn)
+  // is not among its rows, yet its tag lives on
+  const late: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'review', reason: 'big', target: { tool_use_id: 'late' }, created_turn: 0 }] }
+  const midTurn = observer(late)
+  await observeCompaction(midTurn.io, { trigger: 'auto', messages: rows }, { messages: rows.slice(0, 1) })
+  expect(midTurn.log.tags).toBe(late)
+  for (const [e, done] of [
+    [{ trigger: 'manual' }, { skip: 'no' }],
+    [{ trigger: 'auto', agentId: 'x' }, { messages: [] }],
+    [{ trigger: 'manual', instructions: MARKER }, { messages: [] }],
+    [{ trigger: 'precompute' }, { messages: [] }],
+  ] as const) {
+    const h = observer(live)
+    await observeCompaction(h.io, e, done)
+    expect(h.log.updates).toBe(0)
+  }
 })
 
 // ---- [SP_CTX_02_07] CompactionFailed: the handler's `.catch`

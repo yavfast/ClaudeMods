@@ -25,11 +25,11 @@ import { insertDeliveries, type Deliveries } from './deliveries'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { applyEntry, type JournalEntry } from './journal'
 import { appendReport, keepOtherSteps, markerKind, withCommandNote, type Queue } from './queue'
-import { modText, resultsOf, totalChars } from './rows'
+import { apiChars, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
 import { rebindNotes } from './notes'
 import { relocateStageMarks } from './stages'
-import { dropLastApply, pinnedTargets, rebindTags, type TagRegistry } from './tags'
+import { dropLastApply, pinnedTargets, pruneDeadTags, rebindTags, type TagRegistry } from './tags'
 
 const EXT: Record<string, string> = {
   'image/png': 'png',
@@ -58,7 +58,7 @@ function isOwnInstruction(instructions: string | undefined): boolean {
   return markerKind(instructions) !== undefined
 }
 
-type CompactionEvent = { agentId?: string; trigger: string; instructions?: string }
+type CompactionEvent = { agentId?: string; trigger: string; instructions?: string; messages?: readonly SessionMessage[] }
 
 // [SP_CTX_02_07] Which branch of the handler a compaction takes. A match is
 // by `instructions` and no `agentId`, under any trigger but `precompute`: the
@@ -179,6 +179,9 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
   const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
   const api = await io.readApi()
   const { found, knownResults, unmatchedPromptMedia, apiTruncated } = collectMedia(api, messages)
+  // [SP_CTX_02_43] the person's line sizes the conversation by the API form
+  // read here (phase 29); none when it may be cut at its window
+  const apiSize = api.length > 0 && !apiTruncated ? apiChars(api) : undefined
   const mediaOwners = new Set(found.keys())
   const id = io.now()
   const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.dir}/${id}`, io.writeMedia)
@@ -304,7 +307,7 @@ export async function handleCompaction(io: CompactionIO, messages: readonly Sess
       return undefined
     }
     // [SP_CTX_02_43] the person's line goes out after the command (Flush), not from here
-    const line = applyLine(applied.report, ratio)
+    const line = applyLine(applied.report, ratio, apiSize)
     io.reported?.(id, line || undefined)
     return report
   })
@@ -389,8 +392,9 @@ export type ObserveIO = {
 // mod's (the `pass` branch), once `next` answered: the rows it returned are
 // Copied (they may pass session.append again); when it stands, it moves the
 // conversation's start (RecordBoundary) and, being no apply of the mod,
-// leaves nothing to measure: TagRegistry.lastApply goes. A failed write
-// leaves the previous boundary; the compaction stands.
+// leaves nothing to measure: TagRegistry.lastApply goes, and with it the
+// tags of rows it left out (PruneDeadTags, phase 30). A failed write leaves
+// the previous boundary; the compaction stands.
 export async function observeCompaction(io: ObserveIO, e: CompactionEvent, done: { skip?: string; messages?: readonly SessionMessage[] }): Promise<void> {
   if (!e.agentId && done.skip === undefined) io.copies(done.messages)
   try {
@@ -399,7 +403,15 @@ export async function observeCompaction(io: ObserveIO, e: CompactionEvent, done:
     const dir = b && (await io.storage())
     if (b && dir) {
       await io.writeBoundary(dir, b)
-      void io.updateTags(dir)(reg => (reg.lastApply ? dropLastApply(reg) : undefined)).catch(() => undefined)
+      // [SP_CTX_DEC_31] B (phase 30): one change of the registry, the tags of
+      // rows that compaction took and left out go with lastApply; no write
+      // without either
+      const before = e.messages ?? []
+      const after = done.messages ?? []
+      void io.updateTags(dir)(reg => {
+        const next = dropLastApply(pruneDeadTags(reg, before, after))
+        return next === reg ? undefined : next
+      }).catch(() => undefined)
       if (io.attachments) void io.attachments.clear(dir).catch(() => undefined)
     }
   } catch {

@@ -41,8 +41,11 @@ export { ROW_WINDOW }
 // [SP_CTX_01_12]
 export const HANDOFF_DELAY_MS = 1_000
 export const HANDOFF_STALE_MS = 120_000
-export const HANDOFF_PROMPT =
-  "Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Do not call any tools: answer with the document text only. Plain text, no preamble."
+// [SP_CTX_DEC_17] phase 31 (CF-43): the fork reads the request as a prompt;
+// its author's frame and the last sentence keep it out of the document
+export const HANDOFF_PROMPT = modText(
+  "this request is the mod's, not the person's (a handoff to a fresh session is under way). Write a handoff document for a fresh session that continues this work: the person's task and constraints verbatim, decisions in force, facts, numbers, paths and sources still needed, open questions and the next step. Do not call any tools: answer with the document text only. Plain text, no preamble. This request and its rules apply to this answer only: leave them out of the document.",
+)
 // [SP_CTX_01_12] [SP_CTX_DEC_17] The first line of the document prompt: the
 // document is the model's own text (the agent's `document` or a fork of the
 // model), submitted as a `user` prompt (audit PL_AUD_CTX, CF-8).

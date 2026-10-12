@@ -71,6 +71,11 @@ export function lastOrphan(label: string): string {
 export function lastLine(label: string): string {
   return `"last" = ${label}`
 }
+// [SP_CTX_01_12] ALIAS_GONE (phase 31, CF-53): a number the registry gave
+// out, no longer in it (an apply, another compaction or the MAX_ALIASES window)
+export function aliasGone(ref: string): string {
+  return `alias ${ref} is gone: aliases go when an apply changes their pair or the pair leaves the conversation; name the call by its tool_use_id from context_list`
+}
 
 // [SP_CTX_02_17] ResolveLast: the latest call of the conversation written
 // before this one (`callId`), marked or not, the mod's own tools aside; one
@@ -102,12 +107,15 @@ export function resolveLast(rows: readonly SessionMessage[], callId?: string, al
 
 // [SP_CTX_02_17] ResolveRef: `c<n>` by the registry, "last" by the rows (it
 // resolves even when the registry cannot be read); `callId` is the tool_use_id
-// of the context_* call that resolves it.
+// of the context_* call that resolves it. A number given out before and gone
+// since says so (ALIAS_GONE); any other ref is unknown.
 export function refResolver(read: Read<AliasRegistry>, callId?: string): RefResolver {
   const reg = read.state === 'unreadable' ? undefined : read.value
   return (ref, rows) => {
     if (ref === 'last') return resolveLast(rows, callId, reg ? aliasesById(reg) : new Map())
-    if (reg && aliasNumber(ref) !== undefined && owns(reg.map, ref)) return { id: reg.map[ref]! }
+    const n = aliasNumber(ref)
+    if (reg && n !== undefined && owns(reg.map, ref)) return { id: reg.map[ref]! }
+    if (reg && n !== undefined && n < reg.next) return { error: aliasGone(ref) }
     return { error: unknownRef(ref) }
   }
 }
@@ -143,9 +151,10 @@ export function pruneAliases(
 }
 
 // [SP_CTX_02_16] What MarkCall reads from one finished tool call.
-export type CallFacts = { agentId?: unknown; denied: boolean; tool: string; tool_use_id?: string; size: number }
+// `isError`: the host's flag of a failed call (phase 31, CF-52).
+export type CallFacts = { agentId?: unknown; denied: boolean; tool: string; tool_use_id?: string; size: number; isError?: boolean }
 
-type Settled = { deny?: unknown; result?: unknown; text?: unknown }
+type Settled = { deny?: unknown; result?: unknown; text?: unknown; isError?: unknown }
 
 // The size of the result as the model reads it: core's `text`, else the
 // serialized `result` of a hook's own answer.
@@ -157,13 +166,14 @@ export function callFacts(e: { agentId?: unknown; tool: unknown; tool_use_id?: u
     tool: String(e.tool),
     tool_use_id: typeof e.tool_use_id === 'string' && e.tool_use_id ? e.tool_use_id : undefined,
     size,
+    ...(done.isError === true ? { isError: true } : {}),
   }
 }
 
 // [SP_CTX_02_16] Only calls worth editing of the main loop get an alias.
 export function wantsMark(f: CallFacts): boolean {
   if (f.agentId || f.denied || f.tool.startsWith(OWN_TOOLS) || !f.tool_use_id) return false
-  return worthEditing(f.tool, f.size)
+  return worthEditing(f.tool, f.size, f.isError === true)
 }
 
 export function aliasLine(alias: string): string {

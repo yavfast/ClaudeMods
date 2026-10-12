@@ -7,6 +7,7 @@ import type { AliasRegistry } from '../hooks/aliases'
 import {
   blockReport,
   calibrate,
+  calibrateBeforeApply,
   CALIB_MAX,
   CALIB_MIN,
   CALIB_TOKENS,
@@ -22,6 +23,7 @@ import {
   markClose,
   markIndex,
   markLabels,
+  measure,
   MESSAGES_ROW,
   OPTIMIZE_MARK,
   optimizeText,
@@ -909,6 +911,76 @@ test('Calibrate — без API-подання: no form, a failed read or a form 
   }
   expect((await telemetry(rows, reg(), async () => messagesUsage(268_000), update)).ratio).toBeUndefined()
   expect(saved).toEqual([])
+})
+
+// [SP_CTX_02_34] [SP_CTX_DEC_30] A after the live check of phase 29: CALIB_TOKENS stays 20 000
+test('Calibrate — мала розмова: messages 6 000 (below CALIB_TOKENS): the stored ratio, nothing written; messages 20 000, 50 000 API chars: ratio 2.5, written', async () => {
+  expect(CALIB_TOKENS).toBe(20_000)
+  const saved: number[] = []
+  const save = async (v: number) => void saved.push(v)
+  expect(await calibrate(15_000, { measure: 'messages', conversation: 6_000 }, { charsPerToken: 3 }, save)).toBe(3)
+  expect(saved).toEqual([])
+  expect(await calibrate(50_000, { measure: 'messages', conversation: 20_000 }, {}, save)).toBe(2.5)
+  expect(saved).toEqual([2.5])
+})
+
+test('Measure — the size parts of one usage read, as the telemetry shows them', async () => {
+  expect(measure(USAGE)).toEqual({ measure: 'messages', conversation: 12_000, fixed: 70_000, window: 200_000, autoCompactLeft: 78_000, autoCompactOff: false })
+  expect(measure({ context: { tokens: 50_000, window: 200_000 } })).toEqual({ measure: 'request', request: 50_000, window: 200_000, autoCompactOff: false })
+  expect(measure({ context: { window: 200_000 } }).measure).toBe('unknown')
+})
+
+// A host for CalibrateBeforeApply: the registry in memory, every read counted.
+function calibrateHost(over: { usage?: () => Promise<UsageInfo>; api?: () => Promise<readonly unknown[]>; tags?: Read<TagRegistry> } = {}) {
+  const log = { writes: [] as number[], api: 0 }
+  const tags = over.tags ?? missingRead(reg())
+  const io = {
+    usage: over.usage ?? (async () => messagesUsage(30_000)),
+    api: async () => (log.api++, over.api ? over.api() : [{ role: 'user', content: 'x'.repeat(75_000) }]),
+    readTags: async () => tags,
+    updateTags: async (change: (r: TagRegistry) => TagRegistry) => void log.writes.push(change(tags.state === 'unreadable' ? reg() : tags.value).charsPerToken!),
+  }
+  return { io, log }
+}
+
+test('CalibrateBeforeApply — калібрування: no stored ratio, Messages 30 000, 75 000 API chars: 2.5 written on the registry chain; no rows read (the port has none)', async () => {
+  const { io, log } = calibrateHost({ tags: okRead(reg()) })
+  expect(await calibrateBeforeApply(io)).toBe(2.5)
+  expect(log.writes).toEqual([2.5])
+  expect(Object.keys(io).sort()).toEqual(['api', 'readTags', 'updateTags', 'usage'])
+})
+
+test('CalibrateBeforeApply — без калібрування: usage throws / no Messages row / the form at its window / an unreadable or missing registry: no throw, nothing written', async () => {
+  const cut = async () => Array.from({ length: ROW_WINDOW - 1 }, () => ({ role: 'user', content: 'x'.repeat(200) }))
+  const cases = [
+    calibrateHost({ tags: okRead(reg()), usage: async () => Promise.reject(new Error('no usage')) }),
+    calibrateHost({ tags: okRead(reg()), usage: async () => ({ context: { tokens: 50_000, window: 200_000 } }) }),
+    calibrateHost({ tags: okRead(reg()), api: cut }),
+    calibrateHost({ tags: unreadableRead('bad') as Read<TagRegistry> }),
+    calibrateHost(),
+  ]
+  for (const { io, log } of cases) {
+    await calibrateBeforeApply(io)
+    expect(log.writes).toEqual([])
+  }
+  // a stored ratio stays the answer where no new one is measured
+  const kept = calibrateHost({ tags: okRead(reg({ charsPerToken: 3 })), api: cut })
+  expect(await calibrateBeforeApply(kept.io)).toBe(3)
+})
+
+// [SP_CTX_02_28] phase 30 (CF-34): a full registry is named to the agent
+test('Telemetry — повний реєстр: 1000 tags give the Tags line after the notes; 999 tags none; 10 heavy tags the line with 10 tags', async () => {
+  const tag = (i: number, note = 'n'): Tag => ({ kind: 'disposable', target: { tool_use_id: `t${i}` }, note, created_turn: 0 })
+  const lineOf = async (r: TagRegistry) => telemetryText(await telemetry(rows(), r, async () => USAGE)).split('\n').find(l => l.startsWith('Tags:'))
+  const full = await telemetry(rows(), reg({ tags: Array.from({ length: 1000 }, (_, i) => tag(i)) }), async () => USAGE)
+  expect(full.tagsFull?.tags).toBe(1000)
+  expect(await lineOf(reg({ tags: Array.from({ length: 1000 }, (_, i) => tag(i)) }))).toBe(`Tags: the registry is full (1000 tags, ${full.tagsFull!.kb} KB): automatic review tags have stopped; remove tags you no longer need with context_tag "remove"`)
+  expect(await lineOf(reg({ tags: Array.from({ length: 999 }, (_, i) => tag(i)) }))).toBeUndefined()
+  const heavy = await lineOf(reg({ tags: Array.from({ length: 10 }, (_, i) => tag(i, 'x'.repeat(320_000))) }))
+  expect(heavy?.startsWith('Tags: the registry is full (10 tags, ')).toBe(true)
+  // the line comes after the notes line
+  const text = telemetryText(await telemetry(rows(), reg({ tags: Array.from({ length: 1000 }, (_, i) => tag(i)), notes: [{ id: 'n1', target: { tool_use_id: 'a' }, text: 'x', createdTurn: 0 }], nextNote: 2 }), async () => USAGE)).split('\n')
+  expect(text.findIndex(l => l.startsWith('Tags:'))).toBe(text.findIndex(l => l.startsWith('Notes:')) + 1)
 })
 
 test('Estimate — форми: 9000 chars, ratio 1.8 / none', async () => {

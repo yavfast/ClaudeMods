@@ -150,6 +150,32 @@ test('the alias line comes before the reminder in what the model reads after the
   expect(out.result).toBe('r')
 })
 
+// [SP_CTX_02_16] phase 31 (CF-52): a search tool's error is no search output
+test('MarkCall — помилка пошуку: a 200-char Grep error gets no alias; a 5000-char one does by its size; a Grep without an error does', async () => {
+  for (const [over, marked] of [
+    [{ tool: 'Grep', size: 200, isError: true }, false],
+    [{ tool: 'Grep', size: 5000, isError: true }, true],
+    [{ tool: 'Grep', size: 200 }, true],
+  ] as const) {
+    const { io, log } = aliasHarness(empty())
+    expect((await markCall(io, facts(over))) !== undefined).toBe(marked)
+    expect(log.writes).toBe(marked ? 1 : 0)
+  }
+  // the host's flag of a failed call reaches the facts
+  expect(callFacts({ tool: 'Grep', tool_use_id: 'g' }, { text: 'boom', isError: true }).isError).toBe(true)
+  expect(callFacts({ tool: 'Grep', tool_use_id: 'g' }, { text: 'ok', isError: false }).isError).toBeUndefined()
+})
+
+// [SP_CTX_02_17] phase 31 (CF-53)
+test('ResolveRef — прибраний псевдонім: a number the registry gave out and no longer holds says ALIAS_GONE; a number never given and an unreadable registry stay unknown', async () => {
+  const resolve = refResolver(okRead({ next: 6, map: { c5: 'e' } }))
+  expect(resolve('c3', rows())).toEqual({
+    error: 'alias c3 is gone: aliases go when an apply changes their pair or the pair leaves the conversation; name the call by its tool_use_id from context_list',
+  })
+  expect(resolve('c9', rows())).toEqual({ error: 'unknown ref c9 (marked calls carry a "[context-editor] id cN" line after their result)' })
+  expect(refResolver(unreadableRead('x'))('c3', rows())).toEqual({ error: 'unknown ref c3 (marked calls carry a "[context-editor] id cN" line after their result)' })
+})
+
 test('callFacts measures core text, or the serialized result of a hook answer', async () => {
   const e = { tool: 'Read', tool_use_id: 'a' }
   expect(callFacts(e, { result: { file: 1 }, text: BIG }).size).toBe(5000)

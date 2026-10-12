@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MARKER } from '../hooks/compaction'
-import { afterTurn, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, logApplied, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
+import { afterTurn, CALIB_WAIT_MS, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, logApplied, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_RESUME_FRAME, queueEdits, RESUME_FRAME, resumeText, withoutReport, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
@@ -577,4 +577,61 @@ test('LogApply — рядок людини після застосування: 
   expect(await flush(throwing.io, throwing.state, throwing.turns.turns)).toEqual({ outcome: 'compacted', resume: 'submitted' })
   // without the ports (an older binding): nothing
   expect(() => logApplied({}, 7)).not.toThrow()
+})
+
+// ---- [SP_CTX_02_34] [SP_CTX_02_06] CalibrateBeforeApply in Flush (phase 29)
+
+test('Flush — калібрування перед застосуванням: 2 queued edits: calibrate once, before the turn check and the compact MARKER', async () => {
+  const order: string[] = []
+  const h = harness(ok({ edits: EDITS }), {
+    calibrate: async () => void order.push('calibrate'),
+    sleep: () => new Promise(() => undefined),
+  }, l => (order.push('compact'), applied(l)))
+  expect(await flush(h.io, h.state, h.turns.turns)).toEqual({ outcome: 'compacted', resume: 'submitted' })
+  expect(order).toEqual(['calibrate', 'compact'])
+  // a turn that started while calibrating: the check after it sees it, no command
+  const moved = harness(ok({ edits: EDITS }), { calibrate: async () => void turnStarted(moved.turns) })
+  expect((await flush(moved.io, moved.state, moved.turns.turns)).outcome).toBe('person-moved')
+  expect(moved.log.compacts).toEqual([])
+})
+
+test('Flush — калібрування не встигло: a calibrate that never answers waits CALIB_WAIT_MS, one that throws not at all; the command runs either way', async () => {
+  const slept: number[] = []
+  const late = harness(ok({ edits: EDITS }), {
+    calibrate: () => new Promise(() => undefined),
+    sleep: async ms => void slept.push(ms),
+  }, applied)
+  expect((await flush(late.io, late.state, late.turns.turns)).outcome).toBe('compacted')
+  expect(slept).toEqual([CALIB_WAIT_MS])
+  expect(late.log.compacts).toEqual([MARKER])
+  const throwsNow = () => {
+    throw new Error('sync')
+  }
+  for (const calibrate of [async () => Promise.reject(new Error('usage')), throwsNow]) {
+    const failed = harness(ok({ edits: EDITS }), { calibrate, sleep: () => new Promise(() => undefined) }, applied)
+    expect(await flush(failed.io, failed.state, failed.turns.turns)).toEqual({ outcome: 'compacted', resume: 'submitted' })
+    expect(failed.log.compacts).toEqual([MARKER])
+  }
+})
+
+// review fix: a pause the host refuses at once never skips the command
+test('Flush — калібрування: a sleep that throws at once: no wait on a calibrate that never answers; the command runs', async () => {
+  const h = harness(ok({ edits: EDITS }), {
+    calibrate: () => new Promise(() => undefined),
+    sleep: () => {
+      throw new Error('no timer')
+    },
+  }, applied)
+  expect(await flush(h.io, h.state, h.turns.turns)).toEqual({ outcome: 'compacted', resume: 'submitted' })
+  expect(h.log.compacts).toEqual([MARKER])
+})
+
+test('Flush — калібрування без правок: an optimization request or the person\'s /compact without edits never calibrates', async () => {
+  for (const q of [ok({ optimize: true }), ok({ optimize: true, compact: true })]) {
+    let calls = 0
+    const h = harness(q, { calibrate: async () => void calls++ }, undefined, okRead({ ...EMPTY_REGISTRY, lastClosed: { name: 's', after: null, end: null, turn: 0 } }))
+    await flush(h.io, h.state, h.turns.turns)
+    expect(calls).toBe(0)
+    expect(h.log.compacts).toEqual([])
+  }
 })
