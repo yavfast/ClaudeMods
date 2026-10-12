@@ -16,7 +16,7 @@ const HANDOFF: HandoffRequest = { mode: 'transcript', resume: true, resumePrompt
 
 // A host whose /compact runs `onCompact` (the handler) before it returns.
 function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (log: Log) => void, tags: Read<TagRegistry> = missingRead({ ...EMPTY_REGISTRY })) {
-  const log: Log = { queue, compacts: [], submits: [], statuses: [], timers: [], tags, writes: 0 }
+  const log: Log = { queue, compacts: [], submits: [], statuses: [], toasts: [], timers: [], tags, writes: 0, now: 1000, session: 's1' }
   const turns: Turns = newTurns()
   const io: FlushIO = {
     readQueue: async () => log.queue,
@@ -41,12 +41,15 @@ function harness(queue: Read<Queue>, over: Partial<FlushIO> = {}, onCompact?: (l
       if (log.queue.state === 'ok') log.queue = okRead(withoutReport(log.queue.value, delivered))
     },
     status: text => void log.statuses.push(text),
+    toast: text => void log.toasts.push(text),
+    now: () => log.now,
+    sessionId: async () => log.session,
     turns,
     ...over,
   }
   return { io, log, turns, state: newFlushState() }
 }
-type Log = { queue: Read<Queue>; compacts: string[]; submits: string[]; statuses: (string | undefined)[]; timers: { ms: number; fn: () => void }[]; tags: Read<TagRegistry>; writes: number }
+type Log = { queue: Read<Queue>; compacts: string[]; submits: string[]; statuses: (string | undefined)[]; toasts: string[]; timers: { ms: number; fn: () => void }[]; tags: Read<TagRegistry>; writes: number; now: number; session: string }
 
 const ok = (q: Partial<Queue>): Read<Queue> => okRead({ ...EMPTY_QUEUE, ...q })
 // what the handler leaves: the batch gone, a report that asks for the resume

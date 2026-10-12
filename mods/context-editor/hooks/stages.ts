@@ -818,6 +818,28 @@ export function optimizeText(block: ClosedBlock, compacted: boolean, notes = 0):
   )
 }
 
+// [SP_CTX_02_42] [C_CTX_DEC_23] The prompt of the optimization turn the
+// person's plain /compact starts: the whole conversation is the block, the
+// advice is STAGE_ADVICE, and the batch stops the session as an optimization
+// turn's does ([SP_CTX_DEC_16]). The mod's own text: the host's frame of a
+// plugin's prompt says it starts the turn "in the user's place".
+export function compactTurnText(notes = 0): string {
+  return (
+    modText(
+      "the person ran /compact. With this mod on, the host's summary does not run: you compress the conversation yourself in this turn, and the mod applies your batch when the turn ends.",
+    ) +
+    ' Call context_list ("count":0 gives the telemetry and the candidates by reason; then list the rows from the start). Close an open stage whose work is done with context_tag {"tags":[{"op":"close"}]}; then treat the conversation up to the current work as the block: collapse finished stages into stage records and summarize big outputs you have used.' +
+    notesHint(notes) +
+    '\n' +
+    STAGE_ADVICE +
+    '\nThe session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if a task was running and should go on. End your turn with a one-line status. The optimization mark has no effect in this turn.'
+  )
+}
+
+// [SP_CTX_01_12] [SP_CTX_02_42] The toast when the compression turn of the
+// person's /compact ended (not interrupted) with nothing queued.
+export const COMPACT_NOTHING = modText("/compact: the agent compressed nothing; /compact host runs the host's summary.")
+
 // [SP_CTX_02_29] The advice with the person's prompt when no optimization turn ran.
 export function personAdvice(block: ClosedBlock, notes = 0): string {
   return (
@@ -892,6 +914,9 @@ export type DetectIO = {
   // QueueTagReplacements on the queue chain ([SP_CTX_02_13])
   replace: () => Promise<unknown>
   status: (text: string) => void
+  // [SP_CTX_02_42] what the person must see in every host
+  toast: (text: string) => void
+  now: () => number
 }
 
 export type DetectOutcome =
@@ -911,14 +936,21 @@ export type DetectOutcome =
 export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer?: string }): Promise<DetectOutcome> {
   const ready = await io.ready()
   let prompted = false
+  // [SP_CTX_02_42] the end of the compression turn of the person's /compact, and whether it queued anything
+  let compacted: { empty: boolean } | undefined
   if (ready)
     await io
       .changeQueue(read => {
         if (read.state !== 'ok' || !read.value.optimizePrompted) return undefined
         prompted = true
-        return { ...read.value, optimizePrompted: false }
+        if (read.value.compact) compacted = { empty: read.value.edits.length === 0 }
+        // [SP_CTX_02_42] the batch of an ended compression turn waits for its Flush: compactEndedAt
+        const { compactEndedAt: _ended, ...rest } = read.value
+        return { ...rest, optimizePrompted: false, compact: false, ...(read.value.compact && !e.aborted ? { compactEndedAt: io.now() } : {}) }
       })
       .catch(() => undefined)
+  // COMPACT_NOTHING: the host's summary is never run in its place
+  if (compacted?.empty && !e.aborted) io.toast(COMPACT_NOTHING)
   if (e.aborted || !hasOptimizeMark(e.answer)) return 'none'
   // MARK_IN_OPTIMIZATION: silently ignored; the mod never loops
   if (prompted) return 'in-optimization'

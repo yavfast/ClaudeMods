@@ -529,7 +529,7 @@ function longRows(): SessionMessage[] {
 }
 
 function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = okRead({ ...EMPTY_QUEUE }), over: Partial<DetectIO> = {}) {
-  const log = { tags, queue, statuses: [] as string[], replaces: 0, order: [] as string[] }
+  const log = { tags, queue, statuses: [] as string[], toasts: [] as string[], replaces: 0, order: [] as string[] }
   const list = longRows()
   const io: DetectIO = {
     ready: async () => true,
@@ -554,6 +554,8 @@ function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = okRead({ ..
       log.order.push('replace')
     },
     status: text => void log.statuses.push(text),
+    toast: text => void log.toasts.push(text),
+    now: () => 5000,
     ...over,
   }
   return { io, log, list }

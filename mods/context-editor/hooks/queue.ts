@@ -58,6 +58,16 @@ export type Queue = {
   // Only DetectOptimize, Flush and DeliverReport change these two; every other
   // write of the queue carries them over as read ([SP_CTX_01_04]).
   optimizePrompted: boolean
+  // [SP_CTX_02_42] the request (`optimize`) or the turn (`optimizePrompted`)
+  // is the person's /compact: the whole conversation, CompactTurnText, no
+  // closed block needed. Never true without one of the two; it leaves with them.
+  compact: boolean
+  // [SP_CTX_02_42] when the compression turn ended (ms); its Flush has not
+  // run yet. A /compact the host held until that end is busy while a Flush is
+  // planned or for FLUSH_STALE_MS after the end (the end plans its Flush a
+  // moment later; live scenario 8). Flush clears it when it runs, a new
+  // request clears it; past that window without a Flush it decides nothing.
+  compactEndedAt?: number
 }
 
 export const EMPTY_QUEUE: Queue = {
@@ -71,6 +81,7 @@ export const EMPTY_QUEUE: Queue = {
   reportPrompt: DEFAULT_RESUME,
   optimize: false,
   optimizePrompted: false,
+  compact: false,
 }
 
 // [SP_CTX_01_04] The queue once its batch is gone (applied, failed, handed
@@ -88,6 +99,8 @@ export function keepOtherSteps(q: Queue | undefined): Queue {
     reportPrompt: q.reportPrompt,
     optimize: q.optimize,
     optimizePrompted: q.optimizePrompted,
+    compact: q.compact,
+    ...(q.compactEndedAt !== undefined ? { compactEndedAt: q.compactEndedAt } : {}),
     ...(q.handoff ? { handoff: q.handoff } : {}),
   }
 }
@@ -127,6 +140,9 @@ export function parseQueue(text: string): Read<Queue> {
     q.handoff !== undefined && !isHandoff(q.handoff) && 'handoff',
     typeof q.optimize !== 'boolean' && 'optimize',
     typeof q.optimizePrompted !== 'boolean' && 'optimizePrompted',
+    // a file written before phase 25 has no `compact`: the default false
+    (typeof q.compact !== 'boolean' || (q.compact && !q.optimize && !q.optimizePrompted)) && 'compact',
+    q.compactEndedAt !== undefined && typeof q.compactEndedAt !== 'number' && 'compactEndedAt',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badEdit = q.edits.findIndex(e => !isQueuedEdit(e))
@@ -169,10 +185,46 @@ const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-no
 // leading closed spans the host puts before the person's words (VS Code: the open file)
 // (`<system-reminder id="…">`: a subagent's report, [SP_CTX_02_02], phase 20)
 const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)(?:\s[^>]*)?>[\s\S]*?<\/\1>/
-// [SP_CTX_01_12] The mod's compaction marks (compaction.ts re-exports them):
-// queue.ts must not import compaction.ts, which imports it.
-export const MARKER = modText('apply queued edits')
-export const HANDOFF_MARKER = modText('seed the handed-off conversation')
+// [SP_CTX_01_12] [SP_CTX_DEC_26] The mod's compaction marks (compaction.ts
+// re-exports them): the model reads them in the rows of the command
+// (`/compact <args>`, which the host frames as run by the person), so each
+// says who ran it. queue.ts must not import compaction.ts, which imports it.
+// (no apostrophe or other quote: nothing a host might escape breaks the exact match)
+export const MARKER = modText('apply queued edits (run automatically by the mod for context edits the agent queued, not by the person)')
+export const HANDOFF_MARKER = modText('seed the handed-off conversation (run automatically by the mod, not by the person)')
+// [SP_CTX_01_12] The marks before phase 25: rows of earlier applies, and a
+// command an older instance of the module queued before a reload.
+export const LEGACY_MARKER = modText('apply queued edits')
+export const LEGACY_HANDOFF_MARKER = modText('seed the handed-off conversation')
+
+// [SP_CTX_01_12] [SP_CTX_02_07] Which of the mod's compactions a command's
+// args name, by the marks of now or before phase 25; exact text only.
+export function markerKind(text: string | undefined): 'apply' | 'seed' | undefined {
+  if (text === MARKER || text === LEGACY_MARKER) return 'apply'
+  if (text === HANDOFF_MARKER || text === LEGACY_HANDOFF_MARKER) return 'seed'
+  return undefined
+}
+
+// [SP_CTX_01_05] [SP_CTX_DEC_26] CommandNote: the sentence every apply report
+// ends with when it enters the queue; the host frames the command's rows as
+// the person's, and the model took them for the person's command. A message
+// that delivers several reports carries it once (NoteOnce).
+export const COMMAND_NOTE = `A /compact command row whose args start with "${PREFIX}" is a service command the mod ran (here: to apply your queued edits); the person did not run it.`
+
+// [SP_CTX_01_05] An apply report with CommandNote.
+export function withCommandNote(report: string): string {
+  return `${report} ${COMMAND_NOTE}`
+}
+
+// [SP_CTX_01_05] NoteOnce: the reports as one message delivers them, with
+// CommandNote only after the last report that has it. Only the delivered
+// text changes: RemoveDelivered matches the queue's own text.
+export function noteOnce(reports: string): string {
+  const note = ` ${COMMAND_NOTE}`
+  const last = reports.lastIndexOf(note)
+  if (last < 0) return reports
+  return reports.slice(0, last).split(note).join('') + reports.slice(last)
+}
 // [SP_CTX_01_12] The start of a built-in compaction's summary (spike
 // context_editor_handoff_long, Entry 2).
 export const SUMMARY_OPENER = 'This session is being continued from a previous conversation'
@@ -190,8 +242,8 @@ export function personText(raw: string): string {
   if (t.includes('<command-name>')) {
     const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(t)?.[1]?.trim()
     const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim() ?? ''
-    // only the mod's own /compact with its exact marker (review round 41)
-    if (name === '/compact' && (args === MARKER || args === HANDOFF_MARKER)) return ''
+    // only the mod's own /compact with its exact marker, of now or before (review round 41)
+    if (name === '/compact' && markerKind(args) !== undefined) return ''
     return args
   }
   if (t.startsWith(MARK) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
@@ -407,10 +459,17 @@ export type Settle = { delivered?: string; optimizeDone: boolean; tookOver: bool
 // [SP_CTX_02_08] The queue after Settle; the same queue when nothing changes.
 export function settledQueue(q: Queue, s: Settle): Queue {
   let next = s.delivered !== undefined ? withoutReport(q, s.delivered) : q
-  if (s.optimizeDone && next.optimize) next = { ...next, optimize: false }
-  if (s.tookOver && next.optimizePrompted) next = { ...next, optimizePrompted: false }
+  // [SP_CTX_02_42] `compact` leaves with the request or the turn it marks
+  if (s.optimizeDone && next.optimize) next = { ...next, optimize: false, compact: false }
+  if (s.tookOver && next.optimizePrompted) next = { ...next, optimizePrompted: false, compact: false }
   return next
 }
+
+// [SP_CTX_02_42] The advice with the person's prompt when the compression
+// turn of their /compact did not run (the prompt came first).
+export const COMPACT_ADVICE = modText(
+  "the person ran /compact before this prompt, and the compression turn did not run. When it suits the person's request, compress the conversation: close finished stages, collapse finished blocks into stage records, summarize big outputs you have used; keep the person's messages, rules and skills in force verbatim. Edits apply when your turn ends.",
+)
 
 // What DeliverReport needs from the host; register.ts binds it to `$`.
 export type DeliverIO<R> = {
@@ -447,10 +506,11 @@ export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<
   if (intro) context.push(intro)
   const read = await io.readQueue().catch((): Read<Queue> => ({ state: 'unreadable', reason: 'read failed' }))
   const q = read.state === 'ok' ? read.value : undefined
-  if (q?.report) context.push(q.report)
+  if (q?.report) context.push(noteOnce(q.report))
   if (q?.optimize) {
+    // [SP_CTX_02_42] the person's /compact needs no block: its own advice
     // ADVICE_FAILED / ADVICE_NO_BLOCK: the prompt goes without it, once
-    const advice = await io.advice().catch(() => undefined)
+    const advice = q.compact ? COMPACT_ADVICE : await io.advice().catch(() => undefined)
     if (advice) context.push(advice)
   }
   // [SP_CTX_02_37] the advice of an optimization request already says what to compress

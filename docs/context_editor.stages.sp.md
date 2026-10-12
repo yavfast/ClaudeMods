@@ -6,7 +6,7 @@
 > **Updated:** 2026-10-12
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
-> §02 Contracts 02_27–02_38 специфікації [SP_CTX](./context_editor.sp.md): контракти SessionIntro, Telemetry, StageBlock, DetectOptimize, Journal, `context_note`, NoteReminders, Estimate, RecordDelivery, InsertDeliveries, SoftHint, CacheCost. Читати перед зміною `hooks/stages.ts`, `notes.ts`, `journal.ts`, `deliveries.ts`, `hints.ts` або `cache.ts`.
+> §02 Contracts 02_27–02_38 і 02_42 специфікації [SP_CTX](./context_editor.sp.md): контракти SessionIntro, Telemetry, StageBlock, DetectOptimize, Journal, `context_note`, NoteReminders, Estimate, RecordDelivery, InsertDeliveries, SoftHint, CacheCost, PersonCompact (`/compact` людини, фаза 25). Читати перед зміною `hooks/stages.ts`, `notes.ts`, `journal.ts`, `deliveries.ts`, `hints.ts`, `cache.ts` або `personcompact.ts`.
 
 ## Contents
 
@@ -24,6 +24,7 @@
 - [02_36. InsertDeliveries](#SP_CTX_02_36)
 - [02_37. SoftHint](#SP_CTX_02_37)
 - [02_38. CacheCost](#SP_CTX_02_38)
+- [02_42. PersonCompact](#SP_CTX_02_42)
 
 ## 02. Contracts — етапи, телеметрія, нотатки, доставки, нагадування, кеш
 
@@ -186,7 +187,8 @@ Input: подія завершення ходу (`agentId?`, `isAborted`, `answe
 Processing logic (pseudocode):
     ON turn completed (main loop, aborted or not), on the registry chain, before TagRegistry.turn += 1 (преамбула 02):
         prompted = false
-        IF storage ready: on the queue chain: q = read Queue; IF ok AND q.optimizePrompted: prompted = true; optimizePrompted = false; write   # кінець ходу оптимізації знімає запобіжник
+        IF storage ready: on the queue chain: q = read Queue; IF ok AND q.optimizePrompted: prompted = true; empty = q.compact AND len(q.edits) = 0; optimizePrompted = false; compact = false; compactEndedAt = (q.compact AND NOT aborted) ? now : absent; write   # кінець ходу оптимізації знімає запобіжник; SP_CTX_02_42: і `compact` ходу стискання
+        IF empty AND NOT aborted: toast COMPACT_NOTHING                         # хід стискання нічого не поставив; підсумку хоста мод не запускає
         IF aborted OR LastLine(answer) ≠ OPTIMIZE_MARK: RETURN                # LastLine — останній рядок, непорожній після обрізання пробільних символів, обрізаний
         IF prompted: RETURN                                                   # MARK_IN_OPTIMIZATION: мітка у відповіді ходу оптимізації не діє — мод не входить у петлю
         IF storage unavailable: status "context-editor: optimization mark ignored: storage unavailable"; RETURN
@@ -216,6 +218,7 @@ Errors (жодна не виходить до агента; рядок стан�
 | MARK_REGISTRY_UNREADABLE | TagRegistry `unreadable` або не записався | мітка ігнорується; блок не закрито |
 | MARK_HANDOFF | у черзі запит передачі | мітка ігнорується: передача переносить розмову цілою, а оптимізацію агент може попросити в новій сесії |
 | MARK_IN_OPTIMIZATION | `optimizePrompted` був `true` — це відповідь ходу оптимізації | мітка ігнорується мовчки; прапорець знято |
+| COMPACT_NOTHING | кінець ходу стискання `/compact` людини (`compact`), не перерваного, без жодної правки в черзі | спливне повідомлення COMPACT_NOTHING ([SP_CTX_02_42](#SP_CTX_02_42)); `compact` знято разом із запобіжником |
 | MARK_NO_REPLACEMENTS | QueueTagReplacements кинув виняток | заміни з тегів не поставлено (теги лишаються до наступного закриття етапу чи мітки); блок закрито, `optimize` пишеться як завжди |
 | MARK_NOT_QUEUED | реєстр уже записано (блок закрито), а запис черги не вдався або повторне читання черги знайшло `unreadable` чи `handoff` | блок лишається закритим у реєстрі; ходу оптимізації і поради немає; рядок стану «the block is closed, but no optimization turn: <причина>»; агент може закрити наступний блок або поставити мітку знову |
 
@@ -564,6 +567,72 @@ BreakEven — точка беззбитковості спайку ефекти�
 
 Errors: відмов немає (чисті функції).
 
+### 02_42. PersonCompact  {#SP_CTX_02_42}
+
+> **Criticality:** core
+
+Purpose: `/compact` людини, коли мод увімкнено ([C_CTX_DEC_23](./context_editor.concept.md#C_CTX_DEC_23), рішення розробника «Агент стискає сам (Recommended)»): без аргументів — не підсумок хоста, а хід оптимізації на всю розмову (хід стискання), у якому агент стискає сам; `/compact host` — стандартний підсумок хоста; `/compact <інструкції>` людини і будь-яка `/compact` розширення (MARKER і HANDOFF_MARKER самого мода теж) — до хоста без змін. Автоматична компактизація хоста команди не запускає і цим контрактом не зачіпається ([SP_CTX_DEC_27](./context_editor.sp.md#SP_CTX_DEC_27)).
+
+Хук лише пише запит у чергу і планує Flush ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)): запит — `Queue.optimize` з `Queue.compact` ([SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04)). Далі все йде шляхом мітки оптимізації: Flush спершу застосовує те, що в черзі, потім надсилає рівно один промпт — CompactTurnText замість промпту продовження; DetectOptimize на кінці ходу стискання знімає запобіжник і `compact` і, якщо хід нічого не поставив у чергу, каже людині спливним повідомленням ([SP_CTX_02_30](#SP_CTX_02_30)); DeliverReport віддає COMPACT_ADVICE з промптом людини, якщо хід стискання не почався ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)). Один порядок — спершу застосування, потім один промпт — і жодних паралельних таймерів (рев'ю фази 25: окремий таймер хука змагався з Flush).
+
+Логіка — чисті функції `hooks/personcompact.ts` (CompactRoute, RequestCompact, PersonCompact, CompactFailure) за портом PersonCompactIO: сховище й id сесії одним читанням (CONC-01), Update черги в цьому каталозі, ознака покинутого хука (`next.signal`, CONC-02), планування Flush (RequestFlush), спливне повідомлення; зв'язування — хук `command.run` з матчером `{ command: 'compact' }` у `register.ts`. Текст промпту — CompactTurnText у `hooks/stages.ts`. Пам'яті модуля, окремої від Flush, немає: «зайнято» читається з черги і з `FlushState`.
+
+Input: подія `command.run` (`command = compact`, `args`, `origin`; типи хоста `CommandRunInput`).
+
+Processing logic (pseudocode):
+    CompactRoute(e) =
+        e.origin.kind = plugin                     → pass        # застосування мода, засів, інші розширення
+        trim(e.args) = ""                          → agent       # людина: composer, sdk, unclassified, bridge — будь-яке походження, крім plugin
+        lower(trim(e.args)) = HOST_ARG             → host
+        otherwise                                  → pass        # власні інструкції людини для підсумку хоста
+
+    RequestCompact(q, planned) =
+        q.handoff present                                          → handoff
+        q.compact AND (q.optimizePrompted OR (q.optimize AND planned)) → busy   # хід стискання йде, або запит є і Flush заплановано
+        q.compactEndedAt present AND (planned OR now − q.compactEndedAt ≤ FLUSH_STALE) → busy   # хід стискання скінчився, Flush його кінця ще не виконано: хост тримає /compact, набрану під час ходу, до його кінця, і хук може спрацювати ще до планування Flush (живий сценарій 8)
+        otherwise → written: q with optimize = true, optimizePrompted = false, compact = true, compactEndedAt absent   # запит мітки стає цим (уся розмова покриває блок); запит, чий Flush загубився, пишеться й планується знову
+
+    ON command.run compact (e):                                   # хук, на який хід не чекає (як /handoff)
+        route = CompactRoute(e)
+        IF route = pass: RETURN next(e)                            # нічого не читається і не чекається до next
+        IF route = host: RETURN next(e with args = "")             # стандартний підсумок хоста
+        (dir, session) = storage and session id, read once         # CONC-01; немає або кидає → RETURN next(e) (COMPACT_NO_STORAGE)
+        on the queue chain in dir: IF hook aborted: no write (aborted) ELSE RequestCompact(q, IsPlanned(FlushState, now))   # CONC-02: остання перевірка перед записом
+        IF handoff: RETURN { text: COMPACT_HANDOFF }
+        IF busy: RETURN { text: COMPACT_BUSY }
+        IF aborted: RETURN { text: COMPACT_REFUSED }               # нічого не записано
+        IF queue unreadable OR write failed: RETURN next(e)        # COMPACT_NO_STORAGE
+        IF hook aborted: undo; RETURN { text: COMPACT_REFUSED }    # optimize, optimizePrompted, compact — як прочитано
+        TRY RequestFlush(session)                                  # SP_CTX_02_06: FlushState.compactSession = session; планує, якщо Flush не заплановано
+        CATCH err (the host refused the timer): undo; toast "context-editor: /compact: <err>"; RETURN { text: COMPACT_REFUSED }   # COMPACT_REFUSED: нічого не лишається запланованим чи запитаним
+        RETURN { text: COMPACT_REPLY }                             # без next: хост не запускає компактизації
+
+    ON hook failure (.catch): CompactFailure(e, { called, kind }) =
+        called OR kind = re-entry OR e.origin.kind = plugin → next(e)   # повтор next безпечний; власний $.command.run мода хост пропускає як re-entry (навичка plugin-hooks, пункт 60)
+        otherwise → { text: "compact failed: <kind>; /compact host runs the host's summary" }   # COMPACT_HOOK_FAILED
+
+    CompactTurnText(notes) = "context-editor: the person ran /compact. With this mod on, the host's summary does not run: you compress the conversation yourself in this turn, and the mod applies your batch when the turn ends."
+        + " Call context_list (\"count\":0 gives the telemetry and the candidates by reason; then list the rows from the start). Close an open stage whose work is done with context_tag {\"tags\":[{\"op\":\"close\"}]}; then treat the conversation up to the current work as the block: collapse finished stages into stage records and summarize big outputs you have used."
+        + NotesHint(notes) + "\n" + STAGE_ADVICE
+        + "\nThe session stops after this batch: pass \"resume\": true (or a resume_prompt) in context_edit only if a task was running and should go on. End your turn with a one-line status. The optimization mark has no effect in this turn."
+
+Хід стискання — звичайний хід оптимізації ([SP_CTX_04_06](./context_editor.states.sp.md#SP_CTX_04_06)): Flush (Optimize) для `compact` не перевіряє закритого блоку і надсилає CompactTurnText; заміна `optimize → optimizePrompted` переносить `compact`; мітку в відповіді ходу DetectOptimize ігнорує; `context_edit` без `resume` у ньому ставить `resume = false` ([SP_CTX_DEC_16](./context_editor.sp.md#SP_CTX_DEC_16)), тож після застосування сесія зупиняється, а звіт іде з наступним промптом людини. Пакет, що вже в черзі, застосовується до промпту, і звіт його застосування їде в тексті промпту стискання. Збої шляху `compact` у Flush (відмова команди, промпт відхилено) людина бачить спливним повідомленням, а не лише рядком стану, якого у VS Code / stream-json може не бути. Промпт — власний текст мода з PREFIX: хост обгортає його рамкою «The context-editor plugin sent a message: … in the user's place» (навичка plugin-hooks, пункт 57), тож текст сам каже, що `/compact` запустила людина, а пише — мод ([SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17)). Відповідь мода на команду (COMPACT_REPLY) модель теж бачить рядком виводу команди, тому вона говорить про людину й агента в третій особі.
+
+Хід, що вже йде. Вбудована `/compact` без `immediate`: набрана посеред ходу, вона чекає його кінця, і хук спрацьовує, коли сесія вільна (живий прогін: ~80 мс після `turn.complete`). Якщо Flush того ходу вже заплановано, другого таймера немає: той самий Flush застосовує пакет і надсилає промпт стискання замість промпту продовження. Хід, що почався до промпту (OPTIMIZE_PERSON), не переривається: запит лишається для DeliverReport. Сесія, перемкнена `/clear` чи `/resume` між командою і таймером, — Flush пропускає промпт зі спливним повідомленням (COMPACT_SESSION_CHANGED), запит лишається в черзі старої сесії, і DeliverReport віддасть пораду з першим промптом там.
+
+Відповідь мода (`text` без `next`) хост показує як вивід команди під назвами розширень, що чіпляють команду, і пише рядками команди (`<command-name>/compact</command-name>`, порожні аргументи, `<local-command-stdout>`); PersonText читає їх як порожні ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)). Компактизації немає: обробник `session.compact` не викликається (живий прогін: «answered command.run without next(); nothing beneath it ran»). У stream-json ці рядки лишаються серед рядків розмови і після застосування пакета ходу стискання, у терміналі — ні (навичка plugin-hooks, пункт 60).
+
+Errors:
+| Code | Condition | Guidance |
+|------|-----------|----------|
+| COMPACT_NO_STORAGE | сховища немає, читання сховища кидає, черга `unreadable` або запис не вдався | команда йде до хоста як без мода (підсумок хоста) |
+| COMPACT_HANDOFF | у черзі запит передачі | відповідь COMPACT_HANDOFF; нічого не записано і не заплановано |
+| COMPACT_BUSY | хід стискання йде (`compact` і `optimizePrompted`), запит є і Flush заплановано, або хід стискання скінчився, а Flush його кінця ще не виконано (`compactEndedAt`: Flush заплановано або минуло ≤ FLUSH_STALE від кінця) | відповідь COMPACT_BUSY; другого запиту, таймера і промпту немає. `compactEndedAt` знімає Flush, коли виконується, і новий запит; поза вікном без Flush він нічого не вирішує |
+| COMPACT_REFUSED | хук покинуто до запису чи після нього, або хост відхилив таймер | запит повернуто як прочитано, нічого не заплановано; відповідь COMPACT_REFUSED (при відмові таймера ще й спливне повідомлення з причиною); наступна `/compact` планує знову |
+| COMPACT_SESSION_CHANGED | сесія змінилась між командою і таймером Flush | спливне повідомлення «/compact skipped: the session changed …»; промпту немає |
+| COMPACT_NOTHING | хід стискання скінчився (не перерваний) без жодної правки в черзі | спливне повідомлення COMPACT_NOTHING (DetectOptimize); підсумку хоста мод не запускає |
+| COMPACT_HOOK_FAILED | хук кинув виняток чи перевищив бюджет до `next` для походження людини | CompactFailure: відповідь «compact failed: <kind>; /compact host runs the host's summary»; компактизації немає |
+
 ## Changelog
 
 | Date | Change |
@@ -581,3 +650,6 @@ Errors: відмов немає (чисті функції).
 | 2026-10-12 | Калібрування бачить вкладення хоста (беклог, сесія d5614704): 02_34 — Calibrate ділить символи API-подання (ApiChars) на Whole, без подання лишає збережене відношення; 02_28 — `t.attached`, `t.chars`, Whole, `cache.tokens` за TailTokens, Telemetry бере `cache = false`; 02_37 — Measure калібрує за API-поданням і повертає `whole`, Propose передає його в CacheCost і BreakEven; 02_38 — ApiTailChars, TailTokens, глибокий запис = Whole − freed |
 | 2026-10-12 | Калібрування бачить вкладення хоста, рев'ю і живий прогін (сесія ac285189: відношення 2,43 при істині ≈2,38, після трьох застосувань 2,73 при ≈2,58, стара формула ≈1,49 і падала; «freed» −20…+10 % від виміряного, нагадування в межах ~5 %): 02_28 — рядок розміру називає вкладення першого повідомлення окремо від незмінної частини (`fixed part (system prompt, tools) ~<fixed − attached>; attached in the first message … ~<attached>`), хвіст рядка `Cache` — тисячами (tokensText), ApiCut замість `len < ROW_WINDOW`; 02_37 — запис застосування названо «all the request's messages» |
 | 2026-10-12 | Фаза 24: 02_28 — рядок `Host attachments` телеметрії `context_list` (HostAttachState.left; [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) |
+| 2026-10-12 | Фаза 25: 02_42 PersonCompact — `/compact` людини з модом: хід стискання (хід оптимізації на всю розмову), CompactTurnText, CompactTurnEnded зі спливним повідомленням, `/compact host`, походження plugin і власні інструкції — до хоста ([C_CTX_DEC_23](./context_editor.concept.md#C_CTX_DEC_23), [SP_CTX_DEC_27](./context_editor.sp.md#SP_CTX_DEC_27)) |
+| 2026-10-12 | Фаза 25, рев'ю і живий прогін: 02_42 — запит у черзі (`Queue.compact`) і Flush замість окремого таймера (один порядок: застосування, потім один промпт), RequestCompact, COMPACT_BUSY і для ходу, що йде, COMPACT_REFUSED (покинутий хук, відмова таймера), COMPACT_SESSION_CHANGED, CompactFailure — чиста функція; 02_30 — кінець ходу стискання знімає `compact` і дає COMPACT_NOTHING |
+| 2026-10-12 | Фаза 25, живий сценарій 8 (fail → виправлено): `/compact`, яку хост тримав до кінця ходу стискання, — COMPACT_BUSY за `compactEndedAt` (DetectOptimize ставить, Flush і новий запит знімають, вікно FLUSH_STALE); RequestFlush ставить `compactSession` лише для таймера, що ще не спрацював, Flush знімає його у `finally` |

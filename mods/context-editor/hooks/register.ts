@@ -22,8 +22,9 @@ import {
   type Snapshot,
   type View,
 } from './edits'
-import { afterTurn, enteredOrThrow, flushAfterTurn, newFlushState, type FlushIO } from './flush'
+import { afterTurn, enteredOrThrow, flushAfterTurn, isPlanned, newFlushState, requestFlush, type FlushIO } from './flush'
 import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion, type HintIO } from './hints'
+import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
 import { adviceFor, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
@@ -464,12 +465,33 @@ function flushIO($: EngineInterface): FlushIO {
     compact: async args => {
       await $.command.run({ command: 'compact', args })
     },
+    // a timer the host refuses at once throws here, to the planner
     after: (ms, fn) => void $.clock.after(ms, fn),
     // A refused prompt resolves with `drop`; Flush treats it as a failure.
     submit: text => enteredOrThrow($.prompt.submit({ text })),
     removeDelivered: delivered => removeDelivered($, delivered),
     status: text => $.ui.status(text),
+    toast: text => $.ui.toast(text),
+    now: () => Date.now(),
+    sessionId: () => $.session.id(),
     turns,
+  }
+}
+
+// [SP_CTX_02_42] The person's /compact bound to the host. Flush's timer
+// comes from the command.run hook, which no turn waits on (as /handoff's);
+// `$.clock.after` throwing reaches personCompact. `aborted`: the hook's signal.
+function personCompactIO($: EngineInterface, aborted: () => boolean): PersonCompactIO {
+  return {
+    storage: async () => {
+      const st = await ensureStorage($)
+      return 'dir' in st ? { dir: st.dir, session: await $.session.id() } : undefined
+    },
+    updateQueueAt: dir => updateOf(stores($, dir).queue),
+    aborted,
+    planFlush: session => void requestFlush(flushIO($), flushState, session),
+    toast: text => $.ui.toast(text),
+    now: () => Date.now(),
   }
 }
 
@@ -579,6 +601,8 @@ function detectIO($: EngineInterface, dir: string | undefined, snap: Snapshot = 
     rows: snap.rows,
     replace: async () => s().queue.onChain(() => queueTagReplacements(tagIO($, dir, snap))),
     status: text => $.ui.status(text),
+    toast: text => $.ui.toast(text),
+    now: () => Date.now(),
   }
 }
 
@@ -814,6 +838,20 @@ export const register: Register = on => {
     // [SP_CTX_02_20] no mod prefix: the host shows the reply under the plugin's name
     next.called ? next(e) : { text: `handoff failed: ${next.error.kind}` },
   )
+
+  // [SP_CTX_02_42] The person's plain /compact: the agent compresses in an
+  // optimization turn; `/compact host` runs the host's summary; other args
+  // and every plugin's run (the mod's MARKER, HANDOFF_MARKER) pass unchanged.
+  // A run the host raised beneath the mod's own $.command.run skips this hook
+  // (re-entry): the handler lets it through, as it does after `next`.
+  on('command.run', { command: 'compact' }, async ($, e, next) => {
+    const out = await personCompact(personCompactIO($, () => next.signal.aborted), e, () => isPlanned(flushState, Date.now()))
+    if ('text' in out) return { text: out.text }
+    return out.next === e.args ? next(e) : next({ ...e, args: out.next })
+  }).catch(($, e, next) => {
+    const out = compactFailure(e, { called: next.called, kind: next.error.kind })
+    return 'next' in out ? next(e) : out
+  })
 
   // [SP_CTX_02_12] [SP_CTX_02_35] AppendRow: the row is stored first and
   // returned unchanged; RecordDelivery and the rules run after it, in the

@@ -4,15 +4,19 @@
 // `$.command.run('compact')` reaches its own handlers. Free of the host:
 // register.ts binds FlushIO to `$`.
 import { MARKER } from './compaction'
-import { DEFAULT_RESUME, resumeText, type Queue } from './queue'
+import { DEFAULT_RESUME, noteOnce, resumeText, type Queue } from './queue'
 import { errorText, modText } from './rows'
 import type { Read, Update } from './store'
-import { optimizeText } from './stages'
+import { compactTurnText, optimizeText } from './stages'
 import type { TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
 
 // [SP_CTX_01_12] The pause between the end of a turn and the command.
 export const FLUSH_DELAY_MS = 300
+// [SP_CTX_01_12] A planned Flush whose timer has not fired this long after
+// planning counts as lost (the host may refuse a timer silently): the next
+// planning goes ahead instead of waiting on it forever.
+export const FLUSH_STALE_MS = 10_000
 
 export type FlushIO = {
   // the queue of the current session; `unreadable` too when there is no storage
@@ -27,7 +31,8 @@ export type FlushIO = {
   // runs the built-in /compact with `args`, once; rejects with the host's text
   compact: (args: string) => Promise<void>
   // a deferred action; register.ts creates it from the hook that called, never
-  // from a tool.call or prompt.submit hook (the host refuses commands there)
+  // from a tool.call or prompt.submit hook (the host refuses commands there).
+  // A throw (the host refused the timer at once) reaches the planner.
   after: (ms: number, fn: () => void) => void
   // a refused prompt (an exception or a result with `drop`) rejects. The
   // host skips the mod's own prompt.submit hooks for it (DeliverReport too).
@@ -35,20 +40,34 @@ export type FlushIO = {
   // [SP_CTX_02_08] RemoveDelivered on the queue's serial chain
   removeDelivered: (delivered: string) => Promise<void>
   status: (text?: string) => void
+  // [SP_CTX_02_42] what the person must see in every host (the status line
+  // may be invisible in VS Code / stream-json)
+  toast: (text: string) => void
+  now: () => number
+  // [SP_CTX_02_42] the current session id
+  sessionId: () => Promise<string>
   turns: Readonly<Turns>
 }
 
-// [SP_CTX_02_06] Module memory; a reload starts it over.
-export type FlushState = { scheduled: boolean; lastSubmittedReportId: number }
+// [SP_CTX_02_06] Module memory; a reload starts it over. `plannedAt`: when
+// the planned timer was made, until it fires; `compactSession`: the session
+// whose /compact planned this Flush ([SP_CTX_02_42]).
+export type FlushState = { scheduled: boolean; lastSubmittedReportId: number; plannedAt?: number; compactSession?: string }
 
 export function newFlushState(): FlushState {
   return { scheduled: false, lastSubmittedReportId: 0 }
 }
 
+// [SP_CTX_02_06] A Flush is planned or running, unless its timer is lost
+// (not fired FLUSH_STALE_MS after planning).
+export function isPlanned(state: FlushState, now: number): boolean {
+  return state.scheduled && !(state.plannedAt !== undefined && now - state.plannedAt > FLUSH_STALE_MS)
+}
+
 // [SP_CTX_02_06] Errors: QUEUE_UNREADABLE, PERSON_MOVED, HOST_REFUSED; the
 // rest are outcomes of the command. `no-command`: only the optimization
 // request, nothing to apply.
-export type FlushOutcome = 'nothing-queued' | 'handoff-pending' | 'queue-unreadable' | 'person-moved' | 'host-refused' | 'compacted' | 'no-command'
+export type FlushOutcome = 'nothing-queued' | 'handoff-pending' | 'queue-unreadable' | 'person-moved' | 'host-refused' | 'compacted' | 'no-command' | 'session-changed'
 // [SP_CTX_02_06] Errors: PERSON_ACTIVE, RESUME_FAILED.
 export type ResumeOutcome = 'none' | 'submitted' | 'person-active' | 'resume-failed'
 // [SP_CTX_02_06] Errors: OPTIMIZE_PERSON, OPTIMIZE_NO_BLOCK,
@@ -83,7 +102,7 @@ export function unswapOptimize(q: Queue): Queue | undefined {
 }
 
 export function dropOptimize(q: Queue): Queue | undefined {
-  return q.optimize ? { ...q, optimize: false } : undefined
+  return q.optimize ? { ...q, optimize: false, compact: false } : undefined
 }
 
 // [SP_CTX_02] The steps of the end of a main-conversation turn after `next`;
@@ -135,18 +154,50 @@ async function step<T>(run: () => Promise<T>): Promise<T | undefined> {
 // DetectOptimize: plan one Flush when the queue holds edits or an
 // optimization request, and no handoff. True when a Flush was planned.
 export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: boolean): Promise<boolean> {
-  if (aborted || state.scheduled) return false
+  if (aborted || isPlanned(state, io.now())) return false
   const read = await io.readQueue()
-  if (!hasWork(read) || state.scheduled) return false
-  schedule(io, state)
+  if (!hasWork(read) || isPlanned(state, io.now())) return false
+  try {
+    schedule(io, state)
+  } catch {
+    // the host refused the timer: nothing planned; the next turn end tries again
+    return false
+  }
   return true
 }
 
-// A deferred action from the end of the turn: the origin the host queues.
+// [SP_CTX_02_42] Flush for the person's /compact, from the command.run hook
+// (an origin no turn waits on, as /handoff's). True: planned now or already
+// planned; a refused timer throws, with nothing left planned.
+export function requestFlush(io: FlushIO, state: FlushState, session: string): boolean {
+  if (isPlanned(state, io.now())) {
+    // only a timer not fired yet reads it: a running Flush consumed its own
+    if (state.plannedAt !== undefined) state.compactSession = session
+    return true
+  }
+  state.compactSession = session
+  try {
+    schedule(io, state)
+  } catch (err) {
+    state.compactSession = undefined
+    throw err
+  }
+  return true
+}
+
+// A deferred action from the end of the turn (or the person's /compact): the
+// origin the host queues. A timer refused at once leaves nothing planned.
 function schedule(io: FlushIO, state: FlushState): void {
   state.scheduled = true
+  state.plannedAt = io.now()
   const turns0 = io.turns.turns
-  io.after(FLUSH_DELAY_MS, () => void flush(io, state, turns0).catch(() => undefined))
+  try {
+    io.after(FLUSH_DELAY_MS, () => void flush(io, state, turns0).catch(() => undefined))
+  } catch (err) {
+    state.scheduled = false
+    state.plannedAt = undefined
+    throw err
+  }
 }
 
 // [SP_CTX_02_06] One Flush, planned when the turn count was `turns0`. One
@@ -156,9 +207,23 @@ function schedule(io: FlushIO, state: FlushState): void {
 // way out.
 export async function flush(io: FlushIO, state: FlushState, turns0: number): Promise<FlushResult> {
   let again = false
+  // the timer fired: no longer a planned-but-lost one
+  state.plannedAt = undefined
+  const session = state.compactSession
+  state.compactSession = undefined
   try {
     io.status(undefined)
+    // [SP_CTX_02_42] COMPACT_SESSION_CHANGED: /clear or /resume switched the
+    // session after the person's /compact; its request stays in the old
+    // session's queue (DeliverReport serves it with a prompt there)
+    if (session !== undefined && (await io.sessionId().catch(() => session)) !== session) {
+      io.toast(modText('/compact skipped: the session changed before the compression turn; run /compact again'))
+      return { outcome: 'session-changed', resume: 'none' }
+    }
     const read = await io.readQueue()
+    // [SP_CTX_02_42] the Flush of an ended compression turn runs: no longer busy
+    if (read.state !== 'unreadable' && read.value.compactEndedAt !== undefined)
+      await io.updateQueue(({ compactEndedAt, ...q }) => (compactEndedAt !== undefined ? q : undefined)).catch(() => undefined)
     // the edits of a waiting handoff belong to it (RunHandoff applies them)
     if (read.state === 'unreadable') return { outcome: 'queue-unreadable', resume: 'none' }
     if (!read.value.edits.length && !read.value.optimize) return { outcome: 'nothing-queued', resume: 'none' }
@@ -182,7 +247,9 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
         await io.compact(MARKER)
       } catch (err) {
         // the optimization request stays: its advice goes with the person's prompt
-        io.status(modText(`compaction refused: ${errorText(err)}; queued edits wait for the next turn`))
+        const refused = modText(`compaction refused: ${errorText(err)}; queued edits wait for the next turn`)
+        io.status(refused)
+        if (read.value.compact) io.toast(refused)
         return { outcome: 'host-refused', resume: 'none' }
       }
       outcome = 'compacted'
@@ -199,7 +266,15 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     return { outcome, resume: await resume(io, state, q, turns0) }
   } finally {
     state.scheduled = false
-    if (again) schedule(io, state)
+    // [SP_CTX_02_42] no session check outlives this Flush
+    state.compactSession = undefined
+    if (again) {
+      try {
+        schedule(io, state)
+      } catch {
+        // a refused timer: nothing planned; the next turn end plans again
+      }
+    }
   }
 }
 
@@ -217,7 +292,8 @@ async function resume(io: FlushIO, state: FlushState, q: Queue, turns0: number):
   // [SP_CTX_DEC_17] the agent's resume prompt goes under its author's frame
   const text = q.report
   try {
-    await io.submit(`${text}\n\n${resumeText(q.reportPrompt || DEFAULT_RESUME)}`)
+    // [SP_CTX_01_05] CommandNote once per delivered message
+    await io.submit(`${noteOnce(text)}\n\n${resumeText(q.reportPrompt || DEFAULT_RESUME)}`)
   } catch {
     // RESUME_FAILED: the report stays queued for the person's next prompt
     io.status(modText('could not resume the session; send any prompt to continue'))
@@ -248,7 +324,12 @@ async function optimize(
   // OPTIMIZE_PERSON: the person's turn began before the prompt
   if (movedSince(io.turns, turns0)) return personFirst(state, q), { optimize: 'person', resume: 'none' }
   const reg = await io.readTags().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: errorText(err) }))
-  if (reg.state === 'unreadable' || !reg.value.lastClosed) {
+  // [SP_CTX_02_42] the person's /compact: the whole conversation, no block needed
+  const compact = q.compact
+  // what the person must see: a toast for the person's /compact, else the status line
+  const say = (text: string) => (compact ? io.toast(text) : io.status(text))
+  const block = reg.state === 'unreadable' ? undefined : reg.value.lastClosed
+  if (!compact && !block) {
     // OPTIMIZE_NO_BLOCK: the request ends; the batch resumes as without the mark
     await io.updateQueue(dropOptimize).catch(() => undefined)
     io.status(modText(`optimization turn skipped: ${reg.state === 'unreadable' ? 'the tag registry is unreadable' : 'no closed block'}`))
@@ -258,15 +339,16 @@ async function optimize(
   let advice: string
   try {
     report = q.report && q.reportId !== state.lastSubmittedReportId ? q.report : undefined
-    advice = optimizeText(reg.value.lastClosed, compacted, reg.value.notes.length)
+    const notes = reg.state === 'unreadable' ? 0 : reg.value.notes.length
+    advice = compact || !block ? compactTurnText(notes) : optimizeText(block, compacted, notes)
   } catch (err) {
     // OPTIMIZE_BUILD_FAILED
     if (compacted && q.reportResume) {
       await io.updateQueue(dropOptimize).catch(() => undefined)
-      io.status(modText(`optimization turn not started: ${errorText(err)}`))
+      say(modText(`optimization turn not started: ${errorText(err)}`))
       return { optimize: 'build-failed', resume: await resume(io, state, q, turns0) }
     }
-    io.status(modText(`optimization turn not started: ${errorText(err)}; the advice goes with your next prompt`))
+    say(modText(`optimization turn not started: ${errorText(err)}; the advice goes with your next prompt`))
     return { optimize: 'build-failed', resume: 'none' }
   }
   // the check again right before the swap: the person may have begun a turn during the command
@@ -276,11 +358,11 @@ async function optimize(
   if (!swapped) return personFirst(state, q), { optimize: 'person', resume: 'none' }
   try {
     // the queue's own resume text is not sent: the optimization turn decides with its own context_edit
-    await io.submit(report ? `${report}\n\n${advice}` : advice)
+    await io.submit(report ? `${noteOnce(report)}\n\n${advice}` : advice)
   } catch {
     // OPTIMIZE_FAILED: the swap undone in one write; the report stays
     await io.updateQueue(unswapOptimize).catch(() => undefined)
-    io.status(modText('could not start the optimization turn; the advice goes with your next prompt'))
+    say(modText(`could not start the ${compact ? 'compression' : 'optimization'} turn; the advice goes with your next prompt`))
     return { optimize: 'failed', resume: 'none' }
   }
   if (report && q.reportId !== undefined) {

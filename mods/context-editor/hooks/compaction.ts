@@ -23,7 +23,7 @@ import {
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { applyEntry, type JournalEntry } from './journal'
-import { appendReport, HANDOFF_MARKER, keepOtherSteps, MARKER, type Queue } from './queue'
+import { appendReport, keepOtherSteps, markerKind, withCommandNote, type Queue } from './queue'
 import { modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
 import { rebindNotes } from './notes'
@@ -49,11 +49,12 @@ const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
 
 // [SP_CTX_01_12] The args of the built-in /compact the mod runs: the handler
 // sees them as `instructions`, and the model reads them in the command's rows,
-// so they explain themselves.
+// so they explain themselves and say who ran the command ([SP_CTX_DEC_26]).
 export { HANDOFF_MARKER, MARKER } from './queue'
 
+// the marks of now or before phase 25 (markerKind)
 function isOwnInstruction(instructions: string | undefined): boolean {
-  return instructions === MARKER || instructions === HANDOFF_MARKER
+  return markerKind(instructions) !== undefined
 }
 
 type CompactionEvent = { agentId?: string; trigger: string; instructions?: string }
@@ -61,13 +62,12 @@ type CompactionEvent = { agentId?: string; trigger: string; instructions?: strin
 // [SP_CTX_02_07] Which branch of the handler a compaction takes. A match is
 // by `instructions` and no `agentId`, under any trigger but `precompute`: the
 // mod's command arrives as `manual`, as does the person's `/compact MARKER`.
+// The marks before phase 25 match too: a command queued before a reload.
 export type CompactionRoute = 'apply' | 'seed' | 'pass'
 
 export function compactionRoute(e: CompactionEvent): CompactionRoute {
   if (e.agentId || e.trigger === 'precompute') return 'pass'
-  if (e.instructions === MARKER) return 'apply'
-  if (e.instructions === HANDOFF_MARKER) return 'seed'
-  return 'pass'
+  return markerKind(e.instructions) ?? 'pass'
 }
 
 // [SP_CTX_02_07] ON handler failure: never a real, summarizing compaction for
@@ -482,8 +482,9 @@ export async function archiveMedia(
 // The queue once a batch was handled: the batch cleared, its report added
 // after any report not yet delivered. [SP_CTX_01_04] The fields of other
 // steps (the optimization request, a handoff) stay as read (KeepOtherSteps).
+// [SP_CTX_01_05] The report enters with CommandNote; the toast goes without it.
 function reported(q: Queue, text: string, id: number): Queue {
-  return appendReport(keepOtherSteps(q), text, id, q.resume && !q.tagsOnly, q.resumePrompt)
+  return appendReport(keepOtherSteps(q), withCommandNote(text), id, q.resume && !q.tagsOnly, q.resumePrompt)
 }
 
 // [SP_CTX_02_07] The failure branch's write of the queue it read on the
@@ -503,5 +504,5 @@ export function failureRecord(read: Read<Queue>, lastReported: number | undefine
 // of the failure waits for the next prompt.
 export function failedQueue(q: Queue | undefined, reason: string, now: number): Queue {
   // [SP_CTX_01_04] the fields of other steps stay as read
-  return appendReport(keepOtherSteps(q), modText(`applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`), now)
+  return appendReport(keepOtherSteps(q), withCommandNote(modText(`applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`)), now)
 }

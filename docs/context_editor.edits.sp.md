@@ -116,7 +116,7 @@ Processing logic (pseudocode):
         IF DeliveryKind(text) IN (agent, task) → empty                  # вставлений звіт субагента чи сповіщення задачі
         t = trimmed text with every leading closed span <ide_opened_file>…</ide_opened_file> or <system-reminder…>…</system-reminder> removed   # VS Code додає відкритий файл перед словами людини (рев'ю 40: 62 рядки в транскриптах репозиторію); тег з атрибутами (`<system-reminder id="…">`) — теж (фаза 20)
         IF t is a command row (holds <command-name>):
-            the mod's own /compact with MARKER or HANDOFF_MARKER → empty
+            the mod's own /compact with MarkerKind(args) present (MARKER, HANDOFF_MARKER or their texts before phase 25, SP_CTX_01_12) → empty
             ELSE → the trimmed content of <command-args>, empty when absent   # аргументи slash-команди — слова людини (`/dev-flow research …`)
         IF t starts with MARK, PREFIX or SUMMARY_OPENER → empty           # PREFIX = `context-editor:`; кожен текст мода від власного імені будується з PREFIX (ModText) чи MARK — тест виробників (PL_AUD_CTX фаза 9, CF-18)
         IF t matches /^The .+ plugin sent a message:/ → empty           # промпт розширення: хост зберігає його в такій рамці (типи хоста; рядки транскрипту, рев'ю 39)
@@ -312,13 +312,27 @@ Purpose: після ходу основної розмови запустити 
 Input: подія завершення ходу (`agentId?`, `isAborted`). Стан у пам'яті модуля: `scheduled: bool` (false), `lastSubmittedReportId: int` (0), лічильник ходів (`turns`, `inTurn`, `lastTurnAborted`) з преамбули розділу 02; перезавантаження модуля скидає їх.
 
 Processing logic (pseudocode):
+    IsPlanned(now) = scheduled AND NOT (plannedAt present AND now − plannedAt > FLUSH_STALE)   # таймер, що не спрацював FLUSH_STALE, загублений (хост міг мовчки його відхилити)
+
     ON turn completed (main loop, not aborted), after DetectOptimize (SP_CTX_02_30):   # DetectOptimize уже поставив заміни з тегів для мітки
-        IF NOT scheduled AND storage ready AND Queue state = ok AND Queue.handoff absent
+        IF NOT IsPlanned(now) AND storage ready AND Queue state = ok AND Queue.handoff absent
            AND (len(Queue.edits) > 0 OR Queue.optimize):
-            scheduled = true; turns0 = turns; AFTER FLUSH_DELAY: Flush(turns0)   # відкладена дія з turn.complete — походження, яке хост ставить у чергу
+            Schedule()                                                        # таймер, відхилений одразу (виняток), нічого не лишає запланованим
+
+    FUNCTION RequestFlush(session):                                           # SP_CTX_02_42: з хука command.run /compact людини — походження, на яке хід не чекає (як /handoff)
+        IF IsPlanned(now): IF plannedAt present: compactSession = session; RETURN   # таймер ще не спрацював; Flush, що вже йде, свій compactSession спожив — новий не ставиться
+        compactSession = session; Schedule()                                  # виняток таймера: compactSession = none; виняток іде до хука
+                                                                              # уже запланований Flush того ходу обслужить і запит: другого таймера немає
+
+    FUNCTION Schedule(): scheduled = true; plannedAt = now; turns0 = turns; AFTER FLUSH_DELAY: Flush(turns0)   # відкладена дія з turn.complete чи command.run — походження, яке хост ставить у чергу
+        IF the timer throws: scheduled = false; plannedAt = none; rethrow
 
     FUNCTION Flush(turns0):
+        plannedAt = none; session = compactSession; compactSession = none   # таймер спрацював
         clear the status line
+        IF session present AND current session id ≠ session: toast "context-editor: /compact skipped: the session changed before the compression turn; run /compact again"; scheduled = false; RETURN   # COMPACT_SESSION_CHANGED (SP_CTX_02_42)
+        after reading Queue: IF q.compactEndedAt present: on the queue chain: compactEndedAt = absent   # SP_CTX_02_42: Flush кінця ходу стискання виконується
+        finally: scheduled = false; compactSession = none                     # жодна перевірка сесії не переживає цього Flush
         q = read Queue
         IF q state = unreadable OR q.handoff present OR (len(q.edits) == 0 AND NOT q.optimize): scheduled = false; RETURN   # правки з передачею застосує RunHandoff
         IF MovedSince(turns0):                                                # хід почався від планування: команду не ставити в чергу за ним
@@ -329,7 +343,7 @@ Processing logic (pseudocode):
         IF len(q.edits) > 0:                                                  # правки агента і (на кінці ходу з міткою) заміни з тегів — один пакет
             id0 = q.reportId
             TRY run built-in command compact with args = MARKER               # одна спроба; команда чекає, доки сесія вільна
-            CATCH err: status line "context-editor: compaction refused: <err text>; queued edits wait for the next turn"; scheduled = false; RETURN   # optimize лишається: порада піде з промптом людини
+            CATCH err: status line "context-editor: compaction refused: <err text>; queued edits wait for the next turn" (with q.compact also a toast); scheduled = false; RETURN   # optimize лишається: порада піде з промптом людини
             q = read Queue; compacted = (q.reportId present AND q.reportId ≠ id0)   # обробник записав звіт цього застосування: skip без звіту чи покинута диспетчеризація — false
         IF q.optimize: Optimize(q, turns0, compacted); scheduled = false; RETURN
         Resume(q, turns0)
@@ -341,7 +355,7 @@ Processing logic (pseudocode):
                 lastSubmittedReportId = q.reportId                            # продовження не надсилається; звіт лишається в черзі для DeliverReport з наступним промптом людини
             ELSE:
                 text = q.report                                               # увесь недоставлений звіт
-                TRY entered = submit prompt (text + "\n\n" + ResumeText(q.reportPrompt))   # звіт — у самому тексті промпту: власні хуки prompt.submit мода для нього пропускаються (F1); текст продовження — з рамкою автора
+                TRY entered = submit prompt (NoteOnce(text) + "\n\n" + ResumeText(q.reportPrompt))   # NoteOnce: COMMAND_NOTE один раз (SP_CTX_01_05); RemoveDelivered — власний текст черги   # звіт — у самому тексті промпту: власні хуки prompt.submit мода для нього пропускаються (F1); текст продовження — з рамкою автора
                     IF entered (no drop):
                         lastSubmittedReportId = q.reportId
                         on the queue chain: RemoveDelivered(text)              # SP_CTX_02_08: увесь звіт або лише доставлений початок
@@ -349,25 +363,26 @@ Processing logic (pseudocode):
 
     FUNCTION Optimize(q, turns0, compacted):                                  # промпт ходу оптимізації заміняє промпт продовження цього кінця ходу
         IF MovedSince(turns0): PersonFirst(q); RETURN                         # OPTIMIZE_PERSON
-        reg = read TagRegistry                                                # лише назва блоку; рядків розмови Optimize не читає
-        IF reg unreadable OR reg.lastClosed absent:                           # OPTIMIZE_NO_BLOCK
+        reg = read TagRegistry                                                # лише назва блоку і кількість нотаток; рядків розмови Optimize не читає
+        Say(text) = q.compact ? toast text : status line text                 # SP_CTX_02_42: /compact людини — те, що людина мусить побачити в будь-якому хості
+        IF NOT q.compact AND (reg unreadable OR reg.lastClosed absent):       # OPTIMIZE_NO_BLOCK; /compact людини блоку не потребує
             on the queue chain: optimize = false; status line "context-editor: optimization turn skipped: <the tag registry is unreadable | no closed block>"
             RETURN Resume(q, turns0)                                          # звичайне продовження цього застосування
         TRY:
             report = (q.report present AND q.reportId != lastSubmittedReportId) ? q.report : none
-            advice = OptimizeText(reg.lastClosed, compacted, notes = len(reg.notes))   # SP_CTX_02_29; заміни з тегів уже застосовано цим пакетом і названо у звіті
+            advice = q.compact ? CompactTurnText(notes) : OptimizeText(reg.lastClosed, compacted, notes)   # notes = len(reg.notes), 0 для unreadable; SP_CTX_02_29 / SP_CTX_02_42; заміни з тегів уже застосовано цим пакетом і названо у звіті
         CATCH err:                                                            # OPTIMIZE_BUILD_FAILED
             IF compacted AND q.reportResume: on the queue chain: optimize = false; status line "context-editor: optimization turn not started: <err>"; RETURN Resume(q, turns0)   # пакет просив продовження
             status line "context-editor: optimization turn not started: <err>; the advice goes with your next prompt"; RETURN   # optimize лишається true для DeliverReport
         IF MovedSince(turns0): PersonFirst(q); RETURN                         # повторна перевірка перед заміною: людина могла почати хід за час команди
         swapped = on the queue chain: re-read Queue; IF optimize = true: optimize = false, optimizePrompted = true; IF len(edits) > 0: resume = false, resumeSet = false; write; RETURN true; ELSE RETURN false   # порівняння-і-запис; пакет, що лишився (компактизацію покинуто), продовження не зберігає (SP_CTX_DEC_16)
         IF NOT swapped: PersonFirst(q); RETURN                                # DeliverReport уже віддав пораду з промптом людини і зняв optimize: нічого не надсилати
-        TRY entered = submit prompt ((report ? report + "\n\n" : "") + advice)   # власний текст продовження черги не пересилається: продовження вирішує агент у ході оптимізації
+        TRY entered = submit prompt ((report ? NoteOnce(report) + "\n\n" : "") + advice)   # власний текст продовження черги не пересилається: продовження вирішує агент у ході оптимізації
             IF entered (no drop):
                 IF report: lastSubmittedReportId = q.reportId; on the queue chain: RemoveDelivered(report)
         CATCH (exception or result with drop):                                # OPTIMIZE_FAILED
             on the queue chain: optimizePrompted = false, optimize = true      # зворотна заміна одним записом
-            status line "context-editor: could not start the optimization turn; the advice goes with your next prompt"
+            Say("context-editor: could not start the <optimization | compression> turn; the advice goes with your next prompt")
 
     PersonFirst(q): IF q.report: lastSubmittedReportId = q.reportId           # звіт і порада — з промптом людини (DeliverReport); промпту немає
 
@@ -404,8 +419,8 @@ Input: подія компактизації з `trigger`, `instructions`, `mess
 
 Processing logic (pseudocode):
     ON compaction (any trigger):
-        IF agentId present OR trigger = precompute OR instructions NOT IN (MARKER, HANDOFF_MARKER): pass to next handler
-        IF instructions = HANDOFF_MARKER: RETURN HandleSeed(messages)          # SP_CTX_02_26
+        IF agentId present OR trigger = precompute OR MarkerKind(instructions) absent: pass to next handler   # MarkerKind: MARKER, HANDOFF_MARKER і їхні тексти до фази 25 (SP_CTX_DEC_26)
+        IF MarkerKind(instructions) = seed: RETURN HandleSeed(messages)          # SP_CTX_02_26
         IF storage unavailable: RETURN skip "storage unavailable"
         q = read Queue; IF state = unreadable: RETURN skip "queue unreadable"
         IF q.edits empty: RETURN skip "no queued edits"
@@ -445,7 +460,7 @@ Processing logic (pseudocode):
             IF the dispatch was abandoned: put back the registries written (reg, aliases as read; the attachments' decisions as read); RETURN skip "compaction abandoned; the batch stays queued"
             text = FormatReport(report, archive, compaction) + attached.text   # SP_CTX_01_05: без правок — «not changed», без рядка розміру; AttachText останнім
             write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
-                          report: (q.report ? q.report + "\n" : "") + text, reportId: id,
+                          report: (q.report ? q.report + "\n" : "") + text + " " + COMMAND_NOTE, reportId: id,   # CommandNote, SP_CTX_01_05, фаза 25; спливне повідомлення — text без нього
                           reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt,
                           optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04); точка фіксації
             IF that write fails: put back the registries written; the failure goes to the failure branch
@@ -461,13 +476,13 @@ Processing logic (pseudocode):
         RETURN { messages: rows }
 
     ON handler failure:                                                  # CompactionFailed (`compactionFailed` у hooks/compaction.ts) за портом FailureIO
-        IF agentId present OR trigger = precompute OR instructions NOT IN (MARKER, HANDOFF_MARKER): pass to next handler
-        IF instructions = HANDOFF_MARKER: RETURN skip "seeding failed" at once         # RunHandoff побачить, що засів не взято
+        IF agentId present OR trigger = precompute OR MarkerKind(instructions) absent: pass to next handler   # MarkerKind: MARKER, HANDOFF_MARKER і їхні тексти до фази 25 (SP_CTX_DEC_26)
+        IF MarkerKind(instructions) = seed: RETURN skip "seeding failed" at once         # RunHandoff побачить, що засів не взято
         RETURN skip "applying the edits failed" at once; in the background, on the queue's serial chain (after the failed handler, which holds it), read Queue q in the folder of the apply (applyDir; else the current storage);
             IF q readable AND q.edits empty AND q.reportId = lastReported: write nothing   # застосування дійшло до точки фіксації: пакета вже немає, його звіт стоїть — без пари «applied» + «failed»
             ELSE write
             Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
-                    report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed and the batch was dropped.",
+                    report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed and the batch was dropped. " + COMMAND_NOTE,
                     reportId: now, reportResume: false, reportPrompt: DEFAULT_RESUME,
                     optimize, optimizePrompted, handoff: as read from the queue file on that chain }
 
@@ -496,10 +511,11 @@ Processing logic (pseudocode):
         context = []
         IF storage ready AND TagRegistry.introduced = false (state ok or missing): context += INTRO_TEXT            # SP_CTX_02_27
         q = read Queue
-        IF q.report: context += q.report
+        IF q.report: context += NoteOnce(q.report)                          # SP_CTX_01_05: COMMAND_NOTE один раз на повідомлення
         IF q.optimize:                                                      # хід оптимізації не відбувся (HOST_REFUSED, PERSON_MOVED після перерваного ходу, OPTIMIZE_PERSON, OPTIMIZE_FAILED, OPTIMIZE_BUILD_FAILED, перезавантаження модуля)
-            reg = read TagRegistry (now, at hook time)
-            IF reg readable AND reg.lastClosed present:
+            IF q.compact: context += COMPACT_ADVICE                         # SP_CTX_02_42: /compact людини, хід стискання не почався; блоку не треба
+            ELSE reg = read TagRegistry (now, at hook time)
+            IF NOT q.compact AND reg readable AND reg.lastClosed present:
                 TRY context += PersonAdvice(reg.lastClosed, notes = len(reg.notes))   # SP_CTX_02_29: без індексів, розміру і кандидатів; рядків не читає; заміни з тегів уже поставив DetectOptimize
                 CATCH: advice skipped                                       # ADVICE_FAILED: одна спроба
             # реєстр unreadable або lastClosed відсутній — поради немає (ADVICE_NO_BLOCK)
@@ -510,7 +526,7 @@ Processing logic (pseudocode):
         entered = next(prompt with context appended as hidden context)
         IF entered (no drop):
             IF INTRO_TEXT was added: on the registry chain: introduced = true
-            on the queue chain: IF q.report was added: RemoveDelivered(q.report); IF q.optimize: optimize = false; IF tookOver: optimizePrompted = false
+            on the queue chain: IF q.report was added: RemoveDelivered(q.report); IF q.optimize: optimize = false, compact = false; IF tookOver: optimizePrompted = false, compact = false
         RETURN entered
 
 Logic: при кожному промпті основної розмови, що проходить хуки мода (промпт людини або іншого розширення), мод, якщо `Queue.report` присутній, додає `report` як прихований контекст промпту і передає промпт далі. Лише коли промпт увійшов (результат без `drop`), мод на послідовному ланцюжку черги виконує `RemoveDelivered(text)`: видаляє з `report` саме доставлений текст — увесь звіт, якщо він не змінився (тоді також `reportId`, `reportResume = false`, `reportPrompt = DEFAULT_RESUME`), або лише доставлений початок, якщо тим часом дописано новий звіт. Той самий крок виконує Flush після свого промпту продовження ([SP_CTX_02_06](#SP_CTX_02_06)). Промпт, відхилений нижчим обробником, лишає звіт у черзі для наступного промпту.
@@ -609,3 +625,6 @@ Processing logic (pseudocode):
 | 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): тексти коду дослівно — 02_02 відмови `context_edit` (DENIED_EMPTY і для списку, довшого за MAX_QUEUE_EDITS), 02_03 відмови PrepareEdits і ScreenPinned, 02_04 причини `failed` ApplyEdits, 02_07 `compaction abandoned; the batch stays queued`, звіт збою `… and the batch was dropped.`, префікс PREFIX у текстах `skip`, `lastApply` обмежено USAGE_WAIT_MS |
 | 2026-10-12 | Калібрування бачить вкладення хоста, рев'ю: 02_04 — Responses повертає й `message` (індекс повідомлення API-подання рядка асистента; поведінка не змінилась), CacheShape не має власного зіставлення; ApiCut — один предикат обрізаного подання для CollectMedia і калібрування |
 | 2026-10-12 | Фаза 24: 02_07 — крок рішень про вкладення хоста (читання файлів до фіксації, CommitAttachments у кроці фіксації після реєстрів і перед чергою з поверненням при покинутій диспетчеризації, AttachText останнім реченням звіту, ResetPass після відповіді рядками; [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) |
+| 2026-10-12 | Фаза 25: 02_02 PersonText і 02_07 HandleCompaction (гілка, збій) — MarkerKind: нові MARKER і HANDOFF_MARKER і їхні тексти до фази 25; звіт застосування й звіт гілки збою в черзі закінчуються COMMAND_NOTE ([SP_CTX_DEC_26](./context_editor.sp.md#SP_CTX_DEC_26)) |
+| 2026-10-12 | Фаза 25, рев'ю: 02_06 — RequestFlush з хука `/compact` людини (запит у черзі, той самий Flush: спершу застосування, потім рівно один промпт CompactTurnText), Optimize без перевірки блоку для `compact`, Say — спливне повідомлення для `compact`, IsPlanned з FLUSH_STALE (загублений таймер), відхилений таймер нічого не лишає запланованим, COMPACT_SESSION_CHANGED, NoteOnce у Resume і Optimize; 02_08 — COMPACT_ADVICE замість поради блоку, NoteOnce, Settle знімає `compact` |
+| 2026-10-12 | Фаза 25, сценарій 8 і рев'ю дельти: 02_06 — Flush знімає `compactEndedAt`; RequestFlush ставить `compactSession` лише для таймера, що ще не спрацював; `finally` знімає `compactSession`; повторне планування з відхиленим таймером нічого не лишає |

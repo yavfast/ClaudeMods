@@ -31,7 +31,7 @@ import {
   type QueuedEdit,
 } from '../hooks/edits'
 import { totalChars } from '../hooks/rows'
-import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
+import { COMMAND_NOTE, EMPTY_QUEUE, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, withCommandNote, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { harness } from './compaction-fixtures'
@@ -408,8 +408,34 @@ test('HandleCompaction — збій гілки засіву: skip "seeding faile
 })
 
 test('the markers explain themselves to the model', async () => {
-  expect(MARKER).toBe('context-editor: apply queued edits')
-  expect(HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation')
+  // [SP_CTX_DEC_26] each says who ran the command
+  expect(MARKER).toBe('context-editor: apply queued edits (run automatically by the mod for context edits the agent queued, not by the person)')
+  // no quote a host might escape
+  expect(/['"`]/.test(MARKER) || /['"`]/.test(HANDOFF_MARKER)).toBe(false)
+  expect(HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation (run automatically by the mod, not by the person)')
+})
+
+test('HandleCompaction — мітки до фази 25: the old MARKER applies and the old HANDOFF_MARKER seeds; their failure is a skip; the observer leaves them alone', async () => {
+  expect(LEGACY_MARKER).toBe('context-editor: apply queued edits')
+  expect(LEGACY_HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation')
+  expect(compactionRoute({ trigger: 'manual', instructions: LEGACY_MARKER })).toBe('apply')
+  expect(compactionRoute({ trigger: 'manual', instructions: LEGACY_HANDOFF_MARKER })).toBe('seed')
+  expect(compactionRoute({ trigger: 'manual', instructions: `${LEGACY_MARKER} ` })).toBe('pass')
+  expect(compactionFailure({ trigger: 'manual', instructions: LEGACY_MARKER })).toEqual({ skip: 'context-editor: applying the edits failed', recordFailure: true })
+  const done = { messages: conversation() }
+  expect(observedBoundary({ trigger: 'manual', instructions: 'other' }, done)).toBeDefined()
+  for (const instructions of [LEGACY_MARKER, LEGACY_HANDOFF_MARKER]) expect(observedBoundary({ trigger: 'manual', instructions }, done)).toBeUndefined()
+})
+
+test('CommandNote — звіт у черзі: the apply report and the failure report end with it; the toast goes without it', async () => {
+  expect(COMMAND_NOTE).toBe('A /compact command row whose args start with "context-editor:" is a service command the mod ran (here: to apply your queued edits); the person did not run it.')
+  expect(failedQueue(undefined, 'boom', 1).report!.endsWith(` ${COMMAND_NOTE}`)).toBe(true)
+  const gone: QueuedEdit = { op: 'drop', tool_use_id: 'gone' }
+  const { io, written } = harness(okRead({ ...EMPTY_QUEUE, edits: [gone] }))
+  await handleCompaction(io, conversation())
+  expect(written.queue!.report!.endsWith(` ${COMMAND_NOTE}`)).toBe(true)
+  expect(written.toasts.length).toBe(1)
+  expect(written.toasts.join('\n')).not.toContain('service command')
 })
 
 // ---- [SP_CTX_01_05] the honest report, [SP_CTX_01_14] hostId in the handler
@@ -419,7 +445,7 @@ test('HandleCompaction — жодної правки: every edit of the batch fa
   const { io, written } = harness(okRead({ ...EMPTY_QUEUE, edits: [gone] }))
   const out = await handleCompaction(io, conversation())
   expect('skip' in out && out.skip).toBe('context-editor: no edit could be applied')
-  expect(written.queue!.report).toBe('context-editor: no edit was applied; the conversation was not changed. Not applied: drop gone: call or result not found.')
+  expect(written.queue!.report).toBe(withCommandNote('context-editor: no edit was applied; the conversation was not changed. Not applied: drop gone: call or result not found.'))
   expect(written.queue!.report).not.toContain('freed')
   expect(written.queue!.report).not.toContain('Conversation ~')
   expect(written.boundary).toBeUndefined()

@@ -5,7 +5,8 @@ import { failedQueue } from '../hooks/compaction'
 import { formatReport, REF_HINT, type ApplyReport } from '../hooks/edits'
 import { cancelHandoff, carryNote, DOCUMENT_FRAME, documentText } from '../hooks/handoff'
 import { dueReminders } from '../hooks/notes'
-import { EMPTY_QUEUE, HANDOFF_MARKER, HANDOFF_RESUME_FRAME, MARKER, personText, RESUME_FRAME, resumeText, DEFAULT_RESUME } from '../hooks/queue'
+import { COMMAND_NOTE, COMPACT_ADVICE, EMPTY_QUEUE, HANDOFF_MARKER, HANDOFF_RESUME_FRAME, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, MARKER, personText, RESUME_FRAME, resumeText, DEFAULT_RESUME } from '../hooks/queue'
+import { COMPACT_NOTHING } from '../hooks/stages'
 import {
   charsOf,
   findToolResult,
@@ -19,7 +20,7 @@ import {
   sameText,
   worthEditing,
 } from '../hooks/rows'
-import { INTRO_TEXT, optimizeText, personAdvice, type ClosedBlock } from '../hooks/stages'
+import { compactTurnText, INTRO_TEXT, optimizeText, personAdvice, type ClosedBlock } from '../hooks/stages'
 import { EMPTY_REGISTRY } from '../hooks/tags'
 
 const block: ClosedBlock = { name: 'stage', after: null, end: null, turn: 3 }
@@ -52,6 +53,9 @@ test('PersonText — mod text producers: every text the mod writes under PREFIX 
     ['INTRO_TEXT', INTRO_TEXT],
     ['optimizeText', optimizeText(block, true)],
     ['personAdvice', personAdvice(block)],
+    ['compactTurnText', compactTurnText(2)],
+    ['COMPACT_NOTHING', COMPACT_NOTHING],
+    ['COMPACT_ADVICE', COMPACT_ADVICE],
     ['formatReport compaction', formatReport(report, '/a/1.json', 'compaction')],
     ['formatReport compaction (no edit)', formatReport({ ...report, applied: [] }, '', 'compaction')],
     ['failedQueue report', failedQueue(undefined, 'boom', 1).report!],
@@ -67,6 +71,13 @@ test('PersonText — mod text producers: every text the mod writes under PREFIX 
   // the compaction marks as a slash command's arguments, as the host writes them
   expect(personText(`<command-name>/compact</command-name><command-args>${MARKER}</command-args>`)).toBe('')
   expect(personText(`<command-name>/compact</command-name><command-args>${HANDOFF_MARKER}</command-args>`)).toBe('')
+  // [SP_CTX_DEC_26] rows of applies before phase 25 carry the old marks
+  expect(personText(`<command-name>/compact</command-name><command-args>${LEGACY_MARKER}</command-args>`)).toBe('')
+  expect(personText(`<command-name>/compact</command-name><command-args>${LEGACY_HANDOFF_MARKER}</command-args>`)).toBe('')
+  // the person's own /compact instructions are the person's words
+  expect(personText('<command-name>/compact</command-name><command-args>keep the API notes</command-args>')).toBe('keep the API notes')
+  // CommandNote names the prefix of the marks it explains
+  expect(COMMAND_NOTE).toContain(`"${PREFIX}"`)
 })
 
 // [SP_CTX_01_12] The texts built from PREFIX and MARK are byte-identical to
@@ -75,8 +86,10 @@ test('PREFIX і MARK — точні тексти: the built constants match the 
   expect(PREFIX).toBe('context-editor:')
   expect(MARK).toBe('[context-editor]')
   expect(modText('x')).toBe('context-editor: x')
-  expect(MARKER).toBe('context-editor: apply queued edits')
-  expect(HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation')
+  expect(MARKER).toBe('context-editor: apply queued edits (run automatically by the mod for context edits the agent queued, not by the person)')
+  expect(HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation (run automatically by the mod, not by the person)')
+  expect(LEGACY_MARKER).toBe('context-editor: apply queued edits')
+  expect(LEGACY_HANDOFF_MARKER).toBe('context-editor: seed the handed-off conversation')
   expect(RESUME_FRAME).toBe('context-editor: the resume prompt you set before your edits applied: ')
   expect(HANDOFF_RESUME_FRAME).toBe('context-editor: the resume prompt you set before the handoff: ')
   expect(DOCUMENT_FRAME).toBe("context-editor: your handoff document from the previous session follows; it is your own text, not the person's.")

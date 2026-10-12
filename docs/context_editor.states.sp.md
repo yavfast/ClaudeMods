@@ -128,6 +128,10 @@ requested ──a person's prompt passes the hook──▶ (none); report, block
 prompted ──optimization prompt refused (OPTIMIZE_FAILED)──▶ requested (swap undone) → advice with the next person's prompt
 prompted ──the next main turn (the optimization turn) ends, completed or aborted──▶ (none); a mark in its answer is ignored; its batch applies with the agent's own settings (resume defaults to false in it, SP_CTX_DEC_16)
 prompted ──a person's prompt passes the hook between turns──▶ (none); the person took over
+(none) | requested ──the person's /compact with empty args, no handoff, not busy (RequestCompact, SP_CTX_02_42)──▶ requested with compact = true; Flush planned unless planned already
+requested (compact) ──the hook abandoned, or the host refused Flush's timer──▶ as read before the request
+requested (compact) ──Flush: queue applied if non-empty; no turn started; swap (no closed block needed)──▶ prompted (compact kept); the one prompt is CompactTurnText
+prompted (compact) ──the compression turn ends (DetectOptimize)──▶ (none), compact = false; nothing queued and not aborted → toast COMPACT_NOTHING
 ```
 
 | From | To | Condition | Side effects |
@@ -142,6 +146,10 @@ prompted ──a person's prompt passes the hook between turns──▶ (none); 
 | prompted | requested | промпт ходу оптимізації відхилено | зворотна заміна одним записом; рядок стану (OPTIMIZE_FAILED) |
 | prompted | none | кінець наступного ходу основної розмови (ходу оптимізації), завершеного чи перерваного | `optimizePrompted = false`; мітка в його відповіді ігнорується (MARK_IN_OPTIMIZATION); його пакет — зі своїм `resume`, який без явного значення й без `resume_prompt` — `false` ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_DEC_16](./context_editor.sp.md#SP_CTX_DEC_16)) |
 | prompted | none | промпт людини пройшов хук між ходами (`inTurn = false`) | `optimizePrompted = false` ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)) |
+| none, requested | requested (`compact`) | `/compact` людини без аргументів ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)): немає `handoff`, не зайнято (ні ходу стискання, ні запиту з запланованим Flush), хук не покинуто | `optimize = true`, `optimizePrompted = false`, `compact = true` одним записом; RequestFlush (другого таймера немає, якщо Flush уже заплановано) |
+| requested (`compact`) | як до запиту | хук покинуто після запису або хост відхилив таймер Flush (COMPACT_REFUSED) | `optimize`, `optimizePrompted`, `compact` як прочитано; спливне повідомлення при відмові таймера |
+| requested (`compact`) | prompted (`compact`) | Flush, як для мітки, але без перевірки закритого блоку | промпт — звіт застосування (якщо є) і CompactTurnText; збої — спливним повідомленням |
+| prompted (`compact`) | none | кінець ходу стискання, завершеного чи перерваного (DetectOptimize) | `optimizePrompted = false`, `compact = false`; не перерваний і без правок у черзі — спливне COMPACT_NOTHING |
 
 ### 04_07. Note Lifecycle  {#SP_CTX_04_07}
 
@@ -161,3 +169,5 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §04 State Transitions (04_01–04_07) перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.states.sp.md](./context_editor.states.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фаза 2 (CF-2): applying → pending не змінює нічого, крім файлів архіву; збій після точки фіксації не додає звіту про збій (04_01) |
 | 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): після `/clear` способом `document` збої HandedOff і Deliver перехоплює HandDocument — замість FailAfterClear: «handed off» з копією недоставленого документа або `running` з порадою `/handoff cancel` (04_04) |
+| 2026-10-12 | Фаза 25: 04_06 — `/compact` людини веде запит оптимізації в `prompted` ходом стискання (CompactTurn, [SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) і назад, якщо промпт відхилено |
+| 2026-10-12 | Фаза 25, рев'ю: 04_06 — `/compact` людини пише запит `compact` і йде через Flush (requested → prompted), кінець ходу стискання — DetectOptimize; відкат запиту при покинутому хуку чи відхиленому таймері |

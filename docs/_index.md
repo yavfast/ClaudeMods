@@ -8,7 +8,7 @@
 |------|----|--------|-------|
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): філософія, доменна модель, інтеграція, рішення C_CTX_DEC_*; механізми — у дочірньому файлі |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, рішення SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
-| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План: фази 1–24 (усі виконані) і backlog наступної роботи |
+| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План: фази 1–24 виконані, фаза 25 (`/compact` людини, автор власної `/compact`) — код і тести, живі сценарії далі; backlog наступної роботи |
 
 ## Maps
 
@@ -38,7 +38,7 @@
 | `SP_CTX_02_01`–`02_10` (перегляд, правки, застосування, компактизація, медіа) | [context_editor.edits.sp.md](context_editor.edits.sp.md) |
 | `SP_CTX_02_11`–`02_18` (теги, псевдоніми, поточна розмова) | [context_editor.tags.sp.md](context_editor.tags.sp.md) |
 | `SP_CTX_02_19`–`02_26` (передача) | [context_editor.handoff.sp.md](context_editor.handoff.sp.md) |
-| `SP_CTX_02_27`–`02_38` (етапи, телеметрія, нотатки, доставки, нагадування, кеш) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
+| `SP_CTX_02_27`–`02_38`, `02_42` (етапи, телеметрія, нотатки, доставки, нагадування, кеш, `/compact` людини) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
 | `SP_CTX_02_39`–`02_41` (вкладення хоста) | [context_editor.hostattach.sp.md](context_editor.hostattach.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
 | `SP_CTX_05_01` (модульні очікування) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |
