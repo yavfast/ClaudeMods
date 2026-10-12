@@ -1,6 +1,6 @@
 ---
 name: context-stages
-description: Open this for a long or multi-stage task with the context-editor mod, to decide when to open and close stages, how to compress a finished block, when to use the optimization mark, and how to read the context telemetry.
+description: Open this for a long or multi-stage task with the context-editor mod: when to open and close stages, how to compress a finished block, the optimization mark, the telemetry, and what a row marked [context-editor] means when one puzzles you.
 ---
 
 # Managing your context in stages
@@ -83,6 +83,11 @@ Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagg
 
 Write about the content, not row numbers: indexes change after an apply. `context_list` shows `[n3]` on the rows, the full text below the page and `Notes elsewhere` for other pages; a stage close lists the notes in its block. A note moves to the row that replaced its row and goes with a removed row (the apply report names it). Remove one with `{"op":"remove","id":"n3"}`.
 
-## Restoring an original
+## Rows marked [context-editor]
 
-Every replacement says where its original is: `(original: <path>, open with Read)`, and media files as `(media: <path>)`. If you need something you compressed, `Read` that file. It comes back at the end of the conversation: read only what you need (such reads count in `Effect`).
+Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. A replacement is your own work: you read the original, then compressed it to save context. It is no loss and nothing you made up.
+
+- `you read the full output here, then replaced it with your summary`, `you read these N rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`: your `summarize`, `collapse` (e.g. a stage record), `rewrite`, `describe`; your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
+- `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
+- `context-editor: applied N edit(s): …`: the apply report. When it says your `context_*` calls were removed, what you quoted from their results did come from the mod. A `/compact` row whose args start with `context-editor:` is the mod's command.
+- `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the optimization or `/compact` turn, a handoff's document: service texts of the mod.
