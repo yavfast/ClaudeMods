@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-11 21:30
+> **Last updated:** 2026-10-12
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`
 > **Autonomy:** `checkpoints`
@@ -26,6 +26,21 @@
 Прототип мода складається з двох розширень Claude Code — `context-editor` і `context-editor-trigger` — і перевірений модульними та живими тестами в сесії bd80217a. Документи описують його поведінку зворотно, за кодом і результатами тестів. — claude-session-bd80217a
 
 ## Subtasks
+
+### Subtask: Фази 29–31 PL_CTX — калібрування перед застосуванням, теги зниклих рядків, дрібні вади (CF-34, CF-43, CF-52, CF-53)
+> Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 — Status: `in-progress` — Phase: `implement`
+> Autonomy: full (фази 29–31) — «Так, і без зупинок на коміти» (розробник, погодження дизайну 2026-10-12)
+
+Три стандартні зміни за пунктами backlog плану («Калібрування символів на токен не бачить вкладень хоста», «Калібрування малої розмови») і аудиту PL_AUD_CTX (CF-34, CF-43, CF-52, CF-53). Код у `mods/` — лише після погодження дизайну з розробником.
+
+- [x] Дизайн (субагент, документи без коду): фаза 29 — первісний дефект калібрування вже виправлено в 0f9e54f (реєстр d5614704: 2,45 замість 1,005); залишок — CalibrateBeforeApply у Flush, ApplyLine за ApiChars, CALIB_TOKENS ([SP_CTX_DEC_30](../../docs/context_editor.sp.md#SP_CTX_DEC_30) proposed, рекомендація B — 5 000); фаза 30 — CF-34 практично не справжній (мертві теги лише між застосуваннями, найбільший реєстр 62 з 1000), PruneDeadTags у спостерігачі чужої компактизації і рядок повного реєстру ([SP_CTX_DEC_31](../../docs/context_editor.sp.md#SP_CTX_DEC_31) proposed, рекомендація B); фаза 31 — рамка автора в HANDOFF_PROMPT, R3 і WorthEditing без `is_error`, ALIAS_GONE; спец 01_10, 01_11, 01_12, 01_20, 02_06, 02_07, 02_11, 02_12, 02_14, 02_16, 02_17, 02_18, 02_21, 02_28, 02_34, 02_43, 05_01, 05_03, 05_04; план [PL_CTX_P29](../../docs/context_editor.plan.md#PL_CTX_P29)–[P31](../../docs/context_editor.plan.md#PL_CTX_P31)
+- [x] Погодження дизайну розробником 2026-10-12: SP_CTX_DEC_30 B (CALIB_TOKENS 5 000), SP_CTX_DEC_31 B (спостерігач); коміти без окремого погодження
+- [ ] Код і тести фаз 29–31, рев'ю, живі сценарії 05_03 (калібрування перед застосуванням; мертві теги після `/compact host`; документ форку передачі), commit sign-off
+
+**Activity:**
+- 2026-10-12 — дизайн фаз 29–31 записано в docs/ (без коду, без коміту)
+
+---
 
 ### Завершені підзадачі (архів)
 

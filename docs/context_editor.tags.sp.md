@@ -67,7 +67,7 @@ Errors (рівень виклику позначено *, решта — рів�
 | BAD_TARGET | `disposable` за індексом без `to` на рядок, що не є текстом агента без викликів, або на рядок з тегом `state`; `state` не за `index` або на рядок, що не є текстом агента без викликів з непорожнім текстом | для результатів — тегувати за `tool_use_id`; слот стану — власний текстовий рядок |
 | BAD_RANGE | `to` не з `add disposable` за `index`; `to ≤ index` або поза межами; діапазон розриває пару виклику; діапазон захоплює рядок чи пару з тегом `pin` або `state`; рядок `to` — рядок асистента лише з thinking (`row #<to> holds only thinking and cannot end a range`; ту саму причину дає PrepareEdits для згортання цього діапазону): кінець — якір діапазону. Перший рядок діапазону може бути лише з thinking: його знаходить LocateSpan ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) | кінець — рядок з текстом чи викликом |
 | BAD_TTL | `ttl_turns` < 1 або не для `review` | — |
-| TAGS_FULL | новий тег (не заміна) при MAX_TAGS тегах у реєстрі, або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні теги |
+| TAGS_FULL | новий тег (не заміна) при MAX_TAGS тегах у реєстрі, або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні теги; з фази 30 у реєстрі лише теги цілей поточної розмови (і `state`): теги зниклих рядків прибирають застосування мода і спостерігач чужої компактизації ([SP_CTX_02_18](#SP_CTX_02_18)), тож кожен тег, який можна зняти, видно в переліку й телеметрії; повний реєстр телеметрія називає рядком TAGS_FULL_LINE ([SP_CTX_02_28](./context_editor.stages.sp.md#SP_CTX_02_28)) |
 | NO_TAG | `remove` для цілі без тегу | — |
 | STAGE_NAME_REQUIRED | `open` без коректного `stage` | назва 1..MAX_STAGE_NAME символів |
 | STAGE_FIELDS | `open` з полем, крім `op`, `stage`, `index`; `close` з будь-яким полем, крім `op` | — |
@@ -114,7 +114,7 @@ Processing logic (pseudocode):
         IF NOT AutoTagNeeded(row): RETURN stored                          # фаза 11 аудиту (CF-22): жодне правило рядка не змінить реєстру — ні ланцюжка реєстру, ні читання, ні запиту теки
         in the background, on the registry chain, IF storage ready AND TagRegistry state != unreadable:
             R1: door = prompt AND origin.kind IN (composer, bridge, sdk, unclassified)   # stream-json дає промпту людини unclassified (F3)
-            R2, R3: door = tool-result; tool = origin.tool; ids = tool_use_id of each tool_result block; reason big / search
+            R2, R3: door = tool-result; tool = origin.tool; ids = tool_use_id of each tool_result block; reason big / search   # R3 — лише для блоків без `is_error: true` (фаза 31, CF-52); R2 — за розміром рядка, як і досі
             R5 (a): door = tool-result AND some result text of the row ≥ BIG_ROW:
                 rows = CurrentRows()
                 FOR each result r of the row WITH len(r.text) ≥ BIG_ROW:
@@ -130,7 +130,7 @@ Processing logic (pseudocode):
 
     AutoTagNeeded(row) = (door = prompt AND origin.kind IN (composer, bridge, sdk, unclassified))          # R1 (чи перший промпт уже закріплено — з реєстру)
                          OR (door = tool-result AND tool present AND tool not OWN_TOOLS AND ids not empty
-                             AND (size ≥ BIG_ROW OR tool IN SEARCH_TOOLS))                                   # R2, R3
+                             AND (size ≥ BIG_ROW OR (tool IN SEARCH_TOOLS AND some tool_result block is not is_error)))   # R2, R3 (фаза 31: помилка пошуку — не вивід пошуку)
                          OR (door = tool-result AND some result text of the row ≥ BIG_ROW)                 # R5 (a)
     ON hook failure: RETURN stored row unchanged
 
@@ -218,7 +218,7 @@ Logic: у [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07) після A
 
 Прибрана без заміни ціль (`drop`, рядок, що DropOwnCalls чи KeepResponsesWhole спорожнив, ціль поза новим списком) видаляє нотатку, і звіт застосування називає її ідентифікатор ([SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)): текст нотатки агент писав про рядок, якого вже немає, тож переносити його на сусідній рядок — дезорієнтувати. Заміна правкою (стиснення пари, згортання, переписування, опис медіа) переносить нотатку на останній створений рядок: стиснутий рядок — та сама річ у новому вигляді. Зміна засівом (CarryNote дописує текст результату, а відбиток рядка той самий) нотатку не рухає. `remindAt` переноситься без змін. Збій запису реєстру не скасовує застосування, а `notesDropped` тоді порожній.
 
-Вбудована компактизація хоста (`/compact` людини, автоматична) RebindTags не викликає. Межа етапу, чий рядок уже не в поточній розмові, при використанні — `lost` ([SP_CTX_01_18](./context_editor.structures.sp.md#SP_CTX_01_18)): відкритий етап діє від голови, кінець закритого блоку невідомий («its end row is gone», не порожній блок), перегляд і телеметрія про це кажуть, а context_tag і DetectOptimize записують `null` лише на місце загубленого `after`. Теги й нотатки зниклих рядків, зокрема `state`, видаляються наступним застосуванням мода, як і раніше ([C_CTX_03_03](./context_editor.mechanisms.concept.md#C_CTX_03_03), «Вбудована компактизація хоста»).
+Вбудована компактизація хоста (`/compact host` людини, автоматична) RebindTags не викликає. Межа етапу, чий рядок уже не в поточній розмові, при використанні — `lost` ([SP_CTX_01_18](./context_editor.structures.sp.md#SP_CTX_01_18)): відкритий етап діє від голови, кінець закритого блоку невідомий («its end row is gone», не порожній блок), перегляд і телеметрія про це кажуть, а context_tag і DetectOptimize записують `null` лише на місце загубленого `after`. З фази 30 ([SP_CTX_DEC_31](./context_editor.sp.md#SP_CTX_DEC_31)) теги зниклих рядків, крім `state`, прибирає сам спостерігач такої компактизації (PruneDeadTags, [SP_CTX_02_18](#SP_CTX_02_18)), а не наступне застосування мода: до фази 30 вони лишались у реєстрі до застосування, а в сесії без застосувань накопичувались до MAX_TAGS, після чого AutoTag і R4 мовчки ставали (аудит PL_AUD_CTX, CF-34). Тег `state` і нотатки зниклих рядків, як і раніше, видаляє наступне застосування мода ([C_CTX_03_03](./context_editor.mechanisms.concept.md#C_CTX_03_03), «Вбудована компактизація хоста»): слот стану телеметрія до того показує як `its row is no longer in the conversation`, а прибрану нотатку звіт застосування називає (`notesDropped`).
 
 ### 02_15. PrepareStorage  {#SP_CTX_02_15}
 
@@ -256,12 +256,12 @@ Purpose: загальний хук завершених викликів інс�
 Processing logic (pseudocode):
     ON tool call finished (main loop, not denied, tool not OWN_TOOLS, tool_use_id present):
         alias = none
-        IF WorthEditing(tool, len(result text)) AND storage ready AND AliasRegistry readable:   # WorthEditing = size ≥ BIG_ROW OR tool IN SEARCH_TOOLS — та сама політика, що R2/R3 (SP_CTX_01_11); дім — `hooks/rows.ts`
+        IF WorthEditing(tool, len(result text), isError) AND storage ready AND AliasRegistry readable:   # WorthEditing = size ≥ BIG_ROW OR (tool IN SEARCH_TOOLS AND NOT isError) — та сама політика, що R2/R3 (SP_CTX_01_11; фаза 31, CF-52); дім — `hooks/rows.ts`
             n = next; alias = ALIAS_PREFIX + n; next += 1; map[alias] = tool_use_id   # поля last з фази 21 немає: last розв'язується за рядками (SP_CTX_02_17)
             remove map[ALIAS_PREFIX + (n − MAX_ALIASES)]                    # фаза 11 аудиту: витіснення за O(1), вікно останніх MAX_ALIASES номерів (01_13)
             IF len(map) > MAX_ALIASES: remove every alias numbered ≤ n − MAX_ALIASES   # файл з-до фази 11, що тримає старіші номери
             write AliasRegistry; IF written: alias = the new alias          # MarkAlias; псевдонім без запису не розв'язався б
-        marked = WorthEditing(tool, len(result text))
+        marked = WorthEditing(tool, len(result text), isError)          # помилка пошуку — без позначки і без пропозиції м'якого нагадування (фаза 31)
         line = alias ? "[context-editor] id <alias>: use it as \"ref\" in context_tag / context_edit" : none   # рядок псевдоніма — як до фази 22 (P19)
         hint = marked AND storage ready ? Bounded(SoftHint(), HINT_WAIT) : none   # SP_CTX_02_37, канал розміру; фаза 23: окремий рядок SUGGESTION, і без псевдоніма
         IF result is not an error AND storage ready:                     # у фоні: результат не чекає ні R4, ні журналу
@@ -285,11 +285,12 @@ Processing logic (pseudocode):
 
 Purpose: перетворити `ref` на `tool_use_id`.
 
-Logic: `c<число>` → `map[ref]` AliasRegistry; `last` → ResolveLast(rows, callId) за поточною розмовою (фаза 21, [SP_CTX_DEC_20](./context_editor.sp.md#SP_CTX_DEC_20)); інакше або за відсутності запису — `unknown ref <ref>`. Розв'язання відбувається при постановці правки, тегу чи нотатки; у черзі й реєстрі тегів зберігається `tool_use_id`. Виклик, що вийшов за вікно ROW_WINDOW рядків, розв'язується, але правка відхиляється перевірками [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03). Субагент `ref` не розв'язує (як досі).
+Logic: `c<число>` → `map[ref]` AliasRegistry; `last` → ResolveLast(rows, callId) за поточною розмовою (фаза 21, [SP_CTX_DEC_20](./context_editor.sp.md#SP_CTX_DEC_20)); номер, який реєстр уже видавав (`< next`), а запису немає, — ALIAS_GONE (фаза 31, CF-53); інакше — `unknown ref <ref>`. Розв'язання відбувається при постановці правки, тегу чи нотатки; у черзі й реєстрі тегів зберігається `tool_use_id`. Виклик, що вийшов за вікно ROW_WINDOW рядків, розв'язується, але правка відхиляється перевірками [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03). Субагент `ref` не розв'язує (як досі).
 
     FUNCTION ResolveRef(ref, rows, callId) → (tool_use_id, line?) | reason:
         IF ref = "last": RETURN ResolveLast(rows, callId)
         IF ref matches c<число> AND AliasRegistry readable AND map has ref: RETURN (map[ref], none)
+        IF ref matches c<n> AND AliasRegistry readable AND n < next: RETURN ALIAS_GONE(ref)   # фаза 31, CF-53: псевдонім прибрало застосування (PruneAliases, SP_CTX_02_14), чужа компактизація чи вікно MAX_ALIASES
         RETURN "unknown ref <ref> (" + REF_HINT + ")"
 
     FUNCTION ResolveLast(rows, callId):                                 # rows = CurrentRows() (SP_CTX_02_18)
@@ -336,7 +337,11 @@ Processing logic (pseudocode):
            OR trigger = precompute                  # нічого не встановлює; стоїть лише при використанні через manual/auto
            OR MarkerKind(instructions) present   # MARKER, HANDOFF_MARKER і їхні тексти до фази 25; власну межу пишуть HandleCompaction і HandleSeed, за будь-якого trigger
            OR result is skip: RETURN result
-        RecordBoundary(result.messages); remove TagRegistry.lastApply (on its chain); ClearAttachments (SP_CTX_02_41); RETURN result   # SP_CTX_01_10: інша компактизація — не застосування мода; фаза 24: рішення про вкладення хоста йдуть разом із розмовою
+        RecordBoundary(result.messages)
+        on the registry chain, one change: PruneDeadTags(reg, result.messages); remove lastApply; no write when neither changed   # SP_CTX_01_10: інша компактизація — не застосування мода; фаза 30 (SP_CTX_DEC_31, CF-34)
+        ClearAttachments (SP_CTX_02_41); RETURN result   # фаза 24: рішення про вкладення хоста йдуть разом із розмовою
+
+    PruneDeadTags(reg, rows) = reg with tags kept only when kind = state OR ResolveTarget(rows, tag.target, RowIndex(rows)) finds it   # `{ tool_use_id }` — пара в rows; рядок — Locate; діапазон — обидва кінці; межі етапів, нотатки, `firstPromptPinned` і решта полів — без змін; той самий реєстр, коли нічого не прибрано
 
     FUNCTION CurrentRows():
         await hostId (at most HOST_ID_WAIT_MS from the read's start)   # шлях інструментів і промптів: очікування дозволене; тайм-аут не запам'ятовується (SP_CTX_DEC_24)
@@ -380,3 +385,4 @@ Processing logic (pseudocode):
 | 2026-10-12 | Фаза 25: 02_18 — спостерігач не пише межі для MarkerKind (нові мітки і тексти до фази 25, [SP_CTX_DEC_26](./context_editor.sp.md#SP_CTX_DEC_26)) |
 | 2026-10-12 | Фаза 28: 02_16 R5 (а) — уже стиснута пара за ReplacementText (тексти замін фази 28 без MARK і старі з MARK; [SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17), A″) |
 | 2026-10-12 | Фаза 28, рев'ю: 02_13 — правки з тегів несуть `via: 'tag'`, їхній текст називає `context_tag` ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) |
+| 2026-10-12 | Дизайн фаз 29–31: 02_11 — TAGS_FULL: у реєстрі лише теги цілей поточної розмови, повний реєстр — рядок телеметрії; 02_12 — R3 і AutoTagNeeded без результатів-помилок (фаза 31, CF-52); 02_14 — теги зниклих рядків після чужої компактизації прибирає спостерігач, `state` і нотатки — наступне застосування ([SP_CTX_DEC_31](./context_editor.sp.md#SP_CTX_DEC_31), фаза 30, CF-34); 02_16 — WorthEditing з `isError`; 02_17 — ALIAS_GONE для прибраного псевдоніма (фаза 31, CF-53); 02_18 — PruneDeadTags у спостерігачі однією зміною з `lastApply` |

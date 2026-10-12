@@ -372,6 +372,7 @@ Processing logic (pseudocode):
         finally: scheduled = false; compactSession = none                     # жодна перевірка сесії не переживає цього Flush
         q = read Queue
         IF q state = unreadable OR q.handoff present OR (len(q.edits) == 0 AND NOT q.optimize): scheduled = false; RETURN   # правки з передачею застосує RunHandoff
+        IF len(q.edits) > 0: CalibrateBeforeApply() within CALIB_WAIT_MS     # фаза 29 (SP_CTX_02_34): звіт і рядок людини — з відношенням цієї розмови; збій чи тайм-аут — далі без нього; до перевірки ходу, щоб ця пауза не ставила команду за новим ходом
         IF MovedSince(turns0):                                                # хід почався від планування: команду не ставити в чергу за ним
             scheduled = false
             IF NOT inTurn AND NOT lastTurnAborted: scheduled = true; turns0 = turns; AFTER FLUSH_DELAY: Flush(turns0)   # кінець того ходу вже минув і нового планування не дасть
@@ -503,7 +504,7 @@ Processing logic (pseudocode):
                           optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04); точка фіксації
             IF that write fails: put back the registries written; the failure goes to the failure branch
             IF the dispatch was abandoned during that write: write q back as read; put back the registries written; RETURN skip "compaction abandoned; the batch stays queued"
-        after the handler returned, IF the dispatch was not abandoned: lastReported = id; applyDir = <storage>; appliedLine = (id, ApplyLine(report, ratio)) when report.applied is not empty, else none   # пам'ять екземпляра для гілки збою; на ланцюжку черги, до запису гілки збою за ним; appliedLine читає LogApply у Flush (SP_CTX_02_43) — обробник сам рядка не пише: у терміналі компактизація ще триває
+        after the handler returned, IF the dispatch was not abandoned: lastReported = id; applyDir = <storage>; appliedLine = (id, ApplyLine(report, ratio, apiChars)) when report.applied is not empty, else none   # apiChars = ApiChars(api) прочитаного API-подання, відсутнє при ApiCut (фаза 29, SP_CTX_02_43)   # пам'ять екземпляра для гілки збою; на ланцюжку черги, до запису гілки збою за ним; appliedLine читає LogApply у Flush (SP_CTX_02_43) — обробник сам рядка не пише: у терміналі компактизація ще триває
         toast first 200 chars of text
         IF report.applied empty: RETURN skip "no edit could be applied"
         in the background (not awaited): RecordBoundary(boundary)          # SP_CTX_02_18; після точки фіксації обробник нічого не чекає
@@ -670,3 +671,4 @@ Processing logic (pseudocode):
 | 2026-10-12 | Фаза 27, рев'ю і живий прогін: 02_04 — лічильник людини за PersonText (промпт з самих медіа — теж), без лічильника «service messages»; CarrierIds вимагає тексту згортання в результаті для обох форм і рядка в `collapsed`; KeyArg — `cd` з каталогом у лапках, host без userinfo; OneLine не розрізає сурогатної пари; PersonText — у `deliveries.ts`, MARKER і MarkerKind — у `rows.ts` |
 | 2026-10-12 | Фаза 28 ([SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17) — A″, рішення розробника «Від імені агента, без позначки (Recommended)»; спайк context_editor_authorship): 02_04 — тексти замін без MARK, від імені агента з власним викликом `context_edit`; ReplacementText, CollapseText, DescribedText (нові й старі відкривачі); 02_02 PersonText — за ReplacementText; 02_06 — LogApply після команди; 02_07 — `reported(id, line)` ([SP_CTX_02_43](./context_editor.stages.sp.md#SP_CTX_02_43)) |
 | 2026-10-12 | Фаза 28, рев'ю і живий прогін: 02_04 — правки з тегів `via: "tag"` називають `context_tag` (TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER); ReplacementText — за повним відкривачем; результати прогону (describe слабкий); 02_02 — PersonText за тим самим ReplacementText |
+| 2026-10-12 | Дизайн фази 29: 02_06 — Flush з правками в черзі калібрує перед перевіркою ходу і командою `compact` (CalibrateBeforeApply, ≤ CALIB_WAIT_MS, [SP_CTX_02_34](./context_editor.stages.sp.md#SP_CTX_02_34)); 02_07 — ApplyLine обробника з ApiChars прочитаного API-подання ([SP_CTX_02_43](./context_editor.stages.sp.md#SP_CTX_02_43)) |
