@@ -10,7 +10,7 @@
 // (InsertDeliveries, [SP_CTX_02_36]). Pure logic behind a small port;
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
-import { isPlainUserRow, resultsOf, rowChars } from './rows'
+import { isPlainUserRow, MARK, markerKind, PREFIX, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import { isCount, jsonObject, trimOldest, type Read } from './store'
 
@@ -78,6 +78,41 @@ export function deliveryWords(text: string): string | undefined {
   const body = t.slice(t.indexOf(DELIVERY_FRAMES.person) + DELIVERY_FRAMES.person.length)
   const ends = [body.indexOf(`\n${PERSON_TAIL}`), body.indexOf(REMINDER_CLOSE)].filter(k => k >= 0)
   return (ends.length ? body.slice(0, Math.min(...ends)) : body).trim()
+}
+
+// [SP_CTX_02_02] Rows the host writes as user rows that are no message of
+// the person: a plugin's prompt in its frame, and rows of host tags.
+const PLUGIN_FRAME = /^The .+ plugin sent a message:/
+// (`<command-message>` alone, without `<command-name>`, is the host's notice of a running command)
+const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-notification>', '<command-message>']
+// leading closed spans the host puts before the person's words (VS Code: the open file)
+// (`<system-reminder id="…">`: a subagent's report, [SP_CTX_02_02], phase 20)
+const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)(?:\s[^>]*)?>[\s\S]*?<\/\1>/
+
+// [SP_CTX_01_12] The start of a built-in compaction's summary (spike
+// context_editor_handoff_long, Entry 2).
+export const SUMMARY_OPENER = 'This session is being continued from a previous conversation'
+
+// [SP_CTX_02_02] PersonText: what the person wrote in a user row; "" for a
+// row that is no message of the person. Leading `<ide_opened_file>` and
+// `<system-reminder>` spans are taken off; a slash command's arguments are
+// the person's words, except the mod's own /compact (review round 40).
+export function personText(raw: string): string {
+  // [SP_CTX_01_22] an inserted delivery: the person's words, or none of a subagent's or a task's
+  const delivered = deliveryWords(raw)
+  if (delivered !== undefined) return delivered
+  let t = raw.trim()
+  for (let m = LEADING_SPAN.exec(t); m; m = LEADING_SPAN.exec(t)) t = t.slice(m[0].length).trim()
+  if (t.includes('<command-name>')) {
+    const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(t)?.[1]?.trim()
+    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim() ?? ''
+    // only the mod's own /compact with its exact marker, of now or before (review round 41)
+    if (name === '/compact' && markerKind(args) !== undefined) return ''
+    return args
+  }
+  if (t.startsWith(MARK) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
+  if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''
+  return t
 }
 
 const KINDS: readonly string[] = ['person', 'agent', 'task', 'other']

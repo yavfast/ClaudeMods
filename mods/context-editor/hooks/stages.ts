@@ -10,6 +10,7 @@ import type { SessionMessage } from 'claude-code'
 import { aliasesById, type AliasRegistry } from './aliases'
 import {
   apiCut,
+  carrierIds,
   collectMedia,
   describeEdit,
   distinctive,
@@ -705,11 +706,13 @@ function indexList(name: string, at: number[]): string {
 }
 
 // [SP_CTX_02_29] The pairs of REPRODUCIBLE_TOOLS whose call and result rows lie in a..e.
+// A collapse carrier is a note, not a reproducible pair.
 function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number, ix: RowIndex): number {
   let n = 0
+  const carriers = carrierIds(rows.slice(a, e + 1))
   for (let i = a; i <= e; i++)
     for (const u of rows[i]!.toolUses) {
-      if (!REPRODUCIBLE_TOOLS.includes(u.tool)) continue
+      if (!REPRODUCIBLE_TOOLS.includes(u.tool) || carriers.has(u.tool_use_id)) continue
       const res = ix.resultAt(u.tool_use_id)
       if (res >= a && res <= e) n++
     }

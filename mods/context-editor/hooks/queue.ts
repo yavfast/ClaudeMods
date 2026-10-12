@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { checkShape, DESCRIBE_DROPS, describeEdit, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
-import { deliveryWords, personDelivered, type QueuedDelivery } from './deliveries'
+import { personDelivered, personText, type QueuedDelivery } from './deliveries'
 import { isPlainUserRow, MARK, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
 
@@ -177,33 +177,11 @@ function isQueuedEdit(raw: unknown): boolean {
 
 export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
 
-// [SP_CTX_02_02] Rows the host writes as user rows that are no message of
-// the person: a plugin's prompt in its frame, and rows of host tags.
-const PLUGIN_FRAME = /^The .+ plugin sent a message:/
-// (`<command-message>` alone, without `<command-name>`, is the host's notice of a running command)
-const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-notification>', '<command-message>']
-// leading closed spans the host puts before the person's words (VS Code: the open file)
-// (`<system-reminder id="…">`: a subagent's report, [SP_CTX_02_02], phase 20)
-const LEADING_SPAN = /^\s*<(ide_opened_file|system-reminder)(?:\s[^>]*)?>[\s\S]*?<\/\1>/
-// [SP_CTX_01_12] [SP_CTX_DEC_26] The mod's compaction marks (compaction.ts
-// re-exports them): the model reads them in the rows of the command
-// (`/compact <args>`, which the host frames as run by the person), so each
-// says who ran it. queue.ts must not import compaction.ts, which imports it.
-// (no apostrophe or other quote: nothing a host might escape breaks the exact match)
-export const MARKER = modText('apply queued edits (run automatically by the mod for context edits the agent queued, not by the person)')
-export const HANDOFF_MARKER = modText('seed the handed-off conversation (run automatically by the mod, not by the person)')
-// [SP_CTX_01_12] The marks before phase 25: rows of earlier applies, and a
-// command an older instance of the module queued before a reload.
-export const LEGACY_MARKER = modText('apply queued edits')
-export const LEGACY_HANDOFF_MARKER = modText('seed the handed-off conversation')
-
-// [SP_CTX_01_12] [SP_CTX_02_07] Which of the mod's compactions a command's
-// args name, by the marks of now or before phase 25; exact text only.
-export function markerKind(text: string | undefined): 'apply' | 'seed' | undefined {
-  if (text === MARKER || text === LEGACY_MARKER) return 'apply'
-  if (text === HANDOFF_MARKER || text === LEGACY_HANDOFF_MARKER) return 'seed'
-  return undefined
-}
+// [SP_CTX_01_12] [SP_CTX_DEC_26] The mod's compaction marks live in rows.ts
+// and PersonText in deliveries.ts (phase 27: edits.ts reads PersonText too,
+// STRUCT-01); re-exported here for the modules that import them from queue.ts.
+export { HANDOFF_MARKER, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, MARKER, markerKind } from './rows'
+export { personText, SUMMARY_OPENER } from './deliveries'
 
 // [SP_CTX_01_05] [SP_CTX_DEC_26] CommandNote: the sentence every apply report
 // ends with when it enters the queue; the host frames the command's rows as
@@ -225,32 +203,6 @@ export function noteOnce(reports: string): string {
   if (last < 0) return reports
   return reports.slice(0, last).split(note).join('') + reports.slice(last)
 }
-// [SP_CTX_01_12] The start of a built-in compaction's summary (spike
-// context_editor_handoff_long, Entry 2).
-export const SUMMARY_OPENER = 'This session is being continued from a previous conversation'
-
-// [SP_CTX_02_02] PersonText: what the person wrote in a user row; "" for a
-// row that is no message of the person. Leading `<ide_opened_file>` and
-// `<system-reminder>` spans are taken off; a slash command's arguments are
-// the person's words, except the mod's own /compact (review round 40).
-export function personText(raw: string): string {
-  // [SP_CTX_01_22] an inserted delivery: the person's words, or none of a subagent's or a task's
-  const delivered = deliveryWords(raw)
-  if (delivered !== undefined) return delivered
-  let t = raw.trim()
-  for (let m = LEADING_SPAN.exec(t); m; m = LEADING_SPAN.exec(t)) t = t.slice(m[0].length).trim()
-  if (t.includes('<command-name>')) {
-    const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(t)?.[1]?.trim()
-    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim() ?? ''
-    // only the mod's own /compact with its exact marker, of now or before (review round 41)
-    if (name === '/compact' && markerKind(args) !== undefined) return ''
-    return args
-  }
-  if (t.startsWith(MARK) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
-  if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''
-  return t
-}
-
 // [SP_CTX_02_02] PersonRow: a user row without results whose PersonText is not empty.
 export function personRow(rows: readonly SessionMessage[], i: number): boolean {
   const r = rows[i]

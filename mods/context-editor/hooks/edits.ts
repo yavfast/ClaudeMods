@@ -1,4 +1,5 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
+import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
 import { apiBlocks, BIG_ROW, errorText, findToolResult, findToolUse, isBig, isEmptyRow, isPlainUserRow, isPromptRow, MARK, modText, PLAIN_RATIO, resultsOf, rowChars, squash, totalChars } from './rows'
 
@@ -58,9 +59,18 @@ export type Made = { edit: string; resultId?: string; text?: string }
 export const SUMMARIZED = 'you read the full output here, then replaced it with your summary'
 export const REWRITTEN = 'you rewrote this row'
 export const DESCRIBED = 'you saw the media here, then replaced it with your description'
-export function collapsedWords(n: number): string {
-  return `you read these ${n} rows, then collapsed them into your note`
+// [SP_CTX_02_04] [SP_CTX_DEC_29] The collapse words name what the span held
+// (CollapsedList, phase 27): without it the agent took the carrier for a call
+// it never made and the note for something it had not read (live run of phase 26).
+export const COLLAPSED_OPENER = 'you read these '
+export function collapsedWords(n: number, list = ''): string {
+  return `${COLLAPSED_OPENER}${n} rows${list ? ` (${list})` : ''}, then collapsed them into your note`
 }
+// [SP_CTX_01_12] The carrier call's one input field (phase 27), and the
+// bounds of CollapsedList and of one key argument in it.
+export const COLLAPSED_KEY = 'collapsed'
+export const MAX_COLLAPSED_LIST = 200
+export const MAX_COLLAPSED_ARG = 40
 export const OWN_TOOLS = 'mcp__context-editor__'
 export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
@@ -481,9 +491,13 @@ export function callLabel(use: { tool: string; tool_use_id: string; input?: unkn
   return `${use.tool}${mark} id=${use.tool_use_id}${alias ? ` (${alias})` : ''} input="${oneLine(JSON.stringify(use.input ?? {}), 70)}"`
 }
 
+// The cut never splits a surrogate pair: a lone surrogate in a persisted text
+// (a replacement, a carrier's input) makes the API refuse every request.
 export function oneLine(s: string, max: number): string {
   const flat = s.replace(/\s+/g, ' ').trim()
-  return flat.length > max ? flat.slice(0, max) + '…' : flat
+  if (flat.length <= max) return flat
+  const cut = flat.slice(0, max)
+  return (/[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut) + '…'
 }
 
 function isEdited(row: SessionMessage): boolean {
@@ -555,16 +569,18 @@ export function listRows(
       mediaBytes += m.bytes
     }
   const lines: string[] = []
-  // [SP_CTX_02_01] REPRO_FLAG: the tool of a result is the one of its call
+  // [SP_CTX_02_01] REPRO_FLAG: the tool of a result is the one of its call; a
+  // collapse carrier is a note, not a reproducible call
+  const carriers = carrierIds(rows)
   const toolOf = new Map<string, string>()
-  for (const r of rows) for (const u of r.toolUses) toolOf.set(u.tool_use_id, u.tool)
+  for (const r of rows) for (const u of r.toolUses) if (!carriers.has(u.tool_use_id)) toolOf.set(u.tool_use_id, u.tool)
   const repro = (tool: string | undefined) => (tool !== undefined && REPRODUCIBLE_TOOLS.includes(tool) ? REPRO_FLAG : '')
   for (let i = start; i < stop; i++) {
     const row = rows[i]!
     const parts: string[] = []
     if (row.text) parts.push(`text "${oneLine(row.text, 90)}"`)
     for (const u of row.toolUses)
-      parts.push(`tool_use ${callLabel(u, aliases.get(u.tool_use_id), repro(u.tool))}`)
+      parts.push(`tool_use ${callLabel(u, aliases.get(u.tool_use_id), repro(toolOf.get(u.tool_use_id)))}`)
     for (const r of resultsOf(row))
       parts.push(`tool_result${repro(toolOf.get(r.tool_use_id))} id=${r.tool_use_id}${r.isError ? ' ERROR' : ''} "${oneLine(r.text, 70)}"`)
     const own = rowMedia(row, i, media)
@@ -994,6 +1010,148 @@ function stripResult(r: ToolResultSummary): ToolResultSummary {
   return { tool_use_id: r.tool_use_id, text: r.text, isError: r.isError }
 }
 
+// [SP_CTX_02_04] The calls of `rows` that carry a collapse: their result opens
+// with the collapse words, and their input is the one COLLAPSED_KEY string
+// (phase 27) or, from an older apply, empty. Pure.
+export function carrierIds(rows: readonly SessionMessage[]): Set<string> {
+  const notes = new Set<string>()
+  for (const r of rows) for (const t of resultsOf(r)) if (isCollapseNote(t.text)) notes.add(t.tool_use_id)
+  const out = new Set<string>()
+  for (const r of rows)
+    for (const u of r.toolUses) {
+      const input = u.input
+      if (typeof input !== 'object' || input === null || Array.isArray(input)) continue
+      const keys = Object.keys(input)
+      const own = keys.length === 0 || (keys.length === 1 && typeof (input as Record<string, unknown>)[COLLAPSED_KEY] === 'string')
+      if (own && notes.has(u.tool_use_id)) out.add(u.tool_use_id)
+    }
+  return out
+}
+
+function isCollapseNote(text: string): boolean {
+  return text.startsWith(`${MARK} ${COLLAPSED_OPENER}`)
+}
+
+// [SP_CTX_02_04] [SP_CTX_DEC_29] CollapsedList(span): what a collapse span
+// held, at most MAX_COLLAPSED_LIST chars. Its calls grouped by tool in the
+// order of first use, `Tool arg` for one call and `Tool ×n: arg, arg` for
+// more, with the distinct key arguments (KeyArg); then the counts of the
+// person's messages (PersonText not empty, a described prompt, a prompt of
+// media alone), the agent's texts and its earlier collapse notes. Other user
+// rows (host frames, the mod's texts) are not counted. The mod's own calls are
+// not named: DropOwnCalls removes them. Pure.
+export function collapsedList(span: readonly SessionMessage[]): string {
+  const carriers = carrierIds(span)
+  const groups = new Map<string, { n: number; args: string[] }>()
+  let person = 0
+  let texts = 0
+  let notes = 0
+  for (const row of span) {
+    for (const u of row.toolUses) {
+      if (u.tool.startsWith(OWN_TOOLS)) continue
+      if (carriers.has(u.tool_use_id)) {
+        notes++
+        continue
+      }
+      let g = groups.get(u.tool)
+      if (!g) groups.set(u.tool, (g = { n: 0, args: [] }))
+      g.n++
+      const arg = keyArg(u.input)
+      if (arg && !g.args.includes(arg)) g.args.push(arg)
+    }
+    if (resultsOf(row).length) continue
+    const text = row.text.trim()
+    if (text && isCollapseNote(text)) notes++
+    else if (row.role === 'assistant') texts += text ? 1 : 0
+    // a person's prompt keeps its words after a describe; a prompt of media
+    // alone has no text but is the person's
+    else if (text ? text.startsWith(`${MARK} ${DESCRIBED}`) || personText(text) !== '' : isPromptRow(row)) person++
+  }
+  const counts = [
+    person ? `${person} of the person's messages` : '',
+    texts ? `${texts} of your texts` : '',
+    notes ? `${notes} of your earlier notes` : '',
+  ].filter(Boolean)
+  const tail = counts.join('; ')
+  return [capCalls([...groups], MAX_COLLAPSED_LIST - (tail ? tail.length + 2 : 0)), tail].filter(Boolean).join('; ')
+}
+
+// The groups of CollapsedList in at most `max` chars: whole groups while they
+// fit, then the arguments of the next one while they fit (`, …`), then
+// `…, +n more` for the calls of the groups left out.
+function capCalls(groups: readonly [string, { n: number; args: string[] }][], max: number): string {
+  const render = (tool: string, n: number, args: readonly string[], cut: boolean) => {
+    const head = n > 1 ? `${tool} ×${n}` : tool
+    return args.length ? `${head}${n > 1 ? ': ' : ' '}${args.join(', ')}${cut ? ', …' : ''}` : head
+  }
+  const more = (n: number) => `…, +${n} more`
+  const calls = (from: number) => groups.slice(from).reduce((n, [, g]) => n + g.n, 0)
+  const parts: string[] = []
+  let used = 0
+  const fits = (part: string, reserve: number) => used + (parts.length ? 2 : 0) + part.length + reserve <= max
+  const push = (part: string) => {
+    used += (parts.length ? 2 : 0) + part.length
+    parts.push(part)
+  }
+  for (let k = 0; k < groups.length; k++) {
+    const [tool, g] = groups[k]!
+    const later = calls(k + 1)
+    const reserve = later ? 2 + more(later).length : 0
+    const full = render(tool, g.n, g.args, false)
+    if (fits(full, reserve)) {
+      push(full)
+      continue
+    }
+    // this group does not fit whole: its arguments while they fit, then stop
+    let args: string[] = []
+    for (const a of g.args) {
+      if (!fits(render(tool, g.n, [...args, a], true), reserve)) break
+      args = [...args, a]
+    }
+    if (args.length) {
+      push(render(tool, g.n, args, true))
+      if (later) push(more(later))
+    } else {
+      // degenerate: not even this group's first argument (or, without
+      // arguments, its name) fits beside the tail; it and every later group
+      // are counted. The room before always kept space for this tail.
+      push(more(calls(k)))
+    }
+    break
+  }
+  return parts.join('; ')
+}
+
+// [SP_CTX_02_04] KeyArg(input): the argument that names a call, at most
+// MAX_COLLAPSED_ARG chars: the base name of `file_path` or `notebook_path`,
+// a quoted `pattern`, the first word of `command` (after `cd <dir> &&` and
+// variable assignments), the host of `url`, a quoted `description` or
+// `query`, the base name of `path`; none otherwise.
+export function keyArg(input: unknown): string {
+  if (typeof input !== 'object' || input === null) return ''
+  const o = input as Record<string, unknown>
+  const s = (k: string) => (typeof o[k] === 'string' && (o[k] as string).trim() ? (o[k] as string).trim() : undefined)
+  const clip = (v: string) => oneLine(v, MAX_COLLAPSED_ARG - 1)
+  const quote = (v: string) => `"${oneLine(v, MAX_COLLAPSED_ARG - 3)}"`
+  const base = (v: string) => v.replace(/\/+$/, '').split('/').pop() || v
+  const file = s('file_path') ?? s('notebook_path')
+  if (file) return clip(base(file))
+  const pattern = s('pattern')
+  if (pattern) return quote(pattern)
+  const command = s('command')
+  if (command) {
+    const words = command.replace(/^cd\s+("[^"]*"|'[^']*'|\S+)\s*(&&|;)\s*/, '').split(/\s+/).filter(w => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w))
+    return words[0] ? clip(base(words[0])) : ''
+  }
+  const url = s('url')
+  // the host without userinfo: a password in a URL never goes into the text
+  if (url) return clip((/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(url)?.[1] ?? url).replace(/^[^@]*@/, ''))
+  const named = s('description') ?? s('query')
+  if (named) return quote(named)
+  const path = s('path')
+  return path ? clip(base(path)) : ''
+}
+
 // [SP_CTX_02_04] An edited call gets a new id. The suffix of an earlier edit
 // is replaced, never stacked.
 export function freshId(id: string): string {
@@ -1245,15 +1403,18 @@ export function applyEdits(
         run = () => {
           const span = rows.slice(from, to + 1)
           report.originals.push({ edit: name, rows: span })
-          const text = `${MARK} ${collapsedWords(span.length)}${note}${mediaNote(keys)}: ${edit.summary}`
+          const list = collapsedList(span)
+          const text = `${MARK} ${collapsedWords(span.length, list)}${note}${mediaNote(keys)}: ${edit.summary}`
           // The carrier keeps roles and pairing valid around the span; it is
-          // never one of this plugin's own calls, which are dropped later.
+          // never one of this plugin's own calls, which are dropped later. Its
+          // name is a tool the session has; its input names what the span
+          // held, never the first call's arguments ([SP_CTX_DEC_29]).
           const carrier = span.flatMap(r => r.toolUses).find(u => !u.tool.startsWith(OWN_TOOLS))
           const id = carrier && newId(carrier.tool_use_id)
           const replacement: SessionMessage[] =
             carrier && id
               ? [
-                  { role: 'assistant', text: '', toolUses: [{ ...editedUse(carrier, id), input: {} }] },
+                  { role: 'assistant', text: '', toolUses: [{ ...editedUse(carrier, id), input: { [COLLAPSED_KEY]: list } }] },
                   { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, isError: false, text }] },
                 ]
               : [{ role: span[0]!.role, text, toolUses: [] }]

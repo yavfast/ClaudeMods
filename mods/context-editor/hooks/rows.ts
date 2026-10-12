@@ -28,6 +28,26 @@ export function modText(text: string): string {
   return `${PREFIX} ${text}`
 }
 
+// [SP_CTX_01_12] [SP_CTX_DEC_26] The mod's compaction marks (queue.ts and
+// compaction.ts re-export them): the model reads them in the rows of the command
+// (`/compact <args>`, which the host frames as run by the person), so each
+// says who ran it.
+// (no apostrophe or other quote: nothing a host might escape breaks the exact match)
+export const MARKER = modText('apply queued edits (run automatically by the mod for context edits the agent queued, not by the person)')
+export const HANDOFF_MARKER = modText('seed the handed-off conversation (run automatically by the mod, not by the person)')
+// [SP_CTX_01_12] The marks before phase 25: rows of earlier applies, and a
+// command an older instance of the module queued before a reload.
+export const LEGACY_MARKER = modText('apply queued edits')
+export const LEGACY_HANDOFF_MARKER = modText('seed the handed-off conversation')
+
+// [SP_CTX_01_12] [SP_CTX_02_07] Which of the mod's compactions a command's
+// args name, by the marks of now or before phase 25; exact text only.
+export function markerKind(text: string | undefined): 'apply' | 'seed' | undefined {
+  if (text === MARKER || text === LEGACY_MARKER) return 'apply'
+  if (text === HANDOFF_MARKER || text === LEGACY_HANDOFF_MARKER) return 'seed'
+  return undefined
+}
+
 // ---- row predicates
 
 // The tool results of a row; none for a row without them.

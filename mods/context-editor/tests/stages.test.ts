@@ -735,7 +735,7 @@ test('RebindTags — межа на переписаному рядку / на з
   const moved = relocate(before, reg({ stage: { name: 'S', after: mark(before, 6), openedTurn: 0 } }), co)
   // the carrier's result row
   expect(moved.stage!.after).toEqual(mark(co.after, 5))
-  expect(co.after[5]!.toolResults![0]!.text).toContain('rows, then collapsed them into your note')
+  expect(co.after[5]!.toolResults![0]!.text).toContain('), then collapsed them into your note')
 })
 
 test('RebindTags — закриття, стискання і новий етап: the result row of the last pair of A (#11), summarized: both marks on the FreshId result row', async () => {
@@ -1070,6 +1070,19 @@ test('BlockReport — кандидати блоку за причинами: rea
   // the telemetry of the report carries the journal when the port gives one
   const withJournal = await blockReport({ ...blockIO(r, reg({ tags })), journal: async () => ({ applications: 1, rereads: 0, archiveRereads: 0 }) }, { name: 'A', after: null, end: mark(r, 11), turn: 0 })
   expect(withJournal).toContain('Effect: 1 application(s); 0 reread(s) of compressed content (0 of archives)')
+})
+
+test('BlockReport — a collapse carrier is no reproducible pair (phase 27)', async () => {
+  const r: SessionMessage[] = [
+    prompt('p'),
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'k', tool: 'Read', input: { collapsed: 'Read a.txt' } }] },
+    result('k', '[context-editor] you read these 2 rows (Read a.txt), then collapsed them into your note: s'),
+    callRow('a', 'Read', undefined, { file_path: '/a' }),
+    result('a', 'x'),
+    reply('done'),
+  ]
+  const text = await blockReport(blockIO(r, reg()), { name: 'A', after: null, end: mark(r, 5), turn: 0 })
+  expect(text).toContain('reproducible pairs (~) 1.')
 })
 
 // ---- [SP_CTX_02_01] contextList ([PL_AUD_CTX_P10], CF-19)

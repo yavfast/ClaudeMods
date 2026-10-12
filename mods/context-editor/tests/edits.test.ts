@@ -31,6 +31,14 @@ import {
   responseStart,
   ROW_WINDOW,
   SUMMARIZED,
+  carrierIds,
+  collapsedList,
+  collapsedWords,
+  COLLAPSED_KEY,
+  keyArg,
+  oneLine,
+  MAX_COLLAPSED_ARG,
+  MAX_COLLAPSED_LIST,
 } from '../hooks/edits'
 import { findToolResult, findToolUse, MARK } from '../hooks/rows'
 import { emptyRowBetweenCalls, prompt, reply as replyRow, result, use as useRow } from './row-fixtures'
@@ -87,7 +95,7 @@ test('collapse keeps one tool pair as the carrier of the summary', async () => {
   expect(report.applied).toEqual(['collapse #2..#5'])
   expect(out.length).toBe(7)
   expect(out[2]!.toolUses[0]!.tool_use_id.startsWith('a_ce')).toBe(true)
-  expect(out[3]!.toolResults![0]!.text).toContain('you read these 4 rows, then collapsed them into your note')
+  expect(out[3]!.toolResults![0]!.text).toContain('you read these 4 rows (WebSearch; WebFetch), then collapsed them into your note')
   // the next row keeps its content; after the inserted carrier in the same
   // stretch it is rebuilt without its handle ([SP_CTX_02_04], pitfall 30)
   expect(out[4]!.text).toBe('Conclusion: X is true.')
@@ -237,7 +245,7 @@ test('a collapse starting with an own call keeps its summary after the own calls
 
 test('a collapse of text rows only becomes one text row', async () => {
   const { rows: out } = run([{ op: 'collapse', from_index: 0, to_index: 1, summary: 'intro' }])
-  expect(out[0]!.text).toContain('you read these 2 rows, then collapsed them into your note')
+  expect(out[0]!.text).toContain("you read these 2 rows (1 of the person's messages; 1 of your texts), then collapsed them into your note")
   expect(out[0]!.toolUses.length).toBe(0)
   expect(out.length).toBe(8)
 })
@@ -504,9 +512,140 @@ test('CollectMedia — apiTruncated: 4096 / 4095 / 4094 messages of the API form
   expect(of(4094)).toBe(false)
 })
 
-test('a collapse carrier keeps no copy of the first call input', async () => {
+test('a collapse carrier keeps no copy of the first call input; its input names what the span held', async () => {
   const { rows: out } = run([{ op: 'collapse', from_index: 2, to_index: 5, summary: 's' }])
-  expect(out[2]!.toolUses[0]!.input).toEqual({})
+  expect(out[2]!.toolUses[0]!.input).toEqual({ [COLLAPSED_KEY]: 'WebSearch; WebFetch' })
+  expect(out[2]!.toolUses[0]!.tool).toBe('WebSearch')
+  expect(COLLAPSED_KEY).toBe('collapsed')
+})
+
+// ---- [SP_CTX_02_04] [SP_CTX_DEC_29] CollapsedList and the carrier input (phase 27)
+
+const call = (id: string, tool: string, input: Record<string, unknown>): SessionMessage => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool, input }] })
+
+test('CollapsedList — групи і ключові аргументи: calls by tool in order of first use with their key arguments; own calls left out; the person (by PersonText) and texts counted', async () => {
+  const span: SessionMessage[] = [
+    prompt('read the config'),
+    replyRow('Reading.'),
+    call('a', 'Read', { file_path: '/w/cfg.txt' }),
+    result('a', 'x'),
+    call('b', 'Read', { file_path: '/w/big1.txt', offset: 10 }),
+    result('b', 'x'),
+    call('a2', 'Read', { file_path: '/w/cfg.txt' }),
+    result('a2', 'x'),
+    call('c', 'Bash', { command: 'ls -la /w' }),
+    result('c', 'x'),
+    call('d', 'Bash', { command: 'cd /w && LC_ALL=C wc -l big1.txt' }),
+    result('d', 'x'),
+    call('e', 'Grep', { pattern: 'KEY_', path: '/w' }),
+    result('e', 'x'),
+    call('f', 'WebFetch', { url: 'https://docs.example.com/a?b=1', prompt: 'p' }),
+    result('f', 'x'),
+    call('g', 'Agent', { description: 'find the parser', prompt: 'long' }),
+    result('g', 'x'),
+    call('z', 'mcp__context-editor__context_list', {}),
+    result('z', 'listing'),
+    prompt('<system-reminder>a task finished</system-reminder>'),
+    prompt('context-editor: applied 1 edit(s)'),
+    prompt('and the second file'),
+    prompt('[context-editor] you saw the media here, then replaced it with your description: a chart\n\nwhat does it show?'),
+    prompt('<ide_opened_file>The user opened /w/a.ts</ide_opened_file> look at this'),
+    prompt('<command-name>/review</command-name><command-args>pr 5</command-args>'),
+    { role: 'user', text: '', toolUses: [], handle: 'media-only' },
+    { role: 'user', text: '', toolUses: [] },
+  ]
+  expect(collapsedList(span)).toBe(
+    'Read ×3: cfg.txt, big1.txt; Bash ×2: ls, wc; Grep "KEY_"; WebFetch docs.example.com; Agent "find the parser"; ' +
+      "6 of the person's messages; 1 of your texts",
+  )
+})
+
+test('CollapsedList — межа: at most MAX_COLLAPSED_LIST chars; a group cut by its arguments ends with ", …", groups left out with "…, +n more"; the counts stay whole', async () => {
+  const span: SessionMessage[] = [prompt('go')]
+  for (let i = 0; i < 30; i++) span.push(call(`r${i}`, 'Read', { file_path: `/w/a-rather-long-file-name-${i}.txt` }), result(`r${i}`, 'x'))
+  for (let i = 0; i < 5; i++) span.push(call(`b${i}`, 'Bash', { command: `echo ${i}` }), result(`b${i}`, 'x'))
+  const list = collapsedList(span)
+  expect(MAX_COLLAPSED_LIST).toBe(200)
+  expect(list.length <= MAX_COLLAPSED_LIST).toBe(true)
+  expect(list.startsWith('Read ×30: a-rather-long-file-name-0.txt, ')).toBe(true)
+  expect(list).toContain(', …; …, +5 more; ')
+  expect(list.endsWith("; 1 of the person's messages")).toBe(true)
+  // many tools: whole groups while they fit, then the rest counted
+  const tools: SessionMessage[] = []
+  for (let i = 0; i < 40; i++) tools.push(call(`t${i}`, `mcp__server__tool_number_${i}`, {}), result(`t${i}`, 'x'))
+  const many = collapsedList(tools)
+  expect(many.length <= MAX_COLLAPSED_LIST).toBe(true)
+  expect(/^mcp__server__tool_number_0; .*; …, \+\d+ more$/.test(many)).toBe(true)
+})
+
+test('KeyArg — at most MAX_COLLAPSED_ARG chars: file base name, quoted pattern, first word of a command, URL host, quoted description or query, path base name; none otherwise', async () => {
+  expect(keyArg({ file_path: '/a/b/c.ts' })).toBe('c.ts')
+  expect(keyArg({ notebook_path: '/a/n.ipynb' })).toBe('n.ipynb')
+  expect(keyArg({ pattern: '**/*.md', path: '/a' })).toBe('"**/*.md"')
+  expect(keyArg({ command: '/usr/bin/git log --oneline' })).toBe('git')
+  expect(keyArg({ command: 'cd /x; FOO=1 make test' })).toBe('make')
+  expect(keyArg({ url: 'http://host:8080/p' })).toBe('host:8080')
+  // userinfo never goes into the text
+  expect(keyArg({ url: 'https://user:secret@host.example/p' })).toBe('host.example')
+  expect(keyArg({ command: 'cd "/a b" && ls -la' })).toBe('ls')
+  expect(keyArg({ command: "cd '/a b'; wc -l f" })).toBe('wc')
+  expect(keyArg({ query: 'claude code hooks' })).toBe('"claude code hooks"')
+  expect(keyArg({ path: '/a/dir/' })).toBe('dir')
+  expect(keyArg({ q: 'x' })).toBe('')
+  expect(keyArg(undefined)).toBe('')
+  expect(keyArg({ file_path: '/a/' + 'n'.repeat(100) }).length).toBe(MAX_COLLAPSED_ARG)
+  expect(keyArg({ description: 'd'.repeat(100) }).length).toBe(MAX_COLLAPSED_ARG)
+})
+
+test('oneLine — a cut never splits a surrogate pair: an emoji right at the boundary goes whole, no lone surrogate stays', async () => {
+  const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+  // the emoji's high surrogate is the 40th code unit
+  const text = 'a'.repeat(39) + '😀' + 'tail'
+  const cut = oneLine(text, 40)
+  expect(cut).toBe('a'.repeat(39) + '…')
+  expect(lone.test(cut)).toBe(false)
+  expect(oneLine('a'.repeat(38) + '😀' + 'tail', 40)).toBe('a'.repeat(38) + '😀…')
+  // through KeyArg into the carrier input and the replacement text
+  const arg = keyArg({ description: 'x'.repeat(MAX_COLLAPSED_ARG - 4) + '😀😀' })
+  expect(lone.test(arg)).toBe(false)
+  expect(arg.length <= MAX_COLLAPSED_ARG).toBe(true)
+  const input: SessionMessage[] = [prompt('go', 'p0'), call('e', 'Agent', { description: 'y'.repeat(36) + '🚀🚀' }), result('e', 'x')]
+  const { queued } = prepare(input, [{ op: 'collapse', from_index: 1, to_index: 2, summary: 's' }])
+  const out = applyEdits(input, queued, '').rows
+  expect(lone.test(JSON.stringify(out[1]!.toolUses[0]!.input))).toBe(false)
+  expect(lone.test(out[2]!.toolResults![0]!.text)).toBe(false)
+})
+
+test('collapsedWords — the list in parentheses after the row count; none without a list', async () => {
+  expect(collapsedWords(12, 'Read cfg.txt')).toBe('you read these 12 rows (Read cfg.txt), then collapsed them into your note')
+  expect(collapsedWords(2)).toBe('you read these 2 rows, then collapsed them into your note')
+})
+
+test('carrierIds — a call whose input is the one collapsed field, or an empty input whose result is a collapse note (before phase 27); a real call with an empty input is none', async () => {
+  const rows: SessionMessage[] = [
+    call('n', 'Read', { [COLLAPSED_KEY]: 'Read a.txt' }),
+    result('n', `${MARK} you read these 2 rows (Read a.txt), then collapsed them into your note: s`),
+    call('o', 'Bash', {}),
+    result('o', `${MARK} you read these 4 rows, then collapsed them into your note: s`),
+    call('p', 'mcp__x__ping', {}),
+    result('p', 'pong'),
+    call('q', 'mcp__x__fold', { [COLLAPSED_KEY]: true }),
+    result('q', `${MARK} you read these 2 rows, then collapsed them into your note: s`),
+    call('r', 'mcp__x__fold', { [COLLAPSED_KEY]: 'all' }),
+    result('r', 'folded'),
+  ]
+  expect([...carrierIds(rows)]).toEqual(['n', 'o'])
+  // a collapse over an earlier carrier names it as a note, not as a call
+  expect(collapsedList(rows)).toBe('mcp__x__ping; mcp__x__fold ×2; 2 of your earlier notes')
+})
+
+test('listRows — a collapse carrier gets no reproducible flag', async () => {
+  const { rows: out } = run([{ op: 'collapse', from_index: 7, to_index: 8, summary: 's' }])
+  const page = listRows(out, 0, 20)
+  expect(page).toContain('tool_use Read id=c_ce')
+  expect(page).not.toContain('tool_use Read~ id=c_ce')
+  expect(page).toContain('input="{"collapsed":"Read"}"')
+  expect(/tool_result id=c_ce\S+ "\[context-editor\] you read these 2 rows \(Read\)/.test(page)).toBe(true)
 })
 
 test('the plugin own calls are dropped with their results', async () => {
@@ -790,7 +929,7 @@ test('ApplyEdits — хто написав заміну: each replacement says t
   expect(out.rows[1]!.text).toBe(`${MARK} you rewrote this row${note}right`)
   expect(out.rows[3]!.toolResults![0]!.text).toBe(`${MARK} ${SUMMARIZED}${note}A holds K`)
   expect(SUMMARIZED).toBe('you read the full output here, then replaced it with your summary')
-  expect(out.rows[5]!.toolResults![0]!.text).toBe(`${MARK} you read these 4 rows, then collapsed them into your note${note}B and C`)
+  expect(out.rows[5]!.toolResults![0]!.text).toBe(`${MARK} you read these 4 rows (Read ×2), then collapsed them into your note${note}B and C`)
   // the listing still flags every replaced row by the MARK prefix
   const page = listRows(out.rows, 0, 20)
   for (const i of [1, 3, 5]) expect(page).toContain(`#${i}*`)

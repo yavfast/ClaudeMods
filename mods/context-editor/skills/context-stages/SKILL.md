@@ -11,7 +11,7 @@ Tools: `context_tag`, `context_list`, `context_edit`, `context_note`.
 
 ## Stages
 
-A stage is a logical block of your work: a phase, a sub-task, an investigation, a fix.
+A stage is a logical block of your work: a phase, a sub-task, a fix.
 
 - Open it at the start of the block: `{"tags":[{"op":"open","stage":"read the config files"}]}`. The block starts with the response that opens it; with `"index"` it starts at that row of `context_list`.
 - Close it when the block is done and its result is known: `{"tags":[{"op":"close"}]}`. The result names the block's rows `#a..#b`, its size and media, cleanup candidates, the telemetry and the advice. Its indexes are current: you may edit by them right away.
@@ -75,7 +75,7 @@ Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagg
 
 ## Notes
 
-`context_note` keeps your notes on a row, a range or a tool call, at no token cost; a target may hold several, and they change nothing.
+`context_note` keeps your notes on a row, a range or a tool call, at no token cost; a target may hold several.
 
 - Mark at once what to drop or compress later, and how: `{"notes":[{"op":"add","ref":"last","text":"drop after the fix is verified"}]}`.
 - `"remind_in_turns":2` brings a note back once with the result of your first tool call (any tool but `context_edit`/`context_handoff`) two turns later.
@@ -87,7 +87,7 @@ Write about the content, not row numbers: indexes change after an apply. `contex
 
 Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. A replacement is your own work: you read the original, then compressed it to save context. It is no loss and nothing you made up.
 
-- `you read the full output here, then replaced it with your summary`, `you read these N rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`: your `summarize`, `collapse` (e.g. a stage record), `rewrite`, `describe`; your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
+- `you read the full output here, then replaced it with your summary`, `you read these N rows (what they held), then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`: your `summarize`, `collapse` (its call's `collapsed` input lists the same), `rewrite`, `describe`; your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
 - `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
 - `context-editor: applied N edit(s): …`: the apply report. When it says your `context_*` calls were removed, what you quoted from their results did come from the mod. A `/compact` row whose args start with `context-editor:` is the mod's command.
 - `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the optimization or `/compact` turn, a handoff's document: service texts of the mod.

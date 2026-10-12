@@ -333,7 +333,7 @@ test('RebindTags — діапазон нотатки: n2 on #4..#8; the pair at 
   const collapsed = apply(before, [{ op: 'collapse', from_index: 4, to_index: 9, summary: 'S' }])
   const b = rebindNotes(reg({ notes: [range], nextNote: 3 }), before, collapsed.after, collapsed.done, collapsed.produced)
   expect(b.registry.notes[0]!.target).toEqual(at(collapsed.after, 5))
-  expect(collapsed.after[5]!.toolResults![0]!.text).toContain('rows, then collapsed them into your note')
+  expect(collapsed.after[5]!.toolResults![0]!.text).toContain('), then collapsed them into your note')
 })
 
 test('RebindTags — засів з CarryNote: a note on a pair the seed extended stays on the same pair', async () => {
