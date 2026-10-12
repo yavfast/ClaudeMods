@@ -1,0 +1,9 @@
+{
+  "name": "ui-probe",
+  "version": "0.1.0",
+  "description": "Test mod: shows a numbered message through every plugin notification channel ($.ui.log, toast, status, notify, notice) to see which ones a surface draws.",
+  "author": {
+    "name": "Alexandr Yavorsky",
+    "email": "alexandr.yavorsky@4shared.com"
+  }
+}
