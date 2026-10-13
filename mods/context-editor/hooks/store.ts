@@ -16,6 +16,9 @@ export type SessionStorage = StorageState & { sessionId: string }
 // [SP_CTX_01_07] A session id that names a folder: no separator, no dots.
 export const SESSION_ID = /^[A-Za-z0-9_-]+$/
 
+// [SP_CTX_02_52] The reason of a storage whose .zip could not be restored.
+export const PACKED_REASON = 'packed storage cannot be restored'
+
 // [SP_CTX_01_07] The folder of the mod's storages under HOME.
 export const STORAGE_BASE = '.claude/context-editor'
 
@@ -83,6 +86,9 @@ export type PrepareIO = {
   home: () => Promise<string | undefined>
   // makes `dir` and `base` owner-only (700); exitCode 0 when done
   mkdir: (dir: string, base: string) => Promise<{ exitCode: number; stderr?: string }>
+  // [SP_CTX_02_52] RestoreSession of `id` under `base`: false when its packed
+  // storage stays packed; absent, nothing is restored
+  restore?: (base: string, id: string) => Promise<boolean>
   // [SP_CTX_02_18] the boundary step of the new storage (AfterPrepare); never
   // throws. `hurried` settles once a compaction handler waits for this
   // preparation: from then on it takes hostId only if already read.
@@ -123,8 +129,11 @@ async function prepareOnce(mem: StorageMemory, io: PrepareIO, id: string, hurrie
   const plan = storagePlan(await io.home(), id)
   let state: StorageState = plan
   if ('dir' in plan) {
-    const ran = await io.mkdir(plan.dir, plan.base).catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
-    state = madeStorage(plan, ran)
+    const restored = io.restore ? await io.restore(plan.base, id).catch(() => false) : true
+    const ran = restored
+      ? await io.mkdir(plan.dir, plan.base).catch((err: unknown) => ({ exitCode: -1, stderr: String(err) }))
+      : undefined
+    state = ran ? madeStorage(plan, ran) : { reason: PACKED_REASON }
     if ('dir' in state) await io.after(prev, id, state.dir, hurried).catch(() => undefined)
   }
   if ('reason' in state) io.status(modText('storage unavailable'))

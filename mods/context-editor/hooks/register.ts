@@ -66,6 +66,7 @@ import {
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
 import { shapeSubagentResult, type ShapeIO } from './subagents'
+import { choosePacker, needsRestore, packCommands, restoreSession, sweepSessions, SWEEP_DELAY_MS, unpackCommands, type CleanupIO, type Packer } from './cleanup'
 import {
   carry,
   changeOf,
@@ -144,6 +145,8 @@ const hintMemo = newHintMemo()
 // [SP_CTX_02_27] the skill's guide, read once per module instance; a failed
 // read is tried again with the next intro (GUIDE_UNREAD gives INTRO_TEXT)
 let guide: string | undefined
+// [SP_CTX_02_51] the packer this module instance found, probed once
+let packer: Promise<Packer> | undefined
 // [SP_CTX_01_07] [PL_AUD_CTX_P11] The cache of the tag and alias registries (and [SP_CTX_01_23] hostattach.json):
 // a new epoch each time a storage is published (a session start or switch).
 const fileCache = newFileCache()
@@ -408,14 +411,25 @@ function shapeIO($: EngineInterface): ShapeIO {
 // [SP_CTX_01_07] [C_CTX_DEC_28] ArchiveRoot: the archives of storage `dir`
 // go to the session's working directory, where the host lets Read in without
 // asking, under a folder that git-ignores itself; none without a cwd or when
-// the folder cannot be made.
+// the folder cannot be made. [SP_CTX_02_50] The storage remembers each such
+// folder (one per cwd) in `archives.txt`, so a sweep finds them from another session.
 async function archiveRoot($: EngineInterface, dir: string): Promise<string | undefined> {
   const cwd = await $.session.cwd().catch(() => undefined)
   if (!cwd) return undefined
   const root = `${cwd}/.claude/context-editor`
   const folder = `${root}/${dir.slice(dir.lastIndexOf('/') + 1)}`
+  // a session whose cwd is $HOME: the archive folder would be the storage itself
+  if (folder === dir) return undefined
   const ran = await $.process
-    .run(['sh', '-c', 'umask 077 && mkdir -p "$2" && { [ -e "$1/.gitignore" ] || printf \'*\\n\' > "$1/.gitignore"; }', 'sh', root, folder])
+    .run([
+      'sh',
+      '-c',
+      'umask 077 && mkdir -p "$2" && { [ -e "$1/.gitignore" ] || printf \'*\\n\' > "$1/.gitignore"; } && { grep -qxF -- "$2" "$3/archives.txt" 2>/dev/null || printf \'%s\\n\' "$2" >> "$3/archives.txt"; }',
+      'sh',
+      root,
+      folder,
+      dir,
+    ])
     .catch(() => ({ exitCode: -1 }))
   return ran.exitCode === 0 ? folder : undefined
 }
@@ -461,6 +475,7 @@ function prepareIO($: EngineInterface, inCompaction: boolean): PrepareIO {
       return $.env.get('HOME')
     },
     mkdir: (dir, base) => $.process.run(['sh', '-c', 'umask 077 && mkdir -p "$1" && chmod 700 "$2" "$1"', 'sh', dir, base]),
+    restore: (base, id) => restoreSession(cleanupIO($), base, id),
     // [SP_CTX_02_18] a switch in this process (/clear, /resume): the new
     // session's boundary this process wrote no longer names the rows read here
     after: (prev, now, dir, hurried) =>
@@ -503,6 +518,58 @@ async function prepareStorage($: EngineInterface): Promise<SessionStorage> {
 async function removeFile($: EngineInterface, path: string): Promise<void> {
   const ran = await $.process.run(['rm', '-f', '--', path])
   if (ran.exitCode !== 0) throw new Error(ran.stderr.trim() || `rm: exit ${ran.exitCode}`)
+}
+
+// [SP_CTX_02_50] [SP_CTX_02_51] [SP_CTX_02_52] The sweep's ports: every call
+// resolves, a failure is undefined or false; commands run owner-only (umask 077).
+function cleanupIO($: EngineInterface): CleanupIO {
+  const ok = (argv: readonly string[], cwd?: string) =>
+    $.process
+      .run(['sh', '-c', 'umask 077 && exec "$@"', 'sh', ...argv], { timeoutMs: 120_000, ...(cwd ? { cwd } : {}) })
+      .then(r => r.exitCode === 0, () => false)
+  const runs = async (cmds: { argv: string[]; cwd?: string }[]) => {
+    if (!cmds.length) return false
+    for (const c of cmds) if (!(await ok(c.argv, c.cwd))) return false
+    return true
+  }
+  return {
+    now: () => Date.now(),
+    list: dir => $.fs.list(dir).then(
+      es => es.map(e => ({ name: e.name, kind: e.kind })),
+      () => undefined,
+    ),
+    mtime: path => $.fs.stat(path).then(st => st.mtimeMs, () => undefined),
+    exists: path => $.fs.exists(path).catch(() => false),
+    lines: path =>
+      $.fs.read(path).then(
+        t => t.split('\n').map(l => l.trim()).filter(Boolean),
+        () => [],
+      ),
+    write: (path, text) => writeText($, path, text),
+    lock: path => ok(['mkdir', '--', path]),
+    remove: path => ok(['rm', '-rf', '--', path]),
+    // never over an existing `to`: mv would replace a file or move into a folder
+    rename: (from, to) => ok(['sh', '-c', '[ ! -e "$2" ] && mv -- "$1" "$2"', 'sh', from, to]),
+    packer: () =>
+      (packer ??= (async () => {
+        const probe = (argv: string[]) => $.process.run(argv).catch(() => undefined)
+        const [zip, unzip, tar] = await Promise.all([probe(['zip', '-v']), probe(['unzip', '-v']), probe(['tar', '--version'])])
+        return choosePacker(zip?.exitCode === 0, unzip?.exitCode === 0, tar?.exitCode === 0 ? tar.stdout : undefined)
+      })()),
+    pack: (p, folder, zip) => runs(packCommands(p, folder, zip)),
+    unpack: async (p, zip, folder, keep) => (await ok(['mkdir', '-p', '--', folder])) && runs(unpackCommands(p, zip, folder, keep)),
+  }
+}
+
+// [SP_CTX_02_50] One sweep from the deferred action of a session start; its
+// one line goes to the debug log.
+async function runSweep($: EngineInterface): Promise<void> {
+  const home = await $.env.get('HOME')
+  if (!home?.startsWith('/')) return
+  const base = home.replace(/\/+$/, '')
+  const config = (await $.env.get('CLAUDE_CONFIG_DIR'))?.replace(/\/+$/, '') || `${base}/.claude`
+  const out = await sweepSessions(cleanupIO($), { home: base, config, current: await $.session.id() })
+  $.ui.log(modText('skipped' in out ? `old sessions not swept: ${out.skipped}` : `old sessions: ${out.removed} removed, ${out.packed} packed`), { to: 'debug' })
 }
 
 // [SP_CTX_01_07] /clear or /resume in the same process change the session
@@ -891,6 +958,8 @@ export const register: Register = on => {
     // [SP_CTX_02_46] a new host process (--resume, a restart, an IDE opening
     // the session): the repair's one attempt, from a deferred action
     await scheduleRepair(repairIO($), repairMem).catch(() => undefined)
+    // [SP_CTX_02_50] the sweep of old sessions, in the background
+    void $.clock.after(SWEEP_DELAY_MS, () => runSweep($).catch(() => undefined))
     return next(e)
   })
 
@@ -1263,6 +1332,9 @@ export const register: Register = on => {
   // unserved optimization request; each leaves only once that prompt has
   // entered. The host skips this hook for prompts the mod submits itself.
   on('prompt.submit', async ($, e, next) => {
+    // [SP_CTX_02_52] a sweep of another process packed this session's storage
+    const st = storage.state
+    if (await needsRestore({ exists: path => $.fs.exists(path).catch(() => false) }, dirOf(st), 'reason' in st ? st.reason : undefined)) await prepareStorage($)
     const dir = await storageDir($)
     if (!dir) return next(e)
     const s = stores($, dir)

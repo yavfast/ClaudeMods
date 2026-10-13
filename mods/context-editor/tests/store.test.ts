@@ -729,3 +729,20 @@ test('FileCache — скидання під час читання: a read that a
   // a store without a cache never peeks
   expect(jsonFile<Doc>(m.fs, PATH, () => ({ n: 0 }), parseDoc).peek()).toBeUndefined()
 })
+
+test('PrepareStorage — RestoreSession: restored before mkdir; a .zip that stays gives the reason', async () => {
+  const calls: string[] = []
+  const ok = host('A', { restore: async (base, id) => (calls.push(`${base}|${id}`), true) })
+  expect(await prepareStorage(newStorageMemory(), ok.io, 'A')).toEqual({ dir: '/home/u/.claude/context-editor/A', sessionId: 'A' })
+  expect(calls).toEqual(['/home/u/.claude/context-editor|A'])
+  const packed = host('A', { restore: async () => false })
+  expect(await prepareStorage(newStorageMemory(), packed.io, 'A')).toEqual({ reason: 'packed storage cannot be restored', sessionId: 'A' })
+  expect(packed.log.mkdirs).toEqual([])
+  expect(packed.log.afters).toEqual([])
+  const thrown = host('A', {
+    restore: async () => {
+      throw new Error('x')
+    },
+  })
+  expect(await prepareStorage(newStorageMemory(), thrown.io, 'A')).toEqual({ reason: 'packed storage cannot be restored', sessionId: 'A' })
+})

@@ -278,6 +278,23 @@
 | ShapeSubagentResult | is_error | результат з `is_error: true`, великий | обрізано, `is_error` лишається |
 | ShapeSubagentResult | сховище недоступне / недопустимий `agentId` | великий вивід, папки сховища немає; або `agentId` = `..` | рядок без змін, запису немає |
 | ShapeSubagentResult | межі не на кінці рядка | кінець рядка в першій половині вікна голови (i < SUB_HEAD/2) або хвоста (j − t ≥ SUB_TAIL/2) | межа лишається SUB_HEAD / len − SUB_TAIL |
+| SweepSessions | сесія без транскрипту | сховище `<id>` з `archives.txt` = `<cwd>/.claude/context-editor/<id>`, транскрипту `<id>.jsonl` немає, не торкались ≥ SWEEP_GRACE_MS | сховище, `<id>.zip`, `<id>.where`, каталог архівів і `<archives>.zip` видалено |
+| SweepSessions | транскрипт є / свіжа / поточна | транскрипт є і сесії торкались < PACK_IDLE_MS; або транскрипту немає, але < SWEEP_GRACE_MS; або це поточна сесія | нічого не змінено |
+| SweepSessions | давно не відкрита | транскрипт є, не торкались ≥ PACK_IDLE_MS, Packer ≠ NONE | PackSession; без інструмента — нічого |
+| SweepSessions | раз на добу, замок | `.sweep` молодша за SWEEP_EVERY_MS; або `.sweep.lock` свіжий | прибирання не йде; завислий замок (≥ SWEEP_LOCK_MS) забирається атомарним перейменуванням |
+| SweepSessions | транскрипти не читаються / чужий архів | `<config>/projects` не читається або без жодного транскрипту; `CLAUDE_CONFIG_DIR` задає `<config>`; рядок `archives.txt` — не OwnArchives (відносний, з `..`, чужий id, саме сховище) | жодного видалення / каталог за чужим шляхом не пакується і не видаляється |
+| SweepSessions | SWEEP_MAX | дій більше за SWEEP_MAX | виконано SWEEP_MAX, від найстаріших |
+| PackSession | успіх | сховище і каталог архівів | `<id>.zip`, `<archives>.zip`, `<id>.where`; каталоги видалено лише після запису й перевірки обох `.zip` |
+| PackSession | збій | пакування або перевірка `.zip` падає | `.zip.part` видалено, каталоги як були, false |
+| PackSession | залишок і два каталоги | старий `.zip.part` від обірваного пакування; `archives.txt` з двома власними каталогами (два робочі каталоги) | `.zip.part` спершу видалено; обидва каталоги запаковано, `.where` з обома рядками; RestoreSession повертає обидва |
+| Packer | вибір і команди | є `zip`+`unzip` / лише `bsdtar` / лише GNU tar | ZIP / BSDTAR / NONE; bsdtar пише з `--format zip`; розпакування без перезапису — `unzip -n` / `tar -k` |
+| RestoreSession | запакована | `<id>.zip` є, каталогу немає (і так само для архівів) | розпаковано через `.part` і перейменування; `.zip` і `.where` видалено; шляхи файлів — ті самі, що до пакування |
+| RestoreSession | обидва є | і каталог, і `.zip` (обірване пакування або каталог, створений наново після пакування) | `.zip` розпаковано в каталог без перезапису наявних файлів, потім видалено |
+| RestoreSession | збій | `.zip` пошкоджено або немає інструмента | PrepareStorage → `{reason: "packed storage cannot be restored"}`; `.zip` лишається |
+| RestoreSession | збій каталогу архівів / шлях лише в `.where` | `.zip` каталогу архівів пошкоджено; або після злиття `archives.txt` сховища не називає каталог, який називає `.where` | сховище діє (true), `.zip` і `.where` лишаються до наступної підготовки / каталог за `.where` розпаковано |
+| PackSession | `.zip` поруч | біля каталогу сесії вже лежить її `.zip` (злиття ще не відбулось) | не пакується, `.zip` не перезаписано |
+| SweepSessions | перехоплений замок | завислий замок, перейменований саме тоді, коли інший процес створив свіжий | перейменований замок повернуто, прибирання не йде |
+| RestoreSession | NeedsRestore при `prompt.submit` | стан `{reason: PACKED_REASON}`; або опублікованого каталогу немає; або поруч є його `.zip` | PrepareStorage знову, з RestoreSession; інакше нічого |
 | SessionIntro | GuideText | SKILL.md з frontmatter `---…---` | GUIDE_FRAME + текст після другого `---` без пробілів по краях; файл без frontmatter — увесь текст; порожній або з незакритим frontmatter — нічого |
 | SessionIntro | нова сесія | `/clear`, потім промпт людини | сховище нової сесії, реєстру немає — INTRO_TEXT знову [тест: «SessionIntro — перший промпт»] |
 | SessionIntro | промпт відхилено | нижчий обробник повертає `drop` | `introduced` лишається `false` |
@@ -637,6 +654,7 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-13 | Фаза 36: рядки SweepSessions, PackSession, Packer, RestoreSession ([SP_CTX_02_50](./context_editor.cleanup.sp.md#SP_CTX_02_50)–02_52) |
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §05_01 Functional Expectations перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.expectations.sp.md](./context_editor.expectations.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фази 1–2 (CF-1, CF-2): очікування PrepareStorage/EnsureStorage (без HOME, недійсний id, паралельні виклики, робота почата в сесії A, покинута підготовка) і HandleCompaction (покинуто під час очікування реєстру і між записами, запис черги кидає, порядок фіксації, без пари «applied» + «failed», архів не записано і покинуто); `store.test.ts` |
 | 2026-10-11 | PL_AUD_CTX фази 1–2, рев'ю: покинуто під час запису черги; обробник компактизації приєднується до підготовки |

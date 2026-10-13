@@ -237,6 +237,7 @@ Processing logic (pseudocode):
         ELSE IF HOME is not absolute: state = unavailable "HOME is not an absolute path (…)"
         ELSE IF id does not match SESSION_ID: state = unavailable "the session id cannot name a folder (…)"   # SP_CTX_01_12
         ELSE:
+            RestoreSession(id) (SP_CTX_02_52); IF it fails: state = unavailable "packed storage cannot be restored"   # фаза 36: запакована сесія розпаковується до першого звернення
             run one host command: create <storage> with parents, permissions owner-only (700) on <HOME>/.claude/context-editor and on <storage>
             IF it fails or exits non-zero: state = unavailable "cannot make <base> owner-only: <stderr | exit N>"
             ELSE: state = ready <storage>; AfterPrepare(prev, id)    # SP_CTX_02_18: зняти `host` з межі після перемикання
@@ -370,6 +371,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-10-13 | Фаза 36: PrepareStorage спершу розпаковує запаковану сесію (RestoreSession, [SP_CTX_02_52](./context_editor.cleanup.sp.md#SP_CTX_02_52)) |
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_11–02_18 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.tags.sp.md](./context_editor.tags.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фаза 1 (CF-1): PrepareStorage — одна підготовка на `session_id`, перевірка `HOME` і SESSION_ID перед побудовою шляху, публікація пари (id, стан) наприкінці і лише для поточної сесії; EnsureStorage дає операції каталог, який вона тримає до кінця (02_15, 02_18) |
 | 2026-10-11 | PL_AUD_CTX фаза 2 (CF-2): RebindTags і очищення псевдонімів у компактизації — з реєстрів кроку фіксації, без запису після покинутої диспетчеризації, з поверненням реєстрів, коли запис черги не вдався (02_14) |

@@ -680,6 +680,19 @@ P16 (читання через `Bash`) у фазу не входить: [SP_CTX_
 | Тести: шляхи архіву й медіа в каталозі архівів (компактизація, засів, відновлення), видалення файлів засіву, повторне читання в обох каталогах | `tests/compaction.test.ts`, `tests/handoff.test.ts`, `tests/repair.test.ts`, `tests/journal.test.ts` |
 | CLAUDE.md: де лежать архіви | `CLAUDE.md` |
 
+### Phase 36 — Дані старих сесій: видалення і пакування [DONE]  {#PL_CTX_P36}
+
+**Depends on:** Phase 35 (каталог архівів у проєкті).
+**Implements:** [C_CTX_DEC_29](./context_editor.concept.md#C_CTX_DEC_29), [C_CTX_03_10](./context_editor.mechanisms.concept.md#C_CTX_03_10); [SP_CTX_02_50](./context_editor.cleanup.sp.md#SP_CTX_02_50) SweepSessions, [SP_CTX_02_51](./context_editor.cleanup.sp.md#SP_CTX_02_51) PackSession, [SP_CTX_02_52](./context_editor.cleanup.sp.md#SP_CTX_02_52) RestoreSession; крок RestoreSession у PrepareStorage ([SP_CTX_02_15](./context_editor.tags.sp.md#SP_CTX_02_15)); [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) файли `archives.txt`, `.zip`, `.where`, `.sweep`; константи SWEEP_*, PACK_IDLE_MS ([SP_CTX_01_12](./context_editor.structures.sp.md#SP_CTX_01_12)).
+**Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки SweepSessions, PackSession, Packer, RestoreSession; живий сценарій 05_03 «Старі сесії».
+
+| Що | Де |
+|----|----|
+| SweepSessions, PackSession, RestoreSession, Packer за портом `CleanupIO` (list, stat, exists, run, remove, rename, now) | `mods/context-editor/hooks/cleanup.ts` (новий, чистий) |
+| Прив'язка: `session.start` → `$.clock.after(SWEEP_DELAY_MS)` → Sweep; RestoreSession у `prepareIO` до `mkdir`; перевірка каталогу сховища в `prompt.submit`; `archiveRoot` пише `archives.txt` | `mods/context-editor/hooks/register.ts`, `hooks/store.ts` |
+| Тести: усі рядки 05_01 фази 36 з фальшивим `CleanupIO` | `tests/cleanup.test.ts` |
+| CLAUDE.md: прибирання і пакування | `CLAUDE.md` |
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [DONE]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -715,6 +728,8 @@ Time-box: одна сесія. Результат (2026-10-10, хост 2.1.296,
 **Verify:** DEC_09 `resolved` (варіант A, розробник 2026-10-08); код не змінюється — готовність уже перевіряється за інструментом редактора в процесі і свіжістю файлу готовності. 2026-10-09: DEC_09 переглянуто (C — один плагін); файл готовності прибирає [фаза 10](#PL_CTX_P10)
 
 ## Backlog  {#PL_CTX_BACKLOG}
+
+- **Windows: команди хоста без `sh`** (deferred, 2026-10-13). Мод пише файли, створює каталоги й читає `PPID` через `sh -c` (лише POSIX, рішення в Technology Decisions), тож на Windows без POSIX-оболонки сховище недоступне; пакування фази 36 вже обирає інструмент без оболонки (`zip`/`unzip` або `bsdtar`). Повернутись, коли з'явиться потреба запускати мод на Windows: замінити `sh -c` на argv-виклики і `$.fs` там, де вистачає 4 MiB.
 
 - Мод у субагентах: правки агента субагента (`context_*`) — return when: хост дасть плагіну запускати компактизацію субагента (`agentId` у `$.session.compact` або `$.command.run`), або розробник погодиться на знижений поріг (тип агента плагіна з `autoCompactWindow`); фаза 34 обрізає великі результати правилом ([C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27), варіанти 2 і 4). Спайк — [context_editor_subagents](./context_editor_subagents.spike.md).
 
@@ -843,6 +858,7 @@ Time-box: одна сесія. Результат (2026-10-10, хост 2.1.296,
 
 | Date | Change |
 |------|--------|
+| 2026-10-13 | Фаза 36 — дані старих сесій ([C_CTX_DEC_29](./context_editor.concept.md#C_CTX_DEC_29)) |
 | 2026-10-13 | Фаза 35: архіви основної розмови в проєкті; пункт backlog «Архіви основної розмови поза проєктом» перенесено у фазу |
 | — | Старіші 40 записів — у [context_editor.plan.log.md](./context_editor.plan.log.md) |
 | 2026-10-11 | Фази 19 і 20 реалізовано: код і модульні тести (459 тестів), validate і tsc; живі сценарії 05_03 «Хто написав підсумки», «Доставки посеред ходу», «Доставка в передачі» — далі; CLAUDE.md — `hooks/deliveries.ts` у переліку портів і `deliveries.json` у сховищі |
