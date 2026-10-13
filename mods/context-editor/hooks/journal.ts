@@ -93,11 +93,12 @@ export function applyEntry(at: number, report: Pick<ApplyReport, 'applied'>, arc
 
 // [SP_CTX_02_31] JournalReread: a Read of a path some application compressed
 // (and no own write of it since), or of an archive or media file of an
-// application (`<storage>/<at>.json`, `<storage>/<at>/…`). The journal with
-// the entry, or undefined: nothing to record. Pure.
-export function withReread(j: Journal, path: string, toolUseId: string, dir: string, now: number): Journal | undefined {
+// application (`<archives>/<id>.json`, `<archives>/<id>/…`: the media sit
+// beside the archive, in either folder, phase 35). The journal with the
+// entry, or undefined: nothing to record. Pure.
+export function withReread(j: Journal, path: string, toolUseId: string, now: number): Journal | undefined {
   const applies = j.entries.flatMap((e, k) => (e.kind === 'apply' ? [{ e, k }] : []))
-  const archive = applies.some(({ e }) => e.archive !== '' && (path === e.archive || path.startsWith(`${dir}/${e.at}/`)))
+  const archive = applies.some(({ e }) => e.archive !== '' && (path === e.archive || path.startsWith(`${e.archive.replace(/\.json$/, '')}/`)))
   const compressed = applies.some(({ e, k }) => e.compressed.includes(path) && !j.entries.slice(k + 1).some(x => x.kind === 'changed' && x.path === path))
   if (!archive && !compressed) return undefined
   return withEntry(j, { kind: 'reread', at: now, path, tool_use_id: toolUseId, archive })
@@ -146,8 +147,8 @@ export function journalApply(io: JournalIO, entry: JournalEntry): Promise<void> 
 }
 
 // [SP_CTX_02_31] JournalReread, in the background of the call hook after a Read without error.
-export function journalReread(io: JournalIO, path: string, toolUseId: string, dir: string, now: number): Promise<void> {
-  return change(io, false, j => withReread(j, path, toolUseId, dir, now))
+export function journalReread(io: JournalIO, path: string, toolUseId: string, now: number): Promise<void> {
+  return change(io, false, j => withReread(j, path, toolUseId, now))
 }
 
 // [SP_CTX_02_31] JournalChanged, in the background of the call hook after a write tool without error.

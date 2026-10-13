@@ -403,7 +403,10 @@
 | MarkCall | повторне читання | у журналі `apply` з `compressed` [`/p/f`]; Read `/p/f` | запис `reread { path: /p/f, archive: false }` |
 | MarkCall | читання після власної зміни | `apply` з `compressed` [`/p/f`]; Edit `/p/f`; Read `/p/f` | запис `changed { path: /p/f }`; `reread` немає |
 | MarkCall | R4 лише раніші читання | одна відповідь: Edit `f`, далі паралельний Read `f`; раніше — Read `f` у минулому ході | `stale` лише на раніше читання; Read після запису без тегу |
-| MarkCall | читання архіву | Read `<storage>/<at>.json` / `<storage>/<at>/1.png` запису `apply` | `reread` з `archive: true` |
+| MarkCall | читання архіву | Read `<archives>/<at>.json` / `<archives>/<at>/1.png` запису `apply` (і так само в `<storage>` для старих архівів) | `reread` з `archive: true` |
+| ArchiveRoot (прив'язка в `register.ts`; перевіряє живий сценарій [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Архів основної розмови в проєкті») | каталог архівів | `$.session.cwd()` = `/p`, сховище `…/S` / каталог `/p/.claude/context-editor` вже є без `.gitignore` / `cwd` недоступний / `mkdir` не вдався | `/p/.claude/context-editor/S`, `.gitignore` із `*` (режим 700/600) / `.gitignore` дописано, наявний не переписується / `<storage>` для основної розмови, результат субагента не обрізається / так само |
+| HandleCompaction | архів у каталозі архівів | застосування `summarize` з медіа, `<archives>` ≠ `<storage>` | `<archives>/<id>.json` і `<archives>/<id>/1.png`; шляхи в тексті заміни і звіті; у `<storage>` нових файлів архіву немає; запис архіву `apply` у журналі несе шлях у `<archives>` |
+| PrepareSeed | файли засіву | передача `transcript` з медіа / засів відкладено або `/clear` відмовлено | `seed.json` у `<oldDir>/<id>/`, архів і медіа в `<oldArchives>/<id>…` / RemoveSeedFiles видаляє всі три |
 | Journal | застосування | HandleCompaction застосував summarize пари Read `/p/f` і drop пари Grep | запис `apply` з `edits = 2`, `compressed = [/p/f]`, без поля оцінки звільненого |
 | Journal | межа | MAX_JOURNAL записів, ще один | найстаріший видалено |
 | Journal | нечитабельний | файл не JSON | записи пропускаються, файл не перезаписується; телеметрія `Effect: journal unreadable (…)` |

@@ -769,6 +769,7 @@ function host(o: HostOpts = {}) {
         const m = /^(.*)\/(\d+)\/seed\.json$/.exec(p)
         return m && m[1] === d ? [Number(m[2])] : []
       }),
+    archives: async d => d,
     writeMedia: async path => {
       s.files.set(path, 'media')
       return true
@@ -986,6 +987,17 @@ test('RunHandoff — /clear відхилено: Fail with the host text T; the e
   expect(oldQueue().handoff).toBeUndefined()
   expect(s.removed).toEqual([`/s/old/${NOW}`, `/s/old/${NOW}.json`])
   expect(s.toasts.length).toBe(1)
+})
+
+test('RunHandoff — /clear відхилено, каталог архівів: RemoveSeedFiles removes the seed folder, the media folder and the archive', async () => {
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 's' }] })
+  io.archives = async () => '/p/a'
+  io.runCommand = async () => {
+    throw new Error('T: busy')
+  }
+  expect(await runHandoff(io, s.mem, 0)).toBe('failed')
+  expect(s.removed).toEqual([`/s/old/${NOW}`, `/p/a/${NOW}`, `/p/a/${NOW}.json`])
+  expect(s.files.size).toBe(0)
 })
 
 test('RunHandoff — компактизацію засіву відхилено: AfterClear without a second clear; with the agent\'s document HandedOff document and T in the prompt; without it FailAfterClear and the notice', async () => {
@@ -1690,6 +1702,26 @@ test('PrepareSeed — seed.json не записано: "the seed could not be wr
   expect(s.commands).toEqual(['clear'])
   expect(s.submitted[0]).toContain('The transcript way failed (transcript: the seed could not be written).')
   expect(oldQueue().report).toContain('handed off to new (document)')
+})
+
+test('PrepareSeed — файли засіву: seed.json stays in the old storage, the archive and media go to the archive folder; a failed seed.json removes all three', async () => {
+  const { io, s } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }] })
+  io.archives = async d => `/p/.claude/context-editor/${d.slice(d.lastIndexOf('/') + 1)}`
+  const writes: string[] = []
+  const media: string[] = []
+  io.writeMedia = async path => (media.push(path), s.files.set(path, 'media'), true)
+  io.writeText = async (path, body) => {
+    writes.push(path)
+    if (path.endsWith('/seed.json')) return false
+    s.files.set(path, body)
+    return true
+  }
+  expect(await runHandoff(io, s.mem, 0)).toBe('document')
+  expect(writes).toEqual([`/p/.claude/context-editor/old/${NOW}.json`, `/s/old/${NOW}/seed.json`])
+  expect(media.every(p => p.startsWith(`/p/.claude/context-editor/old/${NOW}/`))).toBe(true)
+  expect(media.length).toBeGreaterThan(0)
+  expect(s.removed).toEqual([`/s/old/${NOW}`, `/p/.claude/context-editor/old/${NOW}`, `/p/.claude/context-editor/old/${NOW}.json`])
+  expect(s.files.size).toBe(0)
 })
 
 test('PrepareSeed — доставки старої сесії: readDeliveries reads the old storage; the delivery stands right after its anchor in the seeded rows and the report counts it; a read that throws or an unreadable file: "could not be restored"', async () => {

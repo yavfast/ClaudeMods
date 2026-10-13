@@ -283,6 +283,7 @@ function handler(over: Partial<RepairHandlerIO> = {}, ledgerRead: Read<ApplyLedg
   const written = { media: [] as string[], tags: undefined as TagRegistry | undefined, aliases: undefined as AliasRegistry | undefined, boundary: false, ledgerCleared: false, pruned: undefined as ReadonlySet<string> | undefined, toasts: [] as string[] }
   const io: RepairHandlerIO = {
     dir: '/s',
+    archives: '/s',
     now: () => 42,
     handoffRunning: () => false,
     readLedger: async () => ledgerRead,
@@ -330,6 +331,10 @@ test('HandleRepair — медіа і доставки: a PNG result goes to a fi
   const done = await handleRepair(io, rows)
   if (!('messages' in done.outcome)) throw new Error(JSON.stringify(done.outcome))
   expect(written.media).toEqual(['/s/42/1.png'])
+  // [SP_CTX_01_07] the media go to the archive folder when there is one
+  const moved = handler({ archives: '/p/a', readApi: async () => api }, okRead(ledger(['o1', 'o2'])))
+  await handleRepair(moved.io, rows)
+  expect(moved.written.media).toEqual(['/p/a/42/1.png'])
   const res = done.outcome.messages.find(r => r.toolResults?.length)!
   expect(res.toolResults![0]!.text).toBe(`${MARK} media carried as files (open them with Read): image/png /s/42/1.png`)
   const at = done.outcome.messages.indexOf(res)

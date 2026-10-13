@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-11
+> **Updated:** 2026-10-13
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_19–02_26 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_handoff`, `/handoff`, RunHandoff, BuildSeed, CheckSeed, CheckSeeded, ScrubCommandRows (вилучено), HandleSeed. Читати перед зміною `hooks/handoff.ts`.
@@ -106,7 +106,7 @@ Processing logic (pseudocode):
         IF h.mode = transcript:
             (seed, seedReason) = PrepareSeed()                              # рівно одне з двох; лише стара сесія, без команд хоста
             IF seedReason: reasons += "transcript: " + seedReason; seed = none   # сесія як була — далі document
-            ELSE IF Moved(): remove <oldDir>/<seed.id> and seed.archive; Defer(); RETURN deferred
+            ELSE IF Moved(): RemoveSeedFiles(seed); Defer(); RETURN deferred
             ELSE: RETURN Seed(seed)
         RETURN DocumentWay(reasons)
         ON any exception after the claim:                                   # запит ніколи не лишається running; жоден запис не повторюється
@@ -124,24 +124,27 @@ Processing logic (pseudocode):
 
     FUNCTION PrepareSeed() → (HandoffSeed, none) | (none, reason):
         transcript = read main conversation rows; rows = CurrentRows(); api = read main conversation in Messages API form
-        id = now; folder = <oldDir>/<id>; archive = <oldDir>/<id>.json
+        id = now; folder = <oldDir>/<id>; oldArchives = ArchiveRoot() of the old session   # SP_CTX_01_07; засів — у сховищі, архів і медіа — у каталозі архівів (фаза 35)
+        media = <oldArchives>/<id>; archive = <oldArchives>/<id>.json
         batch = Queue.edits
-        built = BuildSeed(transcript, rows, api, batch, TagRegistry, folder, archive)   # SP_CTX_02_22; пише медіа-файли
-        IF built is a refusal: remove folder; RETURN built.reason
-        IF CheckSeed(built.rows) gives a reason: remove folder; RETURN that reason           # SP_CTX_02_23
+        built = BuildSeed(transcript, rows, api, batch, TagRegistry, media, archive)    # SP_CTX_02_22; пише медіа-файли в media
+        IF built is a refusal: remove media; RETURN built.reason
+        IF CheckSeed(built.rows) gives a reason: remove media; RETURN that reason           # SP_CTX_02_23
         IF built.report.originals not empty AND writing archive (compact JSON, host command) fails:
-            remove folder; RETURN "the originals could not be archived"
-        IF writing <folder>/seed.json (JSON list of rows, owner-only, host command) fails: remove folder and archive; RETURN "the seed could not be written"
+            remove media; RETURN "the originals could not be archived"
+        IF writing <folder>/seed.json (JSON list of rows, owner-only, host command) fails: remove folder, media and archive; RETURN "the seed could not be written"
         RETURN HandoffSeed { old, id, rows: built.rows, file: <folder>/seed.json, archive: (originals written ? archive : ""),
                              report: built.report, visible: built.visible, edits: batch,
                              fromSummary: built.fromSummary, unmatchedPromptMedia: built.unmatchedPromptMedia, carried: built.carried, taken: false }
-        ON any exception: remove folder and archive; RETURN "failed: <error>"
+        ON any exception: remove folder, media and archive; RETURN "failed: <error>"
+
+    FUNCTION RemoveSeedFiles(s): remove <oldDir>/<s.id>, s.media (= <oldArchives>/<s.id>, коли відрізняється) and s.archive   # засів, що не дійшов до очищення сесії: жоден рядок на них не посилається
 
     FUNCTION Seed(s):
         TRY run built-in command clear                                      # одна спроба; чекає, доки сесія вільна
-        CATCH err: remove <oldDir>/<s.id> and s.archive; Fail(["transcript: /clear was refused: " + err]); RETURN failed
+        CATCH err: RemoveSeedFiles(s); Fail(["transcript: /clear was refused: " + err]); RETURN failed
         new = session id
-        IF new = old: remove <oldDir>/<s.id> and s.archive; Fail(["transcript: /clear did not start a new session"]); RETURN failed
+        IF new = old: RemoveSeedFiles(s); Fail(["transcript: /clear did not start a new session"]); RETURN failed
         # процес уже в очищеній сесії; повернення в стару немає
         cleared = true; s.new = new
         turnsClear = turns                                                  # змінна RunHandoff; ходи після цієї точки — уже в новій сесії

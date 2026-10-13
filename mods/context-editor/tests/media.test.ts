@@ -204,6 +204,7 @@ test('HandleCompaction — describe: the prompt media is archived from the API f
   const media: string[] = []
   const io: CompactionIO = {
     dir: '/s',
+    archives: '/s',
     now: () => 7,
     readQueue: async () => okRead(q),
     writeQueue: async () => undefined,
@@ -266,6 +267,7 @@ test('context_edit — needsApi і hasMediaFrom: the API form is read only for a
 function compactionIO(api: unknown[], q: Queue, media: string[], saved: Queue[] = []): CompactionIO {
   return {
     dir: '/s',
+    archives: '/s',
     now: () => 7,
     readQueue: async () => okRead(q),
     writeQueue: async next => void saved.push(next),

@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-12
+> **Updated:** 2026-10-13
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_27–02_38 і 02_42 специфікації [SP_CTX](./context_editor.sp.md): контракти SessionIntro, Telemetry, StageBlock, DetectOptimize, Journal, `context_note`, NoteReminders, Estimate, RecordDelivery, InsertDeliveries, SoftHint, CacheCost, PersonCompact (`/compact` людини, фаза 25). Читати перед зміною `hooks/stages.ts`, `notes.ts`, `journal.ts`, `deliveries.ts`, `hints.ts`, `cache.ts` або `personcompact.ts`.
@@ -248,7 +248,7 @@ Processing logic (pseudocode):
 
     FUNCTION JournalReread(path, tool_use_id):                             # хук викликів (SP_CTX_02_16), після Read без помилки; у фоні
         j = read Journal; IF unreadable OR missing: RETURN
-        archiveHit = some apply entry e with e.archive ≠ "" AND (path = e.archive OR path starts with "<storage>/<e.at>/")
+        archiveHit = some apply entry e with e.archive ≠ "" AND (path = e.archive OR path starts with e.archive without ".json" + "/")   # медіа поруч з архівом, в обох каталогах (фаза 35)
         compressedHit = some apply entry e with path IN e.compressed AND no later changed entry with that path   # власний Edit/Write після стискання — читається новий вміст
         IF NOT archiveHit AND NOT compressedHit: RETURN
         j.entries += { kind: reread, at: now, path, tool_use_id, archive: archiveHit }

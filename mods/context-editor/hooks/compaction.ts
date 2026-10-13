@@ -107,6 +107,9 @@ export function compactionFailed(io: FailureIO, e: CompactionEvent, reason: stri
 // What HandleCompaction needs from the host; register.ts binds it to `$`.
 export type CompactionIO = {
   dir: string
+  // [SP_CTX_01_07] ArchiveRoot: where the originals and media go (`dir` when
+  // the project has no archive folder)
+  archives: string
   now: () => number
   readQueue: () => Promise<Read<Queue>>
   writeQueue: (q: Queue) => Promise<void>
@@ -195,14 +198,14 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   const apiSize = api.length > 0 && !apiTruncated ? apiChars(api) : undefined
   const mediaOwners = new Set(found.keys())
   const id = io.now()
-  const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.dir}/${id}`, io.writeMedia)
+  const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.archives}/${id}`, io.writeMedia)
 
   // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix, only when the batch asked for
   // it ("keep_cache"): the rows before the response of the first change come
   // back as they came, so the prompt cache holds up to it; by default the
   // stretch is rebuilt as before, and --resume stays clean
   const options = { knownResults, unmatchedPromptMedia, apiTruncated, toolRefs, ...(q.keepCache ? { freeze: { api } } : {}) }
-  const archive = `${io.dir}/${id}.json`
+  const archive = `${io.archives}/${id}.json`
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
   const frozen = new Set(messages.slice(0, applied.prefix))
   applied.report.failed.unshift(...refused)

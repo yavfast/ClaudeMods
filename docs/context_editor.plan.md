@@ -667,6 +667,19 @@ P16 (читання через `Bash`) у фазу не входить: [SP_CTX_
 | Зв'язування: у хуку `session.append` для `door = tool-result` з `agentId` — спершу ShapeSubagentResult (`storageNow`, `writeText`), далі AppendRow з обробленою подією | `mods/context-editor/hooks/register.ts` |
 | CLAUDE.md: рядок про обрізання результатів субагента і модуль `subagents.ts` | `CLAUDE.md` |
 
+### Phase 35 — Архіви основної розмови в проєкті [DONE]  {#PL_CTX_P35}
+
+**Depends on:** Phase 34 (каталог архівів субагентів).
+**Implements:** [C_CTX_DEC_28](./context_editor.concept.md#C_CTX_DEC_28); [SP_CTX_01_06](./context_editor.structures.sp.md#SP_CTX_01_06), [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) ArchiveRoot; шляхи в HandleCompaction ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)), PrepareSeed і RemoveSeedFiles ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), HandleRepair ([SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47)), JournalReread ([SP_CTX_02_31](./context_editor.stages.sp.md#SP_CTX_02_31)).
+**Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки ArchiveRoot, HandleCompaction «архів у каталозі архівів», PrepareSeed «файли засіву», MarkCall «читання архіву»; живий сценарій 05_03 «Архів основної розмови в проєкті» (stream-json, haiku, без `bypassPermissions`).
+
+| Що | Де |
+|----|----|
+| ArchiveRoot: `archiveRoot($, dir)` — `<cwd>/.claude/context-editor/<basename dir>` або `undefined` (каталог сесії створюється в тому ж виклику), `archivesOf` з відкатом на `dir`; порт субагентів (`shapeIO`) — через `archiveRoot`; поле `archives` у `CompactionIO`, `RepairHandlerIO`, порт `archives(dir)` у `HandoffIO` (каталог медіа засіву — `HandoffSeed.media`) | `mods/context-editor/hooks/register.ts`, `compaction.ts`, `repair.ts`, `handoff.ts` |
+| JournalReread: медіа — шлях архіву без `.json` + `/`, параметр `dir` прибрано | `mods/context-editor/hooks/journal.ts` |
+| Тести: шляхи архіву й медіа в каталозі архівів (компактизація, засів, відновлення), видалення файлів засіву, повторне читання в обох каталогах | `tests/compaction.test.ts`, `tests/handoff.test.ts`, `tests/repair.test.ts`, `tests/journal.test.ts` |
+| CLAUDE.md: де лежать архіви | `CLAUDE.md` |
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [DONE]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -703,7 +716,6 @@ Time-box: одна сесія. Результат (2026-10-10, хост 2.1.296,
 
 ## Backlog  {#PL_CTX_BACKLOG}
 
-- Архіви основної розмови поза проєктом: `Read` архіву `~/.claude/context-editor/<session>/…` (рядки «original: …, open with Read») без дозволу людини хост відхиляє (живий прогін фази 34, 2026-10-13) — return when: агент основної розмови натрапить на відмову читання архіву; варіанти — архів у `<cwd>/.claude/context-editor/` як у субагентів ([C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27)) або хук `tool.check`, що дозволяє `Read` свого сховища.
 - Мод у субагентах: правки агента субагента (`context_*`) — return when: хост дасть плагіну запускати компактизацію субагента (`agentId` у `$.session.compact` або `$.command.run`), або розробник погодиться на знижений поріг (тип агента плагіна з `autoCompactWindow`); фаза 34 обрізає великі результати правилом ([C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27), варіанти 2 і 4). Спайк — [context_editor_subagents](./context_editor_subagents.spike.md).
 
 - Калібрування за різницею двох запитів (фаза 29, живий прогін `.dev_flow/cache/live-test/phase29-31-results.md`): розбивка хоста завищує системний промпт і інструменти на 13–25 тисяч токенів, тож відношення «ApiChars / Whole» на малій розмові хибне на 36–51 %, а термінал 2.1.296 рядка `Messages` не дає зовсім. Напрям: відношення = Δ виміряних токенів запиту (`usage.context.tokens` двох відповідей) / Δ символів API-подання між ними — незмінна частина (системний промпт, інструменти) скорочується, розбивка не потрібна; зберігати як `charsPerToken`, коли Δ досить велика. — return when: наступна робота з оцінками або скарга на рядок застосування.
@@ -831,6 +843,7 @@ Time-box: одна сесія. Результат (2026-10-10, хост 2.1.296,
 
 | Date | Change |
 |------|--------|
+| 2026-10-13 | Фаза 35: архіви основної розмови в проєкті; пункт backlog «Архіви основної розмови поза проєктом» перенесено у фазу |
 | — | Старіші 40 записів — у [context_editor.plan.log.md](./context_editor.plan.log.md) |
 | 2026-10-11 | Фази 19 і 20 реалізовано: код і модульні тести (459 тестів), validate і tsc; живі сценарії 05_03 «Хто написав підсумки», «Доставки посеред ходу», «Доставка в передачі» — далі; CLAUDE.md — `hooks/deliveries.ts` у переліку портів і `deliveries.json` у сховищі |
 | 2026-10-11 | Рев'ю 48 фаз 19–20 виправлено; живий сценарій «Хто написав підсумки»: haiku 0/3, sonnet 2/2, A′ лишається (SP_CTX_DEC_17); backlog — уточнений тригер спайку, новий пункт про рядки власної `/compact`, що читаються як команда людини |

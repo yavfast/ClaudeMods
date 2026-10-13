@@ -87,7 +87,7 @@ test('Journal — нечитабельний: a file that is no JSON is never ov
   expect(parseJournal(JSON.stringify({ entries: [apply(1, ['/p/f']), { kind: 'changed', at: 2, path: '/p/f' }] })).state).toBe('ok')
   const { io, log } = harness(bad)
   await journalApply(io, apply(1, []))
-  await journalReread(io, '/p/f', 't', DIR, 5)
+  await journalReread(io, '/p/f', 't', 5)
   await journalChanged(io, '/p/f', 5)
   expect(log.writes.length).toBe(0)
   const sum = journalSummary(bad)
@@ -137,7 +137,7 @@ test('Journal — запис не вдався: a rejected write loses the entry
     },
   }
   await journalApply(io, apply(2, []))
-  await journalReread(io, '/p/f', 't', DIR, 3)
+  await journalReread(io, '/p/f', 't', 3)
   await journalChanged(io, '/p/f', 4)
   expect(writes.length).toBe(3)
   // each attempt is the stored journal plus its own entry; a lost entry is not carried into the next write
@@ -160,10 +160,10 @@ test('Journal — межа: one entry larger than MAX_QUEUE_BYTES alone: the tri
 
 test('MarkCall — повторне читання: apply with compressed [/p/f], then Read /p/f: reread { archive: false }; another path, or no journal: nothing', async () => {
   const j: Journal = { entries: [apply(1000, ['/p/f'])] }
-  expect(withReread(j, '/p/f', 't9', DIR, 2000)!.entries.at(-1)).toEqual({ kind: 'reread', at: 2000, path: '/p/f', tool_use_id: 't9', archive: false })
-  expect(withReread(j, '/p/other', 't9', DIR, 2000)).toBeUndefined()
+  expect(withReread(j, '/p/f', 't9', 2000)!.entries.at(-1)).toEqual({ kind: 'reread', at: 2000, path: '/p/f', tool_use_id: 't9', archive: false })
+  expect(withReread(j, '/p/other', 't9', 2000)).toBeUndefined()
   const { io, log } = harness(missingRead({ entries: [] }))
-  await journalReread(io, '/p/f', 't9', DIR, 2000)
+  await journalReread(io, '/p/f', 't9', 2000)
   expect(log.writes.length).toBe(0)
 })
 
@@ -171,22 +171,26 @@ test('MarkCall — читання після власної зміни: apply [/
   const { io, log } = harness(okRead({ entries: [apply(1000, ['/p/f'])] }))
   await journalChanged(io, '/p/f', 1500)
   expect(log.writes[0]!.entries.at(-1)).toEqual({ kind: 'changed', at: 1500, path: '/p/f' })
-  await journalReread(io, '/p/f', 't', DIR, 2000)
+  await journalReread(io, '/p/f', 't', 2000)
   expect(log.writes.length).toBe(1)
   // a change of a path no application compressed is not journaled
   expect(withChanged({ entries: [apply(1, ['/p/f'])] }, '/p/g', 3)).toBeUndefined()
   // a later application of the changed path counts again
   const again: Journal = { entries: [apply(1, ['/p/f']), { kind: 'changed', at: 2, path: '/p/f' }, apply(3, ['/p/f'])] }
-  expect(withReread(again, '/p/f', 't', DIR, 4)).toBeDefined()
+  expect(withReread(again, '/p/f', 't', 4)).toBeDefined()
 })
 
 test('MarkCall — читання архіву: Read of <storage>/<at>.json or <storage>/<at>/1.png of an apply entry: reread { archive: true }', async () => {
   const j: Journal = { entries: [apply(1000, [])] }
-  expect(withReread(j, `${DIR}/1000.json`, 'a', DIR, 5)!.entries.at(-1)).toEqual({ kind: 'reread', at: 5, path: `${DIR}/1000.json`, tool_use_id: 'a', archive: true })
-  expect(withReread(j, `${DIR}/1000/1.png`, 'b', DIR, 5)!.entries.at(-1)).toMatchObject({ archive: true })
-  expect(withReread(j, `${DIR}/999.json`, 'c', DIR, 5)).toBeUndefined()
+  expect(withReread(j, `${DIR}/1000.json`, 'a', 5)!.entries.at(-1)).toEqual({ kind: 'reread', at: 5, path: `${DIR}/1000.json`, tool_use_id: 'a', archive: true })
+  expect(withReread(j, `${DIR}/1000/1.png`, 'b', 5)!.entries.at(-1)).toMatchObject({ archive: true })
+  expect(withReread(j, `${DIR}/999.json`, 'c', 5)).toBeUndefined()
   // no archive was written: only the media folder could match, and nothing does
-  expect(withReread({ entries: [apply(7, [], '')] }, `${DIR}/7.json`, 'd', DIR, 5)).toBeUndefined()
+  expect(withReread({ entries: [apply(7, [], '')] }, `${DIR}/7.json`, 'd', 5)).toBeUndefined()
+  // [SP_CTX_01_07] the media beside an archive in the project's archive folder (phase 35)
+  const moved: Journal = { entries: [apply(8, [], '/p/.claude/context-editor/s/8.json')] }
+  expect(withReread(moved, '/p/.claude/context-editor/s/8/1.png', 'e', 5)!.entries.at(-1)).toMatchObject({ archive: true })
+  expect(withReread(moved, `${DIR}/8/1.png`, 'f', 5)).toBeUndefined()
 })
 
 test('journalSummary: applications, rereads and archive rereads; a missing journal is all zeros', async () => {

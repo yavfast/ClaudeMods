@@ -393,23 +393,37 @@ function onJournal($: EngineInterface, work: (io: JournalIO, dir: string) => Pro
   }).catch(() => undefined)
 }
 
-// [SP_CTX_02_49] The ports of ShapeSubagentResult.
+// [SP_CTX_02_49] The ports of ShapeSubagentResult: the archive folder only in
+// the project, else the result is not cut.
 function shapeIO($: EngineInterface): ShapeIO {
-  return { storage: () => subagentArchive($), write: (path, text) => writeText($, path, text) }
+  return {
+    storage: async () => {
+      const dir = await storageNow($)
+      return dir ? archiveRoot($, dir) : undefined
+    },
+    write: (path, text) => writeText($, path, text),
+  }
 }
 
-// [SP_CTX_02_49] The folder of subagent archives: in the session's working
-// directory, where the host lets Read in without asking, under a folder that
-// git-ignores itself; none when the storage or the cwd is missing.
-async function subagentArchive($: EngineInterface): Promise<string | undefined> {
-  const dir = await storageNow($)
+// [SP_CTX_01_07] [C_CTX_DEC_28] ArchiveRoot: the archives of storage `dir`
+// go to the session's working directory, where the host lets Read in without
+// asking, under a folder that git-ignores itself; none without a cwd or when
+// the folder cannot be made.
+async function archiveRoot($: EngineInterface, dir: string): Promise<string | undefined> {
   const cwd = await $.session.cwd().catch(() => undefined)
-  if (!dir || !cwd) return undefined
+  if (!cwd) return undefined
   const root = `${cwd}/.claude/context-editor`
+  const folder = `${root}/${dir.slice(dir.lastIndexOf('/') + 1)}`
   const ran = await $.process
-    .run(['sh', '-c', 'umask 077 && mkdir -p "$1" && { [ -e "$1/.gitignore" ] || printf \'*\\n\' > "$1/.gitignore"; }', 'sh', root])
+    .run(['sh', '-c', 'umask 077 && mkdir -p "$2" && { [ -e "$1/.gitignore" ] || printf \'*\\n\' > "$1/.gitignore"; }', 'sh', root, folder])
     .catch(() => ({ exitCode: -1 }))
-  return ran.exitCode === 0 ? `${root}/${dir.slice(dir.lastIndexOf('/') + 1)}` : undefined
+  return ran.exitCode === 0 ? folder : undefined
+}
+
+// [SP_CTX_01_07] The archive folder of the main conversation: the storage when
+// the project has none.
+async function archivesOf($: EngineInterface, dir: string): Promise<string> {
+  return (await archiveRoot($, dir)) ?? dir
 }
 
 // [SP_CTX_01_07] The folder of the current session, asked for now; a failure gives none.
@@ -757,6 +771,7 @@ function handoffIO($: EngineInterface): HandoffIO {
     changeTags: (dir, change) => changeOf(stores($, dir).tags)(change),
     listSeeds: async dir =>
       parseSeedNames((await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])).stdout),
+    archives: dir => archivesOf($, dir),
     writeMedia: (path, data) => writeMedia($, path, data),
     writeText: (path, text) => writeText($, path, text),
     remove: async path => {
@@ -824,7 +839,7 @@ function afterCall($: EngineInterface, tool: string, input: Record<string, unkno
       if (dir) await staleReads(tagIO($, dir), next.write, id)
     }).catch(() => undefined)
     onJournal($, io => journalChanged(io, next.write, Date.now()), at)
-  } else onJournal($, (io, dir) => journalReread(io, next.read, id, dir, Date.now()), at)
+  } else onJournal($, io => journalReread(io, next.read, id, Date.now()), at)
 }
 
 function deny(reason: string) {
@@ -1076,10 +1091,12 @@ export const register: Register = on => {
       if (!dir) return { skip: REPAIR_SKIP.storage }
       const session = await $.session.id()
       const s = stores($, dir)
+      const archives = await archivesOf($, dir)
       const done = await s.queue.onChain(q =>
         handleRepair(
           {
             dir,
+            archives,
             now: () => Date.now(),
             handoffRunning: () => handoff.inFlight,
             readLedger: s.ledger.read,
@@ -1123,10 +1140,12 @@ export const register: Register = on => {
     let wrote: number | undefined
     let line: string | undefined
     const s = stores($, dir)
+    const archives = await archivesOf($, dir)
     const outcome = await s.queue.onChain(async q => {
       const done = await handleCompaction(
         {
           dir,
+          archives,
           now: () => Date.now(),
           readQueue: s.queue.read,
           writeQueue: s.queue.write,

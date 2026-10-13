@@ -73,6 +73,8 @@ export type HandoffSeed = {
   id: number
   rows: SessionMessage[]
   file: string
+  // [SP_CTX_01_07] the media folder in the archive folder; none: beside the seed
+  media?: string
   archive: string
   report: ApplyReport
   // the rows BuildSeed applied the edits to (with the old session's handles;
@@ -514,6 +516,9 @@ export type HandoffIO = {
   changeTags: (dir: string, change: ChangeFn<TagRegistry>) => Promise<boolean>
   // ids of the folders `<dir>/<id>` that hold a seed.json
   listSeeds: (dir: string) => Promise<number[]>
+  // [SP_CTX_01_07] ArchiveRoot of a storage folder: where the seed's archive
+  // and media go (the folder itself when the project has none)
+  archives: (dir: string) => Promise<string>
   writeMedia: (path: string, base64: string) => Promise<boolean>
   // owner-only, through a host command (no 4 MiB limit), parents made
   writeText: (path: string, text: string) => Promise<boolean>
@@ -669,20 +674,27 @@ async function deliver(
   }
 }
 
+// [SP_CTX_02_21] RemoveSeedFiles: a seed that never reached the clear of the
+// session; no row names its files.
 async function removeSeedFiles(run: Run, s: HandoffSeed): Promise<void> {
   await run.io.remove(`${run.oldDir}/${s.id}`).catch(() => undefined)
+  if (s.media && s.media !== `${run.oldDir}/${s.id}`) await run.io.remove(s.media).catch(() => undefined)
   if (s.archive) await run.io.remove(s.archive).catch(() => undefined)
 }
 
-// [SP_CTX_02_21] PrepareSeed: the seed and its files, in the old session's
-// storage, before any host command; or why there is none (the files removed).
+// [SP_CTX_02_21] PrepareSeed: the seed in the old session's storage, its
+// archive and media in the old session's archive folder (phase 35), before
+// any host command; or why there is none (the files removed).
 async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: string }> {
   const { io } = run
   const id = io.now()
   const folder = `${run.oldDir}/${id}`
-  const archive = `${run.oldDir}/${id}.json`
+  const archives = await io.archives(run.oldDir).catch(() => run.oldDir)
+  const media = `${archives}/${id}`
+  const archive = `${archives}/${id}.json`
   const clean = async (withArchive: boolean) => {
     await io.remove(folder).catch(() => undefined)
+    if (media !== folder) await io.remove(media).catch(() => undefined)
     if (withArchive) await io.remove(archive).catch(() => undefined)
   }
   try {
@@ -691,7 +703,7 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
     const tags = await io.readTags(run.oldDir)
     const deliveries = io.readDeliveries ? await io.readDeliveries(run.oldDir).catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
     const pulled = io.readLedger ? await io.readLedger(run.oldDir).catch(() => undefined) : undefined
-    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder, archive, writeMedia: io.writeMedia, deliveries, ...(pulled ? { pulled } : {}) })
+    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder: media, archive, writeMedia: io.writeMedia, deliveries, ...(pulled ? { pulled } : {}) })
     if ('refuse' in built) {
       await clean(false)
       return { reason: built.reason }
@@ -720,6 +732,7 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
         id,
         rows: built.rows,
         file,
+        media,
         archive: archived,
         report: built.report,
         visible: built.visible,

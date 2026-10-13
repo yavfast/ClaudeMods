@@ -431,6 +431,8 @@ export const REPAIR_SKIP = {
 // What HandleRepair needs; register.ts binds it to `$`.
 export type RepairHandlerIO = {
   dir: string
+  // [SP_CTX_01_07] ArchiveRoot: where the media go (`dir` when the project has no archive folder)
+  archives: string
   now: () => number
   // a handoff of this instance runs: it seeds a new session itself (BuildSeed takes DropPulled)
   handoffRunning: () => boolean
@@ -503,7 +505,7 @@ export async function handleRepair(io: RepairHandlerIO, messages: readonly Sessi
           continue
         }
         n += 1
-        const path = `${io.dir}/${id}/${n}.${mediaExt(ref.mediaType)}`
+        const path = `${io.archives}/${id}/${n}.${mediaExt(ref.mediaType)}`
         if (!(await io.writeMedia(path, ref.data))) return skip(REPAIR_SKIP.media)
         list.push(path)
       }

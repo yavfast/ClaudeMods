@@ -77,6 +77,17 @@ test('applies the batch: media archived, own calls dropped, charsAfter after the
   expect(written.boundary).toEqual(boundaryOf(out.messages))
 })
 
+test('HandleCompaction — архів у каталозі архівів: the archive and media go to `archives`, the queue stays in `dir`', async () => {
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), { archives: '/p/.claude/context-editor/s' })
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.archive).toBe('/p/.claude/context-editor/s/1000.json')
+  expect(written.media).toEqual(['/p/.claude/context-editor/s/1000/1.png'])
+  expect(out.messages.at(-1)!.toolResults![0]!.text).toContain('(original: /p/.claude/context-editor/s/1000.json, open with Read)')
+  expect(written.queue!.edits).toEqual([])
+  expect(written.journal).toEqual([expect.objectContaining({ kind: 'apply', archive: '/p/.claude/context-editor/s/1000.json' })])
+})
+
 test('a batch that changes nothing leaves the boundary as it was', async () => {
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), { writeArchive: async () => false })
   await handleCompaction(io, conversation())

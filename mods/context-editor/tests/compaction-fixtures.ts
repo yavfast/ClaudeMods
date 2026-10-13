@@ -33,6 +33,7 @@ export function harness(
   } = { media: [], toasts: [], journal: [], order: [] }
   const io: CompactionIO = {
     dir: '/s',
+    archives: '/s',
     now: () => 1000,
     readQueue: async () => queue,
     writeQueue: async q => {

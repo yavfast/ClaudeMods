@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-12
+> **Updated:** 2026-10-13
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_01–02_10 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_list`, `context_edit`, PrepareEdits, ApplyEdits, DropOwnCalls, Flush, HandleCompaction, DeliverReport, Nudge (вилучено), CollectMedia. Читати перед зміною `hooks/edits.ts`, `queue.ts`, `compaction.ts`, `flush.ts` або `media.ts`.
@@ -471,10 +471,10 @@ Processing logic (pseudocode):
         id = now (ms); media = {}; n = 0
         FOR owner IN owners whose media the edits replace:
             FOR ref IN found[owner]:
-                n += 1; path = <storage>/<id>/<n>.<ext>
+                n += 1; path = <archives>/<id>/<n>.<ext>             # SP_CTX_01_07 ArchiveRoot
                 IF ref.data absent OR writing fails: drop media[owner]; BREAK      # ApplyEdits fails its edits
                 media[owner] += path
-        archive = <storage>/<id>.json
+        archive = <archives>/<id>.json
         (rows, report, renamed, prefix) = ApplyEdits(messages, edits, archive, media, mediaOwners, knownResults, unmatchedPromptMedia, apiTruncated, freeze = q.keepCache ? { api } : none)   # SP_CTX_02_04 FrozenPrefix лише на вибір агента (SP_CTX_DEC_22); типово prefix = 0, як до фази 23
         frozen = messages[0..prefix)                                   # ті самі рядки; кеш промпту тримається до них
         IF report.originals not empty AND writing archive (compact JSON, through a host command) fails:

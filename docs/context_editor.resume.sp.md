@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** draft
 > **Created:** 2026-10-12
-> **Updated:** 2026-10-12 (код фази 32)
+> **Updated:** 2026-10-13 (код фази 32)
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_44–02_48 специфікації [SP_CTX](./context_editor.sp.md): журнал входу застосувань (RecordInputs), розпізнавання підтягнутих оригіналів (DropPulled), виявлення і запуск ремонту в новому процесі хоста (ScheduleRepair, RunRepair), обробник компактизації ремонту (HandleRepair), результат ToolSearch, перебудований без `handle` (ToolRefText). Читати перед зміною `hooks/repair.ts`, гілки ремонту в `hooks/compaction.ts`, зв'язування `session.start` у `hooks/register.ts` або перебудови результатів у `hooks/edits.ts`.
@@ -159,7 +159,7 @@ Input: подія компактизації з MarkerKind(`instructions`) = `re
         id = now; n = 0; paths = {}
         FOR each result row t of kept, FOR ref IN found[{t.tool_use_id}]:
             IF ref.data absent: paths[...] = absent; CONTINUE
-            n += 1; path = <storage>/<id>/<n>.<ext>; IF writing fails: RETURN skip "media could not be written"   # як у засіві; без файлу медіа зникло б
+            n += 1; path = <archives>/<id>/<n>.<ext>; IF writing fails: RETURN skip "media could not be written"   # як у засіві; без файлу медіа зникло б
         rows = []
         FOR r IN kept:
             IF r.role = user AND r has no toolResults: rows += r                 # промпти, рядки команд, вставлені доставки — з handle: копії безпечні, вкладення їдуть з ними

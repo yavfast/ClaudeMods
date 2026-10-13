@@ -43,14 +43,23 @@
 
 ---
 
-### Subtask: Фаза 34 — результати субагентів
+### Subtask: Фаза 35 — архіви основної розмови в проєкті
 
 - **Owner:** `claude-session-4118db51` · **Status:** `in-progress` · **Started:** 2026-10-13
+- **Request (verbatim):** «можливо, архіви основної розмови теж потрібно перенести у каталог проєкту?», потім «комітити фазу 34 і переходити до фази 35».
+- **Intent:** агент читає архіви й медіа своїх стиснень через `Read` без дозволу людини в неінтерактивному хості.
+- **Decisions:** [C_CTX_DEC_28](../../docs/context_editor.concept.md#C_CTX_DEC_28): архіви й медіа застосувань, передачі й відновлення — у `<cwd>/.claude/context-editor/<session_id>/`; стан і засів — у сховищі; без каталогу в проєкті — сховище; старі архіви не переносяться.
+- **Progress:** [x] концепт/спека/план · [x] design sign-off («Ok. Продовжуй») · [x] код і тести (829) · [x] рев'ю (PASS WITH WARNINGS: тест RemoveSeedFiles з каталогом архівів, журнал у тесті компактизації, ArchiveRoot створює каталог сесії, примітки про `$HOME` і режим `.claude`, назви в плані — виправлено) · [x] живий прогін stream-json haiku без bypass: архів у проєкті, `Read` без дозволу, KEY_MID=7391; у сховищі лише файли стану · [x] коміт
+
+### Subtask: Фаза 34 — результати субагентів
+
+- **Owner:** `claude-session-4118db51` · **Status:** `done` · **Started:** 2026-10-13
 - **Request:** продовження фази 33: «Make the mod work in subagents» → спайк [context_editor_subagents](../../docs/context_editor_subagents.spike.md) (компактизацію субагента плагін не запускає) → «Формування результатів (Recommended)», «Усі великі, крім Read», «Голова + хвіст», «Завжди; агент читає архів» → [C_CTX_DEC_27](../../docs/context_editor.concept.md#C_CTX_DEC_27), [SP_CTX_02_49](../../docs/context_editor.subagents.sp.md#SP_CTX_02_49).
 - **Intent:** великий вивід інструмента субагента не забиває його контекст, а повний лишається доступним.
 - **Decisions:** живий прогін без `bypassPermissions` — `Read` сховища мода поза проєктом відхилено → «Архів у проєкті»: `<cwd>/.claude/context-editor/<session_id>/subagents/…` з власним `.gitignore` із `*`; архіви основної розмови — backlog.
-- **Progress:** [x] спайк · [x] концепт/спека/план · [x] design sign-off (`/dev-flow implement`) · [x] код і тести (826) · [x] рев'ю (PASS WITH WARNINGS; нітпіки 3–6 виправлено, task-запис — цей блок) · [x] живий прогін stream-json haiku: bypass (сесія 608c18c5) — 5/5; без bypass, архів у проєкті (сесія a7a39f2f) — субагент `Read` архіву, KEY_MID=7391; `git check-ignore` — ігнорується · [x] коміт
+- **Progress:** [x] спайк · [x] концепт/спека/план · [x] design sign-off (`/dev-flow implement`) · [x] код і тести (826) · [x] рев'ю (PASS WITH WARNINGS; нітпіки 3–6 виправлено, task-запис — цей блок) · [x] живий прогін stream-json haiku: bypass (сесія 608c18c5) — 5/5; без bypass, архів у проєкті (сесія a7a39f2f) — субагент `Read` архіву, KEY_MID=7391; `git check-ignore` — ігнорується · [x] коміт bd75156
 
+### Subtask: Фаза 33 — посібник у першому промпті
 
 - **Owner:** `claude-session-4118db51` · **Status:** `done` · **Started:** 2026-10-13
 - **Request (verbatim):** «При старті сесії ai-агента або субагента автоматично не завантажується навичка "/context-editor:context-stages", через що функціонал цього мода взагалі не використовується. Чи можна на початку сесії хуком автоматично завантажити цю навичку?»
