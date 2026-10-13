@@ -12,7 +12,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 | Task | Phase | Status | Contributors | Updated |
 |------|-------|--------|--------------|---------|
-| [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan (backlog) | in-progress | claude-session-bd80217a, claude-session-8e44a3be, claude-session-a3902d56, claude-session-decd4bc6, claude-session-d5614704 | 2026-10-12 |
+| [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan (backlog); фаза 33 закомічена (1e053ad) | in-progress | claude-session-bd80217a, claude-session-8e44a3be, claude-session-a3902d56, claude-session-decd4bc6, claude-session-d5614704, claude-session-4118db51 | 2026-10-13 |
 | [task_20261010_083402_stage-cleanup](tasks/task_20261010_083402_stage-cleanup.md) — Динамічна оптимізація частини контексту за етапами | verify (практика) | in-progress | claude-session-decd4bc6, claude-session-d5614704 | 2026-10-11 |
 
 ## Recently Completed

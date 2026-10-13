@@ -65,6 +65,7 @@ import {
 } from './hostattach'
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
+import { shapeSubagentResult, type ShapeIO } from './subagents'
 import {
   carry,
   changeOf,
@@ -390,6 +391,25 @@ function onJournal($: EngineInterface, work: (io: JournalIO, dir: string) => Pro
     const dir = await at
     if (dir) await work(stores($, dir).journal, dir)
   }).catch(() => undefined)
+}
+
+// [SP_CTX_02_49] The ports of ShapeSubagentResult.
+function shapeIO($: EngineInterface): ShapeIO {
+  return { storage: () => subagentArchive($), write: (path, text) => writeText($, path, text) }
+}
+
+// [SP_CTX_02_49] The folder of subagent archives: in the session's working
+// directory, where the host lets Read in without asking, under a folder that
+// git-ignores itself; none when the storage or the cwd is missing.
+async function subagentArchive($: EngineInterface): Promise<string | undefined> {
+  const dir = await storageNow($)
+  const cwd = await $.session.cwd().catch(() => undefined)
+  if (!dir || !cwd) return undefined
+  const root = `${cwd}/.claude/context-editor`
+  const ran = await $.process
+    .run(['sh', '-c', 'umask 077 && mkdir -p "$1" && { [ -e "$1/.gitignore" ] || printf \'*\\n\' > "$1/.gitignore"; }', 'sh', root])
+    .catch(() => ({ exitCode: -1 }))
+  return ran.exitCode === 0 ? `${root}/${dir.slice(dir.lastIndexOf('/') + 1)}` : undefined
 }
 
 // [SP_CTX_01_07] The folder of the current session, asked for now; a failure gives none.
@@ -966,11 +986,13 @@ export const register: Register = on => {
   // [SP_CTX_02_12] [SP_CTX_02_35] AppendRow: the row is stored first and
   // returned unchanged; RecordDelivery and the rules run after it, in the
   // background, each on its chain in the folder asked for at the event.
-  on('session.append', async ($, e, next) =>
-    appendRow(
+  on('session.append', async ($, e, next) => {
+    // [SP_CTX_02_49] a subagent's big tool result is cut before it is stored
+    const row = e.agentId && e.door === 'tool-result' ? await shapeSubagentResult(shapeIO($), e).catch(() => e) : e
+    return appendRow(
       {
         // observeAppend is sync and reads pinned fields only
-        observe: () => observeAppend(anchorMem, e, Date.now()),
+        observe: () => observeAppend(anchorMem, row, Date.now()),
         storage: () => storageNow($),
         record: (at, item) =>
           void chainOf($, 'deliveries')(async () => {
@@ -984,10 +1006,10 @@ export const register: Register = on => {
           }).catch(() => undefined),
         copied,
       },
-      e,
-      () => next(e),
-    ),
-  ).catch(($, e, next) => next(e))
+      row,
+      () => next(row),
+    )
+  }).catch(($, e, next) => next(e))
 
   // [SP_CTX_02] [SP_CTX_02_30] [SP_CTX_02_12] [SP_CTX_02_06] [SP_CTX_02_21]
   // The end of a turn of the main conversation: the counter first; then, in

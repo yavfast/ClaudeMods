@@ -3,7 +3,7 @@
 > **Code:** PL_CTX
 > **Status:** in-progress
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-12
+> **Updated:** 2026-10-13
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Specification:** [SP_CTX](./context_editor.sp.md)
@@ -655,6 +655,18 @@ P16 (читання через `Bash`) у фазу не входить: [SP_CTX_
 | Зв'язування: читання `${$.plugin.root}/skills/context-stages/SKILL.md` раз на екземпляр модуля (невдачу — повторити з наступним вступом) | `mods/context-editor/hooks/register.ts` |
 | CLAUDE.md: рядок про посібник у першому промпті | `CLAUDE.md` |
 
+### Phase 34 — Результати субагентів [DONE]  {#PL_CTX_P34}
+
+**Depends on:** спайк [context_editor_subagents](./context_editor_subagents.spike.md); Phase 20 (хук `session.append`, AppendRow).
+**Implements:** [C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27), [C_CTX_03_09](./context_editor.mechanisms.concept.md#C_CTX_03_09); [SP_CTX_02_49](./context_editor.subagents.sp.md#SP_CTX_02_49) ShapeSubagentResult; [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) (архіви субагентів), [SP_CTX_01_12](./context_editor.structures.sp.md#SP_CTX_01_12) (SUB_CUT_AT, SUB_HEAD, SUB_TAIL, SUB_ID).
+**Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки ShapeSubagentResult; інваріант 05_02 «Основна розмова не обрізається»; живий сценарій 05_03 «Результати субагента» (stream-json, haiku).
+
+| Що | Де |
+|----|----|
+| SUB_* константи, `cutText` (голова, рядок обрізання, хвіст), `shapeSubagentResult(io, e)` за портом `ShapeIO` (`storage`, `write`) — повертає подію з новим `content` або ту саму | `mods/context-editor/hooks/subagents.ts` (новий, чистий); `tests/subagents.test.ts` |
+| Зв'язування: у хуку `session.append` для `door = tool-result` з `agentId` — спершу ShapeSubagentResult (`storageNow`, `writeText`), далі AppendRow з обробленою подією | `mods/context-editor/hooks/register.ts` |
+| CLAUDE.md: рядок про обрізання результатів субагента і модуль `subagents.ts` | `CLAUDE.md` |
+
 ### Phase 4 — Дослідження: медіа в промптах і межі вікон [DONE]  {#PL_CTX_P4}
 
 **Depends on:** Phase 2
@@ -691,7 +703,8 @@ Time-box: одна сесія. Результат (2026-10-10, хост 2.1.296,
 
 ## Backlog  {#PL_CTX_BACKLOG}
 
-- Мод у субагентах (рішення розробника 2026-10-13 «Make the mod work in subagents», [SP_CTX_DEC_36](./context_editor.sp.md#SP_CTX_DEC_36)): зараз виклики `context_*` із субагента мод відхиляє ([C_CTX_03](./context_editor.mechanisms.concept.md), «Виклик з субагента»), а посібник субагент не отримує. Відкрите: чи дає хост 2.1.296 плагіну переписати розмову субагента (`session.compact` з `agentId`, `$.agent.*`), де зберігати його сховище й теги, як доставити посібник (`agent.spawn` — переписати `prompt`; `skills` лише в типу агента `$.agent.register`), і чи окупиться це для коротких субагентів (кеш субагента — 5 хвилин). Перший крок — спайк можливостей хоста, далі концепт. — return when: після фази 33, наступна робота з backlog.
+- Архіви основної розмови поза проєктом: `Read` архіву `~/.claude/context-editor/<session>/…` (рядки «original: …, open with Read») без дозволу людини хост відхиляє (живий прогін фази 34, 2026-10-13) — return when: агент основної розмови натрапить на відмову читання архіву; варіанти — архів у `<cwd>/.claude/context-editor/` як у субагентів ([C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27)) або хук `tool.check`, що дозволяє `Read` свого сховища.
+- Мод у субагентах: правки агента субагента (`context_*`) — return when: хост дасть плагіну запускати компактизацію субагента (`agentId` у `$.session.compact` або `$.command.run`), або розробник погодиться на знижений поріг (тип агента плагіна з `autoCompactWindow`); фаза 34 обрізає великі результати правилом ([C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27), варіанти 2 і 4). Спайк — [context_editor_subagents](./context_editor_subagents.spike.md).
 
 - Калібрування за різницею двох запитів (фаза 29, живий прогін `.dev_flow/cache/live-test/phase29-31-results.md`): розбивка хоста завищує системний промпт і інструменти на 13–25 тисяч токенів, тож відношення «ApiChars / Whole» на малій розмові хибне на 36–51 %, а термінал 2.1.296 рядка `Messages` не дає зовсім. Напрям: відношення = Δ виміряних токенів запиту (`usage.context.tokens` двох відповідей) / Δ символів API-подання між ними — незмінна частина (системний промпт, інструменти) скорочується, розбивка не потрібна; зберігати як `charsPerToken`, коли Δ досить велика. — return when: наступна робота з оцінками або скарга на рядок застосування.
 - Рядок застосування людині у VS Code (фаза 28): розширення VS Code (2.1.296) не малює `$.ui.log`, `toast`, `status`, `notice` — проба модом `mods/ui-probe` 2026-10-12 (`.dev_flow/cache/live-test/ui-log-probe-results.md`); видно лише `$.ui.notify` — спливне сповіщення VS Code знизу праворуч, і з виклику інструмента, і з таймера після кінця ходу, хоча хост повертає `{ isSent: false, reason: 'no-surface' }`. Напрям: у неінтерактивному хості (stream-json) рядок застосування ще й через `$.ui.notify` (у терміналі це було б системне сповіщення ОС — там лишити `$.ui.log`); як розрізняти хости — перевірити. — return when: розробник попросить або наступна робота з рядком людини (SP_CTX_02_43).

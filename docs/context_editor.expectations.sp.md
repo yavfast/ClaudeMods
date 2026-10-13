@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-12
+> **Updated:** 2026-10-13
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §05_01 Functional Expectations специфікації [SP_CTX](./context_editor.sp.md): таблиця модульних очікувань за контрактами (вхід → очікуваний результат). Читати, коли пишете або звіряєте модульні тести.
@@ -270,6 +270,14 @@
 | SessionIntro | GUIDE_UNREAD | `introduced = false`, файл навички не прочитано (або без тексту після frontmatter) | прихований контекст починається з INTRO_TEXT; після входу `introduced = true` |
 | SessionIntro | після чужої компактизації | `introduced = true`, спостерігач компактизації, що лишилась, поставив `reintroduce = true` | наступний промпт несе INTRO_TEXT (не посібник); після входу `reintroduce = false` |
 | SessionIntro | компактизація до вступу | `introduced = false`, чужа компактизація лишилась | `reintroduce` не ставиться; перший промпт несе посібник |
+| ShapeSubagentResult | великий вивід | субагент, Bash, текст 20 000 символів у рядках | архів `<cwd>/.claude/context-editor/<session_id>/subagents/<agentId>/<id>.txt` з повним текстом; блок — голова ≤ SUB_HEAD, рядок «[context-editor: N chars cut; full output: <path>, open with Read]», хвіст ≤ SUB_TAIL; голова + N + хвіст = 20 000 |
+| ShapeSubagentResult | малий вивід / основна розмова / Read / OWN_TOOLS / unknown | текст < SUB_CUT_AT, або без `agentId`, або походження Read, `mcp__context-editor__*`, `unknown` | рядок без змін, архіву немає |
+| ShapeSubagentResult | масив блоків | `content` — кілька текстових блоків разом ≥ SUB_CUT_AT | текст склеєно через "\n" і обрізано одним рядком; з блоком зображення — без змін |
+| ShapeSubagentResult | помилка запису | запис архіву повертає false | блок без змін |
+| ShapeSubagentResult | недопустимий id | `tool_use_id` з `/` або `..` | блок без змін, запису немає |
+| ShapeSubagentResult | is_error | результат з `is_error: true`, великий | обрізано, `is_error` лишається |
+| ShapeSubagentResult | сховище недоступне / недопустимий `agentId` | великий вивід, папки сховища немає; або `agentId` = `..` | рядок без змін, запису немає |
+| ShapeSubagentResult | межі не на кінці рядка | кінець рядка в першій половині вікна голови (i < SUB_HEAD/2) або хвоста (j − t ≥ SUB_TAIL/2) | межа лишається SUB_HEAD / len − SUB_TAIL |
 | SessionIntro | GuideText | SKILL.md з frontmatter `---…---` | GUIDE_FRAME + текст після другого `---` без пробілів по краях; файл без frontmatter — увесь текст; порожній або з незакритим frontmatter — нічого |
 | SessionIntro | нова сесія | `/clear`, потім промпт людини | сховище нової сесії, реєстру немає — INTRO_TEXT знову [тест: «SessionIntro — перший промпт»] |
 | SessionIntro | промпт відхилено | нижчий обробник повертає `drop` | `introduced` лишається `false` |

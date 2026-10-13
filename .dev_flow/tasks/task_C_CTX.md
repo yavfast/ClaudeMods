@@ -43,14 +43,21 @@
 
 ---
 
-### Subtask: Фаза 33 — посібник навички на початку сесії
+### Subtask: Фаза 34 — результати субагентів
 
 - **Owner:** `claude-session-4118db51` · **Status:** `in-progress` · **Started:** 2026-10-13
+- **Request:** продовження фази 33: «Make the mod work in subagents» → спайк [context_editor_subagents](../../docs/context_editor_subagents.spike.md) (компактизацію субагента плагін не запускає) → «Формування результатів (Recommended)», «Усі великі, крім Read», «Голова + хвіст», «Завжди; агент читає архів» → [C_CTX_DEC_27](../../docs/context_editor.concept.md#C_CTX_DEC_27), [SP_CTX_02_49](../../docs/context_editor.subagents.sp.md#SP_CTX_02_49).
+- **Intent:** великий вивід інструмента субагента не забиває його контекст, а повний лишається доступним.
+- **Decisions:** живий прогін без `bypassPermissions` — `Read` сховища мода поза проєктом відхилено → «Архів у проєкті»: `<cwd>/.claude/context-editor/<session_id>/subagents/…` з власним `.gitignore` із `*`; архіви основної розмови — backlog.
+- **Progress:** [x] спайк · [x] концепт/спека/план · [x] design sign-off (`/dev-flow implement`) · [x] код і тести (826) · [x] рев'ю (PASS WITH WARNINGS; нітпіки 3–6 виправлено, task-запис — цей блок) · [x] живий прогін stream-json haiku: bypass (сесія 608c18c5) — 5/5; без bypass, архів у проєкті (сесія a7a39f2f) — субагент `Read` архіву, KEY_MID=7391; `git check-ignore` — ігнорується · [x] коміт
+
+
+- **Owner:** `claude-session-4118db51` · **Status:** `done` · **Started:** 2026-10-13
 - **Request (verbatim):** «При старті сесії ai-агента або субагента автоматично не завантажується навичка "/context-editor:context-stages", через що функціонал цього мода взагалі не використовується. Чи можна на початку сесії хуком автоматично завантажити цю навичку?»
 - **Intent:** агент з першого ходу знає посібник і користується модом без ручного `/context-editor:context-stages`.
 - **Root cause:** SP_CTX_DEC_11 (C) — перший промпт несе лише INTRO_TEXT з відсиланням до навички; агент навичку не відкриває. Хост не дає плагіну викликати `Skill` за агента (`session.start` без контексту; `skills` лише в `$.agent.register`).
 - **Decisions:** «Both» → [SP_CTX_DEC_36](../../docs/context_editor.sp.md#SP_CTX_DEC_36); «Make the mod work in subagents» → backlog PL_CTX (спайк першим).
-- **Progress:** [x] аналіз · [x] концепт/спека/план (фаза 33) · [x] design sign-off · [x] код і тести (818 тестів) · [x] рев'ю (PASS with WARNINGS, 2 should і advisory 3 виправлено) · [x] живий прогін stream-json haiku — pass (сесія cb7fd416: посібник 8859 символів на першому промпті, `Skill` не викликано, після `/compact host` — INTRO_TEXT 968 символів один раз) · [ ] коміт
+- **Progress:** [x] аналіз · [x] концепт/спека/план (фаза 33) · [x] design sign-off · [x] код і тести (818 тестів) · [x] рев'ю (PASS with WARNINGS, 2 should і advisory 3 виправлено) · [x] живий прогін stream-json haiku — pass (сесія cb7fd416: посібник 8859 символів на першому промпті, `Skill` не викликано, після `/compact host` — INTRO_TEXT 968 символів один раз) · [x] коміт 1e053ad · **Status:** done
 
 ### Subtask: Фаза 32 — ремонт після відновлення
 > Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 18:25 — Status: `done` — Phase: `commit`

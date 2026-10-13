@@ -43,6 +43,7 @@
 | `SP_CTX_02_27`–`02_38`, `02_42`–`02_43` (етапи, телеметрія, нотатки, доставки, нагадування, кеш, `/compact` людини, рядок людини після застосування) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
 | `SP_CTX_02_39`–`02_41` (вкладення хоста) | [context_editor.hostattach.sp.md](context_editor.hostattach.sp.md) |
 | `SP_CTX_02_44`–`02_48` (ремонт після відновлення: журнал входу, DropPulled, ремонт, ToolRefText) | [context_editor.resume.sp.md](context_editor.resume.sp.md) |
+| `SP_CTX_02_49` (результати субагентів: ShapeSubagentResult) | [context_editor.subagents.sp.md](context_editor.subagents.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
 | `SP_CTX_05_01` (модульні очікування) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |
 | `SP_CTX_05_02`–`05_04` (інваріанти, сценарії, граничні випадки) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |
