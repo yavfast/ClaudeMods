@@ -21,7 +21,7 @@ import {
   type QueueIO,
 } from '../hooks/queue'
 import type { Read } from '../hooks/store'
-import { adviceFor, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntroduced } from '../hooks/stages'
+import { adviceFor, GUIDE_FRAME, guideText, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntroduced } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import type { QueuedDelivery } from '../hooks/deliveries'
 import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
@@ -243,11 +243,11 @@ test('contextEdit refuses when the queue can neither be read nor moved, or canno
 
 // A host for DeliverReport: the queue and the registry in memory, bound as
 // register.ts binds them (intro, advice and their writes from stages.ts).
-function deliverHarness(queue: Queue, reg: Read<TagRegistry> = missingRead({ ...EMPTY_REGISTRY }), over: Partial<DeliverIO<{ drop?: unknown }>> = {}) {
+function deliverHarness(queue: Queue, reg: Read<TagRegistry> = missingRead({ ...EMPTY_REGISTRY }), over: Partial<DeliverIO<{ drop?: unknown }>> = {}, guide?: string) {
   const log = { queue, reg, seen: [] as (readonly string[])[], inTurn: false }
   const io: DeliverIO<{ drop?: unknown }> = {
     readQueue: async () => okRead(log.queue),
-    intro: async () => introFor(log.reg),
+    intro: async () => introFor(log.reg, guide),
     advice: async () => adviceFor(log.reg),
     inTurn: () => log.inTurn,
     enter: async context => (log.seen.push(context), {}),
@@ -297,6 +297,23 @@ test('SessionIntro — перший промпт: the hidden context starts with
   const fresh = deliverHarness({ ...EMPTY_QUEUE }, okRead({ ...EMPTY_REGISTRY }))
   await deliverReport(fresh.io)
   expect(fresh.log.seen).toEqual([[INTRO_TEXT]])
+})
+
+test('SessionIntro — перший промпт (фаза 33): the guide in place of INTRO_TEXT; GUIDE_UNREAD gives INTRO_TEXT', async () => {
+  const guide = guideText('---\nname: x\n---\n\n# Guide\n\nbody\n')!
+  const h = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3 }, undefined, {}, guide)
+  await deliverReport(h.io)
+  await deliverReport(h.io)
+  expect(h.log.seen).toEqual([[GUIDE_FRAME + '# Guide\n\nbody', 'R'], []])
+  expect(h.log.reg.state === 'ok' && h.log.reg.value.introduced).toBe(true)
+})
+
+test('SessionIntro — після чужої компактизації: reintroduce gives INTRO_TEXT once, then clears; never the guide', async () => {
+  const h = deliverHarness({ ...EMPTY_QUEUE }, okRead({ ...EMPTY_REGISTRY, introduced: true, reintroduce: true }), {}, 'GUIDE')
+  await deliverReport(h.io)
+  await deliverReport(h.io)
+  expect(h.log.seen).toEqual([[INTRO_TEXT], []])
+  expect(h.log.reg.state === 'ok' && h.log.reg.value).toEqual({ ...EMPTY_REGISTRY, introduced: true })
 })
 
 test('SessionIntro — промпт відхилено / реєстр нечитабельний / INTRO_NOT_RECORDED', async () => {

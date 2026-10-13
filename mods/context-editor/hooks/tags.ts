@@ -71,7 +71,9 @@ export function isRange(target: TagTarget): target is RangeTarget {
 
 // [SP_CTX_01_10] [SP_CTX_01_18] `stage`: the open stage, one at most;
 // `lastClosed`: the last closed block; `introduced`: the session intro was
-// delivered in this session ([SP_CTX_02_27]).
+// delivered in this session ([SP_CTX_02_27]); `reintroduce`: another
+// compaction that stands took the guide, the next prompt carries INTRO_TEXT
+// (phase 33, [SP_CTX_DEC_36]).
 export type TagRegistry = {
   tags: Tag[]
   turn: number
@@ -79,6 +81,7 @@ export type TagRegistry = {
   stage?: Stage
   lastClosed?: ClosedBlock
   introduced: boolean
+  reintroduce?: boolean
   // [SP_CTX_01_21] the agent's service notes, and the number of the next one
   notes: Note[]
   nextNote: number
@@ -182,6 +185,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     reg.stage !== undefined && !isStage(reg.stage) && 'stage',
     reg.lastClosed !== undefined && !isClosed(reg.lastClosed) && 'lastClosed',
     typeof reg.introduced !== 'boolean' && 'introduced',
+    reg.reintroduce !== undefined && typeof reg.reintroduce !== 'boolean' && 'reintroduce',
     badNoteFields(reg.notes, reg.nextNote),
     reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
     reg.hint !== undefined && !isHintState(reg.hint) && 'hint',

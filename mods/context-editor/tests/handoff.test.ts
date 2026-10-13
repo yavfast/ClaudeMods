@@ -2054,6 +2054,7 @@ test('RunHandoff — етапи в новій сесії: marks moved by Relocat
     ...EMPTY_REGISTRY,
     tags: [],
     introduced: true,
+    reintroduce: true,
     // the end of A on the result row of a (summarized in the seed); B after the result of b (CarryNote)
     lastClosed: { name: 'A', after: at(1), end: at(3), turn: 0 },
     stage: { name: 'B', after: at(5), openedTurn: 0 },
@@ -2064,6 +2065,8 @@ test('RunHandoff — етапи в новій сесії: marks moved by Relocat
   const read = s.sessions.get('new')!
   const seeded = read.slice(read.findIndex(r => r.text === 'task: find KEY_0042'))
   expect(reg.introduced).toBe(false)
+  // [SP_CTX_DEC_36] the new session's first prompt carries the guide, not INTRO_TEXT
+  expect(reg.reintroduce).toBeUndefined()
   const madeAt = seeded.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id.startsWith('a_ce')))
   expect(reg.lastClosed!.end).toEqual({ anchor: fingerprint(seeded[madeAt]!), hint: madeAt })
   expect(reg.lastClosed!.after).toEqual({ anchor: fingerprint(seeded[1]!), hint: 1 })

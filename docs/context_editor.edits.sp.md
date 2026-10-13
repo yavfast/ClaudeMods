@@ -550,7 +550,7 @@ Purpose: довести звіт до агента рівно один раз з
 Processing logic (pseudocode):
     ON prompt submitted (main conversation, passes the mod's hooks):
         context = []
-        IF storage ready AND TagRegistry.introduced = false (state ok or missing): context += INTRO_TEXT            # SP_CTX_02_27
+        IF storage ready (TagRegistry state ok or missing): context += Intro(reg)   # SP_CTX_02_27: introduced = false — GuideText() ?? INTRO_TEXT; reintroduce = true — INTRO_TEXT; інакше нічого
         q = read Queue
         IF q.report: context += NoteOnce(q.report)                          # SP_CTX_01_05: COMMAND_NOTE один раз на повідомлення
         IF q.optimize:                                                      # хід оптимізації не відбувся (HOST_REFUSED, PERSON_MOVED після перерваного ходу, OPTIMIZE_PERSON, OPTIMIZE_FAILED, OPTIMIZE_BUILD_FAILED, перезавантаження модуля)
@@ -566,7 +566,7 @@ Processing logic (pseudocode):
         tookOver = q.optimizePrompted AND NOT inTurn                        # промпт людини між ходами: людина взяла хід, запобіжник петлі більше не потрібен
         entered = next(prompt with context appended as hidden context)
         IF entered (no drop):
-            IF INTRO_TEXT was added: on the registry chain: introduced = true
+            IF an intro was added: on the registry chain: introduced = true, reintroduce = false
             on the queue chain: IF q.report was added: RemoveDelivered(q.report); IF q.optimize: optimize = false, compact = false; IF tookOver: optimizePrompted = false, compact = false
         RETURN entered
 

@@ -429,7 +429,9 @@ export async function observeCompaction(io: ObserveIO, e: CompactionEvent, done:
       const before = e.messages ?? []
       const after = done.messages ?? []
       void io.updateTags(dir)(reg => {
-        const next = dropLastApply(pruneDeadTags(reg, before, after))
+        const pruned = dropLastApply(pruneDeadTags(reg, before, after))
+        // [SP_CTX_DEC_36] phase 33: the summary took the guide with the first prompt
+        const next = pruned.introduced && !pruned.reintroduce ? { ...pruned, reintroduce: true } : pruned
         return next === reg ? undefined : next
       }).catch(() => undefined)
       if (io.attachments) void io.attachments.clear(dir).catch(() => undefined)

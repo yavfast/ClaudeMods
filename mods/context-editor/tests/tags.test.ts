@@ -115,6 +115,12 @@ test('parseRegistry reads a good file and makes any bad field or tag unreadable'
   }
   const why = parseRegistry(JSON.stringify(reg([{ kind: 'pin' } as unknown as Tag])))
   expect(why.state === 'unreadable' && why.reason).toContain('bad tag 1')
+  // [SP_CTX_01_10] reintroduce (phase 33): optional bool
+  const re = parseRegistry(JSON.stringify({ ...good, reintroduce: true }))
+  expect(re.state === 'ok' && re.value.reintroduce).toBe(true)
+  expect(parseRegistry(JSON.stringify(good)).state === 'ok' && (parseRegistry(JSON.stringify(good)) as { value: TagRegistry }).value.reintroduce).toBeUndefined()
+  const badRe = parseRegistry(JSON.stringify({ ...good, reintroduce: 'yes' }))
+  expect(badRe.state === 'unreadable' && badRe.reason).toContain('reintroduce')
 })
 
 // ---- [SP_CTX_02_11] context_tag

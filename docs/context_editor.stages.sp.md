@@ -31,14 +31,23 @@
 
 ### 02_27. SessionIntro  {#SP_CTX_02_27}
 
-Purpose: на початку кожної сесії сказати агенту, що він може позначати етапи, просити оптимізацію міткою і бачити телеметрію, а м'яке нагадування ([SP_CTX_02_37](#SP_CTX_02_37)) лише інформує ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15); [SP_CTX_DEC_11](./context_editor.sp.md#SP_CTX_DEC_11)): коротка інструкція прихованим контекстом першого промпту і навичка мода з повним посібником.
+Purpose: на початку кожної сесії сказати агенту, що він може позначати етапи, просити оптимізацію міткою і бачити телеметрію, а м'яке нагадування ([SP_CTX_02_37](#SP_CTX_02_37)) лише інформує ([C_CTX_DEC_15](./context_editor.concept.md#C_CTX_DEC_15); [SP_CTX_DEC_11](./context_editor.sp.md#SP_CTX_DEC_11)): з фази 33 ([SP_CTX_DEC_36](./context_editor.sp.md#SP_CTX_DEC_36)) — повний посібник навички мода прихованим контекстом першого промпту, а після чужої компактизації, що лишилась, — коротка інструкція INTRO_TEXT з наступним промптом (до фази 33 — лише INTRO_TEXT на першому промпті, а посібник — навичкою, яку агент мав відкрити сам).
 
 Processing logic (pseudocode):
     # частина хука prompt.submit DeliverReport (SP_CTX_02_08)
     ON prompt submitted (main conversation, passes the mod's hooks):
-        IF storage ready AND TagRegistry state IN (ok, missing) AND introduced = false:
-            add INTRO_TEXT as hidden context, before the report
-            once the prompt entered (no drop): on the registry chain, re-read TagRegistry; IF not unreadable: introduced = true; write (missing → a new registry with defaults)
+        IF storage ready AND TagRegistry state IN (ok, missing):
+            IF introduced = false: text = GuideText() ?? INTRO_TEXT          # SP_CTX_DEC_36: посібник; файл не прочитано — INTRO_TEXT
+            ELSE IF reintroduce = true: text = INTRO_TEXT                   # після чужої компактизації, що лишилась
+            IF text: add text as hidden context, before the report
+            once the prompt entered (no drop): on the registry chain, re-read TagRegistry; IF not unreadable: introduced = true, reintroduce = false; write (missing → a new registry with defaults)
+
+    GuideText():                                                            # фаза 33
+        file = read `${$.plugin.root}/skills/<SKILL>/SKILL.md` once per module instance (a failed read is retried with the next intro)
+        body = file after its frontmatter (the lines from the first `---` to the next `---`), trimmed
+        RETURN body empty OR frontmatter left open OR read failed ? none : GUIDE_FRAME + body
+
+Посібник — сам файл навички, тож другого тексту посібника, який треба тримати узгодженим, немає; GUIDE_FRAME каже агенту, що навичку відкривати не треба (інакше `Skill` вставив би той самий текст удруге). Застосування мода першого промпту не прибирає: рядок має `pin`, а прихований контекст промпту — вкладення, яке хост перепитує після компактизації (навичка plugin-hooks, пункт 59). Чужа компактизація, що лишилась (підсумок хоста: `/compact host`, автоматична), прибирає перший промпт разом із посібником, тож її спостерігач ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) ставить `reintroduce = true`, і наступний промпт, що проходить хуки мода, несе INTRO_TEXT (повний посібник вдруге — ні: ~2,3 тисячі токенів на кожен підсумок; INTRO_TEXT називає навичку). Субагентам посібник не доставляється: `prompt.submit` — лише основної розмови, а їхні виклики `context_*` мод відхиляє.
 
 Прапорець `introduced` живе в реєстрі тегів сесії ([SP_CTX_01_10](./context_editor.structures.sp.md#SP_CTX_01_10)), тож перезавантаження модуля інструкції не повторює. Сесія — за ідентифікатором: після `/clear` чи `/resume` у тому самому процесі сховище інше (PrepareStorage, [SP_CTX_02_15](./context_editor.tags.sp.md#SP_CTX_02_15)), і перший промпт нової сесії отримує інструкцію знову; відновлена `/resume` сесія, що вже мала інструкцію, має `introduced = true` і повтору не отримує. Передача копіює реєстр з `introduced = false` ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)). Промпти, які мод надсилає сам (продовження, хід оптимізації, Deliver передачі), хука не проходять (F1), тож інструкцію несе перший промпт людини або іншого розширення. Сховище недоступне або реєстр `unreadable` — інструкції немає: інструменти тоді й так відмовляють, а доставку нема де записати.
 
@@ -61,7 +70,7 @@ Processing logic (pseudocode):
 
 Формулювання розділів пише план; специфікація задає обов'язкові частини, межу розміру і те, що INTRO_TEXT називає навичку як `context-editor:<SKILL>`. Файл перевіряє `claude plugin validate` (валідатор приймає теку `skills/`, пункт 39).
 
-Errors: відмов немає — інструкція або додається, або ні; збій запису `introduced` — INTRO_NOT_RECORDED ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)).
+Errors: відмов немає — інструкція або додається, або ні; файл навички не прочитано — INTRO_TEXT замість посібника (GUIDE_UNREAD); збій запису `introduced` — INTRO_NOT_RECORDED ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)).
 
 ### 02_28. Telemetry  {#SP_CTX_02_28}
 

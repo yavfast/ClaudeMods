@@ -769,7 +769,8 @@ export async function carryRegistries(
         const out = rebindNotes(marks, s.visible, s.rows, done, s.report.produced)
         dropped = out.dropped
         // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one
-        return { ...dropLastApply(out.registry), introduced: false }
+        const { reintroduce: _, ...copy } = dropLastApply(out.registry)
+        return { ...copy, introduced: false }
       })
       if (carried === 'carried') s.report.notesDropped = dropped
       return carried

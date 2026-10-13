@@ -266,7 +266,11 @@
 | DeliverReport | збій поради | побудова поради кидає виняток | промпт іде без поради (зі звітом, якщо він є); після входу `optimize` знято [тест: «DeliverReport — ADVICE_FAILED / без блоку»] |
 | DeliverReport | без блоку | `optimize = true`, реєстр `unreadable` або без `lastClosed` | ADVICE_NO_BLOCK: промпт без поради; після входу `optimize = false` |
 | DeliverReport | INTRO_NOT_RECORDED | промпт з INTRO_TEXT увійшов, запис `introduced = true` падає | наступний промпт знову несе INTRO_TEXT [тест: «SessionIntro — промпт відхилено / реєстр нечитабельний / INTRO_NOT_RECORDED»] |
-| SessionIntro | перший промпт | реєстр відсутній або `introduced = false`, промпт людини | прихований контекст починається з INTRO_TEXT; після входу `introduced = true`; другий промпт без INTRO_TEXT |
+| SessionIntro | перший промпт | реєстр відсутній або `introduced = false`, промпт людини | прихований контекст починається з GUIDE_FRAME і тексту SKILL.md без frontmatter (фаза 33); після входу `introduced = true`; другий промпт без посібника |
+| SessionIntro | GUIDE_UNREAD | `introduced = false`, файл навички не прочитано (або без тексту після frontmatter) | прихований контекст починається з INTRO_TEXT; після входу `introduced = true` |
+| SessionIntro | після чужої компактизації | `introduced = true`, спостерігач компактизації, що лишилась, поставив `reintroduce = true` | наступний промпт несе INTRO_TEXT (не посібник); після входу `reintroduce = false` |
+| SessionIntro | компактизація до вступу | `introduced = false`, чужа компактизація лишилась | `reintroduce` не ставиться; перший промпт несе посібник |
+| SessionIntro | GuideText | SKILL.md з frontmatter `---…---` | GUIDE_FRAME + текст після другого `---` без пробілів по краях; файл без frontmatter — увесь текст; порожній або з незакритим frontmatter — нічого |
 | SessionIntro | нова сесія | `/clear`, потім промпт людини | сховище нової сесії, реєстру немає — INTRO_TEXT знову [тест: «SessionIntro — перший промпт»] |
 | SessionIntro | промпт відхилено | нижчий обробник повертає `drop` | `introduced` лишається `false` |
 | SessionIntro | реєстр нечитабельний | TagRegistry `unreadable` | INTRO_TEXT не додається |

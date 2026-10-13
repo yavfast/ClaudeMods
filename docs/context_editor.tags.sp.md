@@ -338,7 +338,7 @@ Processing logic (pseudocode):
            OR MarkerKind(instructions) present   # MARKER, HANDOFF_MARKER і їхні тексти до фази 25; власну межу пишуть HandleCompaction і HandleSeed, за будь-якого trigger
            OR result is skip: RETURN result
         RecordBoundary(result.messages)
-        on the registry chain, one change: PruneDeadTags(reg, e.messages, result.messages); remove lastApply; no write when neither changed   # SP_CTX_01_10: інша компактизація — не застосування мода; фаза 30 (SP_CTX_DEC_31, CF-34)
+        on the registry chain, one change: PruneDeadTags(reg, e.messages, result.messages); remove lastApply; IF introduced: reintroduce = true (фаза 33, SP_CTX_DEC_36: підсумок прибрав посібник); no write when nothing changed   # SP_CTX_01_10: інша компактизація — не застосування мода; фаза 30 (SP_CTX_DEC_31, CF-34)
         ClearAttachments (SP_CTX_02_41); RETURN result   # фаза 24: рішення про вкладення хоста йдуть разом із розмовою
 
     PruneDeadTags(reg, before, after) = reg with tags kept only when kind = state OR ResolveTarget(before, …) does not find it OR ResolveTarget(after, tag.target, RowIndex(after)) finds it   # рев'ю фази 30: тег іде лише тоді, коли його ціль була у вході компактизації (before = e.messages) і зникла з її рядків (after = result.messages) — тег рядка, дописаного після початку компактизації посеред ходу, лишається; без вхідних рядків нічого не прибирається; `{ tool_use_id }` — пара в rows; рядок — Locate; діапазон — обидва кінці; межі етапів, нотатки, `firstPromptPinned` і решта полів — без змін; той самий реєстр, коли нічого не прибрано

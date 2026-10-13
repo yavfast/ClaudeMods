@@ -935,6 +935,20 @@ test('ObserveCompaction — чужа компактизація: its rows are Co
   expect(plain.log.tags).toBe(EMPTY_REGISTRY)
 })
 
+test('ObserveCompaction — фаза 33: a compaction that stands after the intro sets reintroduce; before it, none', async () => {
+  const rows = conversation()
+  const after = observer({ ...EMPTY_REGISTRY, introduced: true })
+  await observeCompaction(after.io, { trigger: 'auto' }, { messages: rows })
+  expect(after.log.tags.reintroduce).toBe(true)
+  const before = observer(EMPTY_REGISTRY)
+  await observeCompaction(before.io, { trigger: 'auto' }, { messages: rows })
+  expect(before.log.tags).toBe(EMPTY_REGISTRY)
+  // the mod's own marker leaves it alone
+  const own = observer({ ...EMPTY_REGISTRY, introduced: true })
+  await observeCompaction(own.io, { trigger: 'manual', instructions: MARKER }, { messages: rows })
+  expect(own.log.tags.reintroduce).toBeUndefined()
+})
+
 test('ObserveCompaction — no boundary, lastApply kept: a subagent, precompute, the mod\'s own markers, a skip, no storage, a failed write', async () => {
   const rows = conversation()
   const sub = observer(MEASURED)

@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-12
+> **Last updated:** 2026-10-13
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`
 > **Autonomy:** `checkpoints`
@@ -42,6 +42,15 @@
 - 2026-10-12 — дизайн фаз 29–31 записано в docs/ (без коду, без коміту)
 
 ---
+
+### Subtask: Фаза 33 — посібник навички на початку сесії
+
+- **Owner:** `claude-session-4118db51` · **Status:** `in-progress` · **Started:** 2026-10-13
+- **Request (verbatim):** «При старті сесії ai-агента або субагента автоматично не завантажується навичка "/context-editor:context-stages", через що функціонал цього мода взагалі не використовується. Чи можна на початку сесії хуком автоматично завантажити цю навичку?»
+- **Intent:** агент з першого ходу знає посібник і користується модом без ручного `/context-editor:context-stages`.
+- **Root cause:** SP_CTX_DEC_11 (C) — перший промпт несе лише INTRO_TEXT з відсиланням до навички; агент навичку не відкриває. Хост не дає плагіну викликати `Skill` за агента (`session.start` без контексту; `skills` лише в `$.agent.register`).
+- **Decisions:** «Both» → [SP_CTX_DEC_36](../../docs/context_editor.sp.md#SP_CTX_DEC_36); «Make the mod work in subagents» → backlog PL_CTX (спайк першим).
+- **Progress:** [x] аналіз · [x] концепт/спека/план (фаза 33) · [x] design sign-off · [x] код і тести (818 тестів) · [x] рев'ю (PASS with WARNINGS, 2 should і advisory 3 виправлено) · [x] живий прогін stream-json haiku — pass (сесія cb7fd416: посібник 8859 символів на першому промпті, `Skill` не викликано, після `/compact host` — INTRO_TEXT 968 символів один раз) · [ ] коміт
 
 ### Subtask: Фаза 32 — ремонт після відновлення
 > Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 18:25 — Status: `done` — Phase: `commit`

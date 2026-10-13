@@ -29,7 +29,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, calibrateBeforeApply, contextList, detectOptimize, introFor, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, calibrateBeforeApply, contextList, detectOptimize, guideText, introFor, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { modText, REPAIR_MARKER } from './rows'
 import {
@@ -140,6 +140,9 @@ const copied = new Set<string>()
 const anchorMem = newAnchorMemory()
 // [SP_CTX_02_37] The request size of the last size check without a hint.
 const hintMemo = newHintMemo()
+// [SP_CTX_02_27] the skill's guide, read once per module instance; a failed
+// read is tried again with the next intro (GUIDE_UNREAD gives INTRO_TEXT)
+let guide: string | undefined
 // [SP_CTX_01_07] [PL_AUD_CTX_P11] The cache of the tag and alias registries (and [SP_CTX_01_23] hostattach.json):
 // a new epoch each time a storage is published (a session start or switch).
 const fileCache = newFileCache()
@@ -473,6 +476,12 @@ async function removeFile($: EngineInterface, path: string): Promise<void> {
 // folder or why there is none, and the session they belong to.
 function ensureStorage($: EngineInterface, inCompaction = false): Promise<SessionStorage> {
   return ensureIn(storage, prepareIO($, inCompaction))
+}
+
+// [SP_CTX_02_27] [SP_CTX_DEC_36] GuideText of the mod's skill file, or none.
+async function skillGuide($: EngineInterface): Promise<string | undefined> {
+  if (guide === undefined) guide = await $.fs.read(`${$.plugin.root}/skills/${SKILL}/SKILL.md`).then(guideText, () => undefined)
+  return guide
 }
 
 // The folder of the current session's storage, or undefined.
@@ -1218,7 +1227,10 @@ export const register: Register = on => {
     const s = stores($, dir)
     return deliverReport({
       readQueue: s.queue.read,
-      intro: async () => introFor(await s.tags.cached()),
+      intro: async () => {
+        const reg = await s.tags.cached()
+        return introFor(reg, reg.state !== 'unreadable' && !reg.value.introduced ? await skillGuide($) : undefined)
+      },
       advice: async () => adviceFor(await s.tags.cached()),
       inTurn: () => turns.inTurn,
       enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),

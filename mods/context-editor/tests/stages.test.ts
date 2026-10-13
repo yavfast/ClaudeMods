@@ -17,7 +17,11 @@ import {
   detectOptimize,
   distinctive,
   hasOptimizeMark,
+  GUIDE_FRAME,
+  guideText,
   INTRO_TEXT,
+  introFor,
+  withIntroduced,
   LIST_HINT,
   markBefore,
   markClose,
@@ -46,7 +50,7 @@ import {
   type RowMark,
   type UsageInfo,
 } from '../hooks/stages'
-import { contextTag, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
+import { contextTag, EMPTY_REGISTRY, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
 import { apiOf, prompt, reg, reply, result, use as callRow, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
@@ -506,6 +510,27 @@ test('OptimizeText — без індексів: the block name, ListHint, STAGE_
 })
 
 // ---- [SP_CTX_02_27] SessionIntro
+
+test('SessionIntro — GuideText: GUIDE_FRAME and the body after the frontmatter, trimmed; none for an empty body', async () => {
+  expect(guideText('---\nname: a\ndescription: b\n---\n\n# T\n\ntext\n')).toBe(GUIDE_FRAME + '# T\n\ntext')
+  expect(guideText('---\r\nname: a\r\n---\r\nbody')).toBe(GUIDE_FRAME + 'body')
+  expect(guideText('# no frontmatter\n')).toBe(GUIDE_FRAME + '# no frontmatter')
+  expect(guideText('---\nname: a\n---\n \n')).toBeUndefined()
+  expect(guideText('')).toBeUndefined()
+  expect(guideText('---\nname: a\nbody')).toBeUndefined()
+  expect(GUIDE_FRAME.startsWith('context-editor: the guide of skill context-editor:context-stages')).toBe(true)
+})
+
+test('SessionIntro — introFor and withIntroduced with reintroduce', async () => {
+  expect(introFor(okRead({ ...EMPTY_REGISTRY }), 'G')).toBe('G')
+  expect(introFor(okRead({ ...EMPTY_REGISTRY }))).toBe(INTRO_TEXT)
+  expect(introFor(okRead({ ...EMPTY_REGISTRY, introduced: true }), 'G')).toBeUndefined()
+  expect(introFor(okRead({ ...EMPTY_REGISTRY, introduced: true, reintroduce: true }), 'G')).toBe(INTRO_TEXT)
+  // компактизація до вступу: introduced = false wins, the guide comes
+  expect(introFor(okRead({ ...EMPTY_REGISTRY, reintroduce: true }), 'G')).toBe('G')
+  expect(withIntroduced(okRead({ ...EMPTY_REGISTRY, introduced: true, reintroduce: true }))).toEqual({ ...EMPTY_REGISTRY, introduced: true })
+  expect(withIntroduced(okRead({ ...EMPTY_REGISTRY, introduced: true }))).toBeUndefined()
+})
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)

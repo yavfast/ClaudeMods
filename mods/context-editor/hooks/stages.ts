@@ -66,6 +66,12 @@ export const INTRO_TEXT = modText(
   'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
 )
 
+// [SP_CTX_02_27] [SP_CTX_DEC_36] The opener of the skill's guide in the
+// hidden context of the first prompt (phase 33).
+export const GUIDE_FRAME = modText(
+  `the guide of skill context-editor:${SKILL}, loaded into your context at the start of the session; you need not open the skill.\n\n`,
+)
+
 // [SP_CTX_02_29] [C_CTX_DEC_04] D: the advice of a closed stage and of the
 // optimization turn; it names the reproducible pairs by the listing's `~`
 // flag (REPRO_FLAG, [SP_CTX_01_12]).
@@ -903,10 +909,24 @@ export function personAdvice(block: ClosedBlock, notes = 0): string {
 
 // ---- [SP_CTX_02_27] SessionIntro
 
-// INTRO_TEXT while the registry (ok or missing) has not recorded it; none
-// from an unreadable one: there is nowhere to record the delivery.
-export function introFor(read: Read<TagRegistry>): string | undefined {
-  return read.state !== 'unreadable' && !read.value.introduced ? INTRO_TEXT : undefined
+// [SP_CTX_DEC_36] The skill's guide for the first prompt: GUIDE_FRAME and
+// SKILL.md after its frontmatter; none for an empty body or a frontmatter
+// left open (GUIDE_UNREAD).
+export function guideText(file: string): string | undefined {
+  const m = /^---\r?\n[\s\S]*?\r?\n---[^\n]*(?:\n|$)/.exec(file)
+  if (!m && /^---\r?\n/.test(file)) return undefined
+  const body = (m ? file.slice(m[0].length) : file).trim()
+  return body ? GUIDE_FRAME + body : undefined
+}
+
+// The guide (or INTRO_TEXT without one) while the registry (ok or missing)
+// has not recorded the intro; INTRO_TEXT once another compaction took it
+// (`reintroduce`); none from an unreadable registry: there is nowhere to
+// record the delivery.
+export function introFor(read: Read<TagRegistry>, guide?: string): string | undefined {
+  if (read.state === 'unreadable') return undefined
+  if (!read.value.introduced) return guide ?? INTRO_TEXT
+  return read.value.reintroduce ? INTRO_TEXT : undefined
 }
 
 // The registry once the intro entered: a missing one is made with defaults;
@@ -914,7 +934,9 @@ export function introFor(read: Read<TagRegistry>): string | undefined {
 export function withIntroduced(read: Read<TagRegistry>): TagRegistry | undefined {
   if (read.state === 'unreadable') return undefined
   const reg = read.state === 'missing' ? { ...EMPTY_REGISTRY, tags: [] } : read.value
-  return reg.introduced ? undefined : { ...reg, introduced: true }
+  if (reg.introduced && !reg.reintroduce) return undefined
+  const { reintroduce: _, ...rest } = reg
+  return { ...rest, introduced: true }
 }
 
 // [SP_CTX_02_29] The advice for the person's prompt, from the registry as it
