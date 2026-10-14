@@ -28,8 +28,10 @@ import {
 import { MAX_QUEUE_BYTES, personTagWarning, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
 import {
+  blockName,
   carrierRow,
   closeStage,
+  endWaiting,
   markBefore,
   CALIB_MAX,
   CALIB_MIN,
@@ -43,10 +45,11 @@ import {
   type Replaced,
   type RowMark,
   type Stage,
+  type Waiting,
 } from './stages'
 import { badNoteFields, type Note } from './notes'
 import { bytes, isCount, jsonObject, storageRefusal, type Read } from './store'
-import { findToolResult, findToolUse, isBig, isPlainUserRow, isReplacementText, isSearchTool, resultsOf, rowChars, squash } from './rows'
+import { errorText, findToolResult, findToolUse, isBig, isPlainUserRow, isReplacementText, isSearchTool, resultsOf, rowChars, squash } from './rows'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
@@ -80,6 +83,8 @@ export type TagRegistry = {
   firstPromptPinned: boolean
   stage?: Stage
   lastClosed?: ClosedBlock
+  // [SP_CTX_01_10] [SP_CTX_DEC_37] `lastClosed` waits for compression; only with `lastClosed`
+  waiting?: Waiting
   introduced: boolean
   reintroduce?: boolean
   // [SP_CTX_01_21] the agent's service notes, and the number of the next one
@@ -184,6 +189,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     typeof reg.firstPromptPinned !== 'boolean' && 'firstPromptPinned',
     reg.stage !== undefined && !isStage(reg.stage) && 'stage',
     reg.lastClosed !== undefined && !isClosed(reg.lastClosed) && 'lastClosed',
+    reg.waiting !== undefined && ((reg.waiting !== 'marked' && reg.waiting !== 'advised') || reg.lastClosed === undefined) && 'waiting',
     typeof reg.introduced !== 'boolean' && 'introduced',
     reg.reintroduce !== undefined && typeof reg.reintroduce !== 'boolean' && 'reintroduce',
     badNoteFields(reg.notes, reg.nextNote),
@@ -316,8 +322,9 @@ export type TagIO = {
   // context_tag: QueueTagReplacements on the queue's serial chain, after the
   // registry is written (default: queueTagReplacements on this io)
   replace?: () => Promise<Replaced>
-  // context_tag: BlockReport of one close ([SP_CTX_02_29]); a throw is REPORT_FAILED
-  report?: (block: ClosedBlock, replaced?: Replaced) => Promise<string>
+  // context_tag: BlockReport of one close, or of the block that waited
+  // (`waiting`, [SP_CTX_DEC_37]) ([SP_CTX_02_29]); a throw is REPORT_FAILED
+  report?: (block: ClosedBlock, replaced?: Replaced, waiting?: boolean) => Promise<string>
   // context_tag: the host's deliveries not yet rows, for PersonTagWarnings
   // ([SP_CTX_01_22]); none when absent or unreadable
   deliveries?: () => Promise<readonly QueuedDelivery[]>
@@ -357,6 +364,9 @@ export type TagOutcome = {
   lines: string[]
   // the registry differs from the one read (tags, stages, a lost mark nulled)
   changed: boolean
+  // [SP_CTX_DEC_37] the block that waited for compression until the first
+  // accepted open or close of this call
+  waited?: ClosedBlock
 }
 
 const OPEN_FIELDS = ['op', 'stage', 'index']
@@ -380,15 +390,24 @@ export function applyTagRequests(
   // [SP_CTX_01_18] a lost start of the stage or of the last block becomes null
   let stages: TagRegistry = normalizeLost(reg, rows)
   const out: TagOutcome = { registry: reg, added: 0, removed: 0, rejected: [], events: [], lines: [], changed: stages !== reg }
+  // [SP_CTX_DEC_37] the agent moves on: the waiting block ends before CloseStage replaces lastClosed
+  const moveOn = () => {
+    const ended = endWaiting(stages)
+    if (!ended) return
+    stages = ended.registry
+    out.waited = ended.block
+    out.changed = true
+  }
   raws.forEach((raw, n) => {
     const reject = (code: TagError, why: string) => void out.rejected.push({ code, reason: `tag ${n + 1}: ${why} (${code})` })
     const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
     if (r.op !== 'add' && r.op !== 'remove' && r.op !== 'open' && r.op !== 'close') return reject('BAD_OP', `op must be "add", "remove", "open" or "close"`)
     if (r.op === 'close') {
       if (Object.keys(r).some(k => k !== 'op')) return reject('STAGE_FIELDS', 'close takes no field but "op"')
-      const closed = closeStage(stages, rows, carrier)
-      if (!closed)
+      if (!stages.stage)
         return reject('NO_STAGE', 'no stage is open; to close a block you did not open, give {"op":"open","stage":"<name>","index":<its first row>} and {"op":"close"} in one call')
+      moveOn()
+      const closed = closeStage(stages, rows, carrier)!
       stages = closed.registry
       out.events.push({ close: closed.block })
       out.changed = true
@@ -403,6 +422,7 @@ export function applyTagRequests(
         if (!Number.isInteger(r.index) || !rows[r.index as number]) return reject('TARGET_NOT_FOUND', `index out of range (0..${rows.length - 1}); refresh context_list`)
         after = markBefore(rows, r.index as number)
       } else after = markBefore(rows, carrier)
+      moveOn()
       // an open stage closes first: its block ends before the row of this call
       const closed = closeStage(stages, rows, carrier)
       if (closed) {
@@ -562,8 +582,20 @@ export async function contextTag(
   if ('deny' in step) return step
   const closes = step.events.flatMap(e => ('close' in e ? [e.close] : []))
   let replaced: Replaced | undefined
-  if (closes.length) replaced = await (io.replace ?? (() => queueTagReplacements(io)))().catch(() => undefined)
+  // [SP_CTX_02_13] a close by the tool, or the end of the waiting block
+  if (closes.length || step.waited) replaced = await (io.replace ?? (() => queueTagReplacements(io)))().catch(() => undefined)
   const texts: string[] = []
+  // [SP_CTX_DEC_37] the block that waited comes first, with indexes; the replacements go with it when no close takes them
+  if (step.waited) {
+    const waited = step.waited
+    if (!io.report) texts.push(`${blockName(waited)} no longer waits for compression.`)
+    else
+      try {
+        texts.push(await io.report(waited, closes.length ? undefined : replaced, true))
+      } catch (err) {
+        texts.push(`${blockName(waited)} no longer waits for compression; its report failed: ${errorText(err)}; call context_list`)
+      }
+  }
   let n = 0
   for (const e of step.events) {
     if ('open' in e) {
@@ -933,10 +965,10 @@ const NOTHING: Replaced = { queued: 0, freed: '' }
 // [SP_CTX_02_13] Queues the replacements of the disposable tags whose
 // replacement is not in the queue yet, and returns how many it queued and the
 // estimated tokens they free; nothing when none was queued. Only a close of a
-// stage by the tool and the optimization mark run it; the indexes come from
-// Locate on the rows now, so there is no listedKey check. PrepareEdits checks
-// pins, the state slot and the pairs of a range as for the agent's edits. The
-// caller runs it on the queue's serial chain.
+// stage by the tool and the end of a waiting block ([SP_CTX_DEC_37]) run it;
+// the indexes come from Locate on the rows now, so there is no listedKey
+// check. PrepareEdits checks pins, the state slot and the pairs of a range as
+// for the agent's edits. The caller runs it on the queue's serial chain.
 export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const tags = await io.readTags()
   const read = await io.readQueue()

@@ -1,5 +1,5 @@
 // [SP_CTX_02_42] [C_CTX_DEC_23] The person's /compact with the mod on: the
-// agent compresses the conversation itself in an optimization turn instead of
+// agent compresses the conversation itself in a compression turn instead of
 // the host's summary. `/compact host` runs the host's summary; any other args
 // (the person's own summary instructions) and every plugin's run (the mod's
 // MARKER and HANDOFF_MARKER among them) go to the host unchanged. Automatic
@@ -68,9 +68,8 @@ export type CompactAnswer = { next: string } | { text: string }
 // [SP_CTX_02_42] What the queue says about a new request.
 type Verdict = 'written' | 'busy' | 'handoff' | 'aborted'
 
-// [SP_CTX_02_42] The request in the queue: `optimize` with `compact`; an
-// optimization request of the mark becomes this one (the whole conversation
-// covers its block). Busy: a compression turn runs (`optimizePrompted`), or one
+// [SP_CTX_02_42] The request in the queue: `optimize` with `compact`; a
+// legacy `optimize` without `compact` becomes this one. Busy: a compression turn runs (`optimizePrompted`), or one
 // is requested and Flush is planned (`planned`), or a compression turn ended and
 // the Flush of its end has not run yet (`compactEndedAt`: the host held a
 // /compact typed during that turn until its end, maybe before that end

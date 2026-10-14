@@ -3,6 +3,7 @@ import { checkShape, DESCRIBE_DROPS, describeEdit, ownerKey, type MediaRef, MAX_
 import { personDelivered, personText, type QueuedDelivery } from './deliveries'
 import { isPlainUserRow, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
+import type { Replaced } from './stages'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -49,9 +50,10 @@ export type Queue = {
   reportResume: boolean
   reportPrompt: string
   handoff?: HandoffRequest
-  // [SP_CTX_02_30] the optimization mark was seen: the request waits for the
-  // optimization turn ([SP_CTX_02_06]) or a person's prompt ([SP_CTX_02_08]);
-  // its block is TagRegistry.lastClosed
+  // [SP_CTX_02_42] the person's /compact asked for a compression turn
+  // ([SP_CTX_02_06]) or, if none runs, its advice with the next prompt
+  // ([SP_CTX_02_08]); only with `compact`. Without it, a mark's request of a
+  // version before 2026-10-14, dropped (OPTIMIZE_LEGACY, [SP_CTX_DEC_37])
   optimize: boolean
   // [SP_CTX_02_06] the optimization prompt entered: the mark in the next
   // answer is ignored (the loop guard). Never true together with `optimize`.
@@ -312,7 +314,8 @@ export function queueEdits(
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
   if (queued.length) next.tagsOnly = false
   const prompt = typeof args.resume_prompt === 'string' && args.resume_prompt.trim() !== ''
-  // [SP_CTX_02_02] [SP_CTX_DEC_16] the optimization turn follows an answer
+  // [SP_CTX_02_02] [SP_CTX_DEC_16] the compression turn of the person's /compact
+  // follows an answer
   // the agent already finished for the person: its batch resumes only when
   // asked to, by "resume" or by a resume_prompt of its own. A choice made
   // once in the batch (even by a call that queued nothing) stays.
@@ -341,7 +344,7 @@ export function queuedText(q: Queue, queued: number, errors: readonly string[], 
       ? `They apply when this turn ends. End your turn now with a one-line status.${
           q.resume
             ? ` The session then resumes by itself with: "${q.resumePrompt}"`
-            : // [SP_CTX_DEC_16] the optimization turn's batch stops the session
+            : // [SP_CTX_DEC_16] the /compact compression turn's batch stops the session
               q.optimizePrompted
               ? ' The session then stops; pass "resume": true to go on.'
               : ''
@@ -372,6 +375,12 @@ export type QueueIO = {
   // moves an unreadable queue file aside; the new path, or undefined
   quarantine: () => Promise<string | undefined>
   queuePath: string
+  // [SP_CTX_DEC_37] on the registry chain: the waiting block ends; its
+  // BlockName, or undefined when none waits; a failed write rejects (the block
+  // keeps waiting). Absent: never
+  endWaiting?: () => Promise<string | undefined>
+  // [SP_CTX_02_13] QueueTagReplacements, on the queue's chain this call holds
+  replace?: () => Promise<Replaced>
 }
 
 // [SP_CTX_02_02]
@@ -400,13 +409,24 @@ export async function contextEdit(
   } catch (err) {
     return { deny: `could not save the queue: ${String(err)}` }
   }
-  return { result: notice + queuedText(out.queue, out.queued, out.errors, out.warnings, out.refLines) }
+  let result = notice + queuedText(out.queue, out.queued, out.errors, out.warnings, out.refLines)
+  // [SP_CTX_DEC_37] an accepted edit is the agent's move: the waiting block
+  // ends, and its disposable replacements join this batch
+  if (out.queued > 0 && io.endWaiting) {
+    const waited = await io.endWaiting().catch(() => undefined)
+    if (waited) {
+      const replaced = await io.replace?.().catch(() => undefined)
+      result += `\n${waited} no longer waits for compression.`
+      if (replaced && replaced.queued > 0) result += ` Replacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
+    }
+  }
+  return { result }
 }
 
 // [SP_CTX_02_08] What changes in the queue once a person's prompt entered:
-// the delivered report leaves (RemoveDelivered), an optimization request
-// whose advice went (or could not be built) is done, and the loop guard is
-// down when the person took over between turns.
+// the delivered report leaves (RemoveDelivered), the request of the person's
+// /compact whose advice went is done (a legacy mark's request too), and the
+// loop guard is down when the person took over between turns.
 export type Settle = { delivered?: string; optimizeDone: boolean; tookOver: boolean }
 
 // [SP_CTX_02_08] The queue after Settle; the same queue when nothing changes.
@@ -430,10 +450,12 @@ export type DeliverIO<R> = {
   // [SP_CTX_02_27] INTRO_TEXT while the registry (ok or missing) has not
   // recorded it in this session; undefined otherwise
   intro: () => Promise<string | undefined>
-  // [SP_CTX_02_29] PersonAdvice of TagRegistry.lastClosed as it is now;
-  // undefined without a readable registry or a block (ADVICE_NO_BLOCK); a
-  // throw is ADVICE_FAILED
+  // [SP_CTX_02_29] WaitingAdvice of TagRegistry.lastClosed as it is now,
+  // while `waiting = marked`; undefined otherwise (WAIT_NO_BLOCK); a throw is
+  // ADVICE_FAILED
   advice: () => Promise<string | undefined>
+  // [SP_CTX_DEC_37] on the registry chain: waiting marked → advised (AdviseWaiting)
+  advised?: () => Promise<void>
   // [SP_CTX_02] a turn runs now
   inTurn: () => boolean
   // passes the prompt on with the hidden context; resolves with the host's verdict
@@ -448,11 +470,13 @@ export type DeliverIO<R> = {
 }
 
 // [SP_CTX_02_08] [SP_CTX_02_27] The person's prompt (or another plugin's)
-// carries the session intro once, the pending report, and the advice of an
-// optimization request that no optimization turn served; each leaves only
-// once that prompt entered. Between turns, the suggestion of the turn
-// channel ([SP_CTX_02_37]) comes last: its state is claimed before the prompt
-// enters, so a dropped prompt loses it. A failed step never holds the prompt back.
+// carries the session intro once, the pending report, the advice of the
+// person's /compact that no compression turn served, and WaitingAdvice of a
+// block the mark left waiting ([SP_CTX_DEC_37]); each leaves only once that
+// prompt entered. Between turns, without any advice, the suggestion of the
+// turn channel ([SP_CTX_02_37]) comes last: its state is claimed before the
+// prompt enters, so a dropped prompt loses it. A failed step never holds the
+// prompt back.
 export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<R>): Promise<R> {
   const context: string[] = []
   const intro = await io.intro().catch(() => undefined)
@@ -460,14 +484,21 @@ export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<
   const read = await io.readQueue().catch((): Read<Queue> => ({ state: 'unreadable', reason: 'read failed' }))
   const q = read.state === 'ok' ? read.value : undefined
   if (q?.report) context.push(noteOnce(q.report))
-  if (q?.optimize) {
-    // [SP_CTX_02_42] the person's /compact needs no block: its own advice
-    // ADVICE_FAILED / ADVICE_NO_BLOCK: the prompt goes without it, once
-    const advice = q.compact ? COMPACT_ADVICE : await io.advice().catch(() => undefined)
-    if (advice) context.push(advice)
+  // [SP_CTX_02_42] the person's /compact needs no block: its own advice. An
+  // `optimize` without `compact` is a legacy mark's request: no advice, cleared once the prompt entered
+  const compactAdvice = !!q?.optimize && q.compact
+  if (compactAdvice) context.push(COMPACT_ADVICE)
+  let waitAdded = false
+  if (!compactAdvice) {
+    // ADVICE_FAILED: the prompt goes without it; the block stays marked
+    const advice = await io.advice().catch(() => undefined)
+    if (advice) {
+      context.push(advice)
+      waitAdded = true
+    }
   }
-  // [SP_CTX_02_37] the advice of an optimization request already says what to compress
-  if (io.suggestion && !io.inTurn() && !q?.optimize) {
+  // [SP_CTX_02_37] an advice already says what to compress
+  if (io.suggestion && !io.inTurn() && !q?.optimize && !waitAdded) {
     const line = await io.suggestion().catch(() => undefined)
     if (line) context.push(line)
   }
@@ -480,5 +511,7 @@ export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<
   if (q && (q.report || q.optimize || tookOver))
     // DELIVERY_FAILED: the report goes again with the next prompt
     await io.settle({ delivered: q.report || undefined, optimizeDone: q.optimize, tookOver }).catch(() => undefined)
+  // WAIT_ADVICE_LOST: the advice goes again with the next prompt
+  if (waitAdded) await io.advised?.().catch(() => undefined)
   return entered
 }

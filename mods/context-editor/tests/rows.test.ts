@@ -35,7 +35,7 @@ import {
   sameText,
   worthEditing,
 } from '../hooks/rows'
-import { compactTurnText, INTRO_TEXT, optimizeText, personAdvice, type ClosedBlock } from '../hooks/stages'
+import { compactTurnText, INTRO_TEXT, waitingAdvice, type ClosedBlock } from '../hooks/stages'
 import { EMPTY_REGISTRY } from '../hooks/tags'
 
 const block: ClosedBlock = { name: 'stage', after: null, end: null, turn: 3 }
@@ -66,8 +66,7 @@ test('PersonText — mod text producers: every text the mod writes under PREFIX 
     ['resumeText HANDOFF_RESUME_FRAME', resumeText('go on with the task', HANDOFF_RESUME_FRAME)],
     ['DOCUMENT_FRAME', documentText('my notes', modText('this session continues s1 (document).'))],
     ['INTRO_TEXT', INTRO_TEXT],
-    ['optimizeText', optimizeText(block, true)],
-    ['personAdvice', personAdvice(block)],
+    ['waitingAdvice', waitingAdvice(block)],
     ['compactTurnText', compactTurnText(2)],
     ['COMPACT_NOTHING', COMPACT_NOTHING],
     ['COMPACT_ADVICE', COMPACT_ADVICE],

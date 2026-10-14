@@ -21,7 +21,7 @@ import {
   withReminderLines,
   type Note,
 } from '../hooks/notes'
-import { blockReport, optimizeText, personAdvice, telemetry, telemetryText, type BlockIO, type UsageInfo } from '../hooks/stages'
+import { blockReport, waitingAdvice, telemetry, telemetryText, type BlockIO, type UsageInfo } from '../hooks/stages'
 import { applyTagRequests, MAX_REGISTRY_BYTES, parseRegistry, type TagIO, type TagRegistry } from '../hooks/tags'
 import { prompt, reg, reply, result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
@@ -372,13 +372,11 @@ test('BlockReport — нотатки в блоці: block #4..#11, notes on #6 a
   expect(blockNotes(r, g, 0, 20, 1)).toBe('n1 #6: text of n1; +1 more')
 })
 
-test('OptimizeText, PersonAdvice — нотатки без рядків: 3 notes give the sentence; none, nothing', async () => {
+test('WaitingAdvice — нотатки без рядків: 3 notes give the sentence; none, nothing', async () => {
   const block = { name: 'A', after: null, end: null, turn: 0 }
   const hint = 'You have 3 note(s); context_list shows them next to their rows and in full below each page.'
-  expect(optimizeText(block, false, 3)).toContain(hint)
-  expect(personAdvice(block, 3)).toContain(hint)
-  expect(optimizeText(block, false, 0)).not.toContain('note(s)')
-  expect(personAdvice(block)).not.toContain('note(s)')
+  expect(waitingAdvice(block, 3)).toContain(hint)
+  expect(waitingAdvice(block)).not.toContain('note(s)')
 })
 
 // ---- [SP_CTX_02_28] Telemetry

@@ -35,37 +35,31 @@ Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: s
 
 Usually keep verbatim: the person's messages, the rules and skills still in force, and the conclusions you need next. A `[pin]` target cannot be edited (the person's first prompt is pinned for you).
 
-Edits apply when your turn ends: end the turn with a one-line status. Unless you pass `"resume": false`, the session resumes by itself with `resume_prompt` (in an optimization turn only with `"resume": true`). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line). Your `context_*` calls leave the conversation; tags and notes stay.
+Edits apply when your turn ends: end it with a one-line status, and the session resumes by itself (`context_edit` gives the options). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line). Your `context_*` calls leave the conversation; tags and notes stay.
 
 ## Dead ends
 
-When you abandon a branch, mark it at once: tag the span `disposable` with a note, `{"op":"add","kind":"disposable","index":<first row>,"to":<last row>,"note":"dead end: X fails because Y"}` (the range holds every tool call with its result; `context_tag` warns when it covers the person's messages). A single text row of yours or an output by `ref`/`tool_use_id` works too. The replacements are queued when you close the stage or end a turn with the optimization mark; a range becomes one `collapse`.
+When you abandon a branch, mark it at once: tag the span `disposable` with a note, `{"op":"add","kind":"disposable","index":<first row>,"to":<last row>,"note":"dead end: X fails because Y"}` (the range holds every tool call with its result; `context_tag` warns when it covers the person's messages). A single text row of yours or an output by `ref`/`tool_use_id` works too. The replacements are queued when you close the stage or move on from a block you marked; a range becomes one `collapse`.
 
 ## Optimization mark
 
-To have the block optimized when you finish your turn for the person, make this the last line of your answer, on its own:
+When you finish your turn for the person and the block is done, end your answer with this line, on its own:
 
 [context-editor: optimize]
 
-- It works only alone on the last non-empty line: quoted mid-text, with other text on its line, or inside the optimization turn it does nothing.
-- It closes the open stage at the end of the turn; with none open, the block since the last closed one. If you closed a stage with the tool in that turn, the mark refers to it. Your `disposable` replacements join that turn's batch.
-- An ordinary optimization turn follows, without indexes: take the range from `Last block #a..#b` in the header of `context_list`, then list from `from = a` before you edit by index.
-- Then the session stops unless `"resume": true`. Mid-work, close the stage with the tool.
+- Only alone on the last non-empty line; mid-text, sharing its line, or in the `/compact` turn it does nothing.
+- It closes the open stage (if none: the block since the last closed one; a stage closed by the tool in that turn stays the block). The block then waits; nothing is compressed.
+- The next prompt names the block: compress it in that turn if the work moves to the next stage, else leave it. Opening a stage reports it with indexes; that or an accepted `context_edit` ends the wait and queues your `disposable` replacements.
+- Following a plan on your own: open a stage per phase; at the next one compress the previous block and end the turn with a status line; the session resumes. Mid-work, close stages by the tool.
 
 ## Telemetry
 
-`context_list` with `"count":0` gives the header alone: the conversation's size without the fixed part, the window, the open stage, the last block, the candidates by reason with their rows, and only when there is something to show:
-
-- `Effect: N application(s); M reread(s) of compressed content (K of archives)`: rereads of what you compressed; many mean you compress too much;
-- `State slot: #i`, or that its row is gone;
-- `Last apply: ~N tokens freed (measured …)`, once after an apply.
-
-Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line (as the context grows, or with the person's next prompt after much reading) proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
+`context_list` with `"count":0` gives the header alone (its description lists the lines). `Effect: … M reread(s) of compressed content`: many mean you compress too much. Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line (as the context grows, or with the person's next prompt after much reading) proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
 
 ## Candidates
 
 - `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
-- `[disposable: note]`: your own replacement, applied when you close a stage or end a turn with the mark.
+- `[disposable: note]`: your own replacement (see Dead ends).
 
 The close report lists the block's candidates by reason and counts its `~` pairs.
 
@@ -75,13 +69,12 @@ Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagg
 
 ## Notes
 
-`context_note` keeps your notes on a row, a range or a tool call, at no token cost; a target may hold several.
+`context_note` keeps notes at no token cost (its description gives the ops and where they show).
 
 - Mark at once what to drop or compress later, and how: `{"notes":[{"op":"add","ref":"last","text":"drop after the fix is verified"}]}`.
-- `"remind_in_turns":2` brings a note back once with the result of your first tool call (any tool but `context_edit`/`context_handoff`) two turns later.
-- A range: `"index"` and `"to"`. Link rows by what they hold.
+- `"remind_in_turns":2` brings a note back once, two turns later. Link rows by what they hold.
 
-Write about the content, not row numbers: indexes change after an apply. `context_list` shows `[n3]` on the rows, the full text below the page and `Notes elsewhere` for other pages; a stage close lists the notes in its block. A note moves to the row that replaced its row and goes with a removed row (the apply report names it). Remove one with `{"op":"remove","id":"n3"}`.
+Write about the content, not row numbers: indexes change after an apply. A stage close lists the notes in its block.
 
 ## Compressed rows and mod texts
 
@@ -90,4 +83,4 @@ Text opening with `Later, your context_edit` (or `context_tag`) is your own repl
 - `… summarize call replaced the full output …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours. Older ones read `[context-editor] you read …, then replaced …`.
 - `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
 - Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command; `… repair the resumed conversation …`: the mod dropped answers a resume had loaded twice; earlier thinking is gone.
-- `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the optimization or `/compact` turn, a handoff's document: service texts of the mod.
+- `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the `/compact` turn, a handoff's document: service texts of the mod.

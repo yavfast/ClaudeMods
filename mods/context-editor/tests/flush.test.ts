@@ -3,7 +3,7 @@ import { MARKER } from '../hooks/compaction'
 import { afterTurn, CALIB_WAIT_MS, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, logApplied, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_RESUME_FRAME, queueEdits, RESUME_FRAME, resumeText, withoutReport, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
-import { optimizeText, STAGE_ADVICE, type ClosedBlock } from '../hooks/stages'
+import { adviseWaiting, compactTurnText, STAGE_ADVICE, waitingAdvice, type ClosedBlock } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted, type Turns } from '../hooks/turns'
 import { missingRead, okRead, unreadableRead } from './row-fixtures'
@@ -191,9 +191,9 @@ test('Flush — людина почала хід (PERSON_ACTIVE): turns moved wh
 // [SP_CTX_02_06] audit PL_AUD_CTX_P6, TST-20
 test('Flush — черга нечитабельна після компактизації: the command ran; compacted with resume none; no prompt, no write, no status line; scheduled down', async () => {
   for (const optimize of [false, true]) {
-    const h = harness(ok({ edits: EDITS, optimize }), {}, l => void (l.queue = unreadableRead('bad json')), withBlock())
+    const h = harness(ok({ edits: EDITS, optimize, compact: optimize }), {}, l => void (l.queue = unreadableRead('bad json')), withBlock())
     const out = await flush(h.io, h.state, 0)
-    // neither the resume nor the optimization turn: no queue to read the report or the request from
+    // neither the resume nor the compression turn: no queue to read the report or the request from
     expect(out).toEqual({ outcome: 'compacted', resume: 'none' })
     expect(h.log.compacts).toEqual([MARKER])
     expect(h.log.submits).toEqual([])
@@ -267,41 +267,43 @@ test('Flush: scheduled is down after a throw too', async () => {
   expect(state.scheduled).toBe(false)
 })
 
-// ---- [SP_CTX_02_06] Optimize: the optimization turn
+// ---- [SP_CTX_02_06] Optimize: the compression turn of the person's /compact
 
 const BLOCK_A: ClosedBlock = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 4 }, turn: 2 }
 const withBlock = (block: ClosedBlock = BLOCK_A): Read<TagRegistry> => okRead({ ...EMPTY_REGISTRY, tags: [], lastClosed: block })
+// [SP_CTX_DEC_37] the mark left block "A" waiting
+const waitingA = (): Read<TagRegistry> => okRead({ ...EMPTY_REGISTRY, tags: [], lastClosed: BLOCK_A, waiting: 'marked' })
 const value = (log: Log) => (log.queue.state === 'ok' ? log.queue.value : undefined)!
 // [SP_CTX_05_02] never both
 const neverBoth = (log: Log) => expect(value(log).optimize && value(log).optimizePrompted).toBe(false)
+const asked = { optimize: true, compact: true }
 
-test('Flush — хід оптимізації без пакета: no command, no rows read; one OptimizeText prompt; the swap written before it', async () => {
+test('Flush — хід стискання без пакета: no command, no rows read; one CompactTurnText prompt; the swap written before it', async () => {
   const seenAtSubmit: Queue[] = []
-  const h = harness(ok({ optimize: true }), { submit: async text => void (h.log.submits.push(text), seenAtSubmit.push(value(h.log))) }, undefined, withBlock())
+  const h = harness(ok(asked), { submit: async text => void (h.log.submits.push(text), seenAtSubmit.push(value(h.log))) }, undefined, waitingA())
   turnStarted(h.turns)
   turnCompleted(h.turns, false)
   expect(await flushAfterTurn(h.io, h.state, false)).toBe(true)
   const out = await flush(h.io, h.state, h.turns.turns)
   expect(out).toEqual({ outcome: 'no-command', resume: 'none', optimize: 'submitted' })
   expect(h.log.compacts).toEqual([])
-  expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false)])
-  expect(h.log.submits[0]).toContain('the session stops after this batch')
+  // the compression turn covers the whole conversation: no WaitingAdvice
+  expect(h.log.submits).toEqual([compactTurnText(0)])
   expect(seenAtSubmit[0]!.optimize).toBe(false)
   expect(seenAtSubmit[0]!.optimizePrompted).toBe(true)
   neverBoth(h.log)
 })
 
-test('Flush — хід оптимізації після пакета: one compact; one prompt: report + OptimizeText; the queue\'s resume text is not sent; RemoveDelivered after it', async () => {
+test('Flush — хід стискання після пакета: one compact; one prompt: report + CompactTurnText; the queue\'s resume text is not sent; RemoveDelivered after it', async () => {
   const h = harness(
-    ok({ edits: EDITS, optimize: true, resume: true, resumePrompt: 'P-text' }),
+    ok({ edits: EDITS, ...asked, resume: true, resumePrompt: 'P-text' }),
     {},
-    l => void (l.queue = ok({ report: 'context-editor: applied 2 edit(s)', reportId: 7, reportResume: true, reportPrompt: 'P-text', optimize: true })),
-    withBlock(),
+    l => void (l.queue = ok({ report: 'context-editor: applied 2 edit(s)', reportId: 7, reportResume: true, reportPrompt: 'P-text', ...asked })),
   )
   const out = await flush(h.io, h.state, 0)
   expect(out).toEqual({ outcome: 'compacted', resume: 'none', optimize: 'submitted' })
   expect(h.log.compacts).toEqual([MARKER])
-  expect(h.log.submits).toEqual([`context-editor: applied 2 edit(s)\n\n${optimizeText(BLOCK_A, true)}`])
+  expect(h.log.submits).toEqual([`context-editor: applied 2 edit(s)\n\n${compactTurnText(0)}`])
   expect(h.log.submits[0]).not.toContain('P-text')
   expect(h.log.submits[0]).toContain(STAGE_ADVICE)
   expect(value(h.log).report).toBeUndefined()
@@ -310,15 +312,15 @@ test('Flush — хід оптимізації після пакета: one compa
 })
 
 test('Flush — людина почала хід: before the command (PERSON_MOVED) or after it (OPTIMIZE_PERSON): no prompt; optimize stays; the report stays', async () => {
-  const before = harness(ok({ edits: EDITS, optimize: true }), {}, applied, withBlock())
+  const before = harness(ok({ edits: EDITS, ...asked }), {}, applied)
   turnStarted(before.turns)
   expect((await flush(before.io, before.state, 0)).outcome).toBe('person-moved')
   expect(before.log.compacts).toEqual([])
   expect(value(before.log).optimize).toBe(true)
-  const during = harness(ok({ edits: EDITS, optimize: true }), {}, l => {
-    l.queue = ok({ report: 'R', reportId: 9, reportResume: true, optimize: true })
+  const during = harness(ok({ edits: EDITS, ...asked }), {}, l => {
+    l.queue = ok({ report: 'R', reportId: 9, reportResume: true, ...asked })
     turnStarted(during.turns)
-  }, withBlock())
+  })
   const out = await flush(during.io, during.state, 0)
   expect(out.optimize).toBe('person')
   expect(during.log.submits).toEqual([])
@@ -328,8 +330,8 @@ test('Flush — людина почала хід: before the command (PERSON_MOV
 })
 
 test('Flush — людина під час команди: DeliverReport took optimize meanwhile; the compare-and-set finds it gone: nothing sent, optimizePrompted not written', async () => {
-  const h = harness(ok({ optimize: true, report: 'R', reportId: 3 }), {
-    // the person's prompt passes DeliverReport while Flush reads the block's name
+  const h = harness(ok({ ...asked, report: 'R', reportId: 3 }), {
+    // the person's prompt passes DeliverReport while Flush reads the registry
     readTags: async () => {
       h.log.queue = ok({ optimize: false })
       return withBlock()
@@ -342,87 +344,119 @@ test('Flush — людина під час команди: DeliverReport took op
   expect(h.state.lastSubmittedReportId).toBe(3)
 })
 
-test('Flush — промпт ходу оптимізації відхилено: the swap undone in one write; the report stays; a status line', async () => {
-  const h = harness(ok({ optimize: true, report: 'R', reportId: 3 }), {
+test('Flush — промпт ходу стискання відхилено: the swap undone in one write; the report stays; a toast', async () => {
+  const h = harness(ok({ ...asked, report: 'R', reportId: 3 }), {
     submit: async () => {
       throw new Error('drop')
     },
-  }, undefined, withBlock())
+  })
   const out = await flush(h.io, h.state, 0)
   expect(out.optimize).toBe('failed')
   expect(value(h.log).optimize).toBe(true)
   expect(value(h.log).optimizePrompted).toBe(false)
   expect(value(h.log).report).toBe('R')
   expect(h.state.lastSubmittedReportId).toBe(0)
-  expect(h.log.statuses).toContain('context-editor: could not start the optimization turn; the advice goes with your next prompt')
+  expect(h.log.toasts).toContain('context-editor: could not start the compression turn; the advice goes with your next prompt')
   neverBoth(h.log)
 })
 
-test('Flush — OPTIMIZE_NO_BLOCK: an unreadable registry or no lastClosed: optimize down, a status line, the resume of the batch as without the mark', async () => {
-  for (const tags of [unreadableRead('x') as Read<TagRegistry>, okRead({ ...EMPTY_REGISTRY }) as Read<TagRegistry>]) {
-    const h = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on', optimize: true })), tags)
-    const out = await flush(h.io, h.state, 0)
-    expect(out).toEqual({ outcome: 'compacted', resume: 'submitted', optimize: 'no-block' })
-    expect(h.log.submits).toEqual(['T\n\ncontext-editor: the resume prompt you set before your edits applied: go on'])
-    expect(value(h.log).optimize).toBe(false)
-    expect(h.log.statuses.some(s => s?.startsWith('context-editor: optimization turn skipped: '))).toBe(true)
-  }
+test('Flush — OPTIMIZE_LEGACY: a mark request of an older version: optimize down without a turn; the batch resumes as without it; alone it is no work', async () => {
+  const h = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on' })), withBlock())
+  expect(await flush(h.io, h.state, 0)).toEqual({ outcome: 'compacted', resume: 'submitted' })
+  expect(h.log.submits).toEqual(['T\n\ncontext-editor: the resume prompt you set before your edits applied: go on'])
+  expect(value(h.log).optimize).toBe(false)
+  const alone = harness(ok({ optimize: true }), {}, undefined, withBlock())
+  expect(await flushAfterTurn(alone.io, alone.state, false)).toBe(false)
+  expect(await flush(alone.io, alone.state, 0)).toEqual({ outcome: 'nothing-queued', resume: 'none' })
+  expect(value(alone.log).optimize).toBe(false)
+  expect(alone.log.submits).toEqual([])
 })
 
 test('Flush — OPTIMIZE_BUILD_FAILED: the batch asked for no resume — optimize stays, no prompt; it asked — optimize down and Resume', async () => {
-  const broken = { after: null, end: null, turn: 0 } as ClosedBlock
-  Object.defineProperty(broken, 'name', {
-    get() {
-      throw new Error('bad block')
-    },
-  })
-  const quiet = harness(ok({ optimize: true }), {}, undefined, withBlock(broken))
+  const broken = (): Read<TagRegistry> => {
+    const r = { ...EMPTY_REGISTRY, tags: [] } as TagRegistry
+    Object.defineProperty(r, 'notes', {
+      get() {
+        throw new Error('bad registry')
+      },
+    })
+    return okRead(r)
+  }
+  const quiet = harness(ok(asked), {}, undefined, broken())
   const a = await flush(quiet.io, quiet.state, 0)
   expect(a.optimize).toBe('build-failed')
   expect(quiet.log.submits).toEqual([])
   expect(value(quiet.log).optimize).toBe(true)
   expect(value(quiet.log).optimizePrompted).toBe(false)
-  const resuming = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on', optimize: true })), withBlock(broken))
+  expect(quiet.log.toasts[0]).toContain('compression turn not started: bad registry')
+  const resuming = harness(ok({ edits: EDITS, ...asked }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on', ...asked })), broken())
   const b = await flush(resuming.io, resuming.state, 0)
   expect(b).toEqual({ outcome: 'compacted', resume: 'submitted', optimize: 'build-failed' })
   expect(resuming.log.submits).toEqual(['T\n\ncontext-editor: the resume prompt you set before your edits applied: go on'])
   expect(value(resuming.log).optimize).toBe(false)
 })
 
-test('Flush — compacted за reportId: the command ran but the handler skipped without a report: OptimizeText without the batch sentence; without optimize nothing is resumed', async () => {
-  const h = harness(ok({ edits: EDITS, optimize: true }), {}, l => void (l.queue = ok({ optimize: true })), withBlock())
+test('Flush — compacted за reportId: the command ran but the handler skipped without a report: CompactTurnText alone; without a request nothing is resumed', async () => {
+  const h = harness(ok({ edits: EDITS, ...asked }), {}, l => void (l.queue = ok(asked)))
   await flush(h.io, h.state, 0)
   expect(h.log.compacts).toEqual([MARKER])
-  expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false)])
+  expect(h.log.submits).toEqual([compactTurnText(0)])
   const plain = harness(ok({ edits: EDITS }), {}, l => void (l.queue = ok({})))
   expect(await flush(plain.io, plain.state, 0)).toEqual({ outcome: 'compacted', resume: 'none' })
   expect(plain.log.submits).toEqual([])
 })
 
-test('Flush: a refused command keeps the optimization request for the person\'s prompt (HOST_REFUSED)', async () => {
-  const h = harness(ok({ edits: EDITS, optimize: true }), {
+test('Flush: a refused command keeps the /compact request for the person\'s prompt (HOST_REFUSED)', async () => {
+  const h = harness(ok({ edits: EDITS, ...asked }), {
     compact: async () => {
       throw new Error('not now')
     },
-  }, undefined, withBlock())
+  })
   expect((await flush(h.io, h.state, 0)).outcome).toBe('host-refused')
   expect(value(h.log).optimize).toBe(true)
   expect(h.log.submits).toEqual([])
 })
 
-test('Flush: an optimization request alone plans a Flush; with a handoff it does not', async () => {
-  const alone = harness(ok({ optimize: true }), {}, undefined, withBlock())
+test('Flush: a /compact request alone plans a Flush; with a handoff it does not', async () => {
+  const alone = harness(ok(asked))
   expect(await flushAfterTurn(alone.io, alone.state, false)).toBe(true)
-  const handoff = harness(ok({ optimize: true, handoff: HANDOFF }), {}, undefined, withBlock())
+  const handoff = harness(ok({ ...asked, handoff: HANDOFF }))
   expect(await flushAfterTurn(handoff.io, handoff.state, false)).toBe(false)
 })
 
-test('Flush — the optimization prompt carries the note count of the registry (NotesHint)', async () => {
+test('Flush — the compression prompt carries the note count of the registry (NotesHint)', async () => {
   const notes = [{ id: 'n1', target: { tool_use_id: 'a' }, text: 't', createdTurn: 0 }, { id: 'n2', target: { tool_use_id: 'b' }, text: 'u', createdTurn: 0 }]
-  const h = harness(ok({ optimize: true }), {}, undefined, okRead({ ...EMPTY_REGISTRY, tags: [], lastClosed: BLOCK_A, notes, nextNote: 3 }))
+  const h = harness(ok(asked), {}, undefined, okRead({ ...EMPTY_REGISTRY, tags: [], lastClosed: BLOCK_A, notes, nextNote: 3 }))
   await flush(h.io, h.state, 0)
-  expect(h.log.submits).toEqual([optimizeText(BLOCK_A, false, 2)])
+  expect(h.log.submits).toEqual([compactTurnText(2)])
   expect(h.log.submits[0]).toContain('You have 2 note(s)')
+})
+
+// ---- [SP_CTX_02_06] [SP_CTX_DEC_37] Resume carries WaitingAdvice
+
+test('Flush — WaitingAdvice у промпті продовження: the resume prompt carries it after the resume text; once entered, advised; WAIT_ADVICE_LOST keeps it marked', async () => {
+  const h = harness(ok({ edits: EDITS }), {}, applied, waitingA())
+  h.io.advised = async () => {
+    const next = adviseWaiting(h.log.tags)
+    if (next) h.log.tags = okRead(next)
+  }
+  expect(await flush(h.io, h.state, 0)).toEqual({ outcome: 'compacted', resume: 'submitted' })
+  expect(h.log.submits).toEqual([`context-editor: applied 2 edit(s)\n\ncontext-editor: the resume prompt you set before your edits applied: go on\n\n${waitingAdvice(BLOCK_A)}`])
+  expect(h.log.tags.state === 'ok' && h.log.tags.value.waiting).toBe('advised')
+  // advised already: the next resume goes without it
+  const after = harness(ok({ edits: EDITS }), {}, l => applied(l, 8), h.log.tags)
+  await flush(after.io, after.state, 0)
+  expect(after.log.submits[0]).not.toContain('waits for compression')
+  const lost = harness(ok({ edits: EDITS }), { advised: async () => Promise.reject(new Error('disk full')) }, applied, waitingA())
+  expect((await flush(lost.io, lost.state, 0)).resume).toBe('submitted')
+  expect(lost.log.tags.state === 'ok' && lost.log.tags.value.waiting).toBe('marked')
+})
+
+test('Flush — після ходу з міткою, черга порожня: no Flush is planned, nothing is sent', async () => {
+  const h = harness(ok({}), {}, undefined, waitingA())
+  expect(await flushAfterTurn(h.io, h.state, false)).toBe(false)
+  expect(h.log.timers).toEqual([])
+  expect(h.log.submits).toEqual([])
 })
 
 // [SP_CTX_DEC_16] [SP_CTX_04_06] review 46: a batch of the marked turn still
@@ -531,11 +565,11 @@ test('AfterTurn — the count waits for DetectOptimize, and Flush for the count'
   expect(steps(calls)).toEqual(['storage', 'detect', 'count /s', 'flush false'])
 })
 
-test('AfterTurn — Flush sees what DetectOptimize queued: the replacements of the mark plan the flush of this very turn', async () => {
+test('AfterTurn — Flush sees the queue as the steps before it left it: the edits of the turn plan the flush of this very turn', async () => {
   const { io: fio, log, state } = harness(ok({}))
   const { io } = turnEnd({
-    // DetectOptimize queues the replacements of the disposable tags
-    detect: async () => void (log.queue = ok({ edits: EDITS, optimize: true })),
+    // the queue as the turn's own context_edit left it, read once DetectOptimize is done
+    detect: async () => void (log.queue = ok({ edits: EDITS })),
     flush: aborted => flushAfterTurn(fio, state, aborted),
   })
   await afterTurn(io, { aborted: false, answer: '' })
@@ -626,7 +660,7 @@ test('Flush — калібрування: a sleep that throws at once: no wait o
   expect(h.log.compacts).toEqual([MARKER])
 })
 
-test('Flush — калібрування без правок: an optimization request or the person\'s /compact without edits never calibrates', async () => {
+test('Flush — калібрування без правок: a legacy mark request or the person\'s /compact without edits never calibrates', async () => {
   for (const q of [ok({ optimize: true }), ok({ optimize: true, compact: true })]) {
     let calls = 0
     const h = harness(q, { calibrate: async () => void calls++ }, undefined, okRead({ ...EMPTY_REGISTRY, lastClosed: { name: 's', after: null, end: null, turn: 0 } }))

@@ -2,9 +2,9 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-13
+> **Last updated:** 2026-10-14
 > **Status:** `in-progress`
-> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`
+> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`, `claude-session-4cdf50ec`
 > **Autonomy:** `checkpoints`
 
 ## Current Work Item
@@ -42,6 +42,12 @@
 - 2026-10-12 — дизайн фаз 29–31 записано в docs/ (без коду, без коміту)
 
 ---
+
+### Subtask: Стискання блоку мітки на переході до наступного етапу (C_CTX_DEC_30)
+**Contributor:** claude-session-4cdf50ec · **Status:** `in-progress` · **Started:** 2026-10-14
+Запит: «щоб оптимізація відбувалася при переході до наступного етапу, так як ще не відомо, чи поточний етап дійсно завершився»; «починай зміни у концепті, бо на реальних проєктах вже проявляються через це деякі незручності». Відповіді: незручності — «Стискає зарано», «Зайве перезаписування кешу», «Службові повідомлення в кінці ходу після фінального висновку від агента»; тригер — «Перехід агента (Recommended)»; негайно — «Лише через /compact (Recommended)»; закриття інструментом — «Без змін (Recommended)». Доповнення: «Агент може сам автоматично перейти до нового етапу, наприклад, якщо він працює по узгодженому плану… теж бажано на початку нового етапу проводити оптимізацію контексту з попереднього» → §3.2 «Перехід агента без людини». Підстава — аналіз ефективності 7 сесій (`.dev_flow/cache/efficiency/eff2.py`; backlog PL_CTX «Вердикт окупності…»).
+Progress: [x] концепт (C_CTX_DEC_30; §3.2 mechanisms; перехід без людини; субагенти — backlog) · [x] специфікація (SP_CTX_DEC_37 proposed: `TagRegistry.waiting` marked/advised; DetectOptimize без замін і черги, злиття другою міткою; BlockReport `waiting` + WAIT_MOVED; WaitingAdvice замість OptimizeText/PersonAdvice; context_tag open/close і context_edit знімають очікування й ставлять заміни; Flush — хід лише `/compact`, OPTIMIZE_LEGACY, WaitingAdvice у промпті продовження; DeliverReport; states 04_05/04_06; 05_01/05_03) · [x] план (PL_CTX_P37) · [x] design sign-off («Ок. Продовжуй.») · [x] код і тести · [x] рев'ю · [ ] рев'ю · [ ] живі сценарії
+Next: живі сценарії 05_03 фази 37 (з дозволу розробника), коміт. Код і тести готові (862/0), рев'ю — без блокерів, знахідки 1–4 виправлено, 5 (два звіти в одному результаті) лишено за специфікацією.
 
 ### Subtask: Фаза 36 — дані старих сесій
 **Contributor:** claude-session-4118db51 · **Status:** `in-progress` · **Started:** 2026-10-13

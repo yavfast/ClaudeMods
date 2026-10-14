@@ -63,7 +63,7 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT = modText(
-  'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn and want the block optimized, make [context-editor: optimize] the last line of your final answer: an optimization turn follows. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
+  'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn with the block done, make [context-editor: optimize] the last line of your final answer: the block waits, and you compress it when the next stage begins. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
 )
 
 // [SP_CTX_02_27] [SP_CTX_DEC_36] The opener of the skill's guide in the
@@ -72,8 +72,8 @@ export const GUIDE_FRAME = modText(
   `the guide of skill context-editor:${SKILL}, loaded into your context at the start of the session; you need not open the skill.\n\n`,
 )
 
-// [SP_CTX_02_29] [C_CTX_DEC_04] D: the advice of a closed stage and of the
-// optimization turn; it names the reproducible pairs by the listing's `~`
+// [SP_CTX_02_29] [C_CTX_DEC_04] D: the advice of a closed stage, of a block
+// waiting for compression and of the /compact turn; it names the reproducible pairs by the listing's `~`
 // flag (REPRO_FLAG, [SP_CTX_01_12]).
 export const STAGE_ADVICE =
   "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
@@ -87,7 +87,12 @@ export { distinctive, estimate }
 export type RowMark = { anchor: string; hint: number }
 export type Stage = { name: string; after: RowMark | null; openedTurn: number }
 // `name` absent: a block without a stage, closed by the mark ([SP_CTX_DEC_14])
+// or two blocks merged by a second mark ([SP_CTX_DEC_37])
 export type ClosedBlock = { name?: string; after: RowMark | null; end: RowMark | null; turn: number }
+// [SP_CTX_01_10] [SP_CTX_DEC_37] TagRegistry.waiting: the mark closed
+// `lastClosed` and it waits for compression; `advised` once its advice went
+// with the first prompt of the next turn
+export type Waiting = 'marked' | 'advised'
 
 // The registry fields stages live in ([SP_CTX_01_10]).
 export type StageFields = { stage?: Stage; lastClosed?: ClosedBlock; turn: number }
@@ -735,7 +740,7 @@ export function tagCallIO(snap: Snapshot, registry: Omit<TagIO, 'rows' | 'replac
   return {
     ...base,
     replace: () => onQueue(() => queueTagReplacements(base)),
-    report: (b, replaced) => blockReport(snapshotBlockIO(snap, block()), b, replaced),
+    report: (b, replaced, waiting) => blockReport(snapshotBlockIO(snap, block()), b, replaced, waiting),
   }
 }
 
@@ -774,7 +779,7 @@ function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number
 // [SP_CTX_02_29] BlockReport: only for a close by the tool, where no
 // compaction comes between the close and the report, so its indexes hold; a
 // report with the block's rows renews listedKey as a listing does.
-export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Replaced): Promise<string> {
+export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Replaced, waiting = false): Promise<string> {
   const key = await io.key()
   const rows = await io.rows()
   const read = await io.readTags()
@@ -786,7 +791,12 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   const a = startOf(rows, block.after)
   const e = markIndex(rows, block.end)
   const hasRows = e !== 'lost' && block.end !== null && a <= e
-  let head = block.name !== undefined ? `Stage "${block.name}" closed: ` : 'Block (no stage): '
+  // [SP_CTX_DEC_37] the block the mark left waiting, reported once the agent moves on
+  let head = waiting
+    ? `You marked ${blockName(block)} with ${OPTIMIZE_MARK}; it waited for compression until this call: `
+    : block.name !== undefined
+      ? `Stage "${block.name}" closed: `
+      : 'Block (no stage): '
   if (e === 'lost') head += 'its end row is gone; call context_list.'
   else if (!hasRows) head += 'no rows in it.'
   else {
@@ -837,7 +847,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     text += `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
   text += '\n' + telemetryText(t)
   if (hasRows) {
-    text += '\n' + STAGE_ADVICE
+    text += '\n' + (waiting ? WAIT_MOVED + ' ' : '') + STAGE_ADVICE
     io.setListed(key)
   }
   return text
@@ -849,6 +859,9 @@ export function reportFailed(block: ClosedBlock, err: unknown): string {
   return `${what} closed; its report failed: ${errorText(err)}; call context_list`
 }
 
+// [SP_CTX_02_29] [SP_CTX_DEC_37] The advice of the waiting block's report.
+export const WAIT_MOVED = 'You are moving on from it: compress it now unless the next stage still needs its details; it no longer waits.'
+
 export function blockName(block: ClosedBlock): string {
   return block.name !== undefined ? `stage "${block.name}"` : 'the last block (no stage)'
 }
@@ -856,26 +869,23 @@ export function blockName(block: ClosedBlock): string {
 export const LIST_HINT =
   " Call context_list: its header names the block's range (Last block #<a>..#<b>, or Last block from #<a> when its end row is gone); list from its first row (from=<a>) to see those rows ([block ▶ …] .. [block end]) before you edit by index."
 
-// [SP_CTX_02_29] [SP_CTX_DEC_15] The optimization turn's prompt: no indexes,
-// sizes or candidates; the listing shows the block's bounds.
-export function optimizeText(block: ClosedBlock, compacted: boolean, notes = 0): string {
+// [SP_CTX_02_29] [SP_CTX_DEC_15] [SP_CTX_DEC_37] WaitingAdvice: the first
+// prompt after the mark names the waiting block; no indexes, sizes or
+// candidates: the listing shows the block's bounds.
+export function waitingAdvice(block: ClosedBlock, notes = 0): string {
   return (
-    modText(`optimization turn for ${blockName(block)} (you ended your last answer with ${OPTIMIZE_MARK}).`) +
-    (compacted
-      ? ' The batch queued in that turn, with the replacements from your disposable tags, was processed (see the report above); if it changed the conversation, indexes from earlier listings no longer hold.'
-      : '') +
+    modText(`you ended your previous answer with ${OPTIMIZE_MARK}; ${blockName(block)} waits for compression.`) +
+    ' If this prompt moves on to the next stage, compress the block in this turn: edits apply when it ends. If it continues that stage, leave the block as it is; opening the next stage with context_tag reports it again.' +
     LIST_HINT +
     notesHint(notes) +
     '\n' +
-    STAGE_ADVICE +
-    // [SP_CTX_DEC_16] the batch of this turn does not resume unless asked to (queueEdits)
-    '\nYou asked for this while finishing your turn for the person, so the session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if the task should go on, then end your turn. The mark has no effect in this turn.'
+    STAGE_ADVICE
   )
 }
 
-// [SP_CTX_02_42] [C_CTX_DEC_23] The prompt of the optimization turn the
+// [SP_CTX_02_42] [C_CTX_DEC_23] The prompt of the compression turn the
 // person's plain /compact starts: the whole conversation is the block, the
-// advice is STAGE_ADVICE, and the batch stops the session as an optimization
+// advice is STAGE_ADVICE, and the batch stops the session as a compression
 // turn's does ([SP_CTX_DEC_16]). The mod's own text: the host's frame of a
 // plugin's prompt says it starts the turn "in the user's place".
 export function compactTurnText(notes = 0): string {
@@ -894,18 +904,6 @@ export function compactTurnText(notes = 0): string {
 // [SP_CTX_01_12] [SP_CTX_02_42] The toast when the compression turn of the
 // person's /compact ended (not interrupted) with nothing queued.
 export const COMPACT_NOTHING = modText("/compact: the agent compressed nothing; /compact host runs the host's summary.")
-
-// [SP_CTX_02_29] The advice with the person's prompt when no optimization turn ran.
-export function personAdvice(block: ClosedBlock, notes = 0): string {
-  return (
-    modText(`you asked to optimize ${blockName(block)} after your previous answer; the optimization turn did not run, so the advice comes with this prompt.`) +
-    LIST_HINT +
-    notesHint(notes) +
-    '\n' +
-    STAGE_ADVICE +
-    "\nCompress the block when it suits the person's request; edits apply when your turn ends."
-  )
-}
 
 // ---- [SP_CTX_02_27] SessionIntro
 
@@ -939,10 +937,27 @@ export function withIntroduced(read: Read<TagRegistry>): TagRegistry | undefined
   return { ...rest, introduced: true }
 }
 
-// [SP_CTX_02_29] The advice for the person's prompt, from the registry as it
-// is now; none without a readable registry or a block (ADVICE_NO_BLOCK).
+// [SP_CTX_02_29] WaitingAdvice for the first prompt after the mark, from the
+// registry as it is now; none unless a block waits and its advice has not
+// gone yet (WAIT_NO_BLOCK).
 export function adviceFor(read: Read<TagRegistry>): string | undefined {
-  return read.state !== 'unreadable' && read.value.lastClosed ? personAdvice(read.value.lastClosed, read.value.notes.length) : undefined
+  return read.state !== 'unreadable' && read.value.waiting === 'marked' && read.value.lastClosed
+    ? waitingAdvice(read.value.lastClosed, read.value.notes.length)
+    : undefined
+}
+
+// [SP_CTX_02_08] [SP_CTX_02_06] AdviseWaiting: marked → advised once the
+// advice entered, compare-and-set; undefined writes nothing.
+export function adviseWaiting(read: Read<TagRegistry>): TagRegistry | undefined {
+  return read.state !== 'unreadable' && read.value.waiting === 'marked' ? { ...read.value, waiting: 'advised' } : undefined
+}
+
+// [SP_CTX_02_02] [SP_CTX_02_11] The waiting block ends: the registry without
+// `waiting` and the block that waited; undefined when none waits. Pure.
+export function endWaiting<R extends TagRegistry>(reg: R): { registry: R; block: ClosedBlock } | undefined {
+  if (!reg.waiting || !reg.lastClosed) return undefined
+  const { waiting: _w, ...rest } = reg
+  return { registry: rest as R, block: reg.lastClosed }
 }
 
 // ---- [SP_CTX_02_30] DetectOptimize
@@ -958,16 +973,20 @@ export function hasOptimizeMark(answer: string | undefined): boolean {
 // tool in this turn stays the block (its stage opened after it stays open);
 // else the open stage closes at the end of the turn; without one, a block
 // without a stage from the previous block's end (or the head) to the end of
-// the turn. Lost starts become null. Pure.
+// the turn. [SP_CTX_DEC_37] A block still waiting merges with the new one:
+// its start, the new end, its name unless a stage closed now. The block then
+// waits (`marked`). Lost starts become null. Pure.
 export function markClose(reg: TagRegistry, rows: readonly SessionMessage[]): TagRegistry {
   const r = normalizeLost(reg, rows)
-  if (r.lastClosed && r.lastClosed.turn === r.turn) return r
+  if (r.lastClosed && r.lastClosed.turn === r.turn) return { ...r, waiting: 'marked' }
   const end = markBefore(rows, rows.length)
-  if (r.stage) {
-    const { stage, ...rest } = r
-    return { ...rest, lastClosed: { name: stage.name, after: stage.after, end, turn: r.turn } }
-  }
-  return { ...r, lastClosed: { after: r.lastClosed ? r.lastClosed.end : null, end, turn: r.turn } }
+  const waited = r.waiting && r.lastClosed ? r.lastClosed : undefined
+  const { stage, ...rest } = r
+  let block: ClosedBlock
+  if (stage) block = waited ? { after: waited.after, end, turn: r.turn } : { name: stage.name, after: stage.after, end, turn: r.turn }
+  else if (waited) block = { ...(waited.name !== undefined ? { name: waited.name } : {}), after: waited.after, end, turn: r.turn }
+  else block = { after: r.lastClosed ? r.lastClosed.end : null, end, turn: r.turn }
+  return { ...rest, lastClosed: block, waiting: 'marked' }
 }
 
 // What DetectOptimize needs from the host; register.ts binds it to `$`.
@@ -982,8 +1001,6 @@ export type DetectIO = {
   changeTags: Change<TagRegistry>
   // CurrentRows ([SP_CTX_02_18])
   rows: () => Promise<readonly SessionMessage[]>
-  // QueueTagReplacements on the queue chain ([SP_CTX_02_13])
-  replace: () => Promise<unknown>
   status: (text: string) => void
   // [SP_CTX_02_42] what the person must see in every host
   toast: (text: string) => void
@@ -997,13 +1014,14 @@ export type DetectOutcome =
   | 'queue-unreadable'
   | 'handoff'
   | 'registry-unreadable'
-  | 'not-queued'
-  | 'requested'
+  | 'waiting'
 
 // [SP_CTX_02_30] At the end of a turn of the main conversation (completed or
 // aborted), before TagRegistry.turn += 1 and before Flush is planned. The
-// end of the turn after an optimization prompt takes the loop guard down and
-// ignores the mark in it. None of its failures reaches the agent.
+// mark closes the block and leaves it waiting: no optimization turn, nothing
+// queued ([SP_CTX_DEC_37]). The end of the turn after the compression prompt
+// of the person's /compact takes the loop guard down and ignores the mark in
+// it. None of its failures reaches the agent.
 export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer?: string }): Promise<DetectOutcome> {
   const ready = await io.ready()
   let prompted = false
@@ -1044,22 +1062,8 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
     regWhy = errorText(err)
   }
   if (regWhy) return ignored(regWhy), 'registry-unreadable'
-  // MARK_NO_REPLACEMENTS: the mark goes on without them
-  await io.replace().catch(() => undefined)
-  let why: string | undefined
-  try {
-    await io.changeQueue(read => {
-      if (read.state === 'unreadable') why = 'the queue is unreadable'
-      else if (read.value.handoff) why = 'a handoff is pending'
-      else return { ...read.value, optimize: true }
-      return undefined
-    })
-  } catch (err) {
-    why = errorText(err)
-  }
-  // MARK_NOT_QUEUED: the block stays closed
-  if (why) return io.status(modText(`optimization mark: the block is closed, but no optimization turn: ${why}`)), 'not-queued'
-  return 'requested'
+  // [SP_CTX_DEC_37] nothing queued: the block waits for the agent's move to the next stage
+  return 'waiting'
 }
 
 // ---- [SP_CTX_02_11] context_tag: the carrier row of the call

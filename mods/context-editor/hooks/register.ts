@@ -29,7 +29,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, calibrateBeforeApply, contextList, detectOptimize, guideText, introFor, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, contextList, detectOptimize, endWaiting, guideText, introFor, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { modText, REPAIR_MARKER } from './rows'
 import {
@@ -640,6 +640,7 @@ function aliasIO($: EngineInterface, dir: string | undefined): AliasIO {
 // turn.complete hook that calls `flushAfterTurn`. Each step takes the storage
 // of the session current when it runs.
 function flushIO($: EngineInterface): FlushIO {
+  let tagsDir: string | undefined
   return {
     readQueue: async () => {
       const st = await ensureStorage($)
@@ -651,7 +652,14 @@ function flushIO($: EngineInterface): FlushIO {
     },
     readTags: async () => {
       const st = await ensureStorage($)
+      tagsDir = 'dir' in st ? st.dir : undefined
       return 'dir' in st ? stores($, st.dir).tags.read() : unavailable(st)
+    },
+    // [SP_CTX_DEC_37] AdviseWaiting on the registry's chain, in the folder the
+    // advice was read from: a /clear or /resume meanwhile leaves the new
+    // session's block marked
+    advised: async () => {
+      if (tagsDir) await changeOf(stores($, tagsDir).tags)(adviseWaiting)
     },
     // one attempt; a refusal rejects with the host's text
     compact: async args => {
@@ -803,7 +811,6 @@ function detectIO($: EngineInterface, dir: string | undefined, snap: Snapshot = 
     changeQueue: async change => changeOf(s().queue)(change),
     changeTags: async change => changeOf(s().tags)(change),
     rows: snap.rows,
-    replace: async () => s().queue.onChain(() => queueTagReplacements(tagIO($, dir, snap))),
     status: text => $.ui.status(text),
     toast: text => $.ui.toast(text),
     now: () => Date.now(),
@@ -982,7 +989,23 @@ export const register: Register = on => {
       // [SP_CTX_02_10] the API form is read only for a describe
       const found = needsApi(args) ? collectMedia(await snap.api(), rows).found : undefined
       const pins = pinsFrom(await stores($, dir).tags.read(), rows)
-      return contextEdit(queueIO($, dir), rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
+      // [SP_CTX_DEC_37] an accepted edit ends the waiting block (the registry's
+      // chain inside the queue's) and queues its disposable replacements on
+      // the queue's chain this call holds
+      const io: QueueIO = {
+        ...queueIO($, dir),
+        endWaiting: async () => {
+          let name: string | undefined
+          await changeOf(stores($, dir).tags, held)(read => {
+            const ended = read.state === 'unreadable' ? undefined : endWaiting(read.value)
+            if (ended) name = blockName(ended.block)
+            return ended?.registry
+          })
+          return name
+        },
+        replace: () => queueTagReplacements(tagIO($, dir, snap)),
+      }
+      return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out
@@ -1053,8 +1076,8 @@ export const register: Register = on => {
     next.called ? next(e) : { text: `handoff failed: ${next.error.kind}` },
   )
 
-  // [SP_CTX_02_42] The person's plain /compact: the agent compresses in an
-  // optimization turn; `/compact host` runs the host's summary; other args
+  // [SP_CTX_02_42] The person's plain /compact: the agent compresses in a
+  // compression turn; `/compact host` runs the host's summary; other args
   // and every plugin's run (the mod's MARKER, HANDOFF_MARKER) pass unchanged.
   // A run the host raised beneath the mod's own $.command.run skips this hook
   // (re-entry): the handler lets it through, as it does after `next`.
@@ -1328,8 +1351,8 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   // [SP_CTX_02_08] [SP_CTX_02_27] The next prompt of the person (or another
-  // plugin) carries the session intro once, the report and the advice of an
-  // unserved optimization request; each leaves only once that prompt has
+  // plugin) carries the session intro once, the report, the advice of an
+  // unserved /compact request or WaitingAdvice of a marked block; each leaves only once that prompt has
   // entered. The host skips this hook for prompts the mod submits itself.
   on('prompt.submit', async ($, e, next) => {
     // [SP_CTX_02_52] a sweep of another process packed this session's storage
@@ -1345,6 +1368,7 @@ export const register: Register = on => {
         return introFor(reg, reg.state !== 'unreadable' && !reg.value.introduced ? await skillGuide($) : undefined)
       },
       advice: async () => adviceFor(await s.tags.cached()),
+      advised: async () => void (await changeOf(s.tags)(adviseWaiting)),
       inTurn: () => turns.inTurn,
       enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),
       markIntroduced: async () => void (await changeOf(s.tags)(withIntroduced)),

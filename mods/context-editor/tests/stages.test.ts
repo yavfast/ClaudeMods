@@ -30,8 +30,11 @@ import {
   measure,
   MESSAGES_ROW,
   OPTIMIZE_MARK,
-  optimizeText,
-  personAdvice,
+  adviceFor,
+  adviseWaiting,
+  endWaiting,
+  waitingAdvice,
+  WAIT_MOVED,
   relocateMark,
   relocateStageMarks,
   SKILL,
@@ -118,7 +121,7 @@ function harness(start: TagRegistry, list: SessionMessage[] = rows(), over: Part
     readQueue: async () => okRead(log.queue),
     writeQueue: async q => void (log.queue = q),
     replace: async () => (log.replaces++, { queued: 0, freed: '' }),
-    report: (b, replaced) => blockReport(block, b, replaced),
+    report: (b, replaced, waiting) => blockReport(block, b, replaced, waiting),
     ...over,
   }
   return { io, log, block }
@@ -366,6 +369,66 @@ test('no more than one open stage after any request (05_02)', async () => {
   expect(log.tags.lastClosed!.name).toBe('B')
 })
 
+// ---- [SP_CTX_02_11] [SP_CTX_DEC_37] the block that waited for compression
+
+test('context_tag — блок, що чекав: the first open reports it with indexes and WAIT_MOVED before the open; waiting ends; the replacements queued once', async () => {
+  const r = rows()
+  const waited: ClosedBlock = { name: 'A', after: mark(r, 3), end: mark(r, 8), turn: 1 }
+  const { io, log } = harness(reg({ turn: 2, lastClosed: waited, waiting: 'advised' }))
+  const text = await tagCall(io, [{ op: 'open', stage: 'B' }])
+  expect(log.tags.waiting).toBeUndefined()
+  expect(log.tags.lastClosed).toEqual(waited)
+  expect(log.tags.stage!.name).toBe('B')
+  expect(text).toContain(`You marked stage "A" with ${OPTIMIZE_MARK}; it waited for compression until this call: rows #4..#8,`)
+  expect(text).toContain(WAIT_MOVED + ' ' + STAGE_ADVICE)
+  expect(text.indexOf('You marked stage "A"')).toBeLessThan(text.indexOf('Stage "B" opened'))
+  expect(log.replaces).toBe(1)
+  expect(log.listed).toBe('K')
+})
+
+test('context_tag — блок, що чекав, і закриття: a close reports the waited block, then the closed stage; the replacements go with the close', async () => {
+  const r = rows()
+  const waited: ClosedBlock = { name: 'A', after: null, end: mark(r, 3), turn: 1 }
+  const { io, log } = harness(reg({ turn: 2, lastClosed: waited, waiting: 'marked', stage: { name: 'B', after: mark(r, 3), openedTurn: 2 } }), r, {
+    replace: async () => (log.replaces++, { queued: 2, freed: '~9 tokens' }),
+  })
+  const text = await tagCall(io, [{ op: 'close' }])
+  expect(log.tags.waiting).toBeUndefined()
+  expect(log.tags.lastClosed!.name).toBe('B')
+  const waitedPart = text.slice(text.indexOf('You marked'), text.indexOf('Stage "B" closed'))
+  expect(waitedPart).not.toContain('Replacements from your disposable tags queued')
+  expect(text.slice(text.indexOf('Stage "B" closed'))).toContain('Replacements from your disposable tags queued: 2 (~9 tokens freed when this turn ends).')
+  expect(log.replaces).toBe(1)
+})
+
+test('context_tag — очікування не зняте: a rejected close (NO_STAGE), an add or a failed write keep the block waiting', async () => {
+  const waited: ClosedBlock = { name: 'A', after: null, end: null, turn: 1 }
+  const start = reg({ turn: 2, lastClosed: waited, waiting: 'marked' })
+  const rejected = harness(start)
+  const text = await tagCall(rejected.io, [{ op: 'close' }, { op: 'add', kind: 'pin', tool_use_id: 'a' }])
+  expect(text).toContain('NO_STAGE')
+  expect(rejected.log.tags.waiting).toBe('marked')
+  expect(text).not.toContain('You marked')
+  expect(rejected.log.replaces).toBe(0)
+  const failing = harness(start, rows(), {
+    writeTags: async () => {
+      throw new Error('disk full')
+    },
+  })
+  const out = await contextTag(failing.io, { tags: [{ op: 'open', stage: 'B' }] }, undefined, undefined, false, 'tc')
+  expect('code' in out && out.code).toBe('DENIED_REGISTRY_WRITE')
+  expect(failing.log.tags.waiting).toBe('marked')
+  expect(failing.log.replaces).toBe(0)
+})
+
+test('TagRegistry.waiting: marked or advised with lastClosed; another value or none without lastClosed is unreadable', async () => {
+  const block: ClosedBlock = { name: 'A', after: null, end: null, turn: 0 }
+  expect(parseRegistry(JSON.stringify(reg({ lastClosed: block, waiting: 'marked' }))).state).toBe('ok')
+  expect(parseRegistry(JSON.stringify(reg({ lastClosed: block, waiting: 'advised' }))).state).toBe('ok')
+  expect(parseRegistry(JSON.stringify({ ...reg({ lastClosed: block }), waiting: 'yes' })).state).toBe('unreadable')
+  expect(parseRegistry(JSON.stringify({ ...reg(), waiting: 'marked' })).state).toBe('unreadable')
+})
+
 // ---- [SP_CTX_02_29] BlockReport
 
 function blockIO(list: SessionMessage[], tags: TagRegistry, listed: { key?: string } = {}): BlockIO {
@@ -486,27 +549,34 @@ test('context_list — лише телеметрія / порожня розмо
   expect(listRows(r, 0, 4, new Map(), new Map(), new Map(), 'Context: X').split('\n')[1]).toBe('Context: X')
 })
 
-// ---- [SP_CTX_02_29] OptimizeText and PersonAdvice
+// ---- [SP_CTX_02_29] WaitingAdvice
 
-test('OptimizeText — без індексів: the block name, ListHint, STAGE_ADVICE, the advice to stop; the batch sentence only when compacted', async () => {
+test('WaitingAdvice — без індексів: the block name, move on or leave it, ListHint, STAGE_ADVICE; no optimization turn', async () => {
   const a: ClosedBlock = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 7 }, turn: 2 }
-  const plain = optimizeText(a, false)
-  expect(plain).toContain('optimization turn for stage "A"')
-  expect(plain).toContain(LIST_HINT)
-  expect(plain).toContain('Last block #<a>..#<b>')
-  expect(plain).toContain('from=<a>')
-  expect(plain).toContain(STAGE_ADVICE)
-  // [SP_CTX_DEC_16] phase 18: the session stops unless the agent asks to go on
-  expect(plain).toContain('the session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if the task should go on')
-  expect(plain).not.toContain('"resume": false')
-  expect(plain).not.toContain('The batch queued in that turn')
-  expect(/#\d/.test(plain)).toBe(false)
-  const done = optimizeText({ ...a, name: undefined }, true)
-  expect(done).toContain('optimization turn for the last block (no stage)')
-  expect(done).toContain('The batch queued in that turn, with the replacements from your disposable tags, was processed (see the report above)')
-  expect(done).not.toContain('applied')
-  expect(personAdvice(a)).toContain('you asked to optimize stage "A" after your previous answer')
-  expect(personAdvice(a)).toContain(LIST_HINT)
+  const text = waitingAdvice(a)
+  expect(text.startsWith(`context-editor: you ended your previous answer with ${OPTIMIZE_MARK}; stage "A" waits for compression.`)).toBe(true)
+  expect(text).toContain('If this prompt moves on to the next stage, compress the block in this turn: edits apply when it ends.')
+  expect(text).toContain('If it continues that stage, leave the block as it is; opening the next stage with context_tag reports it again.')
+  expect(text).toContain(LIST_HINT)
+  expect(text).toContain(STAGE_ADVICE)
+  expect(text).not.toContain('optimization turn')
+  expect(/#\d/.test(text)).toBe(false)
+  expect(waitingAdvice({ ...a, name: undefined })).toContain('the last block (no stage) waits for compression.')
+})
+
+test('WaitingAdvice — лише при waiting = marked: adviceFor; AdviseWaiting marked → advised; endWaiting', async () => {
+  const block: ClosedBlock = { name: 'A', after: null, end: null, turn: 1 }
+  expect(adviceFor(okRead(reg({ lastClosed: block, waiting: 'marked' })))).toBe(waitingAdvice(block))
+  expect(adviceFor(okRead(reg({ lastClosed: block, waiting: 'advised' })))).toBeUndefined()
+  expect(adviceFor(okRead(reg({ lastClosed: block })))).toBeUndefined()
+  expect(adviceFor(unreadableRead('x'))).toBeUndefined()
+  expect(adviseWaiting(okRead(reg({ lastClosed: block, waiting: 'marked' })))!.waiting).toBe('advised')
+  expect(adviseWaiting(okRead(reg({ lastClosed: block, waiting: 'advised' })))).toBeUndefined()
+  const ended = endWaiting(reg({ lastClosed: block, waiting: 'advised' }))!
+  expect(ended.block).toEqual(block)
+  expect(ended.registry.waiting).toBeUndefined()
+  expect(ended.registry.lastClosed).toEqual(block)
+  expect(endWaiting(reg({ lastClosed: block }))).toBeUndefined()
 })
 
 // ---- [SP_CTX_02_27] SessionIntro
@@ -534,7 +604,7 @@ test('SessionIntro — introFor and withIntroduced with reintroduce', async () =
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
-  expect(INTRO_TEXT.length).toBe(968)
+  expect(INTRO_TEXT.length).toBe(994)
   // [SP_CTX_02_37] the suggestion line in a few words: it only informs (phase 23)
   expect(INTRO_TEXT).toContain('A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work.')
   expect(INTRO_TEXT.includes('Nothing reminds you by size')).toBe(false)
@@ -556,7 +626,7 @@ function longRows(): SessionMessage[] {
 }
 
 function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = okRead({ ...EMPTY_QUEUE }), over: Partial<DetectIO> = {}) {
-  const log = { tags, queue, statuses: [] as string[], toasts: [] as string[], replaces: 0, order: [] as string[] }
+  const log = { tags, queue, statuses: [] as string[], toasts: [] as string[], order: [] as string[] }
   const list = longRows()
   const io: DetectIO = {
     ready: async () => true,
@@ -576,10 +646,6 @@ function detectHarness(tags: Read<TagRegistry>, queue: Read<Queue> = okRead({ ..
       return true
     },
     rows: async () => list,
-    replace: async () => {
-      log.replaces++
-      log.order.push('replace')
-    },
     status: text => void log.statuses.push(text),
     toast: text => void log.toasts.push(text),
     now: () => 5000,
@@ -592,13 +658,29 @@ const answer = `Done.\n\n${OPTIMIZE_MARK}`
 const regOf = (h: { log: { tags: Read<TagRegistry> } }) => (h.log.tags.state === 'unreadable' ? undefined : h.log.tags.value)
 const queueOf = (h: { log: { queue: Read<Queue> } }) => (h.log.queue.state === 'unreadable' ? undefined : h.log.queue.value)
 
-test('DetectOptimize — мітка з відкритим етапом: the stage closes at the end of the turn (#20); optimize written; replacements queued before it', async () => {
+test('DetectOptimize — мітка з відкритим етапом: the stage closes at the end of the turn (#20) and waits; the queue is not written', async () => {
   const h = detectHarness(okRead(reg({ turn: 6, stage: { name: 'S', after: null, openedTurn: 2 } })))
-  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('requested')
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('waiting')
   expect(regOf(h)!.lastClosed).toEqual({ name: 'S', after: null, end: mark(h.list, 20), turn: 6 })
+  expect(regOf(h)!.waiting).toBe('marked')
   expect(regOf(h)!.stage).toBeUndefined()
-  expect(queueOf(h)!.optimize).toBe(true)
-  expect(h.log.order).toEqual(['tags', 'replace', 'optimize'])
+  // мітка не ставить замін і не пише черги ([SP_CTX_DEC_37])
+  expect(queueOf(h)!.optimize).toBe(false)
+  expect(h.log.order).toEqual(['tags'])
+})
+
+test('DetectOptimize — друга мітка зливає блоки: the waiting start, the new end; its name without a stage, unnamed over a stage', async () => {
+  const list = longRows()
+  const waited = { name: 'A', after: mark(list, 4), end: mark(list, 8), turn: 2 }
+  const plain = detectHarness(okRead(reg({ turn: 3, lastClosed: waited, waiting: 'advised' })))
+  expect(await detectOptimize(plain.io, { aborted: false, answer })).toBe('waiting')
+  expect(regOf(plain)!.lastClosed).toEqual({ name: 'A', after: mark(list, 4), end: mark(list, 20), turn: 3 })
+  expect(regOf(plain)!.waiting).toBe('marked')
+  const staged = detectHarness(okRead(reg({ turn: 3, lastClosed: waited, waiting: 'marked', stage: { name: 'B', after: mark(list, 10), openedTurn: 3 } })))
+  await detectOptimize(staged.io, { aborted: false, answer })
+  expect(regOf(staged)!.lastClosed).toEqual({ after: mark(list, 4), end: mark(list, 20), turn: 3 })
+  expect(regOf(staged)!.stage).toBeUndefined()
+  expect(regOf(staged)!.waiting).toBe('marked')
 })
 
 test('DetectOptimize — без етапу / перший блок: an unnamed block from the previous end (#8) or from the head', async () => {
@@ -611,14 +693,15 @@ test('DetectOptimize — без етапу / перший блок: an unnamed b
   expect(regOf(first)!.lastClosed).toEqual({ after: null, end: mark(list, 20), turn: 0 })
 })
 
-test('DetectOptimize — закрито інструментом у цьому ході: lastClosed and the new stage stay; optimize written', async () => {
+test('DetectOptimize — закрито інструментом у цьому ході: lastClosed and the new stage stay; that block waits', async () => {
   const list = longRows()
   const start = reg({ turn: 4, lastClosed: { name: 'A', after: null, end: mark(list, 8), turn: 4 }, stage: { name: 'B', after: mark(list, 8), openedTurn: 4 } })
   const h = detectHarness(okRead(start))
-  await detectOptimize(h.io, { aborted: false, answer })
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('waiting')
   expect(regOf(h)!.lastClosed).toEqual(start.lastClosed)
   expect(regOf(h)!.stage).toEqual(start.stage)
-  expect(queueOf(h)!.optimize).toBe(true)
+  expect(regOf(h)!.waiting).toBe('marked')
+  expect(queueOf(h)!.optimize).toBe(false)
 })
 
 test('DetectOptimize — the mark only as the last line, verbatim', async () => {
@@ -652,7 +735,7 @@ test('DetectOptimize — ігнорується: handoff / unreadable queue / ab
   expect(down.log.statuses).toEqual(['context-editor: optimization mark ignored: storage unavailable'])
 })
 
-test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable registry: no block, no optimize', async () => {
+test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable registry: no block, nothing waits', async () => {
   const unread = detectHarness(unreadableRead('x'))
   expect(await detectOptimize(unread.io, { aborted: false, answer })).toBe('registry-unreadable')
   expect(queueOf(unread)!.optimize).toBe(false)
@@ -664,35 +747,9 @@ test('DetectOptimize — MARK_REGISTRY_UNREADABLE: unreadable or unwritable regi
   })
   expect(await detectOptimize(unwritten.io, { aborted: false, answer })).toBe('registry-unreadable')
   expect(unwritten.log.statuses).toEqual(['context-editor: optimization mark ignored: disk full'])
-  expect(unwritten.log.replaces).toBe(0)
 })
 
-test('DetectOptimize — MARK_NOT_QUEUED / MARK_NO_REPLACEMENTS', async () => {
-  const failing = detectHarness(okRead(reg({ stage: { name: 'S', after: null, openedTurn: 0 } })))
-  failing.io.changeQueue = async change => {
-    if ((await change(failing.log.queue))?.optimize) throw new Error('disk full')
-    return false
-  }
-  expect(await detectOptimize(failing.io, { aborted: false, answer })).toBe('not-queued')
-  expect(regOf(failing)!.lastClosed!.name).toBe('S')
-  expect(queueOf(failing)!.optimize).toBe(false)
-  expect(failing.log.statuses).toEqual(['context-editor: optimization mark: the block is closed, but no optimization turn: disk full'])
-  // a handoff found on the re-read
-  const late = detectHarness(okRead(reg()))
-  late.io.replace = async () => void (late.log.queue = okRead({ ...EMPTY_QUEUE, handoff: HANDOFF }))
-  expect(await detectOptimize(late.io, { aborted: false, answer })).toBe('not-queued')
-  expect(late.log.statuses[0]).toContain('a handoff is pending')
-  const throwing = detectHarness(okRead(reg()), undefined, {
-    replace: async () => {
-      throw new Error('boom')
-    },
-  })
-  expect(await detectOptimize(throwing.io, { aborted: false, answer })).toBe('requested')
-  expect(queueOf(throwing)!.optimize).toBe(true)
-  expect(regOf(throwing)!.lastClosed).toBeDefined()
-})
-
-test('DetectOptimize — запобіжник петлі: after the optimization prompt the mark is ignored; the flag goes down in all three cases', async () => {
+test('DetectOptimize — запобіжник петлі: after the /compact compression prompt the mark is ignored; the flag goes down in all three cases', async () => {
   // the mark itself: in-optimization; no mark, or an aborted turn: none
   for (const [ans, aborted, expected] of [
     [answer, false, 'in-optimization'],

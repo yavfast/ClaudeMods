@@ -12,6 +12,7 @@ import {
   parseQueue,
   personRow,
   personText,
+  COMPACT_ADVICE,
   queueEdits,
   queuedText,
   settledQueue,
@@ -21,7 +22,7 @@ import {
   type QueueIO,
 } from '../hooks/queue'
 import type { Read } from '../hooks/store'
-import { adviceFor, GUIDE_FRAME, guideText, INTRO_TEXT, introFor, personAdvice, STAGE_ADVICE, withIntroduced } from '../hooks/stages'
+import { adviceFor, adviseWaiting, GUIDE_FRAME, guideText, INTRO_TEXT, introFor, STAGE_ADVICE, waitingAdvice, withIntroduced } from '../hooks/stages'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import type { QueuedDelivery } from '../hooks/deliveries'
 import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
@@ -241,6 +242,31 @@ test('contextEdit refuses when the queue can neither be read nor moved, or canno
   expect('deny' in b && b.deny).toContain('disk full')
 })
 
+// [SP_CTX_02_02] [SP_CTX_DEC_37] an accepted edit is the agent's move
+test('context_edit — правка знімає очікування: an accepted edit ends the waiting block and queues its replacements; a call with none accepted or no block waiting leaves it', async () => {
+  const calls: string[] = []
+  const waiting = io(missingRead({ ...EMPTY_QUEUE }), {
+    endWaiting: async () => (calls.push('end'), 'stage "A"'),
+    replace: async () => (calls.push('replace'), { queued: 2, freed: '~40 tokens' }),
+  })
+  const out = await contextEdit(waiting.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  expect('result' in out && out.result).toContain('\nstage "A" no longer waits for compression. Replacements from your disposable tags queued: 2 (~40 tokens freed when this turn ends).')
+  expect(calls).toEqual(['end', 'replace'])
+  calls.length = 0
+  const rejected = await contextEdit(waiting.port, rows, { edits: [{ op: 'drop', tool_use_id: 'zz' }] })
+  expect('result' in rejected && rejected.result).not.toContain('no longer waits')
+  expect(calls).toEqual([])
+  const none = io(missingRead({ ...EMPTY_QUEUE }), { endWaiting: async () => undefined, replace: async () => (calls.push('replace'), { queued: 1, freed: '' }) })
+  const plain = await contextEdit(none.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  expect('result' in plain && plain.result).not.toContain('no longer waits')
+  expect(calls).toEqual([])
+  // a failed registry write: the block keeps waiting, the edit stands
+  const failing = io(missingRead({ ...EMPTY_QUEUE }), { endWaiting: async () => Promise.reject(new Error('disk full')) })
+  const kept = await contextEdit(failing.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  expect('result' in kept && kept.result).toContain('Queued 1 edit(s)')
+  expect('result' in kept && kept.result).not.toContain('no longer waits')
+})
+
 // A host for DeliverReport: the queue and the registry in memory, bound as
 // register.ts binds them (intro, advice and their writes from stages.ts).
 function deliverHarness(queue: Queue, reg: Read<TagRegistry> = missingRead({ ...EMPTY_REGISTRY }), over: Partial<DeliverIO<{ drop?: unknown }>> = {}, guide?: string) {
@@ -249,6 +275,10 @@ function deliverHarness(queue: Queue, reg: Read<TagRegistry> = missingRead({ ...
     readQueue: async () => okRead(log.queue),
     intro: async () => introFor(log.reg, guide),
     advice: async () => adviceFor(log.reg),
+    advised: async () => {
+      const next = adviseWaiting(log.reg)
+      if (next) log.reg = okRead(next)
+    },
     inTurn: () => log.inTurn,
     enter: async context => (log.seen.push(context), {}),
     markIntroduced: async () => {
@@ -263,6 +293,9 @@ function deliverHarness(queue: Queue, reg: Read<TagRegistry> = missingRead({ ...
 
 const introduced = (): Read<TagRegistry> => okRead({ ...EMPTY_REGISTRY, introduced: true })
 const BLOCK_A = { name: 'A', after: null, end: { anchor: 'user|r:a|', hint: 2 }, turn: 1 }
+// [SP_CTX_DEC_37] the mark left block "A" waiting
+const waitingA = (extra: Partial<TagRegistry> = {}): Read<TagRegistry> => okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A, waiting: 'marked', ...extra })
+const waitingOf = (r: Read<TagRegistry>) => (r.state === 'unreadable' ? undefined : r.value.waiting)
 
 test('deliverReport removes the report only once the prompt entered', async () => {
   const q: Queue = { ...EMPTY_QUEUE, report: 'R', reportId: 3 }
@@ -333,40 +366,60 @@ test('SessionIntro — промпт відхилено / реєстр нечит
   expect(unwritten.log.seen).toEqual([[INTRO_TEXT], [INTRO_TEXT]])
 })
 
-test('DeliverReport — порада з промптом людини: PersonAdvice of block "A", no indexes; once entered, optimize is down', async () => {
-  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 4 }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A }))
+test('DeliverReport — порада про блок, що чекає: WaitingAdvice of block "A" after the report, no indexes; once entered, advised', async () => {
+  const h = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 4 }, waitingA())
   await deliverReport(h.io)
   expect(h.log.seen.length).toBe(1)
   const [report, advice] = h.log.seen[0]!
   expect(report).toBe('R')
-  expect(advice).toBe(personAdvice(BLOCK_A))
-  expect(advice).toContain('stage "A"')
-  expect(advice).toContain('Last block #<a>..#<b>')
+  expect(advice).toBe(waitingAdvice(BLOCK_A))
+  expect(advice).toContain('stage "A" waits for compression')
   expect(advice).toContain(STAGE_ADVICE)
   expect(/#\d/.test(advice!)).toBe(false)
-  expect(h.log.queue.optimize).toBe(false)
+  expect(waitingOf(h.log.reg)).toBe('advised')
   expect(h.log.queue.report).toBeUndefined()
+  // порада один раз: the next prompt goes without it
+  await deliverReport(h.io)
+  expect(h.log.seen[1]).toEqual([])
 })
 
-test('DeliverReport — ADVICE_FAILED / без блоку: the prompt goes without advice; once entered, optimize is down', async () => {
-  const failing = deliverHarness({ ...EMPTY_QUEUE, optimize: true, report: 'R', reportId: 4 }, introduced(), {
+test('DeliverReport — /compact важливіший: COMPACT_ADVICE and no WaitingAdvice; the block stays marked', async () => {
+  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true, compact: true }, waitingA())
+  await deliverReport(h.io)
+  expect(h.log.seen).toEqual([[COMPACT_ADVICE]])
+  expect(waitingOf(h.log.reg)).toBe('marked')
+  expect(h.log.queue.optimize).toBe(false)
+})
+
+test('DeliverReport — OPTIMIZE_LEGACY: a mark request of an older version gives no advice and is cleared once entered', async () => {
+  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A }))
+  await deliverReport(h.io)
+  expect(h.log.seen).toEqual([[]])
+  expect(h.log.queue.optimize).toBe(false)
+})
+
+test('DeliverReport — ADVICE_FAILED / нічого не чекає: the prompt goes without advice; a failure keeps the block marked; a dropped prompt too', async () => {
+  const failing = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 4 }, waitingA(), {
     advice: async () => {
       throw new Error('boom')
     },
   })
   await deliverReport(failing.io)
   expect(failing.log.seen).toEqual([['R']])
-  expect(failing.log.queue.optimize).toBe(false)
-  for (const reg of [unreadableRead('x') as Read<TagRegistry>, introduced()]) {
-    const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, reg)
+  expect(waitingOf(failing.log.reg)).toBe('marked')
+  for (const reg of [unreadableRead('x') as Read<TagRegistry>, introduced(), waitingA({ waiting: 'advised' })]) {
+    const h = deliverHarness({ ...EMPTY_QUEUE }, reg)
     await deliverReport(h.io)
     expect(h.log.seen).toEqual([[]])
-    expect(h.log.queue.optimize).toBe(false)
   }
-  // a dropped prompt keeps the request
-  const kept = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, introduced(), { enter: async () => ({ drop: 'no' }) })
+  const kept = deliverHarness({ ...EMPTY_QUEUE }, waitingA(), { enter: async () => ({ drop: 'no' }) })
   await deliverReport(kept.io)
-  expect(kept.log.queue.optimize).toBe(true)
+  expect(waitingOf(kept.log.reg)).toBe('marked')
+  // WAIT_ADVICE_LOST: the advice goes again with the next prompt
+  const lost = deliverHarness({ ...EMPTY_QUEUE }, waitingA(), { advised: async () => Promise.reject(new Error('disk full')) })
+  await deliverReport(lost.io)
+  await deliverReport(lost.io)
+  expect(lost.log.seen).toEqual([[waitingAdvice(BLOCK_A)], [waitingAdvice(BLOCK_A)]])
 })
 
 // [SP_CTX_02_08] audit PL_AUD_CTX_P6, TST-20: a queue DeliverReport cannot read
@@ -382,9 +435,9 @@ test('DeliverReport — черга не читається: a read that throws o
     })
     const out = await deliverReport(h.io)
     expect(out).toEqual({})
-    // neither the report nor the advice of the optimization request: the queue is unknown
-    expect(h.log.seen).toEqual([[]])
-    expect(advised).toBe(0)
+    // no report: the queue is unknown; the advice of a waiting block comes from the registry
+    expect(h.log.seen).toEqual([['advice']])
+    expect(advised).toBe(1)
     expect(settles).toBe(0)
     expect(h.log.queue).toBe(q)
   }
@@ -431,9 +484,9 @@ test('Queue: optimize and optimizePrompted parse as booleans and are kept by eve
 
 test('DeliverReport — the advice with the person\'s prompt carries the note count (NotesHint)', async () => {
   const notes = [{ id: 'n1', target: { tool_use_id: 'a' }, text: 't', createdTurn: 0 }]
-  const h = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A, notes, nextNote: 2 }))
+  const h = deliverHarness({ ...EMPTY_QUEUE }, waitingA({ notes, nextNote: 2 }))
   await deliverReport(h.io)
-  expect(h.log.seen[0]![0]).toBe(personAdvice(BLOCK_A, 1))
+  expect(h.log.seen[0]![0]).toBe(waitingAdvice(BLOCK_A, 1))
   expect(h.log.seen[0]![0]).toContain('You have 1 note(s)')
 })
 
@@ -567,7 +620,7 @@ test('PersonWarnings — доставка від людини: a collapse over i
 
 // ---- [SP_CTX_02_08] [SP_CTX_02_37] the turn channel's suggestion with the person's prompt (phase 23)
 
-test('DeliverReport — пропозиція: between turns the suggestion comes last in the hidden context; in a turn or with an optimization request it is not asked; a failure drops only it', async () => {
+test('DeliverReport — пропозиція: between turns the suggestion comes last in the hidden context; in a turn, with an advice or a /compact request it is not asked; a failure drops only it', async () => {
   const asked: string[] = []
   const suggestion = async () => (asked.push('s'), '[context-editor: suggestion] before you go on: …')
   const between = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3 }, introduced(), { suggestion })
@@ -577,9 +630,13 @@ test('DeliverReport — пропозиція: between turns the suggestion comes
   inTurn.log.inTurn = true
   await deliverReport(inTurn.io)
   expect(inTurn.log.seen).toEqual([[]])
-  const optimize = deliverHarness({ ...EMPTY_QUEUE, optimize: true }, okRead({ ...EMPTY_REGISTRY, introduced: true, lastClosed: BLOCK_A }), { suggestion })
-  await deliverReport(optimize.io)
-  expect(optimize.log.seen[0]!.some(c => c.startsWith('[context-editor: suggestion]'))).toBe(false)
+  // [SP_CTX_DEC_37] the WaitingAdvice already says what to compress
+  const waiting = deliverHarness({ ...EMPTY_QUEUE }, waitingA(), { suggestion })
+  await deliverReport(waiting.io)
+  expect(waiting.log.seen[0]!.some(c => c.startsWith('[context-editor: suggestion]'))).toBe(false)
+  const compact = deliverHarness({ ...EMPTY_QUEUE, optimize: true, compact: true }, introduced(), { suggestion })
+  await deliverReport(compact.io)
+  expect(compact.log.seen[0]!.some(c => c.startsWith('[context-editor: suggestion]'))).toBe(false)
   expect(asked).toEqual(['s'])
   const failing = deliverHarness({ ...EMPTY_QUEUE }, introduced(), { suggestion: async () => Promise.reject(new Error('x')) })
   await deliverReport(failing.io)

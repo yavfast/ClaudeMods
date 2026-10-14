@@ -7,7 +7,7 @@ import { MARKER } from './compaction'
 import { DEFAULT_RESUME, noteOnce, resumeText, type Queue } from './queue'
 import { errorText, modText } from './rows'
 import type { Read, Update } from './store'
-import { compactTurnText, optimizeText } from './stages'
+import { adviceFor, compactTurnText } from './stages'
 import type { TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
 
@@ -30,8 +30,12 @@ export type FlushIO = {
   // nothing. True once written; false for an unreadable queue, no storage or
   // no change. A failed write rejects.
   updateQueue: Update<Queue>
-  // the tag registry: Optimize reads only the block's name from it
+  // the tag registry: the compression turn reads the number of notes, the
+  // resume prompt the waiting block ([SP_CTX_DEC_37])
   readTags: () => Promise<Read<TagRegistry>>
+  // [SP_CTX_DEC_37] on the registry chain: waiting marked → advised
+  // (AdviseWaiting); absent: none
+  advised?: () => Promise<unknown>
   // runs the built-in /compact with `args`, once; rejects with the host's text
   compact: (args: string) => Promise<void>
   // [SP_CTX_02_34] CalibrateBeforeApply in the current session's storage,
@@ -80,14 +84,14 @@ export function isPlanned(state: FlushState, now: number): boolean {
 }
 
 // [SP_CTX_02_06] Errors: QUEUE_UNREADABLE, PERSON_MOVED, HOST_REFUSED; the
-// rest are outcomes of the command. `no-command`: only the optimization
-// request, nothing to apply.
+// rest are outcomes of the command. `no-command`: only the request of the
+// person's /compact, nothing to apply.
 export type FlushOutcome = 'nothing-queued' | 'handoff-pending' | 'queue-unreadable' | 'person-moved' | 'host-refused' | 'compacted' | 'no-command' | 'session-changed'
 // [SP_CTX_02_06] Errors: PERSON_ACTIVE, RESUME_FAILED.
 export type ResumeOutcome = 'none' | 'submitted' | 'person-active' | 'resume-failed'
-// [SP_CTX_02_06] Errors: OPTIMIZE_PERSON, OPTIMIZE_NO_BLOCK,
-// OPTIMIZE_BUILD_FAILED, OPTIMIZE_FAILED; `submitted`: the optimization turn's prompt entered.
-export type OptimizeOutcome = 'person' | 'no-block' | 'build-failed' | 'submitted' | 'failed'
+// [SP_CTX_02_06] Errors: OPTIMIZE_PERSON, OPTIMIZE_BUILD_FAILED,
+// OPTIMIZE_FAILED; `submitted`: the compression turn's prompt entered.
+export type OptimizeOutcome = 'person' | 'build-failed' | 'submitted' | 'failed'
 
 export type FlushResult = { outcome: FlushOutcome; resume: ResumeOutcome; optimize?: OptimizeOutcome }
 
@@ -98,14 +102,26 @@ export async function enteredOrThrow(entered: Promise<{ drop?: unknown }>): Prom
   if (out.drop !== undefined) throw new Error(String(out.drop))
 }
 
+// [SP_CTX_02_06] Edits, or the request of the person's /compact; a legacy
+// mark's request (`optimize` without `compact`) is no work (OPTIMIZE_LEGACY).
 function hasWork(read: Read<Queue>): boolean {
-  return read.state !== 'unreadable' && (read.value.edits.length > 0 || read.value.optimize) && !read.value.handoff
+  return read.state !== 'unreadable' && (read.value.edits.length > 0 || compactAsked(read.value)) && !read.value.handoff
+}
+
+function compactAsked(q: Queue): boolean {
+  return q.optimize && q.compact
+}
+
+// [SP_CTX_02_06] OPTIMIZE_LEGACY: a mark's request from a version before
+// 2026-10-14 ends without a turn or an advice ([SP_CTX_DEC_37]).
+export function dropLegacy(q: Queue): Queue | undefined {
+  return q.optimize && !q.compact ? { ...q, optimize: false } : undefined
 }
 
 // [SP_CTX_04_06] requested → prompted: one compare-and-set write, only while
 // `optimize` is still true. The other way when the prompt was refused.
 // [SP_CTX_DEC_16] A batch still queued (its compaction was abandoned) loses
-// its continuation: the agent's choice in the optimization turn decides it.
+// its continuation: the agent's choice in the compression turn decides it.
 export function swapOptimize(q: Queue): Queue | undefined {
   if (!q.optimize) return undefined
   const carried = q.edits.length > 0 ? { resume: false, resumeSet: false } : {}
@@ -142,8 +158,8 @@ export type TurnEndIO = {
 // [SP_CTX_02] AfterTurn: in this order, one after the other, DetectOptimize,
 // the registry's turn count (the mark compares with the count not yet
 // raised; an aborted turn does not count), the repair's timer after a
-// switch in the process ([SP_CTX_02_46]) and Flush (once the mark's
-// replacements and request are queued); the handoff besides. The deferred
+// switch in the process ([SP_CTX_02_46]) and Flush (once the mark's block
+// waits, so its resume prompt carries WaitingAdvice); the handoff besides. The deferred
 // actions these plan come from the turn.complete hook, an origin the host
 // queues commands from.
 export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: unknown }): Promise<void> {
@@ -171,8 +187,8 @@ async function step<T>(run: () => Promise<T>): Promise<T | undefined> {
 }
 
 // [SP_CTX_02_06] ON turn completed (main loop, not aborted), after
-// DetectOptimize: plan one Flush when the queue holds edits or an
-// optimization request, and no handoff. True when a Flush was planned.
+// DetectOptimize: plan one Flush when the queue holds edits or the
+// request of the person's /compact, and no handoff. True when a Flush was planned.
 export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: boolean): Promise<boolean> {
   if (aborted || isPlanned(state, io.now())) return false
   const read = await io.readQueue()
@@ -222,8 +238,8 @@ function schedule(io: FlushIO, state: FlushState): void {
 
 // [SP_CTX_02_06] One Flush, planned when the turn count was `turns0`. One
 // attempt at the command: a refusal is final and waits for the next
-// completed turn. With an optimization request, the optimization turn's
-// prompt takes the place of the resume prompt. `scheduled` is down on every
+// completed turn. With the request of the person's /compact, the
+// compression turn's prompt takes the place of the resume prompt. `scheduled` is down on every
 // way out.
 export async function flush(io: FlushIO, state: FlushState, turns0: number): Promise<FlushResult> {
   let again = false
@@ -246,6 +262,11 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       await io.updateQueue(({ compactEndedAt, ...q }) => (compactEndedAt !== undefined ? q : undefined)).catch(() => undefined)
     // the edits of a waiting handoff belong to it (RunHandoff applies them)
     if (read.state === 'unreadable') return { outcome: 'queue-unreadable', resume: 'none' }
+    // OPTIMIZE_LEGACY: then as without a request
+    if (dropLegacy(read.value)) {
+      await io.updateQueue(dropLegacy).catch(() => undefined)
+      read.value = { ...read.value, optimize: false }
+    }
     if (!read.value.edits.length && !read.value.optimize) return { outcome: 'nothing-queued', resume: 'none' }
     if (read.value.handoff) return { outcome: 'handoff-pending', resume: 'none' }
     // [SP_CTX_02_34] the report and the person's line take this
@@ -255,7 +276,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     // PERSON_MOVED: a turn started since planning; no command queued behind it.
     // A turn that runs plans Flush when it ends; one that already ended
     // normally gives no new planning, so plan again now; after an interrupted
-    // one the queue waits for the next completed turn (an optimization
+    // one the queue waits for the next completed turn (a /compact
     // request stays for DeliverReport).
     if (movedSince(io.turns, turns0)) {
       again = !io.turns.inTurn && !io.turns.lastTurnAborted
@@ -270,7 +291,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
         // the host queues it until the session is idle; it returns once the handler answered
         await io.compact(MARKER)
       } catch (err) {
-        // the optimization request stays: its advice goes with the person's prompt
+        // the /compact request stays: its advice goes with the person's prompt
         const refused = modText(`compaction refused: ${errorText(err)}; queued edits wait for the next turn`)
         io.status(refused)
         if (read.value.compact) io.toast(refused)
@@ -285,7 +306,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       if (compacted) logApplied(io, q!.reportId!)
     }
     if (!q) return { outcome, resume: 'none' }
-    if (q.optimize) {
+    if (compactAsked(q)) {
       const opt = await optimize(io, state, q, turns0, compacted)
       return { outcome, resume: opt.resume, optimize: opt.optimize }
     }
@@ -349,15 +370,25 @@ async function resume(io: FlushIO, state: FlushState, q: Queue, turns0: number):
   // host skips the mod's prompt.submit hooks for a prompt the mod submits;
   // [SP_CTX_DEC_17] the agent's resume prompt goes under its author's frame
   const text = q.report
+  // [SP_CTX_DEC_37] the prompt passes no hook of the mod: WaitingAdvice rides in it; a failed build goes without
+  let wait: string | undefined
+  try {
+    wait = adviceFor(await io.readTags())
+  } catch {
+    wait = undefined
+  }
   try {
     // [SP_CTX_01_05] CommandNote once per delivered message
-    await io.submit(`${noteOnce(text)}\n\n${resumeText(q.reportPrompt || DEFAULT_RESUME)}`)
+    await io.submit(`${noteOnce(text)}\n\n${resumeText(q.reportPrompt || DEFAULT_RESUME)}${wait ? `\n\n${wait}` : ''}`)
   } catch {
     // RESUME_FAILED: the report stays queued for the person's next prompt
     io.status(modText('could not resume the session; send any prompt to continue'))
     return 'resume-failed'
   }
   state.lastSubmittedReportId = q.reportId
+  // WAIT_ADVICE_LOST: the advice goes again with the next prompt; set before
+  // the report's removal, so a prompt meanwhile does not repeat it
+  if (wait) await io.advised?.().catch(() => undefined)
   // DELIVERY_FAILED: the report stays and goes with the next prompt
   await io.removeDelivered(text).catch(() => undefined)
   return 'submitted'
@@ -369,9 +400,10 @@ function personFirst(state: FlushState, q: Queue): void {
   if (q.report && q.reportId !== undefined) state.lastSubmittedReportId = q.reportId
 }
 
-// [SP_CTX_02_06] Optimize: one prompt of the optimization turn in place of
-// the resume prompt of this end of turn. It reads only the block's name from
-// the registry, no rows of the conversation ([SP_CTX_DEC_15]).
+// [SP_CTX_02_06] Optimize: one prompt of the compression turn of the
+// person's /compact in place of the resume prompt of this end of turn. It
+// reads only the number of notes from the registry, no rows of the
+// conversation ([SP_CTX_DEC_15]); what the person must see goes as a toast.
 async function optimize(
   io: FlushIO,
   state: FlushState,
@@ -382,31 +414,20 @@ async function optimize(
   // OPTIMIZE_PERSON: the person's turn began before the prompt
   if (movedSince(io.turns, turns0)) return personFirst(state, q), { optimize: 'person', resume: 'none' }
   const reg = await io.readTags().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: errorText(err) }))
-  // [SP_CTX_02_42] the person's /compact: the whole conversation, no block needed
-  const compact = q.compact
-  // what the person must see: a toast for the person's /compact, else the status line
-  const say = (text: string) => (compact ? io.toast(text) : io.status(text))
-  const block = reg.state === 'unreadable' ? undefined : reg.value.lastClosed
-  if (!compact && !block) {
-    // OPTIMIZE_NO_BLOCK: the request ends; the batch resumes as without the mark
-    await io.updateQueue(dropOptimize).catch(() => undefined)
-    io.status(modText(`optimization turn skipped: ${reg.state === 'unreadable' ? 'the tag registry is unreadable' : 'no closed block'}`))
-    return { optimize: 'no-block', resume: await resume(io, state, q, turns0) }
-  }
   let report: string | undefined
   let advice: string
   try {
     report = q.report && q.reportId !== state.lastSubmittedReportId ? q.report : undefined
-    const notes = reg.state === 'unreadable' ? 0 : reg.value.notes.length
-    advice = compact || !block ? compactTurnText(notes) : optimizeText(block, compacted, notes)
+    // the compression turn covers the whole conversation: no WaitingAdvice
+    advice = compactTurnText(reg.state === 'unreadable' ? 0 : reg.value.notes.length)
   } catch (err) {
     // OPTIMIZE_BUILD_FAILED
     if (compacted && q.reportResume) {
       await io.updateQueue(dropOptimize).catch(() => undefined)
-      say(modText(`optimization turn not started: ${errorText(err)}`))
+      io.toast(modText(`compression turn not started: ${errorText(err)}`))
       return { optimize: 'build-failed', resume: await resume(io, state, q, turns0) }
     }
-    say(modText(`optimization turn not started: ${errorText(err)}; the advice goes with your next prompt`))
+    io.toast(modText(`compression turn not started: ${errorText(err)}; the advice goes with your next prompt`))
     return { optimize: 'build-failed', resume: 'none' }
   }
   // the check again right before the swap: the person may have begun a turn during the command
@@ -415,12 +436,12 @@ async function optimize(
   const swapped = await io.updateQueue(swapOptimize).catch(() => false)
   if (!swapped) return personFirst(state, q), { optimize: 'person', resume: 'none' }
   try {
-    // the queue's own resume text is not sent: the optimization turn decides with its own context_edit
+    // the queue's own resume text is not sent: the compression turn decides with its own context_edit
     await io.submit(report ? `${noteOnce(report)}\n\n${advice}` : advice)
   } catch {
     // OPTIMIZE_FAILED: the swap undone in one write; the report stays
     await io.updateQueue(unswapOptimize).catch(() => undefined)
-    say(modText(`could not start the ${compact ? 'compression' : 'optimization'} turn; the advice goes with your next prompt`))
+    io.toast(modText('could not start the compression turn; the advice goes with your next prompt'))
     return { optimize: 'failed', resume: 'none' }
   }
   if (report && q.reportId !== undefined) {

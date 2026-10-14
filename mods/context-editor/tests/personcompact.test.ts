@@ -97,7 +97,6 @@ function detectIO(log: Log): DetectIO {
     },
     changeTags: async () => false,
     rows: async () => [],
-    replace: async () => undefined,
     status: text => void log.statuses.push(text),
     toast: text => void log.toasts.push(text),
     now: () => log.now,

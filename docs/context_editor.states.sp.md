@@ -30,8 +30,8 @@
 | reported | reported + pending | context_edit до доставки звіту | звіт чекає, нові правки в пакеті |
 | any | unreadable | файл черги пошкоджено | Flush і обробник чекають; мітка оптимізації ігнорується (MARK_QUEUE_UNREADABLE) |
 | unreadable | pending | context_edit переносить файл (QUEUE_QUARANTINED) | нова черга з поставленими правками |
-| reported | empty | наступний промпт (людини, продовження або ходу оптимізації) отримав звіт | поля звіту видалено |
-| pending | applying | хід з міткою оптимізації завершено, черга непорожня; хід оптимізації запускається після застосування ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)) | звіт іде в промпті ходу оптимізації замість промпту продовження |
+| reported | empty | наступний промпт (людини, продовження або ходу стискання) отримав звіт | поля звіту видалено |
+| pending | applying | є запит `/compact` людини, черга непорожня; хід стискання запускається після застосування ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)) | звіт іде в промпті ходу стискання замість промпту продовження; мітка оптимізації цього рядка з 2026-10-14 не дає ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)) |
 
 ### 04_02. Edit Lifecycle  {#SP_CTX_04_02}
 
@@ -43,7 +43,7 @@
 
     [absent] --context_tag add / AutoTag / R4 in the call hook--> [tagged] --ttl not passed--> [tagged, inactive review]
     [tagged review] --R4 (any reason) / R5 (big, search)--> [tagged review, new reason]
-    [tagged disposable] --stage closed by the tool / end of the optimization turn--> [queued as edit] --applied or failed--> [absent]
+    [tagged disposable] --stage closed by the tool / the waiting block ends (open, close, or an accepted context_edit)--> [queued as edit] --applied or failed--> [absent]
     [tagged state] --rewrite of its row applied--> [tagged state on the rewritten row]
     [tagged state] --context_tag add state elsewhere--> [absent] (the new row holds the slot)
     [tagged] --context_tag remove / target edited / target gone--> [absent]
@@ -51,7 +51,7 @@
 | From | To | Condition | Side effects |
 |------|----|-----------|-------------|
 | absent | tagged | агент або правило поставили тег | запис у реєстр |
-| tagged | queued as edit | `disposable`: агент закрив етап інструментом або завершився хід оптимізації (QueueTagReplacements, [SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13)); діапазон — як `collapse` | правка в черзі; удруге та сама заміна не ставиться |
+| tagged | queued as edit | `disposable`: агент закрив етап інструментом або блок, позначений міткою, перестав чекати — `open`/`close` чи `context_edit` з прийнятою правкою ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)) (QueueTagReplacements, [SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13)); діапазон — як `collapse` | правка в черзі; удруге та сама заміна не ставиться |
 | queued as edit | absent | правку застосовано або відхилено при застосуванні | тег видалено (RebindTags) |
 | tagged | absent | тег знято, ціль змінено іншою правкою (для діапазону — будь-який його рядок) або ціль зникла | тег видалено |
 | tagged review | tagged review | R4 на будь-якому `review`, R5 на `review` з причиною `big` або `search` | нова причина, без терміну |
@@ -96,8 +96,11 @@ running ──after /clear, document way or AfterClear with the document: the Ha
 ```
 (no stage) ──context_tag open──▶ open(after) ──context_tag close──▶ (no stage), lastClosed = that block
 open ──context_tag open (another)──▶ open(new after); lastClosed = the previous block
-open ──optimization mark, no tool close in this turn──▶ (no stage), lastClosed = the block up to the end of the turn
-(no stage) ──optimization mark, no tool close in this turn──▶ (no stage), lastClosed = unnamed block after the previous lastClosed.end (or from the head)
+open ──optimization mark, no tool close in this turn──▶ (no stage), lastClosed = the block up to the end of the turn, waiting = marked
+(no stage) ──optimization mark, no tool close in this turn──▶ (no stage), lastClosed = unnamed block after the previous lastClosed.end (or from the head), waiting = marked
+(any) ──optimization mark while waiting──▶ lastClosed = merged block (after of the waiting block, end of this turn), waiting = marked
+waiting = marked ──the first prompt of the next turn carries WaitingAdvice (DeliverReport or Flush's resume prompt)──▶ waiting = advised
+waiting ──context_tag open/close accepted, or context_edit with an accepted edit──▶ no waiting; the block reported (open/close) and disposable replacements queued
 open / lastClosed ──applying edits or seeding: the mark row replaced by an edit (summarize, collapse, rewrite, describe)──▶ the mark moves to the last row that edit produced
 open / lastClosed ──applying edits or seeding: the mark row removed without replacement (drop, own calls, empty row) or changed by the seed (CarryNote)──▶ the mark moves to the nearest preceding unchanged surviving row, or null
 open / lastClosed ──host compaction (/compact, auto): the mark row gone──▶ lost: open stage from the head, lastClosed.end unknown (never shown as empty); a lost after becomes null at the next context_tag or DetectOptimize write
@@ -109,47 +112,49 @@ open / lastClosed ──handoff (transcript)──▶ copied into the new sessio
 | no stage | open | `open` прийнято, реєстр записано | `stage = { name, after, openedTurn }`; перегляд показує `[stage ▶ name]` |
 | open | no stage | `close` прийнято, реєстр записано | `lastClosed` — блок етапу; QueueTagReplacements; звіт блоку в результаті ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) |
 | open | open | `open` при відкритому етапі | спершу закриття, як у рядку вище (звіт у результаті), потім новий етап |
-| open | no stage | мітка оптимізації, у цьому ході етап інструментом не закривали | `lastClosed` до кінця ходу; `Queue.optimize` ([SP_CTX_02_30](./context_editor.stages.sp.md#SP_CTX_02_30)) |
-| no stage | no stage | мітка без відкритого етапу і без закриття в цьому ході | `lastClosed` — блок без етапу від попереднього `lastClosed.end` ([SP_CTX_DEC_14](./context_editor.sp.md#SP_CTX_DEC_14)) |
-| open, no stage | the same | мітка після закриття інструментом у тому самому ході | `lastClosed` не змінюється; відкритий після закриття етап лишається |
+| open | no stage | мітка оптимізації, у цьому ході етап інструментом не закривали | `lastClosed` до кінця ходу; `waiting = marked`; черга без змін ([SP_CTX_02_30](./context_editor.stages.sp.md#SP_CTX_02_30), [SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)) |
+| no stage | no stage | мітка без відкритого етапу і без закриття в цьому ході | `lastClosed` — блок без етапу від попереднього `lastClosed.end` ([SP_CTX_DEC_14](./context_editor.sp.md#SP_CTX_DEC_14)); `waiting = marked` |
+| open, no stage | the same | мітка після закриття інструментом у тому самому ході | `lastClosed` не змінюється; відкритий після закриття етап лишається; `waiting = marked` |
+| waiting | waiting (merged) | мітка, поки блок чекає, без закриття в цьому ході | `lastClosed.after` — від блоку, що чекав, `end` — кінець ходу; назва — блоку, що чекав, якщо етапу не закрито, інакше без назви; `waiting = marked` |
+| waiting `marked` | waiting `advised` | промпт з WaitingAdvice увійшов (DeliverReport; промпт продовження Flush) | порівняння-і-запис на ланцюжку реєстру; збій — порада ще раз |
+| waiting | no waiting | перший прийнятий `open` чи `close` у context_tag | звіт блоку з індексами і WAIT_MOVED у результаті; QueueTagReplacements; далі сам запит ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)) |
+| waiting | no waiting | `context_edit` з прийнятою правкою агента | QueueTagReplacements тим самим пакетом; рядок у результаті ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) |
+| waiting | no waiting | `lastClosed` знято (чужа компактизація, що прибрала межі; передача без реєстру) | порада не йде |
 | open, no stage | the same, marks moved | застосування правок, засів | RelocateMark ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): рядок межі замінено правкою — межа на останньому створеному нею рядку; прибрано без заміни або змінено засівом — на найближчому попередньому незміненому рядку |
 | open, no stage | the same, marks lost | вбудована компактизація хоста, межа вийшла за ROW_WINDOW | перегляд і телеметрія кажуть, що етап діє від голови або кінець блоку невідомий |
 | no stage | no stage | `close` без відкритого етапу | NO_STAGE; реєстр без змін |
 
 ### 04_06. Optimization Request Lifecycle  {#SP_CTX_04_06}
 
+З 2026-10-14 ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)) запит оптимізації (`Queue.optimize`) буває лише запитом ходу стискання `/compact` людини ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)); мітка оптимізації черги не змінює — її стан описує `waiting` у [SP_CTX_04_05](#SP_CTX_04_05).
+
 ```
-(none) ──last line of the answer is the mark; optimizePrompted false (DetectOptimize)──▶ requested (optimize = true); block closed; disposable replacements queued with the turn's edits
-requested ──Flush: queue applied if non-empty; no turn started; compare-and-set swap──▶ prompted (optimizePrompted = true), the optimization prompt is sent instead of the resume prompt
+(none) ──the person's /compact with empty args, no handoff, not busy (RequestCompact)──▶ requested (optimize = true, compact = true); Flush planned unless planned already
+requested ──the hook abandoned, or the host refused Flush's timer──▶ as read before the request
+requested ──Flush: queue applied if non-empty; no turn started; compare-and-set swap──▶ prompted (optimizePrompted = true, compact kept); the one prompt is the report (if any) and CompactTurnText
 requested ──a turn started before the swap, or DeliverReport already cleared optimize (OPTIMIZE_PERSON)──▶ requested / (none); nothing sent
-requested ──compaction refused (HOST_REFUSED) / turn aborted after planning (PERSON_MOVED) / OptimizeText threw and the batch asked for no continuation (OPTIMIZE_BUILD_FAILED) / module reloaded before Flush──▶ requested → advice with the next person's prompt
-requested ──registry unreadable or no lastClosed (OPTIMIZE_NO_BLOCK), or OptimizeText threw and the batch asked for continuation (OPTIMIZE_BUILD_FAILED)──▶ (none); ordinary resume of that batch
-requested ──a person's prompt passes the hook──▶ (none); report, block name and advice ride on that prompt
-prompted ──optimization prompt refused (OPTIMIZE_FAILED)──▶ requested (swap undone) → advice with the next person's prompt
-prompted ──the next main turn (the optimization turn) ends, completed or aborted──▶ (none); a mark in its answer is ignored; its batch applies with the agent's own settings (resume defaults to false in it, SP_CTX_DEC_16)
+requested ──compaction refused (HOST_REFUSED) / turn aborted after planning (PERSON_MOVED) / CompactTurnText threw and the batch asked for no continuation (OPTIMIZE_BUILD_FAILED) / module reloaded before Flush──▶ requested → COMPACT_ADVICE with the next person's prompt
+requested ──CompactTurnText threw and the batch asked for continuation (OPTIMIZE_BUILD_FAILED)──▶ (none); ordinary resume of that batch
+requested ──a person's prompt passes the hook──▶ (none); report and COMPACT_ADVICE ride on that prompt
+prompted ──the compression prompt refused (OPTIMIZE_FAILED)──▶ requested (swap undone) → COMPACT_ADVICE with the next person's prompt
+prompted ──the next main turn (the compression turn) ends, completed or aborted (DetectOptimize)──▶ (none), compact = false; a mark in its answer is ignored; nothing queued and not aborted → toast COMPACT_NOTHING; its batch applies with the agent's own settings (resume defaults to false in it, SP_CTX_DEC_16)
 prompted ──a person's prompt passes the hook between turns──▶ (none); the person took over
-(none) | requested ──the person's /compact with empty args, no handoff, not busy (RequestCompact, SP_CTX_02_42)──▶ requested with compact = true; Flush planned unless planned already
-requested (compact) ──the hook abandoned, or the host refused Flush's timer──▶ as read before the request
-requested (compact) ──Flush: queue applied if non-empty; no turn started; swap (no closed block needed)──▶ prompted (compact kept); the one prompt is CompactTurnText
-prompted (compact) ──the compression turn ends (DetectOptimize)──▶ (none), compact = false; nothing queued and not aborted → toast COMPACT_NOTHING
+legacy (optimize without compact, a file of an earlier version) ──Flush or DeliverReport──▶ (none), nothing sent (OPTIMIZE_LEGACY)
 ```
 
 | From | To | Condition | Side effects |
 |------|----|-----------|-------------|
-| none | requested | мітка — останній рядок фінального тексту ходу основної розмови; `optimizePrompted = false`; немає `handoff`; черга і реєстр читаються | блок закрито в реєстрі; заміни з тегів у черзі разом із правками ходу; `optimize = true` |
-| none | none | реєстр записано, а черга — ні (MARK_NOT_QUEUED) | блок закрито, запиту немає; рядок стану |
-| requested | prompted | Flush: хід людини не почався до заміни; порівняння-і-запис застав `optimize = true` | `optimize = false`, `optimizePrompted = true` одним записом (пакет, що лишився в черзі, — також `resume = false`, `resumeSet = false`); далі один промпт зі звітом застосування і OptimizeText замість промпту продовження |
-| requested | requested | хід людини почався до заміни (OPTIMIZE_PERSON), команду відхилено (HOST_REFUSED), хід перервано після планування (PERSON_MOVED), OptimizeText кинув виняток, а пакет не просив продовження (OPTIMIZE_BUILD_FAILED), модуль перезавантажено | нічого не надіслано; порада — з наступним промптом людини |
-| requested | none | OPTIMIZE_NO_BLOCK; OPTIMIZE_BUILD_FAILED, коли пакет просив продовження (`compacted AND reportResume`) | `optimize = false`; звичайне продовження застосування (Resume) з `reportPrompt` |
+| none, requested | requested | `/compact` людини без аргументів: немає `handoff`, не зайнято (ні ходу стискання, ні запиту з запланованим Flush), хук не покинуто | `optimize = true`, `optimizePrompted = false`, `compact = true` одним записом; RequestFlush (другого таймера немає, якщо Flush уже заплановано) |
+| requested | як до запиту | хук покинуто після запису або хост відхилив таймер Flush (COMPACT_REFUSED) | `optimize`, `optimizePrompted`, `compact` як прочитано; спливне повідомлення при відмові таймера |
+| requested | prompted | Flush: хід людини не почався до заміни; порівняння-і-запис застав `optimize = true` | `optimize = false`, `optimizePrompted = true` одним записом (пакет, що лишився в черзі, — також `resume = false`, `resumeSet = false`); далі один промпт зі звітом застосування і CompactTurnText; збої — спливним повідомленням |
+| requested | requested | хід людини почався до заміни (OPTIMIZE_PERSON), команду відхилено (HOST_REFUSED), хід перервано після планування (PERSON_MOVED), CompactTurnText кинув виняток, а пакет не просив продовження (OPTIMIZE_BUILD_FAILED), модуль перезавантажено | нічого не надіслано; COMPACT_ADVICE — з наступним промптом людини |
+| requested | none | OPTIMIZE_BUILD_FAILED, коли пакет просив продовження (`compacted AND reportResume`) | `optimize = false`, `compact = false`; звичайне продовження застосування (Resume) з `reportPrompt` |
 | requested | none | DeliverReport пройшов раніше заміни (порівняння-і-запис не застав `optimize`) | нічого не надіслано |
-| requested | none | промпт людини пройшов хук DeliverReport | звіт, назва блоку й порада — прихованим контекстом цього промпту; заміни з тегів уже в черзі з кінця ходу з міткою |
-| prompted | requested | промпт ходу оптимізації відхилено | зворотна заміна одним записом; рядок стану (OPTIMIZE_FAILED) |
-| prompted | none | кінець наступного ходу основної розмови (ходу оптимізації), завершеного чи перерваного | `optimizePrompted = false`; мітка в його відповіді ігнорується (MARK_IN_OPTIMIZATION); його пакет — зі своїм `resume`, який без явного значення й без `resume_prompt` — `false` ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_DEC_16](./context_editor.sp.md#SP_CTX_DEC_16)) |
-| prompted | none | промпт людини пройшов хук між ходами (`inTurn = false`) | `optimizePrompted = false` ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)) |
-| none, requested | requested (`compact`) | `/compact` людини без аргументів ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)): немає `handoff`, не зайнято (ні ходу стискання, ні запиту з запланованим Flush), хук не покинуто | `optimize = true`, `optimizePrompted = false`, `compact = true` одним записом; RequestFlush (другого таймера немає, якщо Flush уже заплановано) |
-| requested (`compact`) | як до запиту | хук покинуто після запису або хост відхилив таймер Flush (COMPACT_REFUSED) | `optimize`, `optimizePrompted`, `compact` як прочитано; спливне повідомлення при відмові таймера |
-| requested (`compact`) | prompted (`compact`) | Flush, як для мітки, але без перевірки закритого блоку | промпт — звіт застосування (якщо є) і CompactTurnText; збої — спливним повідомленням |
-| prompted (`compact`) | none | кінець ходу стискання, завершеного чи перерваного (DetectOptimize) | `optimizePrompted = false`, `compact = false`; не перерваний і без правок у черзі — спливне COMPACT_NOTHING |
+| requested | none | промпт людини пройшов хук DeliverReport | звіт і COMPACT_ADVICE — прихованим контекстом цього промпту |
+| prompted | requested | промпт ходу стискання відхилено | зворотна заміна одним записом; спливне повідомлення (OPTIMIZE_FAILED) |
+| prompted | none | кінець наступного ходу основної розмови (ходу стискання), завершеного чи перерваного | `optimizePrompted = false`, `compact = false`; мітка в його відповіді ігнорується (MARK_IN_OPTIMIZATION); не перерваний і без правок у черзі — спливне COMPACT_NOTHING; його пакет — зі своїм `resume`, який без явного значення й без `resume_prompt` — `false` ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_DEC_16](./context_editor.sp.md#SP_CTX_DEC_16)) |
+| prompted | none | промпт людини пройшов хук між ходами (`inTurn = false`) | `optimizePrompted = false`, `compact = false` ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)) |
+| legacy | none | `optimize` без `compact` (файл попередньої версії) — Flush або DeliverReport | `optimize = false`; ні ходу, ні поради (OPTIMIZE_LEGACY) |
 
 ### 04_07. Note Lifecycle  {#SP_CTX_04_07}
 
@@ -171,3 +176,4 @@ noted ──handoff (transcript)──▶ noted in the new session (relocated li
 | 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): після `/clear` способом `document` збої HandedOff і Deliver перехоплює HandDocument — замість FailAfterClear: «handed off» з копією недоставленого документа або `running` з порадою `/handoff cancel` (04_04) |
 | 2026-10-12 | Фаза 25: 04_06 — `/compact` людини веде запит оптимізації в `prompted` ходом стискання (CompactTurn, [SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) і назад, якщо промпт відхилено |
 | 2026-10-12 | Фаза 25, рев'ю: 04_06 — `/compact` людини пише запит `compact` і йде через Flush (requested → prompted), кінець ходу стискання — DetectOptimize; відкат запиту при покинутому хуку чи відхиленому таймері |
+| 2026-10-14 | Перехід між етапами ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)): 04_05 — `waiting` (`marked` → `advised` → знято), злиття другою міткою; 04_06 — запит оптимізації лише для `/compact`, OPTIMIZE_LEGACY; 04_01 і тег `disposable` — без ходу оптимізації за міткою |
