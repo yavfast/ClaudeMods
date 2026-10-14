@@ -20,6 +20,8 @@ sh mods/context-editor/tests/skill-limits.sh        # SKILL.md: description ≤ 
 npx -p typescript@5.6.3 tsc -p mods/context-editor/tsconfig.json --noEmit
 ```
 
+On a Team or Enterprise account (or any machine with managed settings), host 2.1.299+ seats the built-in `cc-plugin-sec-default` outermost, and it passes `session.compact`, `prompt.attachment` and some `session.append` doors over every plugin a person installs (`--plugin-dir` included): the mod's applies, handoff and repair then turn into the host's real summary. The fix is to run the mod as a managed plugin: `.claude-plugin/marketplace.json` at the repo root is the marketplace `claudemods` (the mod loads in place from `mods/context-editor`), and `/etc/claude-code/managed-settings.json` declares it under `extraKnownMarketplaces`, enables `context-editor@claudemods` and lists `["sec-default@builtin", "context-editor@claudemods"]` in `prependPlugins` (spike: `.dev_flow/cache/live-test/host-2.1.299-bypass.md`, `managed-spike/`). Every new session on that machine then loads the working tree. The VS Code extension runs its own bundled host (2.1.296 now), not the installed one.
+
 `claude plugin test` takes only a directory and has no filter. To run one test file, point it at a temporary folder that holds just that file plus the `hooks/` it imports.
 
 `mods/*/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`. Claude Code generates that folder each time it loads the mod, and git ignores it. In a fresh clone, the types and `tsc` only work after the mod has been loaded once with `--plugin-dir`.

@@ -1,0 +1,14 @@
+{
+  "name": "claudemods",
+  "owner": {
+    "name": "Alexandr Yavorsky"
+  },
+  "description": "Mods for Claude Code from this repository, loaded in place from mods/",
+  "plugins": [
+    {
+      "name": "context-editor",
+      "source": "./mods/context-editor",
+      "description": "Lets the agent replace processed tool outputs and dead-end steps in its own context with compact summaries."
+    }
+  ]
+}
