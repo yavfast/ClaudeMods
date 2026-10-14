@@ -37,6 +37,7 @@ import { movedSince, type Turns } from './turns'
 import { apiBlocks, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
 import { dropPulled, type Pulled } from './repair'
 import { storageRefusal, type ChangeFn, type Read, type StorageState } from './store'
+import { HANDOFF_COMMAND_PASSED_OVER, HANDOFF_PASSED_OVER, HANDOFF_TOOL_PASSED_OVER } from './capabilities'
 
 export { ROW_WINDOW }
 
@@ -129,7 +130,7 @@ export function handoffDue(q: Queue | undefined, mem: Pick<HandoffMemory, 'inFli
 export type HandoffArgs = { agentId?: string; mode?: unknown; document?: unknown; resume?: unknown; resume_prompt?: unknown }
 
 // [SP_CTX_02_19] Errors.
-export type HandoffDeny = 'DENIED_SUBAGENT' | 'DENIED_STORAGE' | 'DENIED_BAD_MODE' | 'DENIED_TOO_LONG' | 'DENIED_RUNNING' | 'DENIED_QUEUE'
+export type HandoffDeny = 'DENIED_SUBAGENT' | 'DENIED_STORAGE' | 'DENIED_BAD_MODE' | 'DENIED_TOO_LONG' | 'DENIED_RUNNING' | 'DENIED_QUEUE' | 'DENIED_PASSED_OVER'
 
 // [SP_CTX_02_19] The queue with a new request, or why it is refused. A queued
 // request is replaced; a running one is not while it is in flight here or not
@@ -540,6 +541,9 @@ export type HandoffIO = {
   // [SP_CTX_02_43] the person's line in the chat, never sent to the model
   // ($.ui.log); absent: no line
   log?: (text: string) => void
+  // [SP_CTX_02_54] the host passes over the mod's compaction hook; `wait`:
+  // while unknown, wait for a probe running in this process; absent: never passed
+  compactPassed?: (wait: boolean) => Promise<boolean>
 }
 
 export type HandoffOutcome = 'deferred' | 'nothing' | 'failed' | 'transcript' | 'document'
@@ -1089,6 +1093,14 @@ export async function runHandoff(io: HandoffIO, mem: HandoffMemory, turns0: numb
     const st = await io.storage()
     if ('reason' in st) return 'nothing'
     const oldDir = st.dir
+    // [SP_CTX_02_54] HANDOFF_PASSED_OVER: a request made before the verdict
+    // ends with a report; no command
+    if (await io.compactPassed?.(true).catch(() => false)) {
+      await io.changeQueue(oldDir, read =>
+        read.state === 'unreadable' || !dueIgnoringFlight(read.value, io.now()) ? undefined : { ...withReport(read.value, HANDOFF_PASSED_OVER, io.now()), handoff: undefined },
+      )
+      return 'nothing'
+    }
     const got: { claim?: { q: Queue; h: HandoffRequest } } = {}
     await io.changeQueue(oldDir, async read => {
       if (read.state === 'unreadable' || !dueIgnoringFlight(read.value, io.now())) return undefined
@@ -1257,6 +1269,8 @@ export async function requestHandoff(
 
 // [SP_CTX_02_19] context_handoff: queues the request; the end of the turn runs it.
 export async function contextHandoff(io: HandoffIO, mem: HandoffMemory, args: HandoffArgs): Promise<{ result: string } | { deny: string; code: HandoffDeny }> {
+  // [SP_CTX_02_54] DENIED_PASSED_OVER: nothing is queued
+  if (!args.agentId && (await io.compactPassed?.(false).catch(() => false))) return { code: 'DENIED_PASSED_OVER', deny: HANDOFF_TOOL_PASSED_OVER }
   const out = await requestHandoff(io, mem, args, 'agent')
   if ('deny' in out) return out
   mem.requestTurn = io.turns.turns
@@ -1281,6 +1295,8 @@ export async function handoffCommand(io: HandoffIO, mem: HandoffMemory, rawArgs:
     if (await runningHere(io, mem)) return 'a handoff is running; it cannot be cancelled'
     return (await dropRequest(io, mem, 'cancelled by the person')) ? 'handoff cancelled' : 'no handoff waiting'
   }
+  // [SP_CTX_02_54] DENIED_PASSED_OVER: nothing is written
+  if (await io.compactPassed?.(false).catch(() => false)) return HANDOFF_COMMAND_PASSED_OVER
   const out = await requestHandoff(io, mem, { mode: arg === 'document' ? 'document' : 'transcript' }, 'person')
   // [SP_CTX_02_20] no mod prefix: the host shows the reply under the plugin's name
   if ('deny' in out) return out.deny

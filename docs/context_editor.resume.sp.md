@@ -89,7 +89,7 @@ Errors: немає (чиста функція). Порожній журнал і
 Purpose: у новому процесі хоста чи після перемикання сесії в процесі помітити завантажений ланцюжок з оригіналами і один раз запустити компактизацію ремонту.
 
     ON session start (main conversation), after PrepareStorage:                 # новий процес хоста: --resume, перезапуск, VS Code відкриває сесію
-        ScheduleRepair()
+        repairAtTurnEnd = true                                                 # з 2026-10-14 (SP_CTX_02_54): ремонт — з кінця першого ходу, коли вердикт compact відомий
     ON PrepareStorage publishes another session in this process (a real switch: /resume; /clear теж — нова сесія без журналу, перевірка нічого не знайде):
         repair = { session: new id, state: none }; compactedHere = none; repairAtTurnEnd = true   # таймер звідси не ставиться: перемикання бачать шляхи tool.call / prompt.submit, з таймерів яких команда не йде
     ON turn complete (main loop), in AfterTurn after the turn count, before Flush:
@@ -99,7 +99,7 @@ Purpose: у новому процесі хоста чи після переми�
         id = current session id
         IF repair.session = id AND repair.state ≠ none: RETURN                 # одна спроба на сесію в екземплярі
         repair = { session: id, state: planned }
-        $.clock.after(REPAIR_DELAY_MS, RunRepair)                              # команда — лише з відкладеної дії, запланованої в session.start чи turn.complete
+        $.clock.after(REPAIR_DELAY_MS, RunRepair)                              # команда — лише з відкладеної дії, запланованої в turn.complete
 
     RunRepair():
         IF current session id ≠ repair.session: RETURN                         # перемикання за час очікування — нова сесія планує своє
@@ -130,7 +130,7 @@ Purpose: у новому процесі хоста чи після переми�
 
 Чому Repeats, а не DropPulled (відхилення коду від дизайну, жива перевірка фази 32): `$.session.messages()` не несе `handle`, тож за дизайном NeedsRepair завжди давав би `false`. Repeats бачить те, що завантажувач додає (подвоєні виклики, результати й тексти відповіді в одному відрізку); хибна тривога (той самий текст двічі в ході) коштує одну компактизацію, яка відповідає `skip nothing to repair` (у stream-json лишається рядок команди).
 
-Хости. stream-json: компактизація з `session.start` виконується до першого промпту (спайк, cr2). Термінал з `claude --resume`: `session.start` теж є; якщо людина встигне надіслати промпт за REPAIR_DELAY_MS, команда чекає кінця ходу — перший запит тоді йде з дублікатами (живий сценарій). `/resume` у процесі: `session.start` немає, перемикання бачить PrepareStorage; ремонт іде після першого ходу (хук `command.run` на `resume` як ранній тригер — лише якщо живий прогін покаже, що він спрацьовує і повертається після перемикання; SP_CTX_DEC_32). Разовий `claude -p --resume <id> "<prompt>"`: команда, поставлена посеред єдиного ходу, після нього відхиляється («no session is bound») — рядок стану, сесія як є.
+Хости (до 2026-10-14, коли ремонт планувався з `session.start`). stream-json: компактизація з `session.start` виконувалася до першого промпту (спайк, cr2); тепер перший хід після відновлення йде з дублікатами в усіх хостах. Термінал з `claude --resume`: `session.start` теж є; якщо людина встигне надіслати промпт за REPAIR_DELAY_MS, команда чекає кінця ходу — перший запит тоді йде з дублікатами (живий сценарій). `/resume` у процесі: `session.start` немає, перемикання бачить PrepareStorage; ремонт іде після першого ходу (хук `command.run` на `resume` як ранній тригер — лише якщо живий прогін покаже, що він спрацьовує і повертається після перемикання; SP_CTX_DEC_32). Разовий `claude -p --resume <id> "<prompt>"`: команда, поставлена посеред єдиного ходу, після нього відхиляється («no session is bound») — рядок стану, сесія як є.
 
 Порядок з Flush не потрібен для правильності: якщо застосування черги прийде раніше за ремонт (ремонт відмовлено чи ще не встиг), HandleCompaction сам прибирає підтягнуті оригінали DropPulled ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)), а після нього межа довірена і NeedsRepair — `false`. Черги ремонт не читає й не пише: правки в ній цілять за `tool_use_id` і відбитками (роль, ідентифікатори, текст), які перебудова без `handle` не змінює (крім результату ToolSearch, 02_48, і злитих рядків викликів — як і в застосуванні).
 
@@ -139,6 +139,8 @@ Errors:
 |------|-----------|----------|
 | REPAIR_REFUSED | `$.command.run` відхилено (немає прив'язаної сесії, неприпустиме походження) | одна спроба; рядок стану з текстом відмови; розмова як є; наступний новий процес хоста спробує знову |
 | — | NeedsRepair: сховища немає, журнал нечитабельний, межа довірена | команди немає, мовчки (журнал налагодження) |
+
+Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54), [C_CTX_DEC_31](./context_editor.concept.md#C_CTX_DEC_31) (д)): з 2026-10-14 ScheduleRepair не викликається з `session.start`: новий процес хоста ставить `repairAtTurnEnd = true`, і ремонт планується на кінці першого ходу основної розмови, коли вердикт `compact` уже з кешу чи зонда ([SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)); при `passed` ремонту немає, при зонді, що йде, RunRepair чекає його не довше PROBE_WAIT_MS. Ремонт до першого промпту (stream-json) і рядок «Хости» вище про `session.start` — історія.
 
 ### 02_47. HandleRepair  {#SP_CTX_02_47}
 

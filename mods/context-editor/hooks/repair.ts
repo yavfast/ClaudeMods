@@ -352,6 +352,9 @@ export type RepairIO = {
   // [SP_CTX_02_43] the person's line ($.ui.log), never seen by the model
   log: (text: string) => void
   debug?: (text: string) => void
+  // [SP_CTX_02_54] the host passes over the mod's compaction hook (after a
+  // probe running in this process, at most PROBE_WAIT_MS); absent: never
+  passed?: () => Promise<boolean>
 }
 
 // [SP_CTX_02_46] ScheduleRepair: one attempt per session in this instance.
@@ -371,6 +374,14 @@ export async function scheduleRepair(io: RepairIO, mem: RepairMemory): Promise<b
   return true
 }
 
+// [SP_CTX_02_46] [SP_CTX_02_54] A new host process: the end of its first
+// turn of the main conversation plans the repair, once the verdict of the
+// compaction hook is known from the cache or the probe (a repair on an
+// unknown verdict would run the host's real summary first).
+export function repairAtStart(mem: RepairMemory): void {
+  mem.atTurnEnd = true
+}
+
 // [SP_CTX_02_46] AfterTurn's step: the turn end after a switch in the process plans it.
 export async function repairAtTurnEnd(io: RepairIO, mem: RepairMemory): Promise<boolean> {
   if (!mem.atTurnEnd) return false
@@ -378,7 +389,7 @@ export async function repairAtTurnEnd(io: RepairIO, mem: RepairMemory): Promise<
   return scheduleRepair(io, mem)
 }
 
-export type RepairOutcome = 'switched' | 'clean' | 'refused' | 'repaired' | 'skipped'
+export type RepairOutcome = 'switched' | 'clean' | 'refused' | 'repaired' | 'skipped' | 'passed-over'
 
 // [SP_CTX_02_46] RunRepair: the command once; mid-turn it waits for the turn's end.
 export async function runRepair(io: RepairIO, mem: RepairMemory): Promise<RepairOutcome> {
@@ -387,6 +398,11 @@ export async function runRepair(io: RepairIO, mem: RepairMemory): Promise<Repair
   if (!(await io.needs().catch(() => false))) {
     mem.state = 'done'
     return 'clean'
+  }
+  // [SP_CTX_02_54] no command: its marker would become the host's summary
+  if (await io.passed?.().catch(() => false)) {
+    mem.state = 'done'
+    return 'passed-over'
   }
   mem.state = 'running'
   mem.last = undefined

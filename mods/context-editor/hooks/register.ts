@@ -3,6 +3,7 @@ import { callFacts, EMPTY_ALIASES, markAlias, parseAliases, refResolver, wantsMa
 import { compactionFailed, compactionRoute, handleCompaction, observeCompaction } from './compaction'
 import {
   afterPrepare,
+  boundaryOf,
   collectMedia,
   HOST_ID_WAIT_MS,
   isTrustedBoundary,
@@ -44,7 +45,7 @@ import {
   repairAtTurnEnd,
   repairSwitched,
   REPAIR_SKIP,
-  scheduleRepair,
+  repairAtStart,
   type ApplyLedger,
   type NeedsIO,
   type Pulled,
@@ -65,6 +66,37 @@ import {
 } from './hostattach'
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
+import {
+  CAP_CACHE_FILE,
+  capsOf,
+  compactBrief,
+  compactPassed,
+  EDIT_PASSED_OVER,
+  briefedQueue,
+  briefedTags,
+  isPassed,
+  merge,
+  needsProbe,
+  notePassCompaction,
+  passedCaps,
+  newCapabilities,
+  noteAttachment,
+  noteCommandUnseen,
+  noteOwnCompaction,
+  noteTurn,
+  noticeOnce,
+  observePassedCompact,
+  parseCapCache,
+  PROBE_FILE,
+  PROBE_MARKER,
+  probeSkip,
+  runProbe,
+  scheduleProbe,
+  type CapabilityIO,
+  type CapEntry,
+  type ProbeCounts,
+  type ProbeIO,
+} from './capabilities'
 import { shapeSubagentResult, type ShapeIO } from './subagents'
 import { choosePacker, needsRestore, packCommands, restoreSession, sweepSessions, SWEEP_DELAY_MS, unpackCommands, type CleanupIO, type Packer } from './cleanup'
 import {
@@ -90,6 +122,7 @@ import {
   type SessionStorage,
   type StorageState,
   type Store,
+  STORAGE_BASE,
 } from './store'
 import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
 import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
@@ -159,6 +192,14 @@ const attachSession: { id?: string } = {}
 // instance, the switch that waits for a turn end, the session this instance
 // compacted itself, and the last repair's summary for the person's line.
 const repairMem = newRepairMemory()
+// [SP_CTX_01_25] the host's capabilities: one per host process
+const caps = newCapabilities()
+let capsLoaded = false
+// [SP_CTX_02_57] the mod in a probe process, read once; what it counted
+let probeFlag: Promise<boolean> | undefined
+const probeCounts: ProbeCounts = { attachments: 0, doors: {} }
+// [SP_CTX_01_25] the host's version, read once
+let versionRead: Promise<string | undefined> | undefined
 
 function noteCopies(rows: readonly SessionMessage[] | undefined): void {
   copied.clear()
@@ -260,12 +301,11 @@ function repairIO($: EngineInterface): RepairIO {
     after: (ms, fn) => void $.clock.after(ms, fn),
     needs: () => needsRepair(needsIO($), repairMem),
     // one attempt; a refusal rejects with the host's text
-    command: async () => {
-      await $.command.run({ command: 'compact', args: REPAIR_MARKER })
-    },
+    command: () => ownCompact($, REPAIR_MARKER),
     status: text => $.ui.status(text),
     log: text => $.ui.log(text),
     debug: text => $.ui.log(text, { to: 'debug' }),
+    passed: () => passedNow($, true),
   }
 }
 
@@ -662,9 +702,8 @@ function flushIO($: EngineInterface): FlushIO {
       if (tagsDir) await changeOf(stores($, tagsDir).tags)(adviseWaiting)
     },
     // one attempt; a refusal rejects with the host's text
-    compact: async args => {
-      await $.command.run({ command: 'compact', args })
-    },
+    compact: args => ownCompact($, args),
+    compactPassed: wait => passedNow($, wait),
     // [SP_CTX_02_34] CalibrateBeforeApply in the storage taken once, the
     // registry's view from the cache, its change on the registry's chain
     calibrate: async () => {
@@ -704,6 +743,8 @@ function personCompactIO($: EngineInterface, aborted: () => boolean): PersonComp
     planFlush: session => void requestFlush(flushIO($), flushState, session),
     toast: text => $.ui.toast(text),
     now: () => Date.now(),
+    compactPassed: () => passedNow($, true),
+    brief: () => briefNow($),
   }
 }
 
@@ -765,6 +806,8 @@ function hintIO($: EngineInterface, dir: string, snap: Snapshot = snapshot($)): 
 // [SP_CTX_02_37] The size channel's suggestion after a marked output. Never
 // longer than HINT_WAIT_MS.
 async function hintFor($: EngineInterface): Promise<string | undefined> {
+  // [SP_CTX_02_54] no suggestion of a tool that refuses
+  if (isPassed(caps)) return undefined
   const dir = await storageDir($).catch(() => undefined)
   if (!dir) return undefined
   return bounded(
@@ -776,6 +819,7 @@ async function hintFor($: EngineInterface): Promise<string | undefined> {
 // [SP_CTX_02_37] The turn channel's suggestion for the person's prompt
 // between turns. Never longer than HINT_WAIT_MS.
 function suggestionFor($: EngineInterface, dir: string): Promise<string | undefined> {
+  if (isPassed(caps)) return Promise.resolve(undefined)
   return bounded(
     d => turnSuggestion(hintIO($, dir), hintMemo, d).then(o => o.line),
     () => $.clock.sleep(HINT_WAIT_MS),
@@ -797,6 +841,7 @@ function blockHost($: EngineInterface, dir: string): BlockHost {
     setListed: key => {
       listed.key = key
     },
+    passed: () => isPassed(caps),
   }
 }
 
@@ -856,8 +901,10 @@ function handoffIO($: EngineInterface): HandoffIO {
     carryAliases: (from, to, change) => carry(stores($, from).aliases, stores($, to).aliases, change, 'the alias registry'),
     // [C_CTX_DEC_13] one attempt; the host's refusal is never swallowed: it rejects with its text
     runCommand: async (command, args) => {
-      await $.command.run({ command, args: args ?? '' })
+      if (command === 'compact') await ownCompact($, args ?? '')
+      else await $.command.run({ command, args: args ?? '' })
     },
+    compactPassed: wait => passedNow($, wait),
     fork: async prompt => {
       const r = await $.model.fork({ prompt })
       if (!r.isAnswered) throw new Error(`no reply: ${r.reason}`)
@@ -955,16 +1002,198 @@ async function registryCall($: EngineInterface, e: { agentId?: string; tool_use_
   return { dir, down, refs, stale: !!dir && (await staleIndexes(snap)) }
 }
 
+// ---- [SP_CTX_02_53]–[SP_CTX_02_57] the host's capabilities
+
+// [SP_CTX_02_57] The mod runs in a probe process (CONTEXT_EDITOR_PROBE=1).
+function isProbe($: EngineInterface): Promise<boolean> {
+  probeFlag ??= $.env
+    .get('CONTEXT_EDITOR_PROBE')
+    .then(v => v === '1')
+    .catch(() => false)
+  return probeFlag
+}
+
+// [SP_CTX_01_25] The host's version, read once per instance; undefined: the read threw (CAP_NO_VERSION).
+function hostVersion($: EngineInterface): Promise<string | undefined> {
+  versionRead ??= $.session
+    .version()
+    .then(v => v.version)
+    .catch(() => undefined)
+  return versionRead
+}
+
+// [SP_CTX_01_26] <root>/capabilities.json, shared by the machine's sessions.
+async function capCachePath($: EngineInterface): Promise<string | undefined> {
+  const home = await $.env.get('HOME').catch(() => undefined)
+  return home ? `${home.replace(/\/+$/, '')}/${STORAGE_BASE}/${CAP_CACHE_FILE}` : undefined
+}
+
+function capIO($: EngineInterface): CapabilityIO {
+  return {
+    readCache: async () => {
+      const path = await capCachePath($)
+      return parseCapCache(path ? await readFileText($, path) : undefined)
+    },
+    writeCache: async cache => {
+      const path = await capCachePath($)
+      if (!path || !(await writeText($, path, JSON.stringify(cache)))) throw new Error('the cache file was not written')
+    },
+    now: () => Date.now(),
+    scheduleProbe: () => void planProbe($),
+    debug: text => $.ui.log(text, { to: 'debug' }),
+  }
+}
+
+function mergeCaps($: EngineInterface, source: CapEntry['source']): Promise<void> {
+  return merge(capIO($), caps, source)
+}
+
+// [SP_CTX_02_56] One probe per process, from a deferred action.
+function planProbe($: EngineInterface): boolean {
+  return scheduleProbe({ after: (ms, fn) => void $.clock.after(ms, fn) }, caps, () => runProbe(probeIO($), caps))
+}
+
+function probeIO($: EngineInterface): ProbeIO {
+  return {
+    after: (ms, fn) => void $.clock.after(ms, fn),
+    // the shell's parent is the host itself; in VS Code the claude on PATH is another one
+    hostExe: async () => (await $.process.run(['sh', '-c', 'readlink /proc/$PPID/exe'])).stdout,
+    tempDir: async () => (await $.process.run(['mktemp', '-d'])).stdout,
+    run: (argv, init) => $.process.run([...argv], init),
+    readFile: path => readFileText($, path),
+    remove: async paths => {
+      const r = await $.process.run(['rm', '-rf', ...paths])
+      if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `exit ${r.exitCode}`)
+    },
+    projectsDir: async () => {
+      const home = (await $.env.get('HOME'))?.replace(/\/+$/, '')
+      const config = (await $.env.get('CLAUDE_CONFIG_DIR'))?.replace(/\/+$/, '') || (home ? `${home}/.claude` : undefined)
+      return config ? `${config}/projects` : undefined
+    },
+    pluginRoot: $.plugin.root,
+    merge: () => mergeCaps($, 'probe'),
+    debug: text => $.ui.log(text, { to: 'debug' }),
+  }
+}
+
+// [SP_CTX_02_56] `compact` passed over; `wait`: while unknown, wait for the
+// probe of this process at most PROBE_WAIT_MS.
+function passedNow($: EngineInterface, wait: boolean): Promise<boolean> {
+  return compactPassed(caps, ms => $.clock.sleep(ms), wait)
+}
+
+// [SP_CTX_02_53] The mod's own compaction command: NoteCommandUnseen when the
+// command returned and the handler never saw its marker. One attempt; a
+// refusal rejects with the host's text.
+async function ownCompact($: EngineInterface, args: string): Promise<void> {
+  const seen = caps.ownSeen
+  await $.command.run({ command: 'compact', args })
+  if (caps.ownSeen === seen) {
+    noteCommandUnseen(caps)
+    void mergeCaps($, 'live').catch(() => undefined)
+  }
+}
+
+// [SP_CTX_02_53] NoteOwnCompaction from the handler of a marker of the mod.
+function ownCompactionSeen($: EngineInterface): void {
+  const was = caps.live.compact
+  noteOwnCompaction(caps)
+  if (was !== 'reached') void mergeCaps($, 'live').catch(() => undefined)
+}
+
+// [SP_CTX_02_53] notePassCompaction from the handler's `pass` route.
+function passCompactionSeen($: EngineInterface): void {
+  const was = caps.live.compact
+  notePassCompaction(caps)
+  if (was !== 'reached') void mergeCaps($, 'live').catch(() => undefined)
+}
+
+// [SP_CTX_02_53] [SP_CTX_02_56] Once per process, at its first session start:
+// the cache entry of this host version, or a probe.
+async function loadCapabilities($: EngineInterface): Promise<void> {
+  if (capsLoaded) return
+  capsLoaded = true
+  caps.version = await hostVersion($)
+  if (!caps.version) return
+  const cache = await capIO($).readCache()
+  caps.cache = capsOf(cache.entries[caps.version])
+  if (needsProbe(cache.entries[caps.version])) planProbe($)
+}
+
+// [SP_CTX_02_53] AfterTurn's first step: NoteTurn, Merge, and the person's
+// one line per process.
+async function capabilitiesAtTurnEnd($: EngineInterface, aborted: boolean, at: Promise<string | undefined>): Promise<void> {
+  if (aborted) return
+  noteTurn(caps)
+  await mergeCaps($, 'live')
+  if (!passedCaps(caps).some(cap => !caps.noticed.includes(cap))) return
+  let queued = 0
+  // [SP_CTX_01_07] CONC-01: the folder AfterTurn took at the turn end
+  const dir = await at.catch(() => undefined)
+  if (dir) {
+    const q = await stores($, dir).queue.read().catch(() => undefined)
+    if (q && q.state !== 'unreadable') queued = q.value.edits.length
+  }
+  const line = noticeOnce(caps, queued)
+  if (line) $.ui.log(line)
+}
+
+// [SP_CTX_02_55] CompactBrief over one read of each source; an unreadable one is left out.
+async function briefNow($: EngineInterface): Promise<string> {
+  const dir = await storageDir($)
+  const { rows } = await snapshot($).view()
+  const s = dir ? stores($, dir) : undefined
+  const reg = s ? await s.tags.read().catch(() => undefined) : undefined
+  const q = s ? await s.queue.read().catch(() => undefined) : undefined
+  return compactBrief(rows, reg && reg.state !== 'unreadable' ? reg.value : undefined, q && q.state !== 'unreadable' ? q.value : undefined)
+}
+
+// [SP_CTX_02_55] ObservePassedCompact after the host's summary under the brief.
+async function observeBrief($: EngineInterface, before: readonly SessionMessage[]): Promise<void> {
+  const after = await $.session.messages()
+  const dir = await storageDir($)
+  if (!dir) return
+  const s = stores($, dir)
+  await observePassedCompact(
+    {
+      hostId: () => peekHostId(hostId),
+      writeBoundary: b => writeBoundaryAt($, dir, b),
+      updateTags: (was, now) => updateOf(s.tags)(reg => briefedTags(reg, was, now)),
+      clearQueue: () => updateOf(s.queue)(q => briefedQueue(q, EMPTY_QUEUE)),
+      // [SP_CTX_02_41] the summary stands: the answers about attachments go
+      clearAttachments: async () => {
+        voidAnswers(attachMem)
+        await updateOf(s.hostattach)(clearedAnswers)
+      },
+      boundaryOf,
+    },
+    before,
+    after,
+  )
+}
+
+// [SP_CTX_02_57] The probe process's counts, in its working folder.
+async function writeCounts($: EngineInterface): Promise<void> {
+  const cwd = await $.session.cwd().catch(() => undefined)
+  probeCounts.version = await hostVersion($)
+  if (cwd) await $.fs.write(`${cwd}/${PROBE_FILE}`, JSON.stringify(probeCounts)).catch(() => undefined)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: no storage, repair, sweep, probe or tools
+    if (await isProbe($)) return next(e)
     // [SP_CTX_01_14] the identity's one read starts here or in the first PrepareStorage
     void hostIdOf($)
     for (const tool of TOOLS) await $.tool.register(tool)
     await $.command.register(HANDOFF_COMMAND)
     await prepareStorage($)
-    // [SP_CTX_02_46] a new host process (--resume, a restart, an IDE opening
-    // the session): the repair's one attempt, from a deferred action
-    await scheduleRepair(repairIO($), repairMem).catch(() => undefined)
+    // [SP_CTX_02_53] [SP_CTX_02_56] the cached verdicts of this host version, or a probe
+    await loadCapabilities($).catch(() => undefined)
+    // [SP_CTX_02_46] [SP_CTX_02_54] a new host process (--resume, a restart, an
+    // IDE opening the session): the repair's one attempt, planned at the end
+    // of the first turn, once the compaction hook's verdict is known
+    repairAtStart(repairMem)
     // [SP_CTX_02_50] the sweep of old sessions, in the background
     void $.clock.after(SWEEP_DELAY_MS, () => runSweep($).catch(() => undefined))
     return next(e)
@@ -979,6 +1208,8 @@ export const register: Register = on => {
   // [SP_CTX_02_02]
   on('tool.call', { tool: 'mcp__context-editor__context_edit' }, async ($, e) => {
     if (e.agentId) return deny("a subagent's context cannot be edited; only the main conversation's.")
+    // [SP_CTX_02_54] DENIED_PASSED_OVER, before the queue is read
+    if (isPassed(caps)) return deny(EDIT_PASSED_OVER)
     const st = await ensureStorage($)
     if ('reason' in st) return deny(storageRefusal(st.reason))
     const { dir } = st
@@ -1084,7 +1315,14 @@ export const register: Register = on => {
   on('command.run', { command: 'compact' }, async ($, e, next) => {
     const out = await personCompact(personCompactIO($, () => next.signal.aborted), e, () => isPlanned(flushState, Date.now()))
     if ('text' in out) return { text: out.text }
-    return out.next === e.args ? next(e) : next({ ...e, args: out.next })
+    if (!out.brief) return out.next === e.args ? next(e) : next({ ...e, args: out.next })
+    // [SP_CTX_02_55] the host's summary under the brief, then ObservePassedCompact
+    const before = await $.session.messages().catch(() => undefined)
+    const seen = caps.passSeen
+    const done = await next({ ...e, args: out.next })
+    // the handler saw it after all: its observer did the work
+    if (before && caps.passSeen === seen) await observeBrief($, before).catch(() => undefined)
+    return done
   }).catch(($, e, next) => {
     const out = compactFailure(e, { called: next.called, kind: next.error.kind })
     return 'next' in out ? next(e) : out
@@ -1094,6 +1332,11 @@ export const register: Register = on => {
   // returned unchanged; RecordDelivery and the rules run after it, in the
   // background, each on its chain in the folder asked for at the event.
   on('session.append', async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: the doors are counted, the row stored unchanged
+    if (await isProbe($)) {
+      probeCounts.doors[e.door] = (probeCounts.doors[e.door] ?? 0) + 1
+      return next(e)
+    }
     // [SP_CTX_02_49] a subagent's big tool result is cut before it is stored
     const row = e.agentId && e.door === 'tool-result' ? await shapeSubagentResult(shapeIO($), e).catch(() => e) : e
     return appendRow(
@@ -1123,12 +1366,18 @@ export const register: Register = on => {
   // the background, AfterTurn (DetectOptimize, the turn count, Flush; the
   // handoff besides).
   on('turn.complete', async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: the counts file, read by RunProbe
+    if (await isProbe($)) {
+      await writeCounts($)
+      return next(e)
+    }
     // nothing starts while the turn ends: the counter moves whatever `next` does
     if (!e.agentId) turnCompleted(turns, e.isAborted)
     const done = await next(e)
     if (e.agentId) return done
     void afterTurn(
       {
+        capabilities: (aborted, at) => capabilitiesAtTurnEnd($, aborted, at),
         storage: () => storageDir($),
         detect: (dir, end) => detectOptimize(detectIO($, dir), end),
         countTurn: dir => stores($, dir).tags.onChain(() => countTurn(tagIO($, dir))),
@@ -1149,7 +1398,16 @@ export const register: Register = on => {
   // stands only when it is used. (One hook: the host takes one unmatched
   // `session.compact` hook per module.)
   on('session.compact', async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: the probe's marker is answered with the counts
+    if (e.instructions === PROBE_MARKER && (await isProbe($))) {
+      await writeCounts($)
+      return { skip: probeSkip(probeCounts) }
+    }
     const route = compactionRoute(e)
+    // [SP_CTX_02_53] the handler got one of the mod's own markers, or another
+    // compaction of the main conversation: the hook is called
+    if (route !== 'pass') ownCompactionSeen($)
+    else if (!e.agentId && e.trigger !== 'precompute') passCompactionSeen($)
     if (route === 'pass') {
       const done = await next(e)
       await observeCompaction(
@@ -1337,15 +1595,28 @@ export const register: Register = on => {
   // in the main loop, answered from the decisions in force; every other
   // attachment (a `*_delta`, hook context) has no hook here. A failure keeps
   // the attachment.
+  // [SP_CTX_02_53] [SP_CTX_02_57] Every attachment, any type and origin, only
+  // counted: the host calls the mod's attachment hooks at all (NoteAttachment)
+  on('prompt.attachment', async ($, e, next) => {
+    if (await isProbe($)) probeCounts.attachments++
+    else noteAttachment(caps)
+    return next(e)
+  }).catch(($, e, next) => next(e))
   on('prompt.attachment', { type: 'instructions' }, async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: no storage
+    if (await isProbe($)) return next(e)
     const a = await attachmentAnswer(attachMem, attachIO($), e)
     return 'keep' in a ? next(e) : a.text === null ? { text: null } : next({ ...e, text: a.text })
   }).catch(($, e, next) => next(e))
   on('prompt.attachment', { type: 'nested_memory' }, async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: no storage
+    if (await isProbe($)) return next(e)
     const a = await attachmentAnswer(attachMem, attachIO($), e)
     return 'keep' in a ? next(e) : a.text === null ? { text: null } : next({ ...e, text: a.text })
   }).catch(($, e, next) => next(e))
   on('prompt.attachment', { type: 'skill_listing' }, async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: no storage
+    if (await isProbe($)) return next(e)
     const a = await attachmentAnswer(attachMem, attachIO($), e)
     return 'keep' in a ? next(e) : a.text === null ? { text: null } : next({ ...e, text: a.text })
   }).catch(($, e, next) => next(e))
@@ -1355,6 +1626,8 @@ export const register: Register = on => {
   // unserved /compact request or WaitingAdvice of a marked block; each leaves only once that prompt has
   // entered. The host skips this hook for prompts the mod submits itself.
   on('prompt.submit', async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: no guide, advice or hint
+    if (await isProbe($)) return next(e)
     // [SP_CTX_02_52] a sweep of another process packed this session's storage
     const st = storage.state
     if (await needsRestore({ exists: path => $.fs.exists(path).catch(() => false) }, dirOf(st), 'reason' in st ? st.reason : undefined)) await prepareStorage($)
@@ -1367,7 +1640,8 @@ export const register: Register = on => {
         const reg = await s.tags.cached()
         return introFor(reg, reg.state !== 'unreadable' && !reg.value.introduced ? await skillGuide($) : undefined)
       },
-      advice: async () => adviceFor(await s.tags.cached()),
+      // [SP_CTX_02_54] no WaitingAdvice of a tool that refuses; the block stays marked
+      advice: async () => (isPassed(caps) ? undefined : adviceFor(await s.tags.cached())),
       advised: async () => void (await changeOf(s.tags)(adviseWaiting)),
       inTurn: () => turns.inTurn,
       enter: context => (context.length ? next({ ...e, context: [...(e.context ?? []), ...context] }) : next(e)),

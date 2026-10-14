@@ -276,6 +276,34 @@
 | ShapeSubagentResult | великий вивід | субагент, Bash, текст 20 000 символів у рядках | архів `<cwd>/.claude/context-editor/<session_id>/subagents/<agentId>/<id>.txt` з повним текстом; блок — голова ≤ SUB_HEAD, рядок «[context-editor: N chars cut; full output: <path>, open with Read]», хвіст ≤ SUB_TAIL; голова + N + хвіст = 20 000 |
 | ShapeSubagentResult | малий вивід / основна розмова / Read / OWN_TOOLS / unknown | текст < SUB_CUT_AT, або без `agentId`, або походження Read, `mcp__context-editor__*`, `unknown` | рядок без змін, архіву немає |
 | ShapeSubagentResult | масив блоків | `content` — кілька текстових блоків разом ≥ SUB_CUT_AT | текст склеєно через "\n" і обрізано одним рядком; з блоком зображення — без змін |
+| Capabilities | вердикти і пріоритет | `cache.compact = passed`; потім `probe.compact = reached`; потім `live.compact = passed` | `passed`; `reached`; `passed` |
+| Capabilities | живі вкладення | NoteAttachment раз; окремо — NoteTurn без вкладень; окремо — перерваний хід і хід субагента | `live.attachments = reached`; `passed`; `mainTurns` не змінюється |
+| Capabilities | живе суперечить кешу | кеш `attachments = passed`, вкладення дійшло | запис версії в кеші знято, ScheduleProbe раз; новий запис після зонда |
+| Capabilities | NoteOwnCompaction / NoteCommandUnseen | обробник побачив MARKER; окремо — команда повернулася, обробник мітки не бачив | `live.compact = reached`; `passed` і запис кешу `source: live` |
+| Capabilities | рядок людині один раз | `compact = passed` на кінці двох ходів, у черзі 3 правки; окремо — `attachments = passed` на першому ході, `compact = passed` після зонда | один `$.ui.log` з PassedText, «compaction», «3 queued edit(s) stay»; на другому ході — нічого; окремо — два рядки: «attachment», потім «compaction and attachment» |
+| Capabilities | без версії | `$.session.version()` кидає | кеш не читається й не пишеться, зонда немає; вердикти лише живі |
+| RunProbe | планування | старт сесії без запису для версії; другий старт у тому самому процесі; запис є | один таймер PROBE_DELAY_MS; другого немає; таймера немає |
+| RunProbe | кеш без вердикту зонда | запису немає; запис без `compact`; запис `source: live` з `compact = passed`; запис зонда | зонд; зонд; зонд; без зонда |
+| RunProbe | бінарник хоста | `readlink` дав `…/versions/2.1.299`, `/usr/bin/claude`, `/usr/bin/node`, нічого | той самий шлях; той самий; `claude`; `claude` |
+| RunProbe | аргументи і вхід | ProbeArgs, ProbeInput, PROBE_ENV | `-p --input-format stream-json --output-format stream-json --verbose --no-session-persistence --model haiku --plugin-dir <root>`; два повідомлення `hi` і `/compact <PROBE_MARKER>`; env з `CONTEXT_EDITOR_PROBE=1` і недосяжною адресою API |
+| ParseProbe | результати | `result` «Not compacted · context-editor-probe: {…}» з лічильниками attachments 9; `result` «Not enough messages to compact.» з лічильниками 0; без `result` і файлу; версія лічильників інша | `compact reached, attachments reached`; `compact passed, attachments passed`; none (PROBE_NO_RESULT); none (PROBE_OTHER_HOST) |
+| RunProbe | збій і прибирання | `$.process.run` кидає; окремо — успіх | `probe = {}`, кеш не пишеться; тимчасова тека і тека проєкту видаляються в обох випадках |
+| RunProbe | очікування дією | Flush при `unknown`, зонд `running`, кінець через 3 с; окремо — зонд довше PROBE_WAIT_MS | Flush іде за вердиктом зонда; після PROBE_WAIT_MS — як `unknown` |
+| ProbeMode | лічильники і відповідь | `CONTEXT_EDITOR_PROBE=1`; вкладення, двері, кінець ходу, `session.compact` з PROBE_MARKER | сховища немає; PROBE_FILE з версією й лічильниками; `{ skip: "context-editor-probe: {…}" }`; інструменти `context_*` і `/handoff` не зареєстровані; нових тек у `~/.claude/context-editor` немає |
+| context_edit | обхід | `passed`; правка `drop` | DENIED_PASSED_OVER, черга не читається і не пишеться; при `unknown` — правку прийнято |
+| context_handoff | обхід | `passed` | DENIED_PASSED_OVER; запиту немає |
+| HandoffCommand | обхід | `passed`; `/handoff`, потім `/handoff cancel` при запиті з черги | відмова без запису; `cancel` знімає запит, як завжди |
+| RunHandoff | обхід на запуску | запит `queued`, вердикт став `passed` до таймера | команди немає; запит `done` зі звітом HANDOFF_PASSED_OVER |
+| Flush | обхід | непорожня черга; `passed` на кінці ходу; окремо — Flush заплановано при `unknown`, на запуску `passed` | не планується; запланований — без команди, `scheduled = false`, черга як є |
+| DeliverReport | обхід | `passed`, блок `marked` | WaitingAdvice немає, `waiting` лишається `marked`; підказки немає |
+| BlockReport | обхід | `passed`, закриття етапу | кінець — PASSED_ADVICE, без STAGE_ADVICE |
+| CompactRoute | обхід | `passed`; голий `/compact`; `/compact host`; `/compact <текст>` | `brief`; `host`; `pass` |
+| CompactBrief | зміст і порядок | рядок `state`, collapse і drop у черзі, `pin` на виклику, дві нотатки | BRIEF_HEAD; стан; «Use this summary for the rows from … to …» з підсумком; «Leave out <CallLabel>.»; «Keep verbatim: …»; нотатки з прев'ю цілей; BRIEF_RECORDS — у цьому порядку |
+| CompactBrief | межа | пункти разом > BRIEF_MAX | пункти цілими до межі, далі `(<n> more item(s) left out)`; результат ≤ BRIEF_MAX |
+| CompactBrief | ціль без рядка | правка, чиєї цілі немає в рядках | пункт пропущено |
+| ObservePassedCompact | оригінали + копії | `after` = `before` + 3 рядки підсумку | межа за трьома рядками; теги рядків, яких немає в копіях, зняті; `lastApply` знято; `introduced` → `reintroduce`; черга порожня |
+| ObservePassedCompact | інший порядок | `after` не починається з `before` | межа не пишеться (OBSERVE_NO_PREFIX); теги чистяться за `after`; черга порожня |
+| ScheduleRepair | перший хід процесу | новий процес: `session.start`; потім кінець першого ходу при `working`; окремо — при `passed` | таймера з `session.start` немає; ремонт планується на кінці ходу; при `passed` — ні |
 | ShapeSubagentResult | помилка запису | запис архіву повертає false | блок без змін |
 | ShapeSubagentResult | недопустимий id | `tool_use_id` з `/` або `..` | блок без змін, запису немає |
 | ShapeSubagentResult | is_error | результат з `is_error: true`, великий | обрізано, `is_error` лишається |
@@ -687,3 +715,4 @@
 | 2026-10-12 | Дизайн фази 32 — ремонт після відновлення: RecordInputs, DropPulled, NeedsRepair, ScheduleRepair, RunRepair, HandleRepair, ToolRefText (нові); HandleCompaction «завантажений ланцюжок / той самий процес», MarkerKind «ремонт», ApplyEdits «результат ToolSearch», BuildSeed «після відновлення» |
 | 2026-10-12 | Код фази 32: SoftHint / SuggestionText — рядок з `keep_cache` без речення про відновлення; рядки фази 32 покрито тестами `tests/repair.test.ts` і доповненнями `compaction`, `edits`, `handoff`, `flush` (NeedsRepair «новий процес» — за повторами в рядках без `handle`, не за DropPulled) |
 | 2026-10-14 | Перехід між етапами ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)): WaitingAdvice замість OptimizeText і PersonAdvice; DeliverReport — порада один раз, `/compact` важливіший, OPTIMIZE_LEGACY; Flush — хід лише стискання, WaitingAdvice у промпті продовження, після мітки без черги Flush не планується; DetectOptimize — без замін і запису черги, злиття блоків (MARK_NO_REPLACEMENTS, MARK_NOT_QUEUED, OPTIMIZE_NO_BLOCK вилучено); context_tag і context_edit — кінець очікування |
+| 2026-10-14 | Обхід хуків мода ([SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38)): рядки Capabilities, RunProbe, ParseProbe, ProbeMode, context_edit/context_handoff/HandoffCommand/RunHandoff/Flush/DeliverReport/BlockReport при обході, CompactRoute, CompactBrief, ObservePassedCompact, ScheduleRepair з першого ходу |

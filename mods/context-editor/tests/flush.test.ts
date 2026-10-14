@@ -678,3 +678,34 @@ test('AfterTurn — ремонт після перемикання: its step run
   await afterTurn(failing.io, { aborted: false, answer: '' })
   expect(steps(failing.calls)).toEqual(['storage', 'detect /s false ""', 'count /s', 'flush false'])
 })
+
+// ---- [SP_CTX_02_54] the host passes over the mod's compaction hook
+
+test('Flush — обхід: not planned when passed at the turn end; a Flush planned while unknown runs no command and keeps the queue', async () => {
+  const { io, log, state } = harness(ok({ edits: EDITS }), { compactPassed: async () => true })
+  expect(await flushAfterTurn(io, state, false)).toBe(false)
+  expect(log.timers.length).toBe(0)
+  const planned = harness(ok({ edits: EDITS, optimize: true, compact: true }), { compactPassed: async wait => wait })
+  const out = await flush(planned.io, planned.state, 0)
+  expect(out.outcome).toBe('passed-over')
+  expect(planned.log.compacts).toEqual([])
+  expect(planned.state.scheduled).toBe(false)
+  expect(planned.log.queue.state === 'ok' && planned.log.queue.value.edits.length).toBe(2)
+  // the compression turn's request made before the verdict goes
+  expect(planned.log.queue.state === 'ok' && planned.log.queue.value.optimize).toBe(false)
+})
+
+test('AfterTurn — можливості першим кроком: NoteTurn runs before DetectOptimize', async () => {
+  const order: string[] = []
+  const io: TurnEndIO = {
+    capabilities: async () => void order.push('caps'),
+    storage: async () => (order.push('storage'), '/s'),
+    detect: async () => void order.push('detect'),
+    countTurn: async () => void order.push('count'),
+    flush: async () => void order.push('flush'),
+    handoff: async () => undefined,
+  }
+  await afterTurn(io, { aborted: false, answer: '' })
+  expect(order.indexOf('caps')).toBeLessThan(order.indexOf('detect'))
+  expect(order.slice(-3)).toEqual(['detect', 'count', 'flush'])
+})

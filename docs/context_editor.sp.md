@@ -9,7 +9,7 @@
 > **Depends on:** none
 > **Used by:** —
 > **Plan:** [PL_CTX](./context_editor.plan.md)
-> **Children:** [structures](./context_editor.structures.sp.md) (§01 Data Structures), [edits](./context_editor.edits.sp.md) (§02 Contracts 02_01–02_10), [tags](./context_editor.tags.sp.md) (§02 Contracts 02_11–02_18), [handoff](./context_editor.handoff.sp.md) (§02 Contracts 02_19–02_26), [stages](./context_editor.stages.sp.md) (§02 Contracts 02_27–02_38, 02_42–02_43), [hostattach](./context_editor.hostattach.sp.md) (§02 Contracts 02_39–02_41), [resume](./context_editor.resume.sp.md) (§02 Contracts 02_44–02_48), [subagents](./context_editor.subagents.sp.md) (§02 Contracts 02_49), [cleanup](./context_editor.cleanup.sp.md) (§02 Contracts 02_50–02_52), [states](./context_editor.states.sp.md) (§04 State Transitions), [expectations](./context_editor.expectations.sp.md) (§05_01 Functional Expectations), [scenarios](./context_editor.scenarios.sp.md) (§05_02–05_04)
+> **Children:** [structures](./context_editor.structures.sp.md) (§01 Data Structures), [edits](./context_editor.edits.sp.md) (§02 Contracts 02_01–02_10), [tags](./context_editor.tags.sp.md) (§02 Contracts 02_11–02_18), [handoff](./context_editor.handoff.sp.md) (§02 Contracts 02_19–02_26), [stages](./context_editor.stages.sp.md) (§02 Contracts 02_27–02_38, 02_42–02_43), [hostattach](./context_editor.hostattach.sp.md) (§02 Contracts 02_39–02_41), [resume](./context_editor.resume.sp.md) (§02 Contracts 02_44–02_48), [subagents](./context_editor.subagents.sp.md), [bypass](./context_editor.bypass.sp.md) (§02 Contracts 02_53–02_57) (§02 Contracts 02_49), [cleanup](./context_editor.cleanup.sp.md) (§02 Contracts 02_50–02_52), [states](./context_editor.states.sp.md) (§04 State Transitions), [expectations](./context_editor.expectations.sp.md) (§05_01 Functional Expectations), [scenarios](./context_editor.scenarios.sp.md) (§05_02–05_04)
 >
 > Специфікація розширення Claude Code `context-editor` (одне розширення: воно і запускає компактизацію, і обробляє її, [C_CTX_DEC_02](./context_editor.concept.md#C_CTX_DEC_02)): структури рядків, медіа-ресурсів, правок, тегів, етапів, черги, звіту, журналу ефекту, телеметрії, сховища і засіву нової сесії; контракти інструментів агента, застосування правок, запуску компактизації вбудованою командою, обробника компактизації, доставки звіту, пошуку медіа, тегування й авторозмітки, службових нотаток з нагадуваннями, етапів і мітки оптимізації з ходом оптимізації, телеметрії на запит, м'якого нагадування, інструкції на початку сесії і передачі в нову сесію засівом; правила перевірки; життєві цикли; критерії перевірки з живими сценаріями в інтерактивному терміналі і в неінтерактивному хості з потоковим входом; відкат. Читати перед зміною коду мода або написанням тестів до нього. Набір складається з цієї парасольки (валідація, відкат, рішення, Changelog) і дочірніх файлів, перелічених у полі Children і таблицях розділів 02 і 05.
 
@@ -59,7 +59,8 @@
 | [context_editor.resume.sp.md](./context_editor.resume.sp.md) | §02 Contracts 02_44–02_48: контракти RecordInputs (журнал входу застосувань), DropPulled, ScheduleRepair і RunRepair, HandleRepair (ремонт після відновлення), ToolRefText (фаза 32) | draft |
 | [context_editor.cleanup.sp.md](./context_editor.cleanup.sp.md) | §02 Contracts 02_50–02_52: SweepSessions, PackSession, RestoreSession — дані старих сесій: видалення разом із транскриптом, пакування в `.zip`, відновлення (фаза 36) |
 | [context_editor.subagents.sp.md](./context_editor.subagents.sp.md) | §02 Contracts 02_49: ShapeSubagentResult — великі результати інструментів субагента в мить запису: голова, хвіст, рядок обрізання зі шляхом архіву (фаза 34) |
-| [context_editor.structures.sp.md](./context_editor.structures.sp.md) | §01 Data Structures (01_01–01_22) | active |
+| [context_editor.bypass.sp.md](./context_editor.bypass.sp.md) | §02 Contracts 02_53–02_57: Capabilities (можливості хоста: живі ознаки, зонд, кеш за версією), дії мода при обході, CompactBrief і ObservePassedCompact, RunProbe, ProbeMode | active |
+| [context_editor.structures.sp.md](./context_editor.structures.sp.md) | §01 Data Structures (01_01–01_26) | active |
 | [context_editor.states.sp.md](./context_editor.states.sp.md) | §04 State Transitions (04_01–04_07) | active |
 
 ## 03. Validation Rules  {#SP_CTX_03}
@@ -859,6 +860,31 @@
 **Rejected because:** стан B — черга скидає свої поля з пакетом; стан C — другий блок без споживача; кінець B — вічне очікування; порада B — шум.
 **Resolution trigger:** design sign-off: розробник підтверджує A або обирає інше в будь-якому рядку.
 
+### DEC_38 — Можливості хоста: зонд, компактизація без спостерігача, поради  {#SP_CTX_DEC_38}
+
+> **Status:** resolved — розробник 2026-10-14 («Ок. Продовжуй.» на design sign-off: A в кожному пункті)
+> **Date:** 2026-10-14
+
+**Question:** Концепт [C_CTX_DEC_31](./context_editor.concept.md#C_CTX_DEC_31): раз на версію хоста процес-зонд перевіряє можливості, результат за версією, живі ознаки переважають, вимикається частина мода, чий хук пропущено; `/compact` людини — з інструкціями мода; `unknown` дозволяє. Розробник: «Версію перевіряти не потрібно» — межі версії немає. Що вирішити понад концепт: (а) як зонд завантажує мод; (б) компактизація хоста, якої мод не бачить (спостерігач [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18) живе в `session.compact`); (в) поради стиснути, коли `context_edit` відмовляє; (г) API в процесі-зонді; (д) зонд іншого бінарника.
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| (а) A — завжди `--plugin-dir $.plugin.root` | керований мод копію ігнорує («locked by managed settings», спайк Q4), мод з `--plugin-dir` завантажується тим самим рівнем; мод з marketplace користувача дає дві копії рівня `user` — рівень той самий, поведінка дублікату не перевірена |
+| (а) B — визначати рівень (`/proc/$PPID/cmdline` чи рядок `session.append`) | лише Linux або службовий рядок у транскрипті; більше коду |
+| (б) A — після `/compact` людини з брифом хук `command.run` дочитує рядки і робить роботу спостерігача; автоматична компактизація хоста лишається невидимою | `/compact` людини дає правильний перелік; автоматичну (~800 тисяч токенів) видно лише в наступному процесі |
+| (б) B — нічого | перелік після кожного `/compact` при обході показує рядки до підсумку до перезапуску |
+| (в) A — при `compact = passed` без WaitingAdvice і підказки, звіт етапу з PASSED_ADVICE | агент не тягнеться до інструмента, що відмовить |
+| (в) B — як завжди | відмова `context_edit` за кожним етапом |
+| (г) A — недосяжна адреса API (`ANTHROPIC_BASE_URL=http://127.0.0.1:9`) | $0, ~4 с, без запиту моделі; якщо керовані налаштування організації перекриють адресу — запит haiku (~$0.001) і, при пропущеному хуку, справжній підсумок у тимчасовій сесії (~$0.003) |
+| (г) B — справжній запит haiku | ~$0.003–0.005 і кілька секунд щоразу |
+| (д) A — результат зонда з іншою версією відкидається | у VS Code бінарник у PATH інший; `/proc/$PPID/exe` дає точний, а перевірка версії ловить помилку на інших системах |
+
+**Decision:** A в кожному пункті (розробник 2026-10-14, design sign-off: «Ок. Продовжуй.»); специфікація за A — [SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)–[SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57), [SP_CTX_01_25](./context_editor.structures.sp.md#SP_CTX_01_25), [SP_CTX_01_26](./context_editor.structures.sp.md#SP_CTX_01_26)).
+**Rationale:** спайк [context_editor_probe](./context_editor_probe.spike.md): зонд дає правильну відповідь на обох хостах за ~4 с і $0; (а) A не потребує знати рівень; (б) хук команди людини — єдине місце, де мод знає про компактизацію при обході; (в) порада, що веде до відмови, — шум; (г) без витрат у звичайному випадку; (д) хибний кеш гірший за відсутній.
+**Rejected because:** (а) B — платформа і службовий рядок; (б) B — зламаний перелік; (в) B — відмова за кожним етапом; (г) B — витрати щоразу.
+**Resolution trigger:** design sign-off: розробник підтверджує A в кожному пункті або обирає інше.
+
 ## Changelog
 
 | Date | Change |
@@ -912,3 +938,4 @@
 | 2026-10-13 | Дизайн фази 33: [SP_CTX_DEC_36](#SP_CTX_DEC_36) замінює DEC_11 — повний посібник навички (GUIDE_FRAME + SKILL.md без frontmatter) прихованим контекстом першого промпту, INTRO_TEXT — після чужої компактизації, що лишилась (`reintroduce`); stages 02_27 (GuideText, GUIDE_UNREAD), edits 02_08, tags 02_18, structures 01_10, 01_12; 05_01 рядки SessionIntro; концепт C_CTX_03_02 |
 | 2026-10-13 | Дизайн фази 34 — результати субагентів ([C_CTX_DEC_27](./context_editor.concept.md#C_CTX_DEC_27), рішення розробника; спайк context_editor_subagents): новий дочірній файл [subagents](./context_editor.subagents.sp.md) з [SP_CTX_02_49](./context_editor.subagents.sp.md#SP_CTX_02_49) ShapeSubagentResult; 01_07 — архіви субагентів; 01_12 — SUB_CUT_AT, SUB_HEAD, SUB_TAIL, SUB_ID; 05_01 — рядки ShapeSubagentResult |
 | 2026-10-14 | Дизайн переходу між етапами ([C_CTX_DEC_30](./context_editor.concept.md#C_CTX_DEC_30)): [SP_CTX_DEC_37](#SP_CTX_DEC_37) (proposed) — `TagRegistry.waiting`, кінець очікування, канали поради, злиття блоків, старий `optimize`; мітка більше не запускає ходу оптимізації і не ставить замін з тегів; DEC_14 чинне, DEC_15 і DEC_16 — лише для ходу стискання `/compact`; преамбула 02 і правила 03_01 |
+| 2026-10-14 | Дизайн обходу хуків мода ([C_CTX_DEC_31](./context_editor.concept.md#C_CTX_DEC_31)): новий дочірній файл [bypass](./context_editor.bypass.sp.md) з 02_53 Capabilities, 02_54 дії при обході, 02_55 CompactBrief і ObservePassedCompact, 02_56 RunProbe, 02_57 ProbeMode (спайк [context_editor_probe](./context_editor_probe.spike.md)); 01_25 Capabilities, 01_26 CapabilityCache; константи; DEC_38 (proposed); посилання в 02_02, 02_06, 02_08, 02_19–02_21, 02_29, 02_37, 02_42, 02_46 |

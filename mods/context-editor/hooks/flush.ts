@@ -66,6 +66,10 @@ export type FlushIO = {
   // [SP_CTX_02_42] the current session id
   sessionId: () => Promise<string>
   turns: Readonly<Turns>
+  // [SP_CTX_02_54] the host passes over the mod's compaction hook; `wait`:
+  // while unknown, wait for a probe running in this process ([SP_CTX_02_56]);
+  // absent: never passed
+  compactPassed?: (wait: boolean) => Promise<boolean>
 }
 
 // [SP_CTX_02_06] Module memory; a reload starts it over. `plannedAt`: when
@@ -86,7 +90,16 @@ export function isPlanned(state: FlushState, now: number): boolean {
 // [SP_CTX_02_06] Errors: QUEUE_UNREADABLE, PERSON_MOVED, HOST_REFUSED; the
 // rest are outcomes of the command. `no-command`: only the request of the
 // person's /compact, nothing to apply.
-export type FlushOutcome = 'nothing-queued' | 'handoff-pending' | 'queue-unreadable' | 'person-moved' | 'host-refused' | 'compacted' | 'no-command' | 'session-changed'
+export type FlushOutcome =
+  | 'nothing-queued'
+  | 'handoff-pending'
+  | 'queue-unreadable'
+  | 'person-moved'
+  | 'host-refused'
+  | 'compacted'
+  | 'no-command'
+  | 'session-changed'
+  | 'passed-over'
 // [SP_CTX_02_06] Errors: PERSON_ACTIVE, RESUME_FAILED.
 export type ResumeOutcome = 'none' | 'submitted' | 'person-active' | 'resume-failed'
 // [SP_CTX_02_06] Errors: OPTIMIZE_PERSON, OPTIMIZE_BUILD_FAILED,
@@ -140,6 +153,9 @@ export function dropOptimize(q: Queue): Queue | undefined {
 // register.ts binds each to `$`. A failed step, rejected or thrown at once,
 // never stops the next one.
 export type TurnEndIO = {
+  // [SP_CTX_02_53] NoteTurn of Capabilities, Merge and the person's line,
+  // before anything else; absent: none
+  capabilities?: (aborted: boolean, storage: Promise<string | undefined>) => Promise<unknown>
   // [SP_CTX_02_30] the storage of the session whose turn ended; undefined: none
   storage: () => Promise<string | undefined>
   // [SP_CTX_02_30] DetectOptimize in `dir` (undefined: the mark is ignored)
@@ -164,9 +180,11 @@ export type TurnEndIO = {
 // queues commands from.
 export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: unknown }): Promise<void> {
   const answer = typeof e.answer === 'string' ? e.answer : ''
+  // [SP_CTX_01_07] CONC-01: the folder is asked for at once, before any await
+  const at = step(() => io.storage())
   const steps = (async () => {
-    // [SP_CTX_01_07] CONC-01: the folder is asked for at once, before any await
-    const dir = await step(() => io.storage())
+    if (io.capabilities) await step(() => io.capabilities!(e.aborted, at))
+    const dir = await at
     await step(() => io.detect(dir, { aborted: e.aborted, answer }))
     if (!e.aborted && dir) await step(() => io.countTurn(dir))
     if (io.repair) await step(io.repair)
@@ -191,6 +209,8 @@ async function step<T>(run: () => Promise<T>): Promise<T | undefined> {
 // request of the person's /compact, and no handoff. True when a Flush was planned.
 export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: boolean): Promise<boolean> {
   if (aborted || isPlanned(state, io.now())) return false
+  // [SP_CTX_02_54] passed over: no Flush; the queue stays for the brief of /compact
+  if (await io.compactPassed?.(false).catch(() => false)) return false
   const read = await io.readQueue()
   if (!hasWork(read) || isPlanned(state, io.now())) return false
   try {
@@ -269,6 +289,13 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     }
     if (!read.value.edits.length && !read.value.optimize) return { outcome: 'nothing-queued', resume: 'none' }
     if (read.value.handoff) return { outcome: 'handoff-pending', resume: 'none' }
+    // [SP_CTX_02_54] FLUSH_PASSED_OVER: no command, the edits stay (the brief
+    // of the person's /compact takes them); a compression turn's request
+    // made before the verdict goes, its turn would only meet refusals
+    if (await io.compactPassed?.(true).catch(() => false)) {
+      if (read.value.optimize) await io.updateQueue(dropOptimize).catch(() => undefined)
+      return { outcome: 'passed-over', resume: 'none' }
+    }
     // [SP_CTX_02_34] the report and the person's line take this
     // conversation's ratio; before the turn check, so this pause never puts
     // the command behind a new turn

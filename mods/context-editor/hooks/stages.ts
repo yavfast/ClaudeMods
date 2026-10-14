@@ -8,6 +8,7 @@
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, type AliasRegistry } from './aliases'
+import { PASSED_ADVICE } from './capabilities'
 import {
   apiCut,
   carrierIds,
@@ -720,6 +721,9 @@ export type BlockIO = {
   api?: () => Promise<readonly unknown[]>
   // [SP_CTX_02_18] listedKey = key: the report lists the block's row indexes
   setListed: (key: string) => void
+  // [SP_CTX_02_54] the host passes over the mod's compaction hook: PASSED_ADVICE
+  // ends the report; absent: never
+  passed?: () => boolean
 }
 
 // [SP_CTX_02_29] What BlockReport takes from the host besides the conversation.
@@ -844,10 +848,12 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     if (notes) text += `\nYour notes in the block: ${notes}`
   }
   if (replaced && replaced.queued > 0)
-    text += `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
+    text += io.passed?.()
+      ? `\nReplacements from your disposable tags queued: ${replaced.queued} (not applied on this host; the brief of the person's /compact carries them).`
+      : `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
   text += '\n' + telemetryText(t)
   if (hasRows) {
-    text += '\n' + (waiting ? WAIT_MOVED + ' ' : '') + STAGE_ADVICE
+    text += '\n' + (io.passed?.() ? PASSED_ADVICE : (waiting ? WAIT_MOVED + ' ' : '') + STAGE_ADVICE)
     io.setListed(key)
   }
   return text

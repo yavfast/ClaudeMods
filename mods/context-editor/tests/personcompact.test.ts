@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import { BRIEF_HEAD } from '../hooks/capabilities'
 import { flush, FLUSH_DELAY_MS, FLUSH_STALE_MS, flushAfterTurn, isPlanned, newFlushState, requestFlush, type FlushIO, type FlushState } from '../hooks/flush'
 import { COMPACT_BUSY, COMPACT_HANDOFF, COMPACT_REFUSED, COMPACT_REPLY, compactFailure, compactRoute, personCompact, requestCompact, type PersonCompactIO } from '../hooks/personcompact'
 import { COMMAND_NOTE, COMPACT_ADVICE, deliverReport, EMPTY_QUEUE, MARKER, noteOnce, parseQueue, settledQueue, withCommandNote, withoutReport, type HandoffRequest, type Queue } from '../hooks/queue'
@@ -440,4 +441,23 @@ test('CompactTurnText — текст: the mod\'s own text; the whole conversatio
   expect(text).toContain('context_list')
   expect(text).not.toContain('note(s)')
   expect(compactTurnText(3)).toContain('You have 3 note(s)')
+})
+
+// ---- [SP_CTX_02_55] the route brief when the host passes over the mod's compaction hook
+
+test('CompactRoute — обхід: a bare /compact goes to the host with the brief, no request written; /compact host and /compact <text> as always', async () => {
+  const h = harness(okRead({ ...EMPTY_QUEUE }))
+  const pio: PersonCompactIO = { ...h.pio, compactPassed: async () => true, brief: async () => 'THE BRIEF' }
+  expect(await personCompact(pio, person(''), () => false)).toEqual({ next: 'THE BRIEF', brief: true })
+  expect(h.log.queue.state === 'ok' && h.log.queue.value.optimize).toBe(false)
+  expect(await personCompact(pio, person('host'), () => false)).toEqual({ next: '' })
+  expect(await personCompact(pio, person('keep the API notes'), () => false)).toEqual({ next: 'keep the API notes' })
+  // BRIEF_FAILED: the head alone
+  const failing: PersonCompactIO = {
+    ...pio,
+    brief: async () => {
+      throw new Error('no rows')
+    },
+  }
+  expect(await personCompact(failing, person(''), () => false)).toEqual({ next: BRIEF_HEAD, brief: true })
 })

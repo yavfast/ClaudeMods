@@ -46,6 +46,8 @@ export const LEGACY_HANDOFF_MARKER = modText('seed the handed-off conversation')
 // 32): the mod rebuilds a conversation the host loaded with originals beside
 // their copies.
 export const REPAIR_MARKER = modText('repair the resumed conversation (run automatically by the mod: resuming loaded some answers twice; not by the person)')
+// [SP_CTX_02_57] The probe process's /compact (phase 38): the mod there answers it with skip.
+export const PROBE_MARKER = modText('capability probe (run by the mod in a throwaway process)')
 
 // [SP_CTX_01_12] [SP_CTX_02_48] TOOLREF_TEXT: the text of a ToolSearch result
 // rebuilt without its handle, which would be empty (CF-51): a rebuilt row

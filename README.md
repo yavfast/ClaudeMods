@@ -12,6 +12,24 @@
 claude --plugin-dir ~/Projects/ClaudeMods/mods/context-editor
 ```
 
+## Керований плагін (Managed plugin)
+
+На хості 2.1.299+ з обліковим записом Team чи Enterprise (або з керованими налаштуваннями на машині) вбудований `cc-plugin-sec-default` стає найзовнішнім і пропускає хуки `session.compact` і `prompt.attachment` кожного плагіна, встановленого людиною, зокрема через `--plugin-dir`. Тоді `/compact` мода став би справжнім підсумком хоста, тож мод це перевіряє (окремий процес-зонд раз на версію хоста і живі ознаки) і вимикає те, що пропущено: `context_edit`, `context_handoff` і `/handoff` відмовляють, а `/compact` іде до хоста з брифом мода. Людина бачить про це один рядок у чаті.
+
+Щоб мод працював повністю, його запускають як керований плагін. `.claude-plugin/marketplace.json` у корені репозиторію — marketplace `claudemods` (мод завантажується на місці з `mods/context-editor`). Файл `/etc/claude-code/managed-settings.json` (потрібні права root):
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "claudemods": { "source": { "source": "directory", "path": "/home/<user>/Projects/ClaudeMods" } }
+  },
+  "enabledPlugins": { "context-editor@claudemods": true },
+  "prependPlugins": ["sec-default@builtin", "context-editor@claudemods"]
+}
+```
+
+`sec-default@builtin` лишається першим у `prependPlugins`, щоб зберегти його захист. Кожна нова сесія на машині тоді завантажує робоче дерево мода; копію з `--plugin-dir` керований мод ігнорує. Перевірено на 2.1.299 (спайк у `.dev_flow/cache/live-test/host-2.1.299-bypass.md`, `managed-spike/`). Розширення VS Code запускає власний вбудований хост, не встановлений.
+
 ## Перевірки
 
 ```sh

@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { HANDOFF_COMMAND_PASSED_OVER, HANDOFF_PASSED_OVER } from '../hooks/capabilities'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction, HANDOFF_MARKER, type CompactionIO } from '../hooks/compaction'
 import { parseAliases, refResolver, type AliasRegistry } from '../hooks/aliases'
@@ -2236,4 +2237,23 @@ test('BuildSeed — результат ToolSearch: the seed names the tools it l
   ]
   const seed = built((await seedOf({ rows, transcript: rows, api: seedApi })).out)
   expect(seed.rows.find(r => r.toolResults?.length)!.toolResults![0]!.text).toBe(toolRefWords(['WebFetch']))
+})
+
+// ---- [SP_CTX_02_54] the handoff when the host passes over the mod's compaction hook
+
+test('Передача — обхід: context_handoff and /handoff refuse and write nothing; /handoff cancel as always; a queued request ends with HANDOFF_PASSED_OVER, no command', async () => {
+  const { io, s } = host()
+  const passed: HandoffIO = { ...io, compactPassed: async () => true }
+  const denied = await contextHandoff(passed, s.mem, {})
+  expect('deny' in denied && denied.code).toBe('DENIED_PASSED_OVER')
+  expect(await handoffCommand(passed, s.mem, '')).toBe(HANDOFF_COMMAND_PASSED_OVER)
+  expect(s.timers.length).toBe(0)
+  expect(await handoffCommand(passed, s.mem, 'cancel')).toBe('handoff cancelled')
+  const queued = host()
+  const run: HandoffIO = { ...queued.io, compactPassed: async () => true }
+  expect(await runHandoff(run, queued.s.mem, 0)).toBe('nothing')
+  expect(queued.s.commands).toEqual([])
+  const q = queued.s.queues.get('/s/old')!
+  expect(q.handoff).toBeUndefined()
+  expect(q.report).toContain(HANDOFF_PASSED_OVER)
 })

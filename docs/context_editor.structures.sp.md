@@ -6,11 +6,11 @@
 > **Updated:** 2026-10-13
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
-> §01 Data Structures (01_01–01_24) специфікації [SP_CTX](./context_editor.sp.md): структури: рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила, константи (01_12), псевдоніми, межа, запит передачі, засів, етап і позначки рядків, журнал, телеметрія, нотатка, доставка, рішення про вкладення хоста, доставка хоста. Читати перед зміною будь-якої структури даних або константи мода.
+> §01 Data Structures (01_01–01_26) специфікації [SP_CTX](./context_editor.sp.md): структури: рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила, константи (01_12), псевдоніми, межа, запит передачі, засів, етап і позначки рядків, журнал, телеметрія, нотатка, доставка, рішення про вкладення хоста, доставка хоста, можливості хоста. Читати перед зміною будь-якої структури даних або константи мода.
 
 ## Contents
 
-- [01. Data Structures](#SP_CTX_01) — рядки, правки, черга, звіт, архів, сховище, медіа, теги, константи, псевдоніми, межа, передача, етапи, журнал, телеметрія, нотатки, доставки, рішення про вкладення хоста, журнал входу застосувань
+- [01. Data Structures](#SP_CTX_01) — рядки, правки, черга, звіт, архів, сховище, медіа, теги, константи, псевдоніми, межа, передача, етапи, журнал, телеметрія, нотатки, доставки, рішення про вкладення хоста, журнал входу застосувань, можливості хоста
 
 ## 01. Data Structures  {#SP_CTX_01}
 
@@ -299,6 +299,17 @@ Invariants:
 | LAST_TEXTS (LAST_NONE) | рядок результату: `"last" = <CallLabel>`; відмови: LAST_NONE `"last" names no call: no finished call of yours before this one (context_* calls do not count)`, LAST_PENDING `"last" is <CallLabel>, which has no result yet; use "last" once its result is in, or name another target`, LAST_ORPHAN `"last" is <CallLabel>, a call of an earlier turn that never got a result, so it cannot be a target; name the call you mean by its "tool_use_id" or alias` | Тексти ResolveLast ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17), фаза 21, [SP_CTX_DEC_20](./context_editor.sp.md#SP_CTX_DEC_20); LAST_ORPHAN — рев'ю 50). CallLabel — той самий запис виклику, що в переліку, одна функція `callLabel` в `hooks/edits.ts`: `<tool>` (у переліку — з REPRO_FLAG), ` id=<tool_use_id>`, псевдонім ` (cN)`, якщо є, і `input="<JSON.stringify(input) в один рядок, до 70 символів>"` — внутрішні лапки JSON не екрануються ([SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01)) |
 | FLUSH_DELAY (`FLUSH_DELAY_MS`) | 300 мс | Пауза між завершенням ходу і запуском Flush: команди компактизації, промпту продовження або промпту ходу оптимізації |
 | FLUSH_STALE (`FLUSH_STALE_MS`) | 10 000 мс | Запланований Flush, чий таймер не спрацював стільки часу після планування, вважається загубленим (хост може мовчки відхилити таймер): наступне планування (кінець ходу, `/compact` людини) іде, а не чекає на нього вічно ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)) |
+| PROBE_DELAY_MS | 1000 | Затримка зонда від старту сесії ([SP_CTX_02_56](./context_editor.bypass.sp.md#SP_CTX_02_56)) |
+| PROBE_TIMEOUT_MS | 60000 | Тайм-аут процесу-зонда (`$.process.run`) |
+| PROBE_WAIT_MS | 15000 | Найдовше очікування зонда дією, що запускає компактизацію мода |
+| PROBE_MARKER | `context-editor: capability probe (run by the mod in a throwaway process)` | Аргументи `/compact` у процесі-зонді |
+| PROBE_PREFIX | `context-editor-probe:` | Початок відповіді `skip` обробника на PROBE_MARKER ([SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57)) |
+| PROBE_FILE | `probe-counts.json` | Файл лічильників зонда в його тимчасовій теці |
+| CAP_CACHE_VERSIONS | 5 | Найбільше версій хоста в `capabilities.json` |
+| BRIEF_MAX | 12000 | Межа CompactBrief у символах ([SP_CTX_02_55](./context_editor.bypass.sp.md#SP_CTX_02_55)): пункти цілими в порядку брифу, решта — рядок `(<n> more item(s) left out)` |
+| BRIEF_HEAD | `Summarize this conversation for the agent that goes on with it. Keep every message of the person verbatim.` | Перший рядок CompactBrief; при BRIEF_FAILED — увесь бриф |
+| BRIEF_RECORDS | `Keep verbatim the texts that start with "Later, your context_": they are the agent's own records.` | Останній пункт CompactBrief |
+| PASSED_ADVICE | `Compression is off on this host (context_edit refuses: the host passes over the mod's compaction hook); keep working.` | Кінець BlockReport при `passed` замість STAGE_ADVICE ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)) |
 | HOST_ARG | `host` | Аргумент `/compact`, яким людина просить підсумок хоста: після обрізання пробільних символів, без урахування регістру; мод передає команду хосту з порожнім аргументом ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) |
 | COMPACT_REPLY | `the agent will compress the conversation itself; the person's messages stay verbatim. For the host's summary, run /compact host.` | Відповідь мода на `/compact` людини, коли хід стискання заплановано; без префікса мода: хост показує відповідь команди під назвою розширення (як відповіді `/handoff`); модель її теж бачить (рядок виводу команди) |
 | COMPACT_HANDOFF | `a handoff is pending; nothing was compressed. /compact host runs the host's summary.` | Відповідь на `/compact` людини, поки в черзі запит передачі |
@@ -636,6 +647,39 @@ Invariants:
 - Після ремонту, що стоїть, журнал порожній: жоден рядок асистента чи результатів розмови не має `handle`, тож старі оригінали більше не підтягнуться.
 - Журнал без запису не забороняє ремонту: залишкове правило DropPulled працює і без нього, якщо сесія мала застосування (запис `apply` журналу ефекту, [SP_CTX_01_19](#SP_CTX_01_19)).
 
+### 01_25. Capabilities  {#SP_CTX_01_25}
+
+Пам'ять модуля, з якої Capabilities ([SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)) виводить вердикти: один об'єкт на екземпляр модуля (процес хоста), без файлу; перемикання сесії його не скидає, перезавантаження модуля — скидає.
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| attachments | int | yes | 0 | ≥ 0 | Скільки разів хост викликав хук `prompt.attachment` мода (будь-який тип) |
+| mainTurns | int | yes | 0 | ≥ 0 | Завершені не перервані ходи основної розмови в цьому екземплярі |
+| live | map<Capability, `reached` \| `passed`> | yes | `{}` | — | Живі ознаки цього процесу |
+| probe | map<Capability, `reached` \| `passed`> | yes | `{}` | — | Результат зонда цього процесу |
+| cache | map<Capability, `reached` \| `passed`> | yes | `{}` | — | Запис кешу для версії цього хоста ([SP_CTX_01_26](#SP_CTX_01_26)) |
+| probeState | `none` \| `planned` \| `running` \| `done` | yes | `none` | — | Зонд цього процесу (один на процес) |
+| version | string | no | — | `x.y.z` | `$.session.version().version`, прочитана один раз; відсутня — читання кинуло (кешу і зонда немає) |
+| noticed | list<Capability> | yes | `[]` | — | Можливості, які PassedText уже назвав у цьому процесі |
+| ownSeen | int | yes | 0 | ≥ 0 | Скільки власних міток мода (MARKER, HANDOFF_MARKER, REPAIR_MARKER) побачив обробник `session.compact` цього процесу; NoteCommandUnseen порівнює до і після команди |
+| passSeen | int | yes | 0 | ≥ 0 | Скільки інших компактизацій основної розмови (не precompute) побачив обробник; маршрут `brief` пропускає ObservePassedCompact, коли лічильник зріс |
+
+Capability: `compact` \| `attachments`.
+
+Invariants:
+- `attachments` і `mainTurns` лише зростають.
+- Вердикт — функція полів (Verdict: `live` → `probe` → `cache` → `unknown`), окремо не зберігається.
+
+### 01_26. CapabilityCache  {#SP_CTX_01_26}
+
+Файл `<root>/capabilities.json` (корінь сховища `$HOME/.claude/context-editor/`, режим 700): вердикти за версією хоста, спільні для всіх сесій машини. Пише Merge ([SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)) записом цілого файлу (останній записувач виграє: записи різних процесів однієї версії однакові або новіші за живими ознаками); читає старт сесії. Нечитабельний — як порожній, наступний запис його замінює.
+
+| Field | Type | Required | Default | Constraints | Description |
+|-------|------|----------|---------|-------------|-------------|
+| entries | map<string, CapEntry> | yes | `{}` | ≤ CAP_CACHE_VERSIONS ключів; при перевищенні видаляються записи з найстарішим `at` | Ключ — версія хоста |
+
+CapEntry: `compact` і `attachments` — `reached` \| `passed` (кожне необов'язкове), `at` — мс від епохи, `source` — `probe` \| `live`.
+
 ## Changelog
 
 | Date | Change |
@@ -671,3 +715,4 @@ Invariants:
 | 2026-10-12 | Код фази 32: 01_24 — `handles` запису 1..MAX_LEDGER_HANDLES (було ROW_WINDOW; вхід обробника компактизації не має межі вікна); розбір і обрізання журналу — у модулі ремонту, ланцюжок `ledger` — у порту сховища |
 | 2026-10-12 | Рев'ю фази 32: 01_24 — поле `clean` (вердикт «nothing to repair») |
 | 2026-10-14 | Перехід між етапами ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)): 01_10 — поле `waiting`; 01_04 — `optimize` лише з `compact`, старий запит знімається; 01_18 — інваріант `waiting`; 01_12 — OPTIMIZE_MARK |
+| 2026-10-14 | Можливості хоста ([SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38)): 01_25 Capabilities, 01_26 CapabilityCache; 01_12 — PROBE_*, CAP_CACHE_VERSIONS, BRIEF_MAX, BRIEF_HEAD, BRIEF_RECORDS, PASSED_ADVICE |

@@ -10,6 +10,7 @@
 // prompt, CompactTurnText ([SP_CTX_02_06]); DetectOptimize ends the turn and
 // tells the person when it queued nothing ([SP_CTX_02_30]). Free of the host:
 // register.ts binds PersonCompactIO to `$`.
+import { BRIEF_HEAD } from './capabilities'
 import type { Queue } from './queue'
 import { FLUSH_STALE_MS } from './flush'
 import { errorText, modText } from './rows'
@@ -59,11 +60,17 @@ export type PersonCompactIO = {
   planFlush: (session: string) => void
   toast: (text: string) => void
   now: () => number
+  // [SP_CTX_02_54] the host passes over the mod's compaction hook (after a
+  // probe running in this process, at most PROBE_WAIT_MS); absent: never
+  compactPassed?: () => Promise<boolean>
+  // [SP_CTX_02_55] CompactBrief over the conversation, the registry and the queue
+  brief?: () => Promise<string>
 }
 
-// The hook's answer: `next` — pass to the host with these args; `text` —
-// answer in its place, no compaction runs.
-export type CompactAnswer = { next: string } | { text: string }
+// The hook's answer: `next` — pass to the host with these args (`brief`: the
+// mod's brief, ObservePassedCompact follows); `text` — answer in its place,
+// no compaction runs.
+export type CompactAnswer = { next: string; brief?: true } | { text: string }
 
 // [SP_CTX_02_42] What the queue says about a new request.
 type Verdict = 'written' | 'busy' | 'handoff' | 'aborted'
@@ -89,6 +96,17 @@ export async function personCompact(io: PersonCompactIO, e: { args: string; orig
   const route = compactRoute(e)
   if (route === 'pass') return { next: e.args }
   if (route === 'host') return { next: '' }
+  // [SP_CTX_02_55] route `brief`: the host's summary under the mod's brief
+  // (BRIEF_FAILED: the head alone); no request of a compression turn
+  if (await io.compactPassed?.().catch(() => false)) {
+    let brief: string
+    try {
+      brief = (await io.brief?.()) || BRIEF_HEAD
+    } catch {
+      brief = BRIEF_HEAD
+    }
+    return { next: brief, brief: true }
+  }
   const st = await io.storage().catch(() => undefined)
   // COMPACT_NO_STORAGE: without the mod's storage the host's /compact runs as without the mod
   if (!st) return { next: e.args }

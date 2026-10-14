@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { PASSED_ADVICE } from '../hooks/capabilities'
 import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, ROW_WINDOW, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
@@ -1348,4 +1349,14 @@ test('listLabels / listAliases — none without storage; an unreadable registry 
     ['a', 'c1'],
     ['b', 'c2'],
   ])
+})
+
+// ---- [SP_CTX_02_54] BlockReport when the host passes over the mod's compaction hook
+
+test('BlockReport — обхід: the report ends with PASSED_ADVICE, without STAGE_ADVICE', async () => {
+  const list = [prompt('p'), use('c'), result('c'), reply('r')]
+  const block: ClosedBlock = { name: 'A', after: mark(list, 0), end: mark(list, 3), turn: 0 }
+  const text = await blockReport({ ...blockIO(list, reg()), passed: () => true }, block)
+  expect(text.endsWith(PASSED_ADVICE)).toBe(true)
+  expect(text).not.toContain(STAGE_ADVICE)
 })

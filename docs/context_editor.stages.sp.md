@@ -186,6 +186,8 @@ Errors:
 | NO_STAGE | CloseStage без відкритого етапу | context_tag відхиляє запит ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); реєстр без змін |
 | REPORT_FAILED | BlockReport кинув виняток (читання рядків, API-подання чи реєстру) | етап уже закрито й реєстр записано: результат context_tag замість звіту має `Stage "<name>" closed; its report failed: <error>; call context_list`; `listedKey` не оновлено |
 
+Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): при `passed` BlockReport закінчується PASSED_ADVICE замість STAGE_ADVICE ([SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38) (в)).
+
 ### 02_30. DetectOptimize  {#SP_CTX_02_30}
 
 Purpose: помітити мітку оптимізації у фінальному тексті ходу, закрити блок і позначити його як такий, що чекає стискання ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02), «Мітка оптимізації в тексті»; [C_CTX_DEC_30](./context_editor.concept.md#C_CTX_DEC_30); [SP_CTX_DEC_12](./context_editor.sp.md#SP_CTX_DEC_12), [SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)); зняти запобіжник ходу стискання `/compact` людини ([SP_CTX_02_42](#SP_CTX_02_42)).
@@ -554,6 +556,8 @@ Processing logic (pseudocode):
 
 Errors: відмов немає; будь-який збій — рядок псевдоніма без пропозиції (промпт — без неї), стан не змінюється. Стан пишеться порівнянням-і-записом: якщо паралельний виклик змінив `hint` між читанням і записом, другий рядок не з'являється.
 
+Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): при `passed` підказка не додається в жодному каналі.
+
 ### 02_38. CacheCost  {#SP_CTX_02_38}
 
 Purpose: оцінити, скільки кешу промпту коштує застосування, і чи окупиться воно ([C_CTX_03_02](./context_editor.mechanisms.concept.md#C_CTX_03_02); спайки [context_editor_cache](./context_editor_cache.spike.md) і [context_editor_efficiency](./context_editor_efficiency.spike.md); [SP_CTX_DEC_23](./context_editor.sp.md#SP_CTX_DEC_23)). Чисті функції `hooks/cache.ts`; читають SoftHint ([SP_CTX_02_37](#SP_CTX_02_37)) і Telemetry ([SP_CTX_02_28](#SP_CTX_02_28)). Фаза 23.
@@ -652,6 +656,8 @@ Errors:
 | COMPACT_SESSION_CHANGED | сесія змінилась між командою і таймером Flush | спливне повідомлення «/compact skipped: the session changed …»; промпту немає |
 | COMPACT_NOTHING | хід стискання скінчився (не перерваний) без жодної правки в черзі | спливне повідомлення COMPACT_NOTHING (DetectOptimize); підсумку хоста мод не запускає |
 | COMPACT_HOOK_FAILED | хук кинув виняток чи перевищив бюджет до `next` для походження людини | CompactFailure: відповідь «compact failed: <kind>; /compact host runs the host's summary»; компактизації немає |
+
+Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): маршрут `agent` при вердикті `passed` стає `brief` — `/compact` іде до хоста з CompactBrief, а після підсумку хук робить ObservePassedCompact ([SP_CTX_02_55](./context_editor.bypass.sp.md#SP_CTX_02_55)); черги ходу стискання не пише. `/compact host` і `/compact <інструкції>` — як завжди.
 
 ### 02_43. ApplyLine і LogApply  {#SP_CTX_02_43}
 

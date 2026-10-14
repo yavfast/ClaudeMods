@@ -45,6 +45,7 @@
 | `SP_CTX_02_44`–`02_48` (ремонт після відновлення: журнал входу, DropPulled, ремонт, ToolRefText) | [context_editor.resume.sp.md](context_editor.resume.sp.md) |
 | `SP_CTX_02_50`–`02_52` (старі сесії: SweepSessions, PackSession, RestoreSession) | [context_editor.cleanup.sp.md](context_editor.cleanup.sp.md) |
 | `SP_CTX_02_49` (результати субагентів: ShapeSubagentResult) | [context_editor.subagents.sp.md](context_editor.subagents.sp.md) |
+| `SP_CTX_02_53`–`SP_CTX_02_57` (можливості хоста: Capabilities, дії при обході, CompactBrief, RunProbe, ProbeMode) | [context_editor.bypass.sp.md](context_editor.bypass.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
 | `SP_CTX_05_01` (модульні очікування) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |
 | `SP_CTX_05_02`–`05_04` (інваріанти, сценарії, граничні випадки) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |

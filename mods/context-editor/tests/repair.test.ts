@@ -19,6 +19,7 @@ import {
   REPAIR_DELAY_MS,
   REPAIR_REFUSED,
   REPAIR_SKIP,
+  repairAtStart,
   repairAtTurnEnd,
   repairLine,
   repairSwitched,
@@ -443,4 +444,20 @@ test('CollectMedia — результат двічі в завантаженом
   const done = await handleRepair(io, rows)
   if (!('messages' in done.outcome)) throw new Error(JSON.stringify(done.outcome))
   expect(written.media).toEqual(['/s/42/1.png'])
+})
+
+// ---- [SP_CTX_02_46] [SP_CTX_02_54] the repair from the first turn of the process
+
+test('ScheduleRepair — перший хід процесу: no timer from the session start; the first turn end plans it; passed runs no command', async () => {
+  const { io, log, mem } = repairHost()
+  repairAtStart(mem)
+  expect(log.timers.length).toBe(0)
+  expect(await repairAtTurnEnd(io, mem)).toBe(true)
+  expect(log.timers.map(t => t.ms)).toEqual([REPAIR_DELAY_MS])
+  expect(await repairAtTurnEnd(io, mem)).toBe(false)
+  const passed = repairHost({ passed: async () => true })
+  expect(await runRepair(passed.io, passed.mem)).toBe('switched')
+  passed.mem.session = 's1'
+  expect(await runRepair(passed.io, passed.mem)).toBe('passed-over')
+  expect(passed.log.commands).toBe(0)
 })
