@@ -10,32 +10,23 @@
 > **Depends on:** [SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04), [SP_CTX_02_05](./context_editor.edits.sp.md#SP_CTX_02_05), [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07), [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12), [SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16), [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18), [SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29), [SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)
 > **Used by:** —
 >
-> Курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)) у термінах контрактів: структури (епістемний статус, походження, пункти слота стану, нові поля правок і тегів, записи рядків хоста, константи), контракти (правило слів людини з відмовою при постановці й застосуванні, `describe` для вставок, запис рядків хоста і їх список з `id`, тексти замін з походженням і статусом, перевірка залежностей, слід власних викликів, застаріле читання й готові заміни, операція `state`, піни, правила й тексти навички), перевірки, життєві цикли, критерії перевірки, відкат і рішення SP_CTX_DEC_39–DEC_43. Наявні контракти, які курування змінює, лишаються у своїх файлах із посиланням сюди. Читати перед реалізацією будь-якого механізму курування.
+> Курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)) у термінах контрактів: структури (походження, пункти слота стану, нові поля правок і тегів, записи рядків хоста, константи), контракти (правило слів людини з відмовою при постановці й застосуванні, `describe` для вставок, запис рядків хоста і їх список з `id`, тексти замін з походженням, перевірка залежностей, слід власних викликів, застаріле читання й готові заміни, операція `state`, піни, правила й тексти навички), перевірки, життєві цикли, критерії перевірки, відкат і рішення SP_CTX_DEC_39–DEC_44. Наявні контракти, які курування змінює, лишаються у своїх файлах із посиланням сюди. Читати перед реалізацією будь-якого механізму курування.
 
 ## Contents
 
-- [01. Data Structures — курування](#SP_CTX_01_27) — епістемний статус, джерело заміненого змісту, пункт слота стану й нові поля реєстру, нові поля правок і тегів, записи рядків хоста, константи курування
+- [01. Data Structures — курування](#SP_CTX_01_27) — джерело заміненого змісту, пункт слота стану й нові поля реєстру, нові поля правок і тегів, записи рядків хоста, константи курування
 - [02. Contracts — курування](#SP_CTX_02_58) — слова людини, `describe` для вставок, запис рядків хоста і їх список з `id`, відкривачі замін, перевірка залежностей, слід власних викликів, застаріле читання, готові заміни, операція `state`, піни, правила й тексти навички
 - [03. Validation Rules — курування](#SP_CTX_03_03) — що перевіряється на вході агента і в результаті застосування
 - [04. State Transitions — курування](#SP_CTX_04_08) — життєвий цикл пункту слота стану і запису рядків хоста
 - [05. Verification Criteria — курування](#SP_CTX_05_05) — модульні очікування, інваріанти, живі сценарії, граничні випадки
 - [06. Reversibility — курування](#SP_CTX_06_02) — як вимкнути кожен механізм і що лишається
-- [07. Design Decisions — курування](#SP_CTX_DEC_39) — де лежить специфікація, форма статусу, операція слота стану, як агент бачить і прибирає рядки хоста, де правила курування
+- [07. Design Decisions — курування](#SP_CTX_DEC_39) — де лежить специфікація, форма статусу та його зняття після воріт, операція слота стану, як агент бачить і прибирає рядки хоста, де правила курування
 
 ## 01. Data Structures — курування
 
-### 01_27. EpistemicStatus  {#SP_CTX_01_27}
+### 01_27. EpistemicStatus (вилучено)  {#SP_CTX_01_27}
 
-Наскільки надійний зміст заміни, на думку агента ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06), [C_CTX_DEC_33](./context_editor.curation.concept.md#C_CTX_DEC_33)). Один на заміну; окремі факти в тексті агент позначає власними словами, мод їх не розбирає ([SP_CTX_DEC_40](#SP_CTX_DEC_40)).
-
-| Value | Meaning | Words in the opener (STATUS_WORDS) |
-|-------|---------|------------------------------------|
-| `verified` | агент звірив зміст із зовнішнім сигналом: тест, вивід інструмента, перечитування | `verified` |
-| `read` | факти перенесено з оригіналу так, як їх прочитано | `read from the source` |
-| `inferred` | висновок агента з оригіналу | `inferred` |
-| `assumed` | неперевірена гіпотеза | `assumed` |
-
-Де стоїть: поле `status` правки ([SP_CTX_01_30](#SP_CTX_01_30)) — обов'язкове для `summarize` і `collapse` і для тегу `disposable`, чия заміна стискає пару чи діапазон; необов'язкове для `rewrite`, `describe` і `disposable` на власному текстовому рядку; відсутнє для `drop` і `state`.
+Вилучено 2026-10-15 рішенням [SP_CTX_DEC_44](#SP_CTX_DEC_44): слова статусу (`verified`, `read`, `inferred`, `assumed`) у відкривачі заміни на воротах фази 39 майже не змінили довіри агента до стиснутого ([SP_CTX_05_07](#SP_CTX_05_07)), тож заміна несе лише джерело ([SP_CTX_01_28](#SP_CTX_01_28)) і `which you quoted from later`. Поля `status` у правках і тегах, переліку STATUS_WORDS, слів StatusWords і відмов STATUS_REQUIRED і BAD_STATUS немає; надійність окремих фактів агент, коли треба, називає власними словами в тексті заміни. Якір лишається для посилань.
 
 ### 01_28. Source  {#SP_CTX_01_28}
 
@@ -82,17 +73,15 @@ Edit ([SP_CTX_01_02](./context_editor.structures.sp.md#SP_CTX_01_02)) і QueuedE
 
 | Field | Applies to | Type | Required | Description |
 |-------|------------|------|----------|-------------|
-| status | `summarize`, `collapse` | EpistemicStatus | yes | [SP_CTX_01_27](#SP_CTX_01_27) |
-| status | `rewrite`, `describe` | EpistemicStatus? | no | Те саме, на вибір агента |
 | changes | `state` (нова операція) | list<StateChange> | yes | 1..MAX_STATE_ITEMS змін, у порядку застосування |
 | quoted | QueuedEdit `summarize`, `drop`, `collapse` | `true`? | no | DependencyCheck знайшов цитати оригіналу ([SP_CTX_02_63](#SP_CTX_02_63)); пише мод |
 | host | `drop` | string? | no | `id` запису рядка хоста ([SP_CTX_01_31](#SP_CTX_01_31)); виключає `tool_use_id` і `ref` ([SP_CTX_02_61](#SP_CTX_02_61)) |
 
 StateChange — одне з: `{ "do": "add", "kind": <kind>, "text": <string> }`, `{ "do": "set", "id": <id>, "text": <string> }`, `{ "do": "mark", "id": <id>, "as": "harmful" | "outdated" }`, `{ "do": "unmark", "id": <id> }`, `{ "do": "remove", "id": <id> }`. Правка `state` має форму `{ "op": "state", "changes": [...] }`; ціллю є рядок, що тримає тег `state` у мить застосування.
 
-Tag ([SP_CTX_01_09](./context_editor.structures.sp.md#SP_CTX_01_09)): `status` (EpistemicStatus?) для `disposable` — обов'язковий, коли ціль — пара чи діапазон, необов'язковий для власного текстового рядка; `reason` тегу `review` додає `superseded` (R6, [SP_CTX_02_65](#SP_CTX_02_65)).
+Tag ([SP_CTX_01_09](./context_editor.structures.sp.md#SP_CTX_01_09)): `reason` тегу `review` додає `superseded` (R6, [SP_CTX_02_65](#SP_CTX_02_65)).
 
-Розбір файлів: невідоме значення `status`, `do`, `kind`, `as` чи `reason` робить чергу або реєстр `unreadable`, як будь-яке погане поле ([SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04)). Черга, записана старішою версією, полів `status` і `quoted` не має: така правка застосовується без слів статусу і без застереження про цитати. Поле `status` у правці `drop` чи `state` мод ігнорує разом зі значенням, як будь-яке зайве поле правки (checkShape, [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)).
+Розбір файлів: невідоме значення `do`, `kind`, `as` чи `reason` робить чергу або реєстр `unreadable`, як будь-яке погане поле ([SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04)). Черга, записана старішою версією, поля `quoted` не має: така правка застосовується без застереження про цитати. Поля статусу немає ([SP_CTX_DEC_44](#SP_CTX_DEC_44)): `status` у правці чи тегу мод ігнорує разом зі значенням, як будь-яке зайве поле (checkShape правки, [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03); isTag тегу).
 
 ### 01_31. HostRows  {#SP_CTX_01_31}
 
@@ -191,14 +180,14 @@ Processing logic (pseudocode):
         kinds = (media of the row archived ? media) + (PasteBlocks(text) ? pasted text)
         IF kinds empty: fail "no media or pasted text found in that row now"
         typed = text with paste block k (from 1) replaced by "[pasted text <k>, <chars> chars: see your description above]"
-        row text = DescribedWords(kinds) + StatusWords(status) + note + mediaNote(row) + ": " + description + "\n\n" + typed
+        row text = DescribedWords(kinds) + note + mediaNote(row) + ": " + description + "\n\n" + typed
         DescribedWords: media → "Later, your context_edit describe call replaced the media you had seen here with your own description" (DESCRIBED, як досі)
                         pasted text → "Later, your context_edit describe call replaced the pasted text you had seen here with your own description"
                         both → "Later, your context_edit describe call replaced the media and the pasted text you had seen here with your own description"
 
 Набраний текст — усе поза блоками вставок і медіа, зокрема рамки хоста в тому самому рядку (контекст редактора, нагадування): `describe` їх не чіпає. Опис уже описаного рядка можливий, лише коли в ньому лишилися медіа чи вставки. isDescribedText (`hooks/rows.ts`, STRUCT-01) розпізнає DESCRIBED_HEAD — голову кожного відкривача `describe` цієї версії — і старі форми, тож CollapsedList і PersonRow ([SP_CTX_02_58](#SP_CTX_02_58)) бачать описаний промпт.
 
-Ворота перед кодом: живий сценарій «Обгортка вставок» ([SP_CTX_05_07](#SP_CTX_05_07)) встановлює для обох хостів, де хост позначає вставку — у тексті рядка, лише у формі API чи ніде. У 462 локальних транскриптах обгортки `<pasted_content>` немає; її бачили лише в доставці посеред ходу і в системному промпті хоста, а `prompt.submit` віддає текст із уже розгорнутими вставками. Позначає лише форма API — PasteBlocks читає форму API промпту через PromptMatch ([SP_CTX_02_10](./context_editor.edits.sp.md#SP_CTX_02_10)), як медіа. Не позначає ніде — `describe` бере лише медіа, а вставлений людиною текст лишається дослівним, як решта її слів: [C_CTX_DEC_39](./context_editor.curation.concept.md#C_CTX_DEC_39) тоді не діє, і розробнику про це кажуть.
+Ворота перед кодом пройдено (фаза 39, 2026-10-15, хости 2.1.296 і 2.1.299; [SP_CTX_05_07](#SP_CTX_05_07)): хост ставить обгортку в сам текст рядка — її бачать `prompt.submit`, `session.append`, `$.session.messages()`, форма API і транскрипт, тож PasteBlocks читає текст рядка. Обгорнуто: велику вставку в терміналі (згорнуту в «[Pasted text #1 +N lines]»), записи поля SDK `pasted_content` (дописані після набраного тексту) і `inline_pastes` (на своєму місці в тексті); розширення VS Code (OSS, 2.1.299 і 2.1.300) за своїм кодом шле вставки полем `inline_pastes` — наживо не спостережено. Коротка вставка в терміналі, яку хост не згортає, лишається набраним текстом без обгортки (спостережено на 2.1.299) — `describe` її не відрізнить, і вона лишається дослівною. Id обгортки — один на сесію (чотири шістнадцяткові знаки), тож блоки розрізняє лише порядок, а не id.
 
 Errors: NO_MEDIA при постановці («no media or pasted text found in that row») і при застосуванні («… now»), як для медіа.
 
@@ -289,24 +278,23 @@ Errors:
 
 ### 02_62. ReplacementOpeners  {#SP_CTX_02_62}
 
-Purpose: текст заміни говорить від імені агента і несе походження й статус змісту ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06), [C_CTX_DEC_33](./context_editor.curation.concept.md#C_CTX_DEC_33)). Змінює тексти `run summarize`, `run collapse`, `run rewrite`, `run describe` ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)).
+Purpose: текст заміни говорить від імені агента і несе походження змісту; статусу змісту він не несе ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06), [C_CTX_DEC_33](./context_editor.curation.concept.md#C_CTX_DEC_33), [C_CTX_DEC_40](./context_editor.curation.concept.md#C_CTX_DEC_40), [SP_CTX_DEC_44](#SP_CTX_DEC_44)). Змінює тексти `run summarize`, `run collapse`, `run rewrite`, `run describe` ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)).
 
 Processing logic (pseudocode):
-    StatusWords(s) = s present ? ", your status: " + STATUS_WORDS[s] : ""
     Quoted(q) = q ? ", which you quoted from later," : ""
-    summarize: (via = tag ? TAG_SUMMARIZED_OF : SUMMARIZED_OF) + SourceOf(call) + " you had read here" + Quoted(quoted) + (via = tag ? " with your own note" : " with your own summary") + StatusWords(status)
-    collapse:  collapsedWords(n, list, via) with Quoted(quoted) before " with your own note", then StatusWords(status)   # перелік у дужках і далі — походження діапазону (CollapsedList)
-    rewrite:   RewrittenWords(via) + StatusWords(status)
-    describe:  DescribedWords(kinds) + StatusWords(status)   # SP_CTX_02_59
+    summarize: (via = tag ? TAG_SUMMARIZED_OF : SUMMARIZED_OF) + SourceOf(call) + " you had read here" + Quoted(quoted) + (via = tag ? " with your own note" : " with your own summary")
+    collapse:  collapsedWords(n, list, via) with Quoted(quoted) before " with your own note"   # перелік у дужках і далі — походження діапазону (CollapsedList)
+    rewrite:   RewrittenWords(via)
+    describe:  DescribedWords(kinds)   # SP_CTX_02_59
     then, as before: note (" (original: <archive>, open with Read)") + mediaNote + ": " + agent text
 
-Приклад: `Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here, which you quoted from later, with your own summary, your status: inferred (original: …, open with Read): …`.
+Приклад: `Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here, which you quoted from later, with your own summary (original: …, open with Read): …`.
 
-Розпізнавання (ReplacementText, `hooks/rows.ts`, STRUCT-01): REPLACEMENT_OPENERS отримує голови SUMMARIZED_OF, TAG_SUMMARIZED_OF, DESCRIBED_HEAD, STATE_REBUILT і TRACE_OPENER; повні відкривачі фази 28 лишаються в списку, бо збережені сесії мають і їх. Голови `rewrite`, `collapse` і тегових `rewrite`/`collapse` не змінюються: слова статусу стоять після них. Тег `disposable` несе свій `status` ([SP_CTX_01_30](#SP_CTX_01_30)) у заміну так само.
+Розпізнавання (ReplacementText, `hooks/rows.ts`, STRUCT-01): REPLACEMENT_OPENERS отримує голови SUMMARIZED_OF, TAG_SUMMARIZED_OF, DESCRIBED_HEAD, STATE_REBUILT і TRACE_OPENER; повні відкривачі фази 28 лишаються в списку, бо збережені сесії мають і їх. Голови `rewrite`, `collapse` і тегових `rewrite`/`collapse` не змінюються. Заміна тегу `disposable` будується тими самими словами з `via = tag`.
 
-Ворота перед кодом: нові тексти перевіряє живий сценарій «Тексти замін з походженням і статусом» ([SP_CTX_05_07](#SP_CTX_05_07)), як спайк [context_editor_authorship](./context_editor_authorship.spike.md): агент і далі визнає стискання своїм (P13, P23 не повертаються) і менше довіряє виведеному й припущеному.
+Ворота перед кодом пройдено (фаза 39, 2026-10-15; живий сценарій «Тексти замін з походженням і статусом», [SP_CTX_05_07](#SP_CTX_05_07), як спайк [context_editor_authorship](./context_editor_authorship.spike.md)): з джерелом у відкривачі агент і далі визнає стискання своїм (28 з 28 сесій з джерелом і статусом, 9 з 9 у контролі з поточними текстами; P13, P23 не повертаються, хоча у варіантах зі статусом траплялись 1 заперечення власних викликів і 2 «вигадав» при малому n). Слова статусу після «with your own summary» довіри майже не змінили (впевненість haiku: контроль (поточні тексти, без джерела й статусу) 94.6, `read` 91.4, `inferred` 93.8, `assumed` 86.0), тож відкривач іде лише з джерелом ([SP_CTX_DEC_44](#SP_CTX_DEC_44)).
 
-Errors: STATUS_REQUIRED при постановці — «`<label>`: "status" is required (verified, read, inferred or assumed)» для `summarize`, `collapse` і `disposable` з парою чи діапазоном; BAD_STATUS — значення поза переліком.
+Errors: власних відмов немає; поле `status` правки чи тегу мод ігнорує як зайве ([SP_CTX_01_30](#SP_CTX_01_30), [SP_CTX_DEC_44](#SP_CTX_DEC_44)).
 
 ### 02_63. DependencyCheck  {#SP_CTX_02_63}
 
@@ -378,14 +366,14 @@ Purpose: у звіті закриття етапу назвати застарі
 Processing logic (pseudocode):
     in BlockReport, after "Candidates in the block":
         ready = Read pairs with call and result in a..e, an active review tag of reason superseded, stale or duplicate, result not ReplacementText
-        IF ready: text += "\nReady replacements (summarize each with its text, a status and what you still need from it): "
+        IF ready: text += "\nReady replacements (summarize each with its text and what you still need from it): "
                        + ("#<i> <alias or tool_use_id> \"<Ready(tag, path)>\"" for each, ≤ MAX_BLOCK_INDEXES, then "+<n> more") joined "; " + "."
     Ready: superseded → "Outdated: <path> was read again later and its content had changed."
            stale → "Outdated: you changed <path> later."
            duplicate → "Duplicate: a later read of <path> returned the same output."
     path = the path part of SourceOf (SP_CTX_01_28)
 
-Тексти не мають індексів: після застосування індекси зсуваються, а текст заміни лишається. Агент копіює текст у `summarize` разом з обов'язковим статусом ([SP_CTX_02_62](#SP_CTX_02_62)) і тим, що зі старої версії ще потрібно.
+Тексти не мають індексів: після застосування індекси зсуваються, а текст заміни лишається. Агент копіює текст у `summarize` разом із тим, що зі старої версії ще потрібно; джерело в заміну ставить мод ([SP_CTX_02_62](#SP_CTX_02_62)).
 
 ### 02_67. StateEdit  {#SP_CTX_02_67}
 
@@ -449,7 +437,7 @@ Processing logic (pseudocode):
 
 Purpose: правила й тексти, якими агент дізнається про курування ([C_CTX_06_09](./context_editor.curation.concept.md#C_CTX_06_09), [C_CTX_06_12](./context_editor.curation.concept.md#C_CTX_06_12), [SP_CTX_DEC_43](#SP_CTX_DEC_43)). Точні тексти пише фаза реалізації в межах, названих тут.
 
-Файл правил курування `skills/context-stages/curation.md` (≤ CURATION_MAX символів, перевіряє `tests/skill-limits.sh`) — друга частина навички. Він містить: правила [C_CTX_06_09](./context_editor.curation.concept.md#C_CTX_06_09) (урок із лічбою спроб і причиною; виправлення лише за зовнішнім сигналом, пакетом на межі етапу; статус і дослівна цитата недовіреного тексту з атрибуцією; архів перед каяттям у вигадці; правка замість «ігноруй»; зведення вимог додаванням; не видаляти архівів і транскриптів; огляд підстав і згортання розвідки до висновку на закритті етапу; засліплена перевірка — лише порада), значення чотирьох статусів, форму операції `state`, рядки сліду й готові заміни, список рядків хоста і `drop` за `id`, `describe` для медіа і вставок.
+Файл правил курування `skills/context-stages/curation.md` (≤ CURATION_MAX символів, перевіряє `tests/skill-limits.sh`) — друга частина навички. Він містить: правила [C_CTX_06_09](./context_editor.curation.concept.md#C_CTX_06_09) (урок із лічбою спроб і причиною; виправлення лише за зовнішнім сигналом, пакетом на межі етапу; дослівна цитата недовіреного тексту з атрибуцією; архів перед каяттям у вигадці; правка замість «ігноруй»; зведення вимог додаванням; не видаляти архівів і транскриптів; огляд підстав і згортання розвідки до висновку на закритті етапу; засліплена перевірка — лише порада), форму операції `state`, рядки сліду й готові заміни, список рядків хоста і `drop` за `id`, `describe` для медіа і вставок.
 
 `context_list` з `"rules": true` ([SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01)) повертає текст `curation.md`, який мод читає з `$.plugin.root`, замість переліку: читання поза проєктом хост дозволяє лише з дозволу людини ([C_CTX_DEC_28](./context_editor.core.concept.md#C_CTX_DEC_28)), а мод читає власний файл без цього. Файл не прочитався — `context-editor: the curation rules could not be read: <error>`.
 
@@ -457,11 +445,11 @@ Purpose: правила й тексти, якими агент дізнаєть�
 
 | Текст | Зміна |
 |-------|-------|
-| SKILL.md ([SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27)) | «Usually keep verbatim: the person's messages…» і «(the person's first prompt is pinned for you)» → повідомлення й відповіді людини в цій сесії лишаються дослівними: правку, що їх захоплює, мод відхиляє; описати медіа чи вставку її промпту можна; піни ставить і знімає агент; рядки хоста зі списку `context_list` — не слова людини, їх прибирає `drop` за `id`. «It is no loss and nothing you made up» → заміну зробив агент, а її зміст надійний настільки, наскільки кажуть джерело й статус; перш ніж назвати щось вигадкою, відкрити архів. Рядок про правила курування: `context_list` з `"rules": true`. Межа 9000 символів лишається |
+| SKILL.md ([SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27)) | «Usually keep verbatim: the person's messages…» і «(the person's first prompt is pinned for you)» → повідомлення й відповіді людини в цій сесії лишаються дослівними: правку, що їх захоплює, мод відхиляє; описати медіа чи вставку її промпту можна; піни ставить і знімає агент; рядки хоста зі списку `context_list` — не слова людини, їх прибирає `drop` за `id`. «It is no loss and nothing you made up» → заміну зробив агент, а джерело в ній каже, звідки зміст; перш ніж назвати щось вигадкою, відкрити архів. Рядок про правила курування: `context_list` з `"rules": true`. Межа 9000 символів лишається |
 | INTRO_TEXT | «the person's messages, rules and skills in use usually stay verbatim» → «the person's messages stay verbatim; rules and skills in use usually too»; рядок про правила курування |
-| STAGE_ADVICE (і через неї WaitingAdvice та звіт закриття) | повідомлення людини «stay verbatim: edits that cover them are refused» замість «keep them verbatim unless you drop them deliberately»; «Usually keep verbatim the person's messages, rules…» → «Usually keep the rules and skills still in force…»; додати: невдалі спроби — у урок «tried X ×N → failed because Y → do Z», кожна заміна — зі статусом |
-| EDIT_DESCRIPTION ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), ≤ MAX_DESCRIPTION; зараз 2024 з 2048, `tests/boundary.test.ts`) | додати: `,"status"` у рядках `summarize` і `collapse`; рядок операції `{"op":"state","changes"}`; вставки в рядку `describe`; ціль `"host"` у рядку `drop`; «або операцією `state`, коли слот має пункти» в реченні про `[state]`; в останньому абзаці — повідомлення людини (і відповіді AskUserQuestion) лишаються дослівними, правки, що їх захоплюють, відхиляються. Місце: абзац про `ref` переходить в опис поля REF (там уже те саме), текст відновлення за замовчуванням — в опис поля `resume_prompt`; подробиці `status` і `changes` — в описах їхніх полів. Порядок скорочення пунктів 02_02 не змінюється, нові речення стоять поряд із тими, що їх стосуються |
-| TAG_DESCRIPTION ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), ≤ MAX_DESCRIPTION) | без «The person's first prompt is pinned for you.» — це місце бере речення: `disposable` бере `"status"`, коли стискає пару чи діапазон; подробиці — в описі поля; у пункті про слот стану «change it only by a rewrite of that row» → «change it by a rewrite of that row, or by the state op once it has items» |
+| STAGE_ADVICE (і через неї WaitingAdvice та звіт закриття) | повідомлення людини «stay verbatim: edits that cover them are refused» замість «keep them verbatim unless you drop them deliberately»; «Usually keep verbatim the person's messages, rules…» → «Usually keep the rules and skills still in force…»; додати: невдалі спроби — у урок «tried X ×N → failed because Y → do Z» |
+| EDIT_DESCRIPTION ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), ≤ MAX_DESCRIPTION; зараз 2024 з 2048, `tests/boundary.test.ts`) | додати: рядок операції `{"op":"state","changes"}`; вставки в рядку `describe`; ціль `"host"` у рядку `drop`; «або операцією `state`, коли слот має пункти» в реченні про `[state]`; в останньому абзаці — повідомлення людини (і відповіді AskUserQuestion) лишаються дослівними, правки, що їх захоплюють, відхиляються. Місце: абзац про `ref` переходить в опис поля REF (там уже те саме), текст відновлення за замовчуванням — в опис поля `resume_prompt`; подробиці `changes` — в описі поля. Порядок скорочення пунктів 02_02 не змінюється, нові речення стоять поряд із тими, що їх стосуються |
+| TAG_DESCRIPTION ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), ≤ MAX_DESCRIPTION) | без «The person's first prompt is pinned for you.»; у пункті про слот стану «change it only by a rewrite of that row» → «change it by a rewrite of that row, or by the state op once it has items» |
 | Відмова STATE_SLOT ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) і інваріант тегу `state` ([SP_CTX_01_09](./context_editor.structures.sp.md#SP_CTX_01_09)) | «change it only by rewrite of that row» → «change it by rewrite of that row, or by the state op once it has items»; інваріант — так само |
 | Легенда переліку ([SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01)) | причина `superseded`; `[state] your state slot (rewrite only)` → `(rewrite, or the state op once it has items)`; рядок заголовка й секція рядків хоста ([SP_CTX_02_61](#SP_CTX_02_61)) |
 
@@ -471,7 +459,7 @@ Purpose: правила й тексти, якими агент дізнаєть�
 
 ### 03_03. Input Validation  {#SP_CTX_03_03}
 
-- `summarize` і `collapse` мають `status` з переліку [SP_CTX_01_27](#SP_CTX_01_27); `rewrite` і `describe` — або без нього, або з переліку; `drop` і `state` статусу не мають: поле в них мод ігнорує, як будь-яке зайве поле правки (checkShape).
+- Поля статусу правки й теги не мають ([SP_CTX_DEC_44](#SP_CTX_DEC_44)): `status` мод ігнорує, як будь-яке зайве поле (checkShape правки, isTag тегу).
 - Правка, що захоплює слова людини, відхиляється при постановці (PERSON_WORDS) і не застосовується (PERSON_WORDS_NOW); тег `disposable` над ними не ставиться (PERSON_TAG). `describe` дозволено над промптом людини, коли в ньому є медіа чи вставка.
 - Правка `state` вимагає слота і пунктів, на які посилається; `rewrite` слота з пунктами і `rewrite` слота поряд із `state` в одному пакеті відхиляються.
 - `drop` з `host` бере `id` зі списку рядків хоста і не бере `tool_use_id` чи `ref` (HOST_EXCLUSIVE, HOST_UNKNOWN, HOST_TWICE); інші операції рядків хоста не бачать.
@@ -479,7 +467,7 @@ Purpose: правила й тексти, якими агент дізнаєть�
 
 ### 03_04. Output Validation  {#SP_CTX_03_04}
 
-- Кожна заміна, яку пише ця версія, починається з повного відкривача чи голови з REPLACEMENT_OPENERS, говорить від імені агента і, для `summarize`, називає джерело; статус стоїть, коли його дано.
+- Кожна заміна, яку пише ця версія, починається з повного відкривача чи голови з REPLACEMENT_OPENERS, говорить від імені агента і, для `summarize`, називає джерело; слів статусу в ній немає.
 - Набраний людиною текст рядка після `describe` той самий, що в оригіналі, з позначками вставок на їхніх місцях.
 - Текст із рамкою хоста ніколи не рахується словами людини (PersonText порожній); після застосування лишаються лише записи, чий попередник повернувся зі своїм `handle`; рядок перед прибраним рядком хоста повертається без `handle`, а результат і звіт кажуть, що він утратив.
 - Текст слота стану після застосування `state` — рівно STATE_REBUILT, рядок архіву й Assemble(items).
@@ -552,9 +540,8 @@ Transition rules:
 | HostList | попередника згорнуто | `collapse` над попередником h2 | звіт `Host rows that went with rebuilt rows: h2 (peer).`; запису немає |
 | HostList | навичка інструмента `Skill` | застосування без `keep_cache` після `Skill` | запис за рядком «Launching skill» зник; звіт його називає |
 | HostList | чужа компактизація | вбудована `/compact` | файл прибрано, списку немає |
-| ReplacementOpeners | `summarize` з `status` | `Read docs/x.md`, `status: inferred` | текст починається `Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here with your own summary, your status: inferred (original:` |
-| ReplacementOpeners | без `status` | `summarize` без поля | STATUS_REQUIRED |
-| ReplacementOpeners | стара черга | правка без `status`, записана старішою версією | застосовано без слів статусу |
+| ReplacementOpeners | `summarize` з джерелом | `Read docs/x.md` | текст починається `Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here with your own summary (original:` |
+| ReplacementOpeners | зайве поле `status` | `summarize` з `"status": "inferred"` | прийнято; поле ігнорується, слів статусу в заміні немає |
 | ReplacementOpeners | розпізнавання | старі й нові відкривачі | ReplacementText — так для обох |
 | DependencyCheck | цитата в пізнішому тексті | ідентифікатор оригіналу є лише в пізнішому тексті агента | прийнято із застереженням, що називає рядок і фрагмент; заміна каже `which you quoted from later` |
 | DependencyCheck | інше джерело лишається | той самий фрагмент і в іншому рядку поза ціллю | застереження немає |
@@ -581,7 +568,7 @@ Transition rules:
 |-----------|-------------------|
 | Жодне застосування не змінює набраного людиною тексту | модульний тест на ScreenPerson і `describe`; живий сценарій «Слова людини» |
 | Рядок хоста не рахується словами людини | PersonText для кожної рамки HostFrame порожній |
-| Заміни цієї версії несуть джерело й статус | тести текстів `run summarize`, `run collapse`; ReplacementText для нових голів |
+| Заміни цієї версії несуть джерело і не несуть статусу | тести текстів `run summarize`, `run collapse`; ReplacementText для нових голів |
 | Слот стану дорівнює зібраним пунктам | тест `run state`: текст = STATE_REBUILT + архів + Assemble |
 | Запис лишається, лише поки попередник повертається зі своїм `handle` | тест фіксації: попередник із `handle`, без нього, відсутній |
 | У вікні копій записів немає | тест RecordHostRows з відкритим вікном: копії, рядки команди, рядок `isMeta` |
@@ -592,12 +579,13 @@ Transition rules:
 
 | Scenario | Preconditions | Steps | Expected result |
 |----------|--------------|-------|-----------------|
-| Тексти замін з походженням і статусом (ворота перед кодом текстів) | копія сесії, як у спайку [context_editor_authorship](./context_editor_authorship.spike.md); haiku і sonnet | застосувати `summarize` і `collapse` з новими текстами й різними статусами; спитати агента про стиснуте | агент визнає стискання своїм (P13, P23 не повертаються) і частіше перевіряє виведене й припущене, ніж прочитане |
+| Тексти замін з походженням і статусом (ворота перед кодом текстів) | копія сесії, як у спайку [context_editor_authorship](./context_editor_authorship.spike.md); haiku і sonnet | застосувати `summarize` і `collapse` з новими текстами й різними статусами; спитати агента про стиснуте | агент визнає стискання своїм (P13, P23 не повертаються) і частіше перевіряє виведене й припущене, ніж прочитане. Спостережено 2026-10-15 (фаза 39, 57 сесій на 2.1.296, `.dev_flow/cache/live-test/curation-gate/texts/results.md`): авторство — 28 з 28 з джерелом і статусом, 9 з 9 у контролі, «не бачив вмісту» не частіше, ніж у контролі; впевненість після стискання (haiku, 5 сесій на варіант) — контроль (поточні тексти, без джерела й статусу) 94.6, `read` 91.4, `inferred` 93.8, `assumed` 86.0: статус довіри майже не змінює; розробник: «Лише джерело, без статусу» ([SP_CTX_DEC_44](#SP_CTX_DEC_44)) |
+| Тексти замін з джерелом (повтор у фазі 41, на коді мода) | копія сесії, як у спайку [context_editor_authorship](./context_editor_authorship.spike.md); haiku і sonnet | застосувати `summarize` і `collapse` з відкривачем лише з джерелом ([SP_CTX_DEC_44](#SP_CTX_DEC_44)); спитати агента, хто писав стиснуте і чи бачив він вміст | агент визнає стискання своїм не рідше, ніж у контролі воріт фази 39 (9 з 9), і не каже частіше, що вмісту не бачив (P13, P23 не повертаються) |
 | Слід власних викликів | живий прогін з кількома етапами | закрити етап, застосувати, спитати про власні виклики й цитати їхнього виводу | агент не заперечує викликів і не називає цитат вигадкою (P13, P23) |
 | Рядки хоста | термінал і stream-json; навичка зі slash-командою; звіт субагента між ходами без застосування; звіт одразу після рядків команди `/compact` мода; навичка з інструмента `Skill` | (1) записи після `session.append`, `context_list`; (2) `drop` за `id`, застосувати; (3) застосування без правок рядків хоста; (4) звіт одразу після `/compact` мода; (5) `Skill`, потім застосування | (1) `after` — `uuid` попереднього видимого рядка, список показує записи; (2) рядка хоста немає в транскрипті, попередник без `handle`, решта правок на своїх індексах; (3) записи лишаються, рядки хоста на місцях; (4) запису немає, рядок іде лише разом із рядком перед ним; (5) текст навички зник, звіт називає запис. Перевірити тут же: порядок і походження рядків `/compact` мода щодо початку обробника й копій; порядок дверей `tool-message` навички `Skill` щодо результату «Launching skill» і чи починається вона з SKILL_FRAME; чи минають `session.append` рядки локальних команд людини в терміналі; чи проходять `session.append` у stream-json рядки хоста, які хост повертає після застосування. Правило розміщення хостом спостережено 2026-10-15 (спайк [context_editor_hostrows](./context_editor_hostrows.spike.md), Q6) |
-| Обгортка вставок (ворота перед кодом `describe` вставок) | термінал і VS Code (stream-json) | вставити текст у промпт; прочитати рядок у `$.session.messages()` і у формі API | де стоїть `<pasted_content …>`: у тексті рядка, лише у формі API чи ніде ([SP_CTX_02_59](#SP_CTX_02_59)); опис замінює лише вставку |
+| Обгортка вставок (ворота перед кодом `describe` вставок) | термінал і VS Code (stream-json) | вставити текст у промпт; прочитати рядок у `$.session.messages()` і у формі API | де стоїть `<pasted_content …>`: у тексті рядка, лише у формі API чи ніде ([SP_CTX_02_59](#SP_CTX_02_59)); опис замінює лише вставку. Спостережено 2026-10-15 (фаза 39, пробний плагін `.dev_flow/cache/live-test/curation-gate/paste-probe/`): у тексті рядка на 2.1.296 і 2.1.299 — велика вставка в терміналі, `pasted_content` і `inline_pastes` у stream-json; коротка вставка в терміналі не обгортається (2.1.299) |
 | Слова людини | живий прогін | попросити агента згорнути блок із промптом людини | відмова PERSON_WORDS; агент ділить діапазон |
-| Thinking-блоки на новому акаунті | акаунт, створений від 2026-08-31, модель із перевіркою префікса | правка посередині розмови, застосування, наступний хід | хід іде або помилка, яку мод називає; поведінкові правки частішають лише після цього прогону ([C_CTX_06_11](./context_editor.curation.concept.md#C_CTX_06_11)) |
+| Thinking-блоки на новому акаунті | акаунт, створений від 2026-08-31, модель із перевіркою префікса | правка посередині розмови, застосування, наступний хід | хід іде або помилка, яку мод називає; поведінкові правки частішають лише після цього прогону ([C_CTX_06_11](./context_editor.curation.concept.md#C_CTX_06_11)). Стандартними засобами `unobserved`: акаунта, створеного від 2026-08-31, немає. Лише спостереження (фаза 39, 2.1.299, opus, недокументований перемикач хоста `CLAUDE_CODE_POLISHED_DEWDROP=block`, на який дизайн не спирається): thinking-блок незмінної відповіді після місця правки дав 400 «Invalid `signature` in `thinking` block…», хост відкинув блок і повторив запит, хід минув; блоки перебудованих рядків мод і так губить |
 | Правила курування | сесія з модом, встановленим поза проєктом | `context_list` з `"rules": true` | текст правил без запиту дозволу |
 | Пін документа | передача «документом» з продовженням | кінець першого ходу нової сесії; `context_list` | `[pin]` на рядку документа; агент знімає його `remove` |
 
@@ -628,10 +616,10 @@ Transition rules:
 
 | Aspect | Rollback approach |
 |--------|-------------------|
-| Data/state changes | `hostrows.json` можна видалити: список рядків хоста порожніє, а самі рядки лишаються в розмові. Полів `status` і `quoted` правок, `items`, `nextItem`, `docChecked` реєстру і `status` тегів старіша версія не бачить: її розбір пропускає зайві поля (parseRegistry зливає невідомі поля верхнього рівня, checkShape і isTag зайвих ключів не перевіряють). Ламають її розбір лише причина `superseded` тегу `review`, операція `state` і `drop` з `host` у черзі: реєстр чи черга для неї `unreadable`. Перед поверненням версії — прибрати теги `superseded` (або видалити `tags.json` сесії) і застосувати чи видалити чергу з правками `state` і `drop` з `host` |
+| Data/state changes | `hostrows.json` можна видалити: список рядків хоста порожніє, а самі рядки лишаються в розмові. Полів `quoted` правок, `items`, `nextItem`, `docChecked` реєстру старіша версія не бачить: її розбір пропускає зайві поля (parseRegistry зливає невідомі поля верхнього рівня, checkShape і isTag зайвих ключів не перевіряють). Ламають її розбір лише причина `superseded` тегу `review`, операція `state` і `drop` з `host` у черзі: реєстр чи черга для неї `unreadable`. Перед поверненням версії — прибрати теги `superseded` (або видалити `tags.json` сесії) і застосувати чи видалити чергу з правками `state` і `drop` з `host` |
 | Artifacts | `skills/context-stages/curation.md` прибирається разом із рядком навички про нього |
 | Dependent modules | тексти замін цієї версії лишаються в збережених сесіях як інертний текст; старіша версія не розпізнає нових голів як заміну, тож позначки `*` переліку й R5 їх не бачать — прийнято |
-| External contracts | параметри `status`, `state`, `"rules"` і ціль `host` правки `drop` зникають з інструментів; повернення попередження замість відмови — у PersonWarnings ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)); повернення R1 — рядок таблиці [SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11) |
+| External contracts | параметри `state`, `"rules"` і ціль `host` правки `drop` зникають з інструментів; повернення попередження замість відмови — у PersonWarnings ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)); повернення R1 — рядок таблиці [SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11) |
 
 Кожен механізм відокремлюваний ([C_CTX_06_12](./context_editor.curation.concept.md#C_CTX_06_12)): правила навички відкочуються текстом, тексти замін — як у [C_CTX_DEC_25](./context_editor.core.concept.md#C_CTX_DEC_25), список рядків хоста — без запису `hostrows.json` і без цілі `host`.
 
@@ -657,7 +645,7 @@ Transition rules:
 
 ### DEC_40 — Форма епістемного статусу  {#SP_CTX_DEC_40}
 
-> **Status:** resolved
+> **Status:** superseded
 > **Date:** 2026-10-15
 
 **Question:** Концепт лишив специфікації, чи статус один на заміну, чи стоїть і біля окремих фактів ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06)).
@@ -672,6 +660,7 @@ Transition rules:
 **Decision:** A — розробник, 2026-10-15: «Один на правку, обов'язковий (Recommended)».
 **Rationale:** переказ чужого змісту — саме те місце, де виведене плутають із прочитаним; обов'язковий статус змушує агента сказати це щоразу, а мод не розбирає тексту.
 **Rejected because:** B — статус пропускатимуть; C — мод розбирав би вільний текст агента.
+**Superseded:** 2026-10-15 — [SP_CTX_DEC_44](#SP_CTX_DEC_44): ворота фази 39 показали, що слова статусу майже не змінюють довіри агента; статус знято з правок, тегів і відкривачів, заміна несе лише джерело.
 
 ### DEC_41 — Якою операцією змінюються пункти слота стану  {#SP_CTX_DEC_41}
 
@@ -729,10 +718,30 @@ Transition rules:
 **Rationale:** правила курування потрібні, коли агент курує, а не на кожному початку сесії. Читання поза проєктом хост дозволяє лише з дозволу людини ([C_CTX_DEC_28](./context_editor.core.concept.md#C_CTX_DEC_28)), а встановлений мод лежить поза проєктом, тож файл віддає сам мод: `context_list` з `"rules": true` ([SP_CTX_02_69](#SP_CTX_02_69)); посібник каже, коли його відкрити. Чи агент справді відкриває правила, перевіряють живі прогони.
 **Rejected because:** A — ціна на кожному початку сесії; C — ціна на кожному закритті етапу.
 
+### DEC_44 — Статус змісту в заміні після воріт  {#SP_CTX_DEC_44}
+
+> **Status:** resolved
+> **Date:** 2026-10-15
+
+**Question:** Ворота текстів замін (фаза 39, [SP_CTX_05_07](#SP_CTX_05_07), `.dev_flow/cache/live-test/curation-gate/texts/results.md`) показали: з джерелом у відкривачі агент визнає стискання своїм (28 з 28 сесій з джерелом і статусом, 9 з 9 у контролі з поточними текстами; P13, P23 не повертаються, хоча у варіантах зі статусом траплялись 1 заперечення власних викликів і 2 «вигадав» при малому n), але слова статусу довіри майже не змінюють. Чи лишати обов'язковий статус ([SP_CTX_DEC_40](#SP_CTX_DEC_40))?
+
+**Options considered:**
+| Option | Consequence |
+|--------|-------------|
+| A — джерело й обов'язковий статус ([SP_CTX_DEC_40](#SP_CTX_DEC_40), A) | агент щоразу вибирає статус, мод тримає перелік, відмови STATUS_REQUIRED і BAD_STATUS, правило навички й місце в описах інструментів — заради ефекту, якого ворота не показали |
+| B — лише джерело, без статусу | менше полів, відмов і тексту в описах; надійність окремих фактів агент за потреби називає своїми словами в тексті заміни |
+| C — сильніші слова статусу й ще один прогін воріт | ще одна фаза воріт перед кодом без певності, що сильніші слова подіють |
+
+**Decision:** B — розробник, 2026-10-15: «Лише джерело, без статусу».
+**Rationale:** у другому раунді воріт (haiku, 5 сесій на варіант, впевненість 0–100 у стиснутому після застосування) контроль (поточні тексти, без джерела й статусу) — 94.6, `read` — 91.4, `inferred` — 93.8, `assumed` — 86.0; позначку `assumed` згадано лише у 2 з 5 відповідей, а незалежний доказ у тому самому контексті тягне впевненість угору у всіх варіантах. Критерій «частіше перевіряє виведене й припущене» не доведено, тож статус коштує полів, відмов і місця в описах без виміряного ефекту. Авторство тримає джерело й власний відкривач, а не статус.
+**Rejected because:** A — ціна без ефекту; C — затримує код текстів замін ще однією фазою воріт без підстави чекати іншого результату.
+
 ## Changelog
 
 | Date | Change |
 |------|--------|
+| 2026-10-15 | Рев'ю фази 39 (pass with fixes): числа воріт уточнено — авторство 28 з 28 з джерелом і статусом, контроль з поточними текстами 9 з 9 і 94.6; варіант лише з джерелом окремо не проганяли — рядок [SP_CTX_05_07](#SP_CTX_05_07) «Тексти замін з джерелом» для фази 41; надсилання вставок розширенням VS Code — за його кодом, не наживо |
+| 2026-10-15 | Ворота текстів замін (фаза 39): статус змісту знято ([SP_CTX_DEC_44](#SP_CTX_DEC_44), рішення розробника «Лише джерело, без статусу»; [SP_CTX_DEC_40](#SP_CTX_DEC_40) — `superseded`): 01_27 вилучено; поля `status` правок і тегів, STATUS_WORDS, StatusWords, STATUS_REQUIRED і BAD_STATUS прибрано з [SP_CTX_01_30](#SP_CTX_01_30), [SP_CTX_02_59](#SP_CTX_02_59), [SP_CTX_02_62](#SP_CTX_02_62), [SP_CTX_02_66](#SP_CTX_02_66), [SP_CTX_02_69](#SP_CTX_02_69), [SP_CTX_03_03](#SP_CTX_03_03), [SP_CTX_03_04](#SP_CTX_03_04), [SP_CTX_05_05](#SP_CTX_05_05), [SP_CTX_05_06](#SP_CTX_05_06), [SP_CTX_06_02](#SP_CTX_06_02); відкривач несе джерело і `which you quoted from later`; результат воріт — у [SP_CTX_05_07](#SP_CTX_05_07) |
 | 2026-10-15 | Вузьке рев'ю B″ (pass with fixes): PersonPrompt не бере рядків з маркером мода; вікно копій відкривається на вході хука `session.compact` гілки `pass`; тека сховища береться синхронно (CONC-01); прибирання записів — лише після точки фіксації; `drop` за `host`, чий попередник відсутній у вході, падає; HOST_MEDIA з перевірками `collapse`; HOST_EXCLUSIVE, HOST_TWICE; голова рядка команди; межа двох процесів ([SP_CTX_02_60](#SP_CTX_02_60), [SP_CTX_02_61](#SP_CTX_02_61)) |
 | 2026-10-15 | Рев'ю 2 (fail → виправлено): рядки хоста — окремий список з `id` ([SP_CTX_DEC_42](#SP_CTX_DEC_42), B″, рішення розробника «Окремий список з id (Recommended)»): запис при `session.append` з `handle`, видом і головою попередника, вікно копій від синхронного скидання на початку кожної гілки компактизації до `turn.start` чи промпту людини, список у `context_list`, `drop` з `host`; віртуальних рядків, WithHost, HOST_TARGET і HOST_GROUP немає; примітки до команд не записуються; DetachNote в результаті й звіті; запис прибирає фіксація того самого застосування; навичку інструмента `Skill` і [SP_CTX_DEC_02](./context_editor.sp.md#SP_CTX_DEC_02) названо. PersonRow — за DescribedText; тексти слота стану в [SP_CTX_02_69](#SP_CTX_02_69); коди збоїв `run state`; [SP_CTX_04_08](#SP_CTX_04_08) — `set` і `mark` позначеного пункту; промпт лише з медіа в [SP_CTX_05_08](#SP_CTX_05_08) |
 | 2026-10-15 | Живий зонд Q6: правило розміщення рядків хоста підтверджено; ворота «`uuid` = `handle`» знято, запасний якір із відбитків трьох рядків прибрано; після компактизації `lastVisible` порожній ([SP_CTX_02_60](#SP_CTX_02_60), [SP_CTX_05_07](#SP_CTX_05_07), [SP_CTX_DEC_42](#SP_CTX_DEC_42)) |

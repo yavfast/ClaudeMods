@@ -62,7 +62,7 @@
 | [context_editor.cleanup.sp.md](./context_editor.cleanup.sp.md) | §02 Contracts 02_50–02_52: SweepSessions, PackSession, RestoreSession — дані старих сесій: видалення разом із транскриптом, пакування в `.zip`, відновлення (фаза 36) |
 | [context_editor.subagents.sp.md](./context_editor.subagents.sp.md) | §02 Contracts 02_49: ShapeSubagentResult — великі результати інструментів субагента в мить запису: голова, хвіст, рядок обрізання зі шляхом архіву (фаза 34) |
 | [context_editor.bypass.sp.md](./context_editor.bypass.sp.md) | §02 Contracts 02_53–02_57: Capabilities (можливості хоста: живі ознаки, зонд, кеш за версією), дії мода при обході, CompactBrief і ObservePassedCompact, RunProbe, ProbeMode | active |
-| [context_editor.curation.sp.md](./context_editor.curation.sp.md) | Курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)): структури 01_27–01_32, контракти 02_58–02_69 (слова людини, `describe` для вставок, рядки хоста, відкривачі з походженням і статусом, перевірка залежностей, слід власних викликів, застаріле читання й готові заміни, операція `state`, піни, правила й тексти навички), перевірки 03_03–03_04, стани 04_08–04_09, критерії 05_05–05_08, відкат 06_02, рішення SP_CTX_DEC_39–DEC_43 | draft |
+| [context_editor.curation.sp.md](./context_editor.curation.sp.md) | Курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)): структури 01_27–01_32, контракти 02_58–02_69 (слова людини, `describe` для вставок, рядки хоста, відкривачі з походженням, перевірка залежностей, слід власних викликів, застаріле читання й готові заміни, операція `state`, піни, правила й тексти навички), перевірки 03_03–03_04, стани 04_08–04_09, критерії 05_05–05_08, відкат 06_02, рішення SP_CTX_DEC_39–DEC_44 | draft |
 | [context_editor.structures.sp.md](./context_editor.structures.sp.md) | §01 Data Structures (01_01–01_26) | active |
 | [context_editor.states.sp.md](./context_editor.states.sp.md) | §04 State Transitions (04_01–04_07) | active |
 
@@ -134,7 +134,7 @@
 
 ## 07. Design Decisions  {#SP_CTX_DEC}
 
-Рішення курування історії SP_CTX_DEC_39–DEC_43 — у [специфікації курування](./context_editor.curation.sp.md#SP_CTX_DEC_39).
+Рішення курування історії SP_CTX_DEC_39–DEC_44 — у [специфікації курування](./context_editor.curation.sp.md#SP_CTX_DEC_39).
 
 ### DEC_01 — Ідентифікатор зміненої пари  {#SP_CTX_DEC_01}
 
@@ -894,6 +894,7 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-15 | Курування: рішення [SP_CTX_DEC_44](./context_editor.curation.sp.md#SP_CTX_DEC_44) (статус змісту знято після воріт фази 39, відкривач несе лише походження); покажчик рішень і рядок таблиці дочірніх файлів — SP_CTX_DEC_39–DEC_44 |
 | 2026-10-15 | Дочірній файл [curation](./context_editor.curation.sp.md) (курування історії, [C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)): рядок у таблиці дочірніх файлів і в Children, ланцюжок `hostrows` рангу 4, покажчик рішень SP_CTX_DEC_39–DEC_43; у Children виправлено порядок subagents і bypass |
 | 2026-10-13 | Дизайн фази 36 — дані старих сесій ([C_CTX_DEC_29](./context_editor.core.concept.md#C_CTX_DEC_29)): новий дочірній файл [cleanup](./context_editor.cleanup.sp.md) з 02_50 SweepSessions, 02_51 PackSession, 02_52 RestoreSession; 01_07 — `archives.txt`, `.zip`, `.where`, `.sweep`; 01_12 — SWEEP_*, PACK_IDLE_MS; 06_01 — артефакти |
 | 2026-10-13 | Фаза 35 (C_CTX_DEC_28): архіви й медіа основної розмови — у каталозі архівів `<cwd>/.claude/context-editor/<session_id>` (01_06, 01_07 ArchiveRoot, 02_07, 02_21 RemoveSeedFiles, 02_31, 02_47, 06_01) |

@@ -54,7 +54,7 @@ Invariants:
 
 ### 01_02. Edit  {#SP_CTX_01_02}
 
-> **Курування:** `status` і операція `state` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+> **Курування:** операція `state` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
 
 Правка, як її передає агент. Варіант визначає поле `op`; кожне поле варіанта обов'язкове.
 
@@ -70,7 +70,7 @@ Invariants:
 
 ### 01_03. QueuedEdit  {#SP_CTX_01_03}
 
-> **Курування:** `status`, `quoted`, `changes` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+> **Курування:** `quoted`, `changes` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
 
 Edit плюс `anchors: list<string>?` — відбитки рядків для правок за індексом: для `collapse` — `[fingerprint(row[from_index]), fingerprint(row[to_index])]`, для `rewrite` і `describe` — `[fingerprint(row[index])]`, для правок за ідентифікатором — відсутні.
 
@@ -185,7 +185,7 @@ MediaRef живе лише під час перегляду і застосув�
 
 ### 01_09. Tag  {#SP_CTX_01_09}
 
-> **Курування:** `status` для `disposable` і причина `superseded` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+> **Курування:** причина `superseded` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
 
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
@@ -726,3 +726,4 @@ CapEntry: `compact` і `attachments` — `reached` \| `passed` (кожне не�
 | 2026-10-12 | Рев'ю фази 32: 01_24 — поле `clean` (вердикт «nothing to repair») |
 | 2026-10-14 | Перехід між етапами ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)): 01_10 — поле `waiting`; 01_04 — `optimize` лише з `compact`, старий запит знімається; 01_18 — інваріант `waiting`; 01_12 — OPTIMIZE_MARK |
 | 2026-10-14 | Можливості хоста ([SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38)): 01_25 Capabilities, 01_26 CapabilityCache; 01_12 — PROBE_*, CAP_CACHE_VERSIONS, BRIEF_MAX, BRIEF_HEAD, BRIEF_RECORDS, PASSED_ADVICE |
+| 2026-10-15 | Покажчики курування в 01_02, 01_03, 01_09: поля `status` правок і тегів немає ([SP_CTX_DEC_44](./context_editor.curation.sp.md#SP_CTX_DEC_44), статус змісту знято після воріт фази 39) |

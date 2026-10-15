@@ -60,7 +60,7 @@ Errors:
 
 ### 02_02. context_edit  {#SP_CTX_02_02}
 
-> **Курування:** відмова на слова людини замість попередження — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); `status` — [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62); перевірка залежностей — [SP_CTX_02_63](./context_editor.curation.sp.md#SP_CTX_02_63); операція `state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); `describe` вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59).
+> **Курування:** відмова на слова людини замість попередження — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); перевірка залежностей — [SP_CTX_02_63](./context_editor.curation.sp.md#SP_CTX_02_63); операція `state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); `describe` вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59).
 
 Purpose: інструмент агента; перевіряє правки і дописує прийняті до черги.
 
@@ -178,7 +178,7 @@ Purpose: перевірити правки на поточній розмові 
 
 ### 02_04. ApplyEdits  {#SP_CTX_02_04}
 
-> **Курування:** тексти замін з походженням і статусом — [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62); `describe` для вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59); `run state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); Detach попередника рядка хоста — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61).
+> **Курування:** тексти замін з походженням — [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62); `describe` для вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59); `run state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); Detach попередника рядка хоста — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61).
 
 > **Criticality:** core
 
@@ -708,3 +708,4 @@ Processing logic (pseudocode):
 | 2026-10-12 | Код фази 32: 02_02 — опис `keep_cache` без речення про відновлення (і пропозиція 02_37 — без «with it, a later --resume may show earlier answers twice»); 02_07 — гілка `repair`, DropPulled перед ScreenPinned, RecordInputs після фіксації, `pulledDropped`; 02_10 — `toolRefs`; ToolRefText у правилі SP_CTX_DEC_02 ApplyEdits |
 | 2026-10-12 | Рев'ю фази 32: 02_07 — без DropPulled, коли `compactedHere` = сесія; 02_10 — медіа і `tool_reference` результату один раз за `tool_use_id` (завантажений ланцюжок показує його двічі) |
 | 2026-10-14 | Перехід між етапами ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)): 02_02 — правка агента знімає очікування блоку і ставить заміни з тегів; 02_06 — хід оптимізації лише для `/compact`, OPTIMIZE_LEGACY замість OPTIMIZE_NO_BLOCK, WaitingAdvice у промпті продовження, WAIT_ADVICE_LOST; 02_08 — WaitingAdvice замість PersonAdvice |
+| 2026-10-15 | Покажчики курування: поля `status` у правках немає, тексти замін несуть лише походження ([SP_CTX_DEC_44](./context_editor.curation.sp.md#SP_CTX_DEC_44), статус змісту знято після воріт фази 39) |

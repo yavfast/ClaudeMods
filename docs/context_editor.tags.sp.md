@@ -25,7 +25,7 @@
 
 ### 02_11. context_tag  {#SP_CTX_02_11}
 
-> **Курування:** `disposable` над словами людини відхиляється — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); `status` для `disposable` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30); опис без автопіну — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
+> **Курування:** `disposable` над словами людини відхиляється — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); опис без автопіну — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
 
 Purpose: інструмент агента; ставить і знімає теги, відкриває і закриває етапи ([C_CTX_DEC_16](./context_editor.methods.concept.md#C_CTX_DEC_16), [C_CTX_DEC_17](./context_editor.methods.concept.md#C_CTX_DEC_17)).
 
@@ -406,3 +406,4 @@ Processing logic (pseudocode):
 | 2026-10-12 | Фази 30–31 реалізовано: 02_18 — `pruneDeadTags` (RowIndex один раз) і одна зміна реєстру в `observeCompaction` разом зі зняттям `lastApply` ([SP_CTX_DEC_31](./context_editor.sp.md#SP_CTX_DEC_31) B); 02_12 — AppendFacts несе `isError` результату, R3 і AutoTagNeeded пропускають результат-помилку пошуку; 02_16 — `worthEditing(tool, size, isError)`, `callFacts` бере `done.isError` (зв'язування `register.ts` не змінилось: позначка пропозиції м'якого нагадування вже йде через `wantsMark`); 02_17 — `aliasGone` (ALIAS_GONE) у `refResolver` |
 | 2026-10-12 | Рев'ю фази 30: 02_18 — PruneDeadTags(reg, before, after) прибирає тег лише тоді, коли його ціль була у вході компактизації (`e.messages`) і зникла з результату; тег рядка, дописаного після початку компактизації, лишається. Живий прогін фаз 30–31 — pass в обох хостах |
 | 2026-10-14 | Перехід між етапами ([SP_CTX_DEC_37](./context_editor.sp.md#SP_CTX_DEC_37)): 02_11 — перший `open`/`close` при `waiting` звітує про блок, що чекав (BlockReport з `waiting`), знімає очікування і ставить заміни з тегів; 02_13 — заміни ставить кінець очікування, а не мітка |
+| 2026-10-15 | Покажчик курування: поля `status` у `disposable` немає ([SP_CTX_DEC_44](./context_editor.curation.sp.md#SP_CTX_DEC_44), статус змісту знято після воріт фази 39) |
