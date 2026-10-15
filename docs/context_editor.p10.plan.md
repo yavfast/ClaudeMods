@@ -1,0 +1,40 @@
+# Редактор контексту агента — Implementation Plan: фаза 10 — Один плагін, компактизація командою, передача засівом
+
+> **Code:** PL_CTX (дочірній файл набору)
+> **Status:** completed
+> **Updated:** 2026-10-15
+> **Umbrella:** [PL_CTX](./context_editor.plan.md)
+
+### Phase 10 — Один плагін, компактизація командою, передача засівом [DONE]  {#PL_CTX_P10}
+
+**Depends on:** Phase 9; спайк [context_editor_handoff_long](./context_editor_handoff_long.spike.md) (Entries 1–4); [C_CTX_DEC_02](./context_editor.core.concept.md#C_CTX_DEC_02), [C_CTX_DEC_09](./context_editor.core.concept.md#C_CTX_DEC_09), [C_CTX_DEC_11](./context_editor.methods.concept.md#C_CTX_DEC_11)–[C_CTX_DEC_14](./context_editor.methods.concept.md#C_CTX_DEC_14); виконується перед фазами 4 і 5 ([PL_CTX_DEC_04](./context_editor.plan.md#PL_CTX_DEC_04))
+**Implements:** преамбула [SP_CTX_02](./context_editor.sp.md#SP_CTX_02) (команди в черзі хоста, походження команди, лічильник ходів); [SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05) (`mediaFiles` засіву), [01_06](./context_editor.structures.sp.md#SP_CTX_01_06), [01_07](./context_editor.structures.sp.md#SP_CTX_01_07), [01_12](./context_editor.structures.sp.md#SP_CTX_01_12), [01_15](./context_editor.structures.sp.md#SP_CTX_01_15) (`owner`, `handoffInFlight`, `handoffScheduled`, Due), вилучення [01_16](./context_editor.structures.sp.md#SP_CTX_01_16), [01_17](./context_editor.structures.sp.md#SP_CTX_01_17); [02_06](./context_editor.edits.sp.md#SP_CTX_02_06) Flush, [02_07](./context_editor.edits.sp.md#SP_CTX_02_07), [02_12](./context_editor.tags.sp.md#SP_CTX_02_12) (копії рядків, лічильник ходів реєстру), [02_15](./context_editor.tags.sp.md#SP_CTX_02_15), [02_18](./context_editor.tags.sp.md#SP_CTX_02_18), [02_19](./context_editor.handoff.sp.md#SP_CTX_02_19)–[02_24](./context_editor.handoff.sp.md#SP_CTX_02_24), вилучення [02_25](./context_editor.handoff.sp.md#SP_CTX_02_25), [02_26](./context_editor.handoff.sp.md#SP_CTX_02_26); [03_02](./context_editor.sp.md#SP_CTX_03_02); [04_01](./context_editor.states.sp.md#SP_CTX_04_01), [04_04](./context_editor.states.sp.md#SP_CTX_04_04); [SP_CTX_DEC_04](./context_editor.sp.md#SP_CTX_DEC_04), [DEC_08](./context_editor.sp.md#SP_CTX_DEC_08), [DEC_09](./context_editor.sp.md#SP_CTX_DEC_09)
+**Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки Flush, Лічильник ходів, HandleCompaction, HandleSeed, AutoTag (копії рядків), BuildSeed, CheckSeed, CheckSeeded, PinSummary, RunHandoff, Due, HandoffCommand, context_handoff, cancelHandoff, CurrentRows «межа засіяної сесії», RecordBoundary, DeliverReport; [SP_CTX_05_02](./context_editor.scenarios.sp.md#SP_CTX_05_02) «Справжнє підсумовування не запускається через мод», «Рядки команди несуть самопояснювальну мітку, і обробник бачить її ж», «Засіяна сесія переживає відновлення»; [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) — обов'язкові в обох хостах: «Завершення команди після обробника», «Мітка в розмові», «Команда людини»; нові: «Стиснення в неінтерактивному хості», «Мод вимкнено», «Передача засівом (термінал)», «Передача засівом (неінтерактивний хост)», «Передача довгої сесії після `/compact`», «Запасний шлях до очищення» (в обох хостах, без документа агента — перевіряє `$.model.fork` у stream-json), «Збій засіву після очищення»; повторний прогін в обох хостах — «Стиснення в межах сесії», «Три операції», «Нагадування з початку», «Скриншот у результаті інструменту», «Незмінене медіа», «Перегляд після компактизації», «Передача документом», «Автоматичне чищення з тегів», «Захист початкового завдання»; у терміналі — «Тег за псевдонімом»; [SP_CTX_05_04](./context_editor.scenarios.sp.md#SP_CTX_05_04) рядки «Хост відхиляє команду компактизації», «Команда чекає кінця ходу», «Разовий `claude -p "<prompt>"`», «Передача після `--resume` відредагованої сесії», «Перезавантаження модуля посеред передачі», «Рядки, повернені компактизацією, у stream-json», «Передача, коли модель бачить не всі рядки», «Передача заповненої розмови», «Хід почався в новій сесії до засіву», «Запис старої черги після засіву не вдався», «`/compact` людини з текстом HANDOFF_MARKER». Плюс механічне: `claude plugin validate`, tsc, жодної згадки `context-editor-trigger`, `editor-ready`, `$.session.compact`, `FLUSH_RETRIES` у коді
+
+| Що | Де |
+|----|----|
+| Лічильник ходів основної розмови (`turns`, `inTurn`, `lastTurnAborted`), спільний для Flush, AutoTag і RunHandoff | новий `mods/context-editor/hooks/turns.ts` (чиста логіка + порт), тести `tests/turns.test.ts` |
+| Flush: логіка тригера переходить у редактор, порт FlushIO, одна спроба, без перевірки готовності | новий `mods/context-editor/hooks/flush.ts`, тести `tests/flush.test.ts` (з тригера) |
+| Запуск Flush з паузи після `turn.complete` (FLUSH_DELAY), `command.run('compact', MARKER)`; HandleCompaction за інструкцією (крім `precompute`); без `editor-ready` | `mods/context-editor/hooks/register.ts`, `compaction.ts`; `tests/compaction.test.ts` |
+| AutoTag пропускає рядки з `origin.kind = plugin` | `tags.ts`, `register.ts`; `tests/tags.test.ts` |
+| BuildSeed (повний і хвостовий режими, медіа по елементах, SEED_ROOM), CheckSeed, CheckSeeded, PinSummary, RunHandoff у новому порядку з `Deliver`, HandleSeed, `owner`/`handoffInFlight`, `/handoff` через Schedule(); HandoffIO без пошуку транскрипту, запису `.jsonl` і `/resume`; відмова команди хоста — у причинах | `mods/context-editor/hooks/handoff.ts`, `compaction.ts`, `queue.ts`, `register.ts`; `tests/handoff.test.ts` |
+| Межа: власна компактизація мода — `manual` з MARKER/HANDOFF_MARKER; межа засіяної сесії | `compaction.ts` (`observedBoundary`), `edits.ts` (`currentRows`), `register.ts`; `tests/boundary.test.ts` |
+| Константи (HANDOFF_MARKER, ROW_WINDOW, TRANSCRIPT_LINE, SUMMARY_OPENER, SEED_PROBE, SEED_ROOM, FLUSH_DELAY) | `queue.ts` / `handoff.ts` / `flush.ts` за місцем використання |
+| Вилучення тригера | видалити `mods/context-editor-trigger/` і `scripts/check-shared.sh` |
+| Документація поза `docs/` (propagate) | `CLAUDE.md` (один плагін, команди, пастки неінтерактивного хоста), кореневий `README.md` (опис тригера, команда запуску), драйвер `.dev_flow/cache/live-test/ce.sh` (один `--plugin-dir`) |
+| Навичка хоста | `.dev_flow/skills/claude-code/plugin-hooks.md`: `TriggerIO` → `FlushIO` у «Key Concepts»; «Usage in This Project» без `mods/context-editor-trigger` |
+
+Pseudocode sketch:
+    ON turn start (main loop): turns += 1; inTurn = true       # команди мода подій ходу не дають (спайк Entry 4)
+    ON turn complete (main loop): inTurn = false; lastTurnAborted = aborted; IF not aborted AND queue has edits AND no handoff: after FLUSH_DELAY — a turn since scheduling → no command (PERSON_MOVED: wait for the next completed turn, or reschedule if it already ended not aborted); else run /compact MARKER once (queued by the host until idle); a refusal → status line; else report + resume prompt once
+    ON compaction (not precompute): instructions = MARKER → HandleCompaction; = HANDOFF_MARKER → HandleSeed; any failure → skip
+    ON row appended: origin.kind = plugin → AutoTag skips it
+    RunHandoff(transcript): claim (in flight, owner for diagnostics) → PrepareSeed in the old session → Moved? defer : /clear → turn check → MovedSince check → /compact HANDOFF_MARKER → CheckSeeded → HandedOff first, then registries, PinSummary, Deliver; failure before clear → document; after clear → second clear only if the seed was taken, then document or notice via Deliver; any exception → Fail / guarded AfterClear / FailAfterClear; FINALLY not in flight
+
+Живий прогін у неінтерактивному хості — драйвер `.dev_flow/cache/handoff-long/drive.sh` (`--plugin-dir mods/context-editor`, `--model haiku`); наприкінці — повторна жива передача з VS Code (сесія розробника, розширення на актуальній версії), яка й виявила ваду.
+
+## Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-10-15 | Розділ перенесено дослівно з [context_editor.plan.md](./context_editor.plan.md): поділ плану по фазах (structural-event) |

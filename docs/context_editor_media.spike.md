@@ -9,7 +9,7 @@
 > **Mode:** single
 >
 > **Target concept:** [C_CTX](./context_editor.concept.md)
-> **Serves:** [SP_CTX_DEC_06](./context_editor.sp.md#SP_CTX_DEC_06), фаза плану [PL_CTX_P4](./context_editor.plan.md#PL_CTX_P4)
+> **Serves:** [SP_CTX_DEC_06](./context_editor.sp.md#SP_CTX_DEC_06), фаза плану [PL_CTX_P4](./context_editor.p04.plan.md#PL_CTX_P4)
 > **Question(s):**
 > 1. Як зіставити повідомлення API-подання з медіа в промпті людини з рядком розмови: A — рівність тексту, B — позиція промптів людини в обох поданнях, C — відмова від `describe`?
 > 2. Чи дорівнює текст такого повідомлення `Row.text` (точно, після якої нормалізації, як вкладено нагадування), і чи збігаються кількість і порядок промптів у поданнях, зокрема після компактизації?

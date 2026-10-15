@@ -8,7 +8,7 @@
 |------|----|--------|-------|
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): спільні філософія й обмеження хоста, склад набору, покажчик рішень C_CTX_DEC_*; дочірні концепти — ядро й інструменти, методи оптимізації контексту, курування історії (draft) |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, рішення SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
-| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План: фази 1–28 виконані; фази 29–31 (калібрування перед застосуванням, теги зниклих рядків, дрібні вади CF-43/52/53) — дизайн; фаза 32 (ремонт після відновлення, CF-46/51) — дизайн; backlog наступної роботи |
+| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–37 виконано, 38 (можливості хоста) — у роботі, 39–46 — курування історії (спершу живі ворота) |
 
 ## Maps
 
@@ -56,5 +56,6 @@
 | `SP_CTX_05_02`–`05_04` (інваріанти, сценарії, граничні випадки) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |
 | `SP_CTX_02`, `SP_CTX_03`, `SP_CTX_05`, `SP_CTX_06`, `SP_CTX_DEC` | [context_editor.sp.md](context_editor.sp.md) |
 | `PL_CTX` | [context_editor.plan.md](context_editor.plan.md) |
+| `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
 Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` (поза перевірками цілісності).
