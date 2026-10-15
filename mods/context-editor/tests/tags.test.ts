@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, TAG_REWRITTEN, TAG_SUMMARIZED, touchedBy, type QueuedEdit } from '../hooks/edits'
-import { BIG_ROW, isReplacementText } from '../hooks/rows'
+import { BIG_ROW, DOCUMENT_FRAME, isReplacementText } from '../hooks/rows'
 import { insertDeliveries } from '../hooks/deliveries'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
@@ -19,6 +19,7 @@ import {
   MAX_REGISTRY_BYTES,
   MAX_TAGS,
   parseRegistry,
+  pinDocument,
   pruneDeadTags,
   registryFull,
   TAG_ROOM,
@@ -300,31 +301,59 @@ test('appendFacts reads door, origin, tool, ids and size from an appended row', 
   expect(p.tool).toBeUndefined()
 })
 
-test('R1 pins the first prompt of the person only; the second prompt gets no tag', async () => {
+// [SP_CTX_02_68] R1 is gone (C_CTX_DEC_38): no origin gets its first prompt pinned
+test('Pins — перший промпт: no rule pins the person\'s first prompt, from any origin', async () => {
   const { io, log } = harness(empty())
-  await autoTag(io, fact({ text: 'the task:\nfind KEY_0042' }))
-  expect(log.tags!.firstPromptPinned).toBe(true)
-  expect(log.tags!.tags).toEqual([{ kind: 'pin', target: anchorOf(0), created_turn: 0 }])
-  await autoTag(io, fact({ text: 'Next step.' }))
-  expect(log.tags!.tags.length).toBe(1)
-  expect(log.tagWrites).toBe(1)
-})
-
-test('R1 waits for the person: a plugin prompt first gets no pin', async () => {
-  const { io, log } = harness(empty())
-  await autoTag(io, fact({ origin: 'plugin', text: 'the task: find KEY_0042' }))
-  expect(log.tags).toBeUndefined()
-  await autoTag(io, fact({ origin: 'bridge', text: 'the task: find KEY_0042' }))
-  expect(log.tags!.tags[0]!.kind).toBe('pin')
-})
-
-test('AutoTag — R1 у stream-json: the person\'s first prompt arrives with origin unclassified and is pinned; a plugin-origin row is not', async () => {
-  const { io, log } = harness(empty())
-  await autoTag(io, appendFacts({ door: 'prompt', origin: { kind: 'plugin' }, message: { content: [{ type: 'text', text: 'the task: find KEY_0042' }] } }))
+  for (const origin of ['composer', 'bridge', 'sdk', 'unclassified', 'plugin'])
+    await autoTag(io, fact({ origin, text: 'the task: find KEY_0042' }))
+  await autoTag(io, appendFacts({ door: 'prompt', origin: { kind: 'unclassified' }, message: { content: [{ type: 'text', text: 'the task' }] } }))
   expect(log.tagWrites).toBe(0)
-  await autoTag(io, appendFacts({ door: 'prompt', origin: { kind: 'unclassified' }, message: { content: [{ type: 'text', text: 'the task: find KEY_0042' }] } }))
-  expect(log.tags!.firstPromptPinned).toBe(true)
-  expect(log.tags!.tags).toEqual([{ kind: 'pin', target: anchorOf(0), created_turn: 0 }])
+  expect(autoTagNeeded(fact({ origin: 'composer', text: 'the task' }))).toBe(false)
+})
+
+const DOC_ROW = (frame = true): SessionMessage => ({
+  role: 'user',
+  text: `${frame ? 'The context-editor plugin sent a message:\n' : ''}${DOCUMENT_FRAME}\n\nmy notes\n\ncontext-editor: this session continues s1 (document).`,
+  toolUses: [],
+})
+
+test('Pins — передача «документом»: the first turn end pins row 0 of a document session once; docChecked stays', async () => {
+  let reads = 0
+  const r = [DOC_ROW(), { role: 'assistant' as const, text: 'ok', toolUses: [] }]
+  const { io, log } = harness(empty(), undefined, { rows: async () => (reads++, r) })
+  await countTurn(io)
+  expect(log.tags!.tags).toEqual([{ kind: 'pin', target: { anchor: fingerprint(r[0]!), hint: 0 }, created_turn: 1 }])
+  expect(log.tags!.docChecked).toBe(true)
+  expect(log.tags!.turn).toBe(1)
+  await countTurn(io)
+  expect(reads).toBe(1)
+  expect(log.tags!.tags.length).toBe(1)
+  // the agent removes the pin like any other
+  const removed = await contextTag(io, { tags: [{ op: 'remove', index: 0 }] })
+  expect('result' in removed).toBe(true)
+  expect(log.tags!.tags).toEqual([])
+})
+
+test('Pins — no document: row 0 of an ordinary session gets no pin; a document without the host frame is still one', async () => {
+  const { io, log } = harness(empty())
+  await countTurn(io)
+  expect(log.tags!.tags).toEqual([])
+  expect(log.tags!.docChecked).toBe(true)
+  expect(pinDocument(EMPTY_REGISTRY, [DOC_ROW(false)]).tags.length).toBe(1)
+  // a tag already on row 0 stays as it is
+  const mine = reg([{ kind: 'review', reason: 'agent', target: { anchor: fingerprint(DOC_ROW()), hint: 0 }, created_turn: 0 }])
+  expect(pinDocument(mine, [DOC_ROW()]).tags).toEqual(mine.tags)
+  expect(parseRegistry(JSON.stringify({ ...EMPTY_REGISTRY, docChecked: 'yes' })).state).toBe('unreadable')
+})
+
+// [SP_CTX_02_68] stream-json: the host writes the rows of the mod's /clear before the document (live run of phase 40)
+test('Pins — рядки /clear перед документом: the document after the command rows is pinned at its own index; a document after the first response is not', async () => {
+  const clear = [prompt('<local-command-caveat>Caveat: …</local-command-caveat>'), prompt('<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>')]
+  const out = pinDocument(EMPTY_REGISTRY, [...clear, DOC_ROW(), reply('PELICAN')])
+  expect(out.tags).toEqual([{ kind: 'pin', target: { anchor: fingerprint(DOC_ROW()), hint: 2 }, created_turn: 0 }])
+  expect(out.docChecked).toBe(true)
+  const late = pinDocument(EMPTY_REGISTRY, [prompt('task'), reply('ok'), DOC_ROW()])
+  expect(late.tags).toEqual([])
 })
 
 test('AutoTag — копія промпту: a prompt row a compaction returned, appended again with plugin origin, gets no pin', async () => {
@@ -334,7 +363,7 @@ test('AutoTag — копія промпту: a prompt row a compaction returned,
   const { io, log } = harness(empty())
   await autoTag(io, copy)
   expect(log.tagWrites).toBe(0)
-  expect(applyRules(EMPTY_REGISTRY, copy, anchorOf(0))).toBe(EMPTY_REGISTRY)
+  expect(applyRules(EMPTY_REGISTRY, copy)).toBe(EMPTY_REGISTRY)
 })
 
 test('AutoTag — копія великого результату (plugin origin): a 5000-char Read result copy with plugin origin gets neither R2 nor R3', async () => {
@@ -619,20 +648,34 @@ test('context_tag — агентський review: the agent\'s review gets reas
   expect(out.tags).toEqual([{ kind: 'review', reason: 'agent', target: { tool_use_id: 'b' }, ttl_turns: 2, created_turn: 0 }])
 })
 
-test('context_tag — попередження про людину: a range over a prompt and an AskUserQuestion answer, a disposable on the AskUserQuestion pair; none without the person\'s rows', async () => {
+// [SP_CTX_02_58] PERSON_TAG
+test('PersonWords — тег над промптом: a range over a prompt and an AskUserQuestion answer and a disposable on the AskUserQuestion pair are refused; a range without them stands', async () => {
   const range = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 4, to: 9, note: 'n' }])
-  expect(range.tags.length).toBe(1)
+  expect(range.tags.length).toBe(0)
   expect(range.text).toContain(
-    "Warning: disposable #4..#9 covers the person's messages: #6 (AskUserQuestion answer), #7 (prompt). Keep them verbatim unless you drop them deliberately.",
+    "Rejected: tag 1: disposable #4..#9: covers the person's words: #6 (AskUserQuestion answer), #7 (prompt); they stay verbatim in this session: narrow the range or split it around them (PERSON_TAG).",
   )
   const pair = await tag15(reg([]), [{ op: 'add', kind: 'disposable', tool_use_id: 'q', note: 'n' }])
-  expect(pair.tags.length).toBe(1)
-  expect(pair.text).toContain("Warning: disposable q covers the person's messages: #6 (AskUserQuestion answer).")
+  expect(pair.tags.length).toBe(0)
+  expect(pair.text).toContain("disposable q: the AskUserQuestion answer is the person's words; it stays verbatim (PERSON_TAG)")
   const plain = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 2, to: 4, note: 'n' }])
-  expect(plain.text).not.toContain('Warning')
+  expect(plain.tags.length).toBe(1)
+  expect(plain.text).not.toContain('Rejected')
 })
 
-test('context_tag — доставки не прочитано: io.deliveries rejects: the tag stands and the warning still names the person\'s rows', async () => {
+// [SP_CTX_02_58] a tag queued before this version whose target covers the person's words now
+test('PersonWords — тег у QueueTagReplacements: the tag over a prompt is removed, not queued; its line names it; the other tag is queued', async () => {
+  const over = { kind: 'disposable' as const, target: { ...at15(4), toAnchor: fingerprint(rows15()[9]!), toHint: 9 }, note: 'n', created_turn: 0 }
+  const fine = { kind: 'disposable' as const, target: { tool_use_id: 'a' }, note: 'file a', created_turn: 0 }
+  const h = harness(okRead(reg([over, fine])), undefined, { rows: async () => rows15() })
+  const out = await queueTagReplacements(h.io)
+  expect(out.queued).toBe(1)
+  expect(out.dropped).toEqual(["disposable #4..#9 dropped: it covers the person's words"])
+  expect(h.log.tags!.tags).toEqual([fine])
+  expect(h.log.queue!.edits.map(describeEdit)).toEqual(['summarize a'])
+})
+
+test('context_tag — доставки не прочитано: io.deliveries rejects: the refusal still comes from the rows', async () => {
   const h = harness(okRead(reg([])), undefined, {
     rows: async () => rows15(),
     deliveries: async () => {
@@ -640,8 +683,8 @@ test('context_tag — доставки не прочитано: io.deliveries re
     },
   })
   const out = await contextTag(h.io, { tags: [{ op: 'add', kind: 'disposable', index: 4, to: 9, note: 'n' }] })
-  expect('result' in out && out.result).toContain("Warning: disposable #4..#9 covers the person's messages: #6 (AskUserQuestion answer), #7 (prompt).")
-  expect(h.log.tags!.tags.length).toBe(1)
+  expect('result' in out && out.result).toContain("disposable #4..#9: covers the person's words: #6 (AskUserQuestion answer), #7 (prompt);")
+  expect(h.log.tags).toBeUndefined()
 })
 
 test('context_list — позначки: [state], [review: stale] on both rows of a pair, a range on its first row only; `review` без причини — [review], an agent\'s — [review: agent]', async () => {
@@ -699,7 +742,7 @@ test('PrepareEdits — слот стану: rewrite of the state row passes; a c
   expect(stateRow(r.slice(0, 3), reg([{ kind: 'state', target: at15(4), created_turn: 0 }]))).toBe(-1)
 })
 
-test('AutoTag — R1, R2, R3: R2 gives reason big, R3 reason search with SEARCH_TTL', async () => {
+test('AutoTag — R2, R3: R2 gives reason big, R3 reason search with SEARCH_TTL', async () => {
   const { io, log } = harness(empty())
   await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 5000, results: [{ id: 'a', text: BIG }] }))
   await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Grep', ids: ['b'], size: 10, results: [{ id: 'b', text: 'match list' }] }))
@@ -1148,7 +1191,7 @@ test('AppendRow — a compaction copy: every result id in Copied; a failed ancho
   expect(broken.calls).toEqual(['storage', 'store', 'autoTag'])
 })
 
-test('AutoTagNeeded — без читання реєстру: a small result of a tool that is no search tool, a plugin row or a copy need no rule; a person\'s prompt, a big or search result and a big result text do', async () => {
+test('AutoTagNeeded — без читання реєстру: a small result of a tool that is no search tool, a plugin row, a copy and a person\'s prompt (R1 is gone) need no rule; a big or search result and a big result text do', async () => {
   const small = fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 10, results: [{ id: 'a', text: '0123456789' }] })
   expect(autoTagNeeded(small)).toBe(false)
   expect(autoTagNeeded({ ...small, tool: 'Grep' })).toBe(true)
@@ -1156,7 +1199,7 @@ test('AutoTagNeeded — без читання реєстру: a small result of 
   expect(autoTagNeeded({ ...small, tool: 'mcp__context-editor__context_list', size: BIG_ROW })).toBe(false)
   expect(autoTagNeeded({ ...small, tool: undefined, results: [{ id: 'a', text: 'x'.repeat(BIG_ROW) }] })).toBe(true)
   expect(autoTagNeeded({ ...small, tool: 'Grep' }, true)).toBe(false)
-  expect(autoTagNeeded(fact({ text: 'the task' }))).toBe(true)
+  expect(autoTagNeeded(fact({ text: 'the task' }))).toBe(false)
   expect(autoTagNeeded(fact({ origin: 'plugin', text: 'the task' }))).toBe(false)
   expect(autoTagNeeded(fact({ door: 'attachment', origin: 'engine', size: 6000 }))).toBe(false)
 })

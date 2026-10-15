@@ -605,7 +605,7 @@ test('SessionIntro — introFor and withIntroduced with reintroduce', async () =
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
-  expect(INTRO_TEXT.length).toBe(994)
+  expect(INTRO_TEXT.length).toBe(998)
   // [SP_CTX_02_37] the suggestion line in a few words: it only informs (phase 23)
   expect(INTRO_TEXT).toContain('A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work.')
   expect(INTRO_TEXT.includes('Nothing reminds you by size')).toBe(false)
@@ -1359,4 +1359,12 @@ test('BlockReport — обхід: the report ends with PASSED_ADVICE, without ST
   const text = await blockReport({ ...blockIO(list, reg()), passed: () => true }, block)
   expect(text.endsWith(PASSED_ADVICE)).toBe(true)
   expect(text).not.toContain(STAGE_ADVICE)
+})
+
+// [SP_CTX_02_58] a tag over the person's words, removed instead of queued: its line in the close report
+test('PersonWords — рядок прибраного тегу у звіті закриття: each dropped line is printed after the replacements', async () => {
+  const list = [prompt('p'), use('c'), result('c')]
+  const block: ClosedBlock = { name: 'A', after: mark(list, 0), end: mark(list, list.length - 1), turn: 0 }
+  const text = await blockReport(blockIO(list, reg({ tags: [] })), block, { queued: 0, freed: '~0 tokens', dropped: ["disposable #0..#2 dropped: it covers the person's words"] })
+  expect(text).toContain("\ndisposable #0..#2 dropped: it covers the person's words.")
 })

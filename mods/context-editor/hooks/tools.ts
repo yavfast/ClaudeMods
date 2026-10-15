@@ -38,23 +38,27 @@ const LIST_SCHEMA = {
 // [SP_CTX_02_02] At most MAX_DESCRIPTION chars, by the priorities of the spec.
 export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have processed (screenshots and documents too), dead-end steps and wrong conclusions with summaries.
 
-Edits apply when your turn ends: after this call, end your turn with a one-line status. The session then resumes by itself with "resume_prompt" (default: "${DEFAULT_RESUME}") unless "resume" is false; in a /compact turn only on "resume": true or "resume_prompt".
+Edits apply when your turn ends: after this call, end your turn with a one-line status. The session then resumes by itself with "resume_prompt" unless "resume" is false; in a /compact turn only on "resume": true or "resume_prompt".
 
 Ops (items of "edits"; every field shown is required):
 - {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
 - {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
-- {"op":"describe","index","description"}: replace the image or document in a prompt row of the person (@ in ${LIST}) by your description; its text stays.
+- {"op":"describe","index","description"}: replace the image, document or pasted text in a prompt row of the person (@ in ${LIST}) by your description; the text the person typed stays.
 
-Calls worth editing carry a line "${MARK} id cN" after their result: "ref":"cN" targets that call and "ref":"last" your latest call, without ${LIST}. A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
+A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
 
 Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
-Compress a finished stage's block into a stage record; usually keep verbatim the person's messages (AskUserQuestion answers too), rules and skills in force. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
+Compress a finished stage's block into a stage record. The person's messages (AskUserQuestion answers too) stay verbatim: edits that cover them are refused. Usually keep the rules and skills in force verbatim. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
-const REF = { type: 'string', description: `Instead of tool_use_id: a call alias "cN" from a "${MARK} id cN" line, or "last" for your latest call (context_* calls do not count).` }
+// [SP_CTX_02_69] the paragraph about refs lives here, not in EDIT_DESCRIPTION
+const REF = {
+  type: 'string',
+  description: `Instead of tool_use_id: a call alias "cN" from the "${MARK} id cN" line after a call's result, or "last" for your latest call (context_* calls do not count); no ${LIST} needed.`,
+}
 
 const EDIT_SCHEMA = {
   type: 'object',
@@ -76,7 +80,7 @@ const EDIT_SCHEMA = {
       },
     },
     resume: { type: 'boolean', description: 'Resume the session after this batch applies (default true).' },
-    resume_prompt: { type: 'string', description: 'What the resumed turn is told.' },
+    resume_prompt: { type: 'string', description: `What the resumed turn is told (default: "${DEFAULT_RESUME}").` },
     keep_cache: {
       type: 'boolean',
       description:
@@ -94,7 +98,7 @@ Targets of add and remove: exactly one of "tool_use_id" (a tool call with its re
 Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, cleanup candidates, context telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
 
 Kinds (op "add"):
-- "pin": nothing may edit the target, neither you nor the replacements of disposable tags. The person's first prompt is pinned for you.
+- "pin": nothing may edit the target, neither you nor the replacements of disposable tags. Pins are yours to set and remove.
 - "disposable" + "note": once you close a stage or move on from a block you marked, the target is replaced by your note (a tool result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
 - "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (the file changed since), duplicate.
 - "state": your one state slot (task state, plan), an assistant text row by "index"; change it only by a rewrite of that row, never append a new one. A new state tag moves the slot.

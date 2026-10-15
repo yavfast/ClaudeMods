@@ -10,7 +10,7 @@
 // (InsertDeliveries, [SP_CTX_02_36]). Pure logic behind a small port;
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
-import { isPlainUserRow, isReplacementText, markerKind, PREFIX, resultsOf, rowChars } from './rows'
+import { hostFrame, isPlainUserRow, isReplacementText, markerKind, PLUGIN_FRAME, PREFIX, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import { isCount, jsonObject, trimOldest, type Read } from './store'
 
@@ -82,7 +82,6 @@ export function deliveryWords(text: string): string | undefined {
 
 // [SP_CTX_02_02] Rows the host writes as user rows that are no message of
 // the person: a plugin's prompt in its frame, and rows of host tags.
-const PLUGIN_FRAME = /^The .+ plugin sent a message:/
 // (`<command-message>` alone, without `<command-name>`, is the host's notice of a running command)
 const HOST_ROWS = ['<local-command-stdout>', '<local-command-caveat>', '<task-notification>', '<command-message>']
 // leading closed spans the host puts before the person's words (VS Code: the open file)
@@ -112,6 +111,8 @@ export function personText(raw: string): string {
   }
   // a replacement (of now or marked with MARK before phase 28) and the mod's own words
   if (isReplacementText(t) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
+  // [SP_CTX_02_58] the text of an expanded skill or a subagent's report is no person's words
+  if (hostFrame(t)) return ''
   if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''
   return t
 }

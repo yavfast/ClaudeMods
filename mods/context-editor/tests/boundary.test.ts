@@ -26,7 +26,8 @@ import {
 } from '../hooks/edits'
 import { applyTagRequests, EMPTY_REGISTRY } from '../hooks/tags'
 import { applyNoteRequests } from '../hooks/notes'
-import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION } from '../hooks/tools'
+import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION, TOOLS } from '../hooks/tools'
+import { DEFAULT_RESUME } from '../hooks/queue'
 
 function row(role: 'user' | 'assistant', text: string): SessionMessage {
   return { role, text, toolUses: [] }
@@ -96,11 +97,27 @@ test('every tool description reaches the model whole (the five tools)', async ()
   for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION, NOTE_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
 })
 
-// [SP_CTX_02_02] [SP_CTX_DEC_20] phase 21: "last" is the latest call, marked or not
-test('EDIT_DESCRIPTION — last (phase 21)', async () => {
+// [SP_CTX_02_02] [SP_CTX_DEC_20] phase 21: "last" is the latest call, marked or not;
+// [SP_CTX_02_69] phase 40: the paragraph lives in the field "ref", the default resume text in "resume_prompt"
+test('EDIT_DESCRIPTION — last (phase 21), поля (phase 40)', async () => {
   expect(EDIT_DESCRIPTION.length <= MAX_DESCRIPTION).toBe(true)
-  expect(EDIT_DESCRIPTION).toContain('"ref":"last" your latest call, without context_list.')
   expect(EDIT_DESCRIPTION).not.toContain('latest marked')
+  expect(EDIT_DESCRIPTION).not.toContain('id cN')
+  const schema = TOOLS.find(t => t.name === 'context_edit')!.inputSchema as { properties: Record<string, { description?: string; items?: { oneOf: { properties: Record<string, { description?: string }> }[] } }> }
+  const ref = schema.properties.edits!.items!.oneOf.find(o => o.properties.ref)!.properties.ref!.description!
+  expect(ref).toContain('"last" for your latest call')
+  expect(ref).toContain('id cN')
+  expect(schema.properties.resume_prompt!.description).toContain(DEFAULT_RESUME)
+})
+
+// [SP_CTX_02_58] [SP_CTX_02_68] [SP_CTX_02_69] phase 40: the person's words and the pins
+test('описи інструментів (phase 40): the person\'s messages stay verbatim and edits over them are refused; pasted text in describe; no first-prompt pin', async () => {
+  expect(EDIT_DESCRIPTION).toContain("The person's messages (AskUserQuestion answers too) stay verbatim: edits that cover them are refused.")
+  expect(EDIT_DESCRIPTION).toContain('the image, document or pasted text in a prompt row of the person')
+  expect(EDIT_DESCRIPTION).not.toContain('unless you drop')
+  expect(TAG_DESCRIPTION).not.toContain('first prompt is pinned')
+  expect(TAG_DESCRIPTION).toContain('Pins are yours to set and remove.')
+  expect(TAG_DESCRIPTION.length <= MAX_DESCRIPTION).toBe(true)
 })
 
 // [SP_CTX_02_01] [SP_CTX_02_02] [SP_CTX_02_11] the content phase 15 adds
@@ -483,7 +500,7 @@ test('RecordBoundary — host: with hostId the boundary carries it, without it n
 
 test('EDIT_DESCRIPTION — keep_cache (phase 23): a few words point to the field; the text stays within MAX_DESCRIPTION', async () => {
   expect(EDIT_DESCRIPTION).toContain('Batch edits in one call (see "keep_cache").')
-  expect(EDIT_DESCRIPTION.length).toBe(2024)
+  expect(EDIT_DESCRIPTION.length).toBe(1888)
 })
 
 // [PL_AUD_CTX_P6] TST-17: before the storage is ready

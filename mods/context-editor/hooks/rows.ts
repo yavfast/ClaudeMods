@@ -77,7 +77,14 @@ const BY_TAG = `${REPLACED}tag disposable tag replaced `
 export type Via = 'edit' | 'tag'
 export const SUMMARIZED = `${BY_EDIT}summarize call replaced the full output you had read here with your own summary`
 export const REWRITTEN = `${BY_EDIT}rewrite call replaced the text of this row with your own rewrite`
-export const DESCRIBED = `${BY_EDIT}describe call replaced the media you had seen here with your own description`
+// [SP_CTX_01_32] The head of every describe opener: media, pasted text or both ([SP_CTX_02_59]).
+export const DESCRIBED_HEAD = `${BY_EDIT}describe call replaced the `
+export const DESCRIBED = `${DESCRIBED_HEAD}media you had seen here with your own description`
+// [SP_CTX_02_59] DescribedWords: what the describe replaced
+export function describedWords(media: boolean, pasted: boolean): string {
+  const what = media && pasted ? 'media and the pasted text' : pasted ? 'pasted text' : 'media'
+  return `${DESCRIBED_HEAD}${what} you had seen here with your own description`
+}
 export const TAG_SUMMARIZED = `${BY_TAG}the full output you had read here with your own note`
 export const TAG_REWRITTEN = `${BY_TAG}the text of this row with your own note`
 // [SP_CTX_DEC_29] The collapse words name what the span held (CollapsedList,
@@ -95,7 +102,8 @@ export function rewrittenWords(via: Via = 'edit'): string {
 }
 // Every full opener of phase 28: the test of a replacement is the whole
 // opener, not REPLACED alone (a person quoting the start back is no replacement).
-export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER]
+// [SP_CTX_02_59] DESCRIBED_HEAD stands for every describe opener of phase 40.
+export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER]
 // [SP_CTX_01_12] The openers of phases 19–27 (A′): sessions applied before
 // phase 28 still carry them.
 export const LEGACY_DESCRIBED = `${MARK} you saw the media here, then replaced it with your description`
@@ -118,7 +126,35 @@ export function isCollapseText(text: string): boolean {
 // [SP_CTX_02_04] A person's prompt after a describe (its words follow the
 // description), of now or of phases 19–27.
 export function isDescribedText(text: string): boolean {
-  return text.startsWith(DESCRIBED) || text.startsWith(LEGACY_DESCRIBED)
+  return text.startsWith(DESCRIBED_HEAD) || text.startsWith(LEGACY_DESCRIBED)
+}
+
+// [SP_CTX_01_32] [SP_CTX_02_58] The frames of the text the host adds as a
+// user row: an expanded skill, a subagent's report between turns. HostFrame:
+// such a text is never the person's words.
+export const SKILL_FRAME = 'Base directory for this skill: '
+export const PEER_FRAME = 'Another Claude session sent a message:\n<agent-message'
+export function hostFrame(text: string): boolean {
+  return text.startsWith(SKILL_FRAME) || text.startsWith(PEER_FRAME)
+}
+
+// [SP_CTX_02_59] PasteBlocks: the host's wrapper of pasted text in a
+// prompt's text, `<pasted_content id="X">…</pasted_content id="X">` (the
+// closing tag repeats the id) or without an id; in order, not nested.
+const PASTE = /<pasted_content( id="[^"]*")?>([\s\S]*?)<\/pasted_content\1>/g
+export type PasteBlock = { start: number; end: number; chars: number }
+export function pasteBlocks(text: string): PasteBlock[] {
+  return [...text.matchAll(PASTE)].map(m => ({ start: m.index!, end: m.index! + m[0].length, chars: m[2]!.length }))
+}
+// [SP_CTX_02_59] The typed text with paste block k (from 1) in its place as a mark.
+export function withPasteMarks(text: string, blocks: readonly PasteBlock[]): string {
+  let out = ''
+  let at = 0
+  blocks.forEach((b, k) => {
+    out += `${text.slice(at, b.start)}[pasted text ${k + 1}, ${b.chars} chars: see your description above]`
+    at = b.end
+  })
+  return out + text.slice(at)
 }
 
 // [SP_CTX_01_12] [SP_CTX_02_07] Which of the mod's compactions a command's
@@ -157,6 +193,21 @@ export function isBlankRow(row: SessionMessage): boolean {
 // row a drop left empty. The base of the prompt predicates below.
 export function isPlainUserRow(row: SessionMessage): boolean {
   return row.role === 'user' && !resultsOf(row).length
+}
+
+// [SP_CTX_02_02] The host's frame of a plugin's prompt: its first line.
+export const PLUGIN_FRAME = /^The .+ plugin sent a message:/
+const PLUGIN_FRAME_LINE = new RegExp(`${PLUGIN_FRAME.source}[ \\t]*\\n`)
+// [SP_CTX_01_12] [SP_CTX_02_21] The first line of a handoff document in the new session.
+export const DOCUMENT_FRAME = modText("your handoff document from the previous session follows; it is your own text, not the person's.")
+
+// [SP_CTX_02_68] DocumentRow: a user row without results whose text, after
+// the host's frame of a plugin's prompt, starts with DOCUMENT_FRAME.
+export function documentRow(row: SessionMessage): boolean {
+  if (!isPlainUserRow(row)) return false
+  const t = row.text.trimStart()
+  const frame = PLUGIN_FRAME_LINE.exec(t)
+  return (frame ? t.slice(frame[0].length).trimStart() : t).startsWith(DOCUMENT_FRAME)
 }
 
 // [SP_CTX_02_04] PromptRow: a user row without results that is not a result

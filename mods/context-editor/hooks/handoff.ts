@@ -27,14 +27,14 @@ import {
   type Boundary,
   type QueuedEdit,
 } from './edits'
-import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
+import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, screenPerson, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
-import { apiBlocks, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
+import { apiBlocks, DOCUMENT_FRAME, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
 import { dropPulled, type Pulled } from './repair'
 import { storageRefusal, type ChangeFn, type Read, type StorageState } from './store'
 import { HANDOFF_COMMAND_PASSED_OVER, HANDOFF_PASSED_OVER, HANDOFF_TOOL_PASSED_OVER } from './capabilities'
@@ -52,7 +52,7 @@ export const HANDOFF_PROMPT = modText(
 // [SP_CTX_01_12] [SP_CTX_DEC_17] The first line of the document prompt: the
 // document is the model's own text (the agent's `document` or a fork of the
 // model), submitted as a `user` prompt (audit PL_AUD_CTX, CF-8).
-export const DOCUMENT_FRAME = modText("your handoff document from the previous session follows; it is your own text, not the person's.")
+export { DOCUMENT_FRAME } from './rows'
 export const SEED_ROOM = 16
 export const SEED_PROBE = 80
 export const SEED_WAIT_MS = 2_000
@@ -303,7 +303,10 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
       return false
     })
   }
-  const screened = screenPinned(visible, edits, input.tags)
+  // [SP_CTX_02_58] ScreenPerson beside ScreenPinned on the visible rows
+  const pinScreen = screenPinned(visible, edits, input.tags)
+  const personScreen = screenPerson(visible, pinScreen.edits, input.deliveries?.state === 'ok' ? input.deliveries.value.items : [])
+  const screened = { edits: personScreen.edits, refused: [...pinScreen.refused, ...personScreen.refused] }
   // [SP_CTX_02_10] prompt rows by their index in `visible`, which ends where the API form ends
   const { found, unmatchedPromptMedia: unmatched, toolRefs } = collectMedia(api, visible)
   // a prompt's media goes to a file only for an edit that replaces it; the rest is not carried

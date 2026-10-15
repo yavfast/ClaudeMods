@@ -17,6 +17,14 @@ import {
   collapsedWords,
   COLLAPSED_OPENER,
   DESCRIBED,
+  DESCRIBED_HEAD,
+  describedWords,
+  documentRow,
+  hostFrame,
+  pasteBlocks,
+  PEER_FRAME,
+  SKILL_FRAME,
+  withPasteMarks,
   isCollapseText,
   isDescribedText,
   isReplacementText,
@@ -159,7 +167,7 @@ test('ReplacementText — тексти фази 28 і старі: the new opener
   expect(collapsedWords(5, 'Read cfg.txt; Bash ls')).toBe('Later, your context_edit collapse call replaced these 5 rows you had read (Read cfg.txt; Bash ls) with your own note')
   // [SP_CTX_02_13] a disposable tag's replacement names context_tag
   expect(collapsedWords(3, '', 'tag')).toBe('Later, your context_tag disposable tag replaced these 3 rows you had read with your own note')
-  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER])
+  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER])
   for (const t of REPLACEMENT_OPENERS) expect(t.startsWith(REPLACED) && !t.includes(MARK)).toBe(true)
   const now = [`${SUMMARIZED}: s`, `${REWRITTEN}: s`, `${DESCRIBED}: d\n\nwhat is it?`, `${collapsedWords(2)}: s`, `${TAG_SUMMARIZED}: s`, `${TAG_REWRITTEN}: s`, `${collapsedWords(2, 'Read a', 'tag')}: s`]
   const legacy = [
@@ -181,4 +189,29 @@ test('ReplacementText — тексти фази 28 і старі: the new opener
   for (const t of ['Later, your build failed', 'later, your context_edit summarize call', 'context_edit summarize', '', 'Later, your context_edit call looked odd', 'Later, your context_tag disposable tag replaced it?']) expect(isReplacementText(t)).toBe(false)
   expect(personText('Later, your context_edit call looked odd')).toBe('Later, your context_edit call looked odd')
   expect(personText('Later, your build failed')).toBe('Later, your build failed')
+})
+
+// [SP_CTX_02_58] [SP_CTX_02_59] [SP_CTX_02_68] phase 40
+test('HostFrame, PasteBlocks, DescribedWords, DocumentRow: the host\'s frames are no person\'s words; paste blocks by order; the document after the plugin frame', async () => {
+  const skill = `${SKILL_FRAME}/home/u/.claude/skills/dev-flow\n\n# Concept-Driven Development`
+  const peer = `${PEER_FRAME} from="a1">\nreport</agent-message>`
+  expect(hostFrame(skill) && hostFrame(peer)).toBe(true)
+  expect(personText(skill)).toBe('')
+  expect(personText(peer)).toBe('')
+  expect(personText('please read Base directory for this skill: x')).toBe('please read Base directory for this skill: x')
+  const text = 'a <pasted_content id="f00d">X</pasted_content id="f00d"> b <pasted_content>YY</pasted_content> c <pasted_content id="1">bad</pasted_content id="2">'
+  const blocks = pasteBlocks(text)
+  expect(blocks.map(b => b.chars)).toEqual([1, 2])
+  expect(withPasteMarks(text, blocks).startsWith('a [pasted text 1, 1 chars: see your description above] b [pasted text 2, 2 chars: see your description above] c <pasted_content id="1">')).toBe(true)
+  expect(describedWords(true, false)).toBe(DESCRIBED)
+  expect(describedWords(false, true).startsWith(DESCRIBED_HEAD)).toBe(true)
+  for (const w of [describedWords(false, true), describedWords(true, true)]) {
+    expect(isReplacementText(`${w}: d\n\nhi`)).toBe(true)
+    expect(isDescribedText(`${w}: d\n\nhi`)).toBe(true)
+  }
+  const doc = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
+  expect(documentRow(doc(`The context-editor plugin sent a message:\n${DOCUMENT_FRAME}\n\nnotes`))).toBe(true)
+  expect(documentRow(doc(`${DOCUMENT_FRAME}\n\nnotes`))).toBe(true)
+  expect(documentRow(doc(`please look: ${DOCUMENT_FRAME}`))).toBe(false)
+  expect(documentRow({ role: 'assistant', text: DOCUMENT_FRAME, toolUses: [] })).toBe(false)
 })

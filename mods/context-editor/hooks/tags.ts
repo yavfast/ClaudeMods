@@ -25,7 +25,7 @@ import {
   type RefResolver,
   type RowIndex,
 } from './edits'
-import { MAX_QUEUE_BYTES, personTagWarning, type Queue } from './queue'
+import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
 import {
   blockName,
@@ -49,7 +49,7 @@ import {
 } from './stages'
 import { badNoteFields, type Note } from './notes'
 import { bytes, isCount, jsonObject, storageRefusal, type Read } from './store'
-import { errorText, findToolResult, findToolUse, isBig, isPlainUserRow, isReplacementText, isSearchTool, resultsOf, rowChars, squash } from './rows'
+import { documentRow, errorText, findToolResult, findToolUse, isBig, isReplacementText, isSearchTool, resultsOf, rowChars } from './rows'
 
 // [SP_CTX_01_12]
 export const MAX_TAGS = 1000
@@ -87,6 +87,8 @@ export type TagRegistry = {
   waiting?: Waiting
   introduced: boolean
   reintroduce?: boolean
+  // [SP_CTX_02_68] PinDocument looked at row 0 of this session
+  docChecked?: boolean
   // [SP_CTX_01_21] the agent's service notes, and the number of the next one
   notes: Note[]
   nextNote: number
@@ -114,9 +116,6 @@ export function isHintState(v: unknown): v is HintState {
 export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false, notes: [], nextNote: 1 }
 
 const KINDS: readonly string[] = ['pin', 'disposable', 'review', 'state']
-// [SP_CTX_01_11] Who counts as the person for rule R1.
-// stream-json files the person's prompt rows as `unclassified`, not `sdk`
-const HUMAN: readonly string[] = ['composer', 'bridge', 'sdk', 'unclassified']
 
 // [SP_CTX_01_09] Every field of one stored tag, by type and constraint.
 function isTag(raw: unknown): raw is Tag {
@@ -192,6 +191,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     reg.waiting !== undefined && ((reg.waiting !== 'marked' && reg.waiting !== 'advised') || reg.lastClosed === undefined) && 'waiting',
     typeof reg.introduced !== 'boolean' && 'introduced',
     reg.reintroduce !== undefined && typeof reg.reintroduce !== 'boolean' && 'reintroduce',
+    reg.docChecked !== undefined && typeof reg.docChecked !== 'boolean' && 'docChecked',
     badNoteFields(reg.notes, reg.nextNote),
     reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
     reg.hint !== undefined && !isHintState(reg.hint) && 'hint',
@@ -325,7 +325,7 @@ export type TagIO = {
   // context_tag: BlockReport of one close, or of the block that waited
   // (`waiting`, [SP_CTX_DEC_37]) ([SP_CTX_02_29]); a throw is REPORT_FAILED
   report?: (block: ClosedBlock, replaced?: Replaced, waiting?: boolean) => Promise<string>
-  // context_tag: the host's deliveries not yet rows, for PersonTagWarnings
+  // context_tag: the host's deliveries not yet rows, for the PERSON_TAG refusal
   // ([SP_CTX_01_22]); none when absent or unreadable
   deliveries?: () => Promise<readonly QueuedDelivery[]>
 }
@@ -348,6 +348,7 @@ export type TagError =
   | 'STAGE_NAME_REQUIRED'
   | 'STAGE_FIELDS'
   | 'NO_STAGE'
+  | 'PERSON_TAG'
 
 // [SP_CTX_02_11] A stage event of the batch, in request order: an open with
 // its text, or a close with its block.
@@ -360,7 +361,7 @@ export type TagOutcome = {
   rejected: { code: TagError; reason: string }[]
   events: StageEvent[]
   // [SP_CTX_02_11] lines of the result besides: the state slot moved,
-  // PersonTagWarnings of the disposable tags added
+  // the PERSON_TAG refusals of the disposable tags requested
   lines: string[]
   // the registry differs from the one read (tags, stages, a lost mark nulled)
   changed: boolean
@@ -505,6 +506,15 @@ export function applyTagRequests(
     // [SP_CTX_02_11] a thinking-only row has an anchor Locate cannot tell
     // apart: no tag on it alone (a range may start there, LocateSpan)
     if (row && r.to === undefined && thinkingOnly(row)) return reject('TARGET_NOT_FOUND', UNTRACKED_ROW(r.index as number))
+    // [SP_CTX_02_58] PERSON_TAG: no disposable tag over the person's words
+    if (kind === 'disposable') {
+      const no = isRange(target)
+        ? personTagRefusal(rows, { from: target.hint, to: target.toHint }, delivered)
+        : 'tool_use_id' in target
+          ? personTagRefusal(rows, { tool_use_id: target.tool_use_id }, delivered)
+          : undefined
+      if (no) return reject('PERSON_TAG', no)
+    }
     const tag: Tag = { kind, target, created_turn: reg.turn }
     if (kind === 'disposable') tag.note = r.note as string
     if (kind === 'review') tag.reason = 'agent'
@@ -525,15 +535,6 @@ export function applyTagRequests(
     if (oldTag) tags.splice(tags.indexOf(oldTag), 1)
     size += delta
     out.added++
-    // [SP_CTX_02_11] PersonTagWarnings: the tag stands, the result names the person's rows
-    if (kind === 'disposable') {
-      const warn = isRange(target)
-        ? personTagWarning(rows, { from: target.hint, to: target.toHint }, delivered)
-        : 'tool_use_id' in target
-          ? personTagWarning(rows, { tool_use_id: target.tool_use_id }, delivered)
-          : undefined
-      if (warn) out.lines.push(warn)
-    }
   })
   if (out.added || out.removed) out.changed = true
   out.registry = { ...stages, tags }
@@ -659,24 +660,6 @@ export function appendFacts(e: AppendEvent): AppendFacts {
   }
 }
 
-// [SP_CTX_02_12] Whether R1 asks for the stored row of this prompt.
-export function wantsPromptRow(reg: TagRegistry, f: AppendFacts): boolean {
-  return f.door === 'prompt' && HUMAN.includes(f.origin) && !reg.firstPromptPinned
-}
-
-// The row of a prompt just stored: the latest prompt row whose text matches,
-// whitespace aside (the host joins text blocks its own way). -1 when none.
-export function promptRow(rows: readonly SessionMessage[], text: string): number {
-  const want = squash(text)
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const r = rows[i]!
-    if (!isPlainUserRow(r)) continue
-    const have = squash(r.text)
-    if (have === want || (want && have.includes(want))) return i
-  }
-  return -1
-}
-
 // Adds tags to a registry within the TAGS_FULL limits ([SP_CTX_02_11]);
 // `replace` says which tag already on the target the new one may replace.
 function tagAdder(reg: TagRegistry) {
@@ -700,16 +683,11 @@ function tagAdder(reg: TagRegistry) {
   }
 }
 
-// [SP_CTX_01_11] R1..R3 for one appended row; a rule never replaces a tag a
-// target already has. `prompt` is the stored row R1 pins. The same registry
-// when nothing changed.
-export function applyRules(reg: TagRegistry, f: AppendFacts, prompt?: { anchor: string; hint: number }): TagRegistry {
+// [SP_CTX_01_11] R2, R3 for one appended row; a rule never replaces a tag a
+// target already has. The same registry when nothing changed. [SP_CTX_02_68]
+// R1 is gone: no rule pins the person's first prompt (C_CTX_DEC_38).
+export function applyRules(reg: TagRegistry, f: AppendFacts): TagRegistry {
   const add = tagAdder(reg)
-  let firstPromptPinned = reg.firstPromptPinned
-  if (wantsPromptRow(reg, f) && prompt) {
-    add.put({ kind: 'pin', target: { anchor: prompt.anchor, hint: prompt.hint }, created_turn: reg.turn })
-    firstPromptPinned = true
-  }
   if (f.door === 'tool-result' && f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS)) {
     // [SP_CTX_01_11] R3 only for a result that is no error (phase 31, CF-52); R2 by the row's size
     const failed = new Set(f.results.filter(r => r.isError).map(r => r.id))
@@ -718,8 +696,8 @@ export function applyRules(reg: TagRegistry, f: AppendFacts, prompt?: { anchor: 
       if (isSearchTool(f.tool) && !failed.has(id)) add.put({ kind: 'review', reason: 'search', target: { tool_use_id: id }, ttl_turns: SEARCH_TTL, created_turn: reg.turn })
     }
   }
-  if (!add.changed() && firstPromptPinned === reg.firstPromptPinned) return reg
-  return { ...reg, tags: add.tags, firstPromptPinned }
+  if (!add.changed()) return reg
+  return { ...reg, tags: add.tags }
 }
 
 // A review tag a rule may turn into another reason.
@@ -830,14 +808,12 @@ export function resultIds(rows: readonly SessionMessage[]): string[] {
 }
 
 // [SP_CTX_02_12] [PL_AUD_CTX_P11] Whether a rule may change the registry for
-// this row, from the row alone (CF-22): a person's prompt (R1, until the first
-// one is pinned), a result of another tool that is big or of a search tool
+// this row, from the row alone (CF-22): a result of another tool that is big or of a search tool
 // (R2, R3), or a big result text (R5 (a)). Not for a plugin's row or a
 // compaction's copy. Without it AutoTag neither waits for the registry's chain
 // nor reads the registry. Pure.
 export function autoTagNeeded(f: AppendFacts, copy = false): boolean {
   if (isPluginRow(f) || copy) return false
-  if (f.door === 'prompt') return HUMAN.includes(f.origin)
   if (f.door !== 'tool-result') return false
   // [SP_CTX_02_12] phase 31 (CF-52): a search tool's error is no search output
   if (f.tool !== undefined && !f.tool.startsWith(OWN_TOOLS) && f.ids.length && (isBig(f.size) || (isSearchTool(f.tool) && f.results.some(r => !r.isError)))) return true
@@ -906,23 +882,37 @@ export async function autoTag(io: TagIO, f: AppendFacts, copy = false): Promise<
   if (!autoTagNeeded(f, copy)) return
   const read = await io.readTags()
   if (read.state === 'unreadable') return
-  let rows: readonly SessionMessage[] | undefined
-  let prompt: { anchor: string; hint: number } | undefined
-  if (wantsPromptRow(read.value, f)) {
-    rows = await io.rows()
-    const at = promptRow(rows, f.text)
-    if (at >= 0) prompt = { anchor: fingerprint(rows[at]!), hint: at }
-  }
-  let next = applyRules(read.value, f, prompt)
+  let next = applyRules(read.value, f)
   // [SP_CTX_01_11] R5 (a): the conversation is read only for a large result
-  if (f.door === 'tool-result' && f.results.some(r => isBig(r.text.length))) next = markDuplicates(next, rows ?? (await io.rows()), f.results)
+  if (f.door === 'tool-result' && f.results.some(r => isBig(r.text.length))) next = markDuplicates(next, await io.rows(), f.results)
   if (next !== read.value) await io.writeTags(next)
 }
 
-// [SP_CTX_02_12] One more completed turn of the main conversation.
+// [SP_CTX_02_12] One more completed turn of the main conversation, and
+// [SP_CTX_02_68] PinDocument in the same change: the first turn end of a
+// session reads the view once.
 export async function countTurn(io: TagIO): Promise<void> {
   const read = await io.readTags()
-  if (read.state !== 'unreadable') await io.writeTags({ ...read.value, turn: read.value.turn + 1 })
+  if (read.state === 'unreadable') return
+  let next: TagRegistry = { ...read.value, turn: read.value.turn + 1 }
+  if (!next.docChecked) {
+    const rows = await io.rows().catch(() => undefined)
+    if (rows?.length) next = pinDocument(next, rows)
+  }
+  await io.writeTags(next)
+}
+
+// [SP_CTX_02_68] PinDocument: the handoff document among the user rows that
+// open a new session (before its first response: the host may put the rows of
+// the mod's /clear first) gets a pin, unless it has a tag or the registry is
+// full; the check is done once (`docChecked`). The agent may remove the pin. Pure.
+export function pinDocument(reg: TagRegistry, rows: readonly SessionMessage[]): TagRegistry {
+  if (!rows.length) return reg
+  const end = rows.findIndex(r => r.role === 'assistant')
+  const at = rows.slice(0, end < 0 ? rows.length : end).findIndex(documentRow)
+  const add = tagAdder(reg)
+  if (at >= 0) add.put({ kind: 'pin', target: { anchor: fingerprint(rows[at]!), hint: at }, created_turn: reg.turn })
+  return { ...reg, tags: add.tags, docChecked: true }
 }
 
 // [SP_CTX_02_13] The edits the disposable tags stand for, on `rows`: a pair
@@ -979,20 +969,42 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const rows = await io.rows()
   const ix = indexRows(rows)
   const prepared = prepare(rows, tagEdits(rows, fresh, ix), undefined, pinnedTargets(rows, tags.value, ix)).queued
+  // [SP_CTX_02_58] a tag whose target covers the person's words now is not
+  // queued but removed; the call's result names it
+  const delivered = (await io.deliveries?.().catch(() => undefined)) ?? []
+  const over = prepared.filter(e => personRefusal(rows, e, delivered) !== undefined)
+  const dropped = over.length ? await dropTagsOf(io, over) : []
   // [SP_CTX_02_13] the replacement's text names the agent's tag, not a context_edit call
-  const queued: QueuedEdit[] = prepared.map(e => ({ ...e, via: 'tag' as const }))
-  if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return NOTHING
+  const queued: QueuedEdit[] = prepared.filter(e => !over.includes(e)).map(e => ({ ...e, via: 'tag' as const }))
+  const none: Replaced = dropped.length ? { ...NOTHING, dropped } : NOTHING
+  if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return none
   const next: Queue = { ...q, edits: [...q.edits, ...queued], tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
-  if (bytes(next) > MAX_QUEUE_BYTES) return NOTHING
+  if (bytes(next) > MAX_QUEUE_BYTES) return none
   try {
     await io.writeQueue(next)
   } catch {
-    return NOTHING
+    return none
   }
   let chars = 0
   for (const edit of queued) chars += replacedSize(rows, edit) - noteSize(edit)
   // [SP_CTX_02_34] by the registry's calibrated ratio
-  return { queued: queued.length, freed: estimate(Math.max(0, chars), tags.value.charsPerToken) }
+  return { queued: queued.length, freed: estimate(Math.max(0, chars), tags.value.charsPerToken), ...(dropped.length ? { dropped } : {}) }
+}
+
+// [SP_CTX_02_58] Removes the disposable tags of these replacements from the
+// registry (on its chain when the io has one) and returns their lines; none
+// when the registry cannot be read or written.
+async function dropTagsOf(io: TagIO, edits: readonly QueuedEdit[]): Promise<string[]> {
+  const keys = new Set(edits.map(tagEditKey).filter(k => k !== undefined))
+  const onRegistry = io.onRegistry ?? (<T>(work: () => Promise<T>) => work())
+  const done = await onRegistry(async () => {
+    const now = await io.readTags()
+    if (now.state === 'unreadable') return false
+    await io.writeTags({ ...now.value, tags: now.value.tags.filter(t => !keys.has(tagKey(t) ?? '')) })
+    return true
+  }).catch(() => false)
+  if (!done) return []
+  return edits.map(e => `disposable ${e.op === 'collapse' ? `#${e.from_index}..#${e.to_index}` : e.op === 'summarize' || e.op === 'drop' ? e.tool_use_id : e.op === 'rewrite' || e.op === 'describe' ? `#${e.index}` : '?'} dropped: it covers the person's words`)
 }
 
 // [SP_CTX_02_13] Whether a batch edit is the replacement a disposable tag

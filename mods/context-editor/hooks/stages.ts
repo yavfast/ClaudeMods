@@ -64,7 +64,7 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT = modText(
-  'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages, rules and skills in use usually stay verbatim). If you end your turn with the block done, make [context-editor: optimize] the last line of your final answer: the block waits, and you compress it when the next stage begins. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
+  'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages stay verbatim; rules and skills in use usually too). If you end your turn with the block done, make [context-editor: optimize] the last line of your final answer: the block waits, and you compress it when the next stage begins. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
 )
 
 // [SP_CTX_02_27] [SP_CTX_DEC_36] The opener of the skill's guide in the
@@ -77,7 +77,7 @@ export const GUIDE_FRAME = modText(
 // waiting for compression and of the /compact turn; it names the reproducible pairs by the listing's `~`
 // flag (REPRO_FLAG, [SP_CTX_01_12]).
 export const STAGE_ADVICE =
-  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), are not reproducible: keep them verbatim unless you drop them deliberately. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the person's messages, rules and skills still in force, and conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
+  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), stay verbatim: edits that cover them are refused. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the rules and skills still in force, and the conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
 
 export { distinctive, estimate }
 
@@ -750,7 +750,8 @@ export function tagCallIO(snap: Snapshot, registry: Omit<TagIO, 'rows' | 'replac
 
 // [SP_CTX_02_13] What QueueTagReplacements queued.
 // `freed`: Estimate of the replaced text less the notes ([SP_CTX_02_34])
-export type Replaced = { queued: number; freed: string }
+// `dropped`: the lines of disposable tags removed because they cover the person's words ([SP_CTX_02_58])
+export type Replaced = { queued: number; freed: string; dropped?: string[] }
 
 // The rows of a tag's target that lie in a..e, the first of them, or -1.
 function firstIn(rows: readonly SessionMessage[], tag: Tag, a: number, e: number, ix: RowIndex): number {
@@ -851,6 +852,8 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
     text += io.passed?.()
       ? `\nReplacements from your disposable tags queued: ${replaced.queued} (not applied on this host; the brief of the person's /compact carries them).`
       : `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
+  // [SP_CTX_02_58] tags over the person's words, removed instead of queued
+  for (const line of replaced?.dropped ?? []) text += `\n${line}.`
   text += '\n' + telemetryText(t)
   if (hasRows) {
     text += '\n' + (io.passed?.() ? PASSED_ADVICE : (waiting ? WAIT_MOVED + ' ' : '') + STAGE_ADVICE)

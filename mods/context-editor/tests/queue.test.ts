@@ -509,7 +509,7 @@ const personRows = (): SessionMessage[] => [
   { role: 'assistant', text: 'end', toolUses: [] },
 ]
 
-test('context_edit — повідомлення людини: collapse 2..9 over a prompt and an AskUserQuestion answer; summarize of the answer; a collapse without them', async () => {
+test('PersonWords — повідомлення людини: collapse 2..9 over a prompt and an AskUserQuestion answer and summarize of the answer are refused; a collapse without them is queued', async () => {
   const r = personRows()
   const out = queueEdits(EMPTY_QUEUE, r, {
     edits: [
@@ -519,13 +519,14 @@ test('context_edit — повідомлення людини: collapse 2..9 over
     ],
   })
   if ('deny' in out) throw new Error(out.deny)
-  // queued: a warning, never a refusal
-  expect(out.queued).toBe(3)
-  expect(out.warnings).toEqual([
-    "Warning: collapse #2..#9 covers the person's messages: #3 (prompt), #6 (AskUserQuestion answer). Keep them verbatim unless you drop them deliberately.",
-    "Warning: summarize q covers the person's messages: #6 (AskUserQuestion answer). Keep them verbatim unless you drop them deliberately.",
+  // [SP_CTX_02_58] PERSON_WORDS: refused, no permission
+  expect(out.queued).toBe(1)
+  expect(out.warnings).toEqual([])
+  expect(out.errors).toEqual([
+    "collapse #2..#9: covers the person's words: #3 (prompt), #6 (AskUserQuestion answer); they stay verbatim in this session: narrow the range or split it around them",
+    "summarize q: the AskUserQuestion answer is the person's words; it stays verbatim",
   ])
-  expect(queuedText(out.queue, out.queued, out.errors, out.warnings)).toContain('covers the person')
+  expect(queuedText(out.queue, out.queued, out.errors, out.warnings)).toContain("Rejected: collapse #2..#9: covers the person's words")
 })
 
 test('context_edit — не промпти людини: a mod report row, the /compact MARKER row, a changed row: no warning', async () => {
@@ -577,7 +578,7 @@ test('PersonText — the person\'s words behind an open-file span, and the argum
   const r = [vscode, reminder, slash, bare, opened, mod]
   expect(r.map((_, i) => personRow(r, i))).toEqual([true, true, true, false, false, false])
   const out = queueEdits(EMPTY_QUEUE, [...r, { role: 'assistant', text: 'end', toolUses: [] }], { edits: [{ op: 'collapse', from_index: 0, to_index: 5, summary: 's' }] })
-  expect('warnings' in out && out.warnings[0]).toContain('#0 (prompt), #1 (prompt), #2 (prompt).')
+  expect('errors' in out && out.errors[0]).toContain('#0 (prompt), #1 (prompt), #2 (prompt);')
 })
 
 // ---- [SP_CTX_02_02] phase 20: the host's deliveries
@@ -590,7 +591,7 @@ test('PersonText — вставлені доставки: the person\'s words of
   expect(r.map((_, i) => personRow(r, i))).toEqual([true, false, false])
 })
 
-test('PersonWarnings — доставка від людини: a collapse over its anchor and a drop of it warn; a summarize keeps it and does not', async () => {
+test('PersonWords — доставка від людини: a collapse over its anchor and a drop of it are refused; a summarize keeps it and is queued', async () => {
   const r = personRows()
   const d: QueuedDelivery = { uuid: 'd1', anchor: ['s'], kind: 'person', origin: 'composer', text: PERSON_TEXT, cut: 0, media: 0, at: 1 }
   const agent: QueuedDelivery = { ...d, uuid: 'd2', anchor: ['r'], kind: 'agent', text: AGENT_TEXT }
@@ -612,10 +613,11 @@ test('PersonWarnings — доставка від людини: a collapse over i
     [d, agent],
   )
   if ('deny' in out) throw new Error(out.deny)
-  expect(out.warnings).toEqual([
-    "Warning: collapse #7..#9 covers the person's messages: #9 (message sent during this tool call). Keep them verbatim unless you drop them deliberately.",
-    "Warning: drop s covers the person's messages: #9 (message sent during this tool call). Keep them verbatim unless you drop them deliberately.",
+  expect(out.errors).toEqual([
+    "collapse #7..#9: covers the person's words: #9 (message sent during this tool call); they stay verbatim in this session: narrow the range or split it around them",
+    "drop s: the person's message sent during this tool call goes with it; summarize the call instead: the message stays after it",
   ])
+  expect(out.queued).toBe(2)
 })
 
 // ---- [SP_CTX_02_08] [SP_CTX_02_37] the turn channel's suggestion with the person's prompt (phase 23)
@@ -679,4 +681,14 @@ test('parseQueue — via: an edit with via "tag" reads; another via is a bad edi
   const read = parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ ...edit, via: 'tag' }] }))
   expect(read.state === 'ok' && read.value.edits[0]!.via).toBe('tag')
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ ...edit, via: 'edit' }] }))).toEqual({ state: 'unreadable', reason: 'bad edit 1' })
+})
+
+// [SP_CTX_02_58] the replacements queued with an accepted edit: a tag over the person's words is named, not queued
+test('PersonWords — рядок прибраного тегу в результаті context_edit: the line follows the waiting sentence', async () => {
+  const waiting = io(missingRead({ ...EMPTY_QUEUE }), {
+    endWaiting: async () => 'stage "A"',
+    replace: async () => ({ queued: 0, freed: '~0 tokens', dropped: ["disposable #4..#9 dropped: it covers the person's words"] }),
+  })
+  const out = await contextEdit(waiting.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  expect('result' in out && out.result).toContain("\nstage \"A\" no longer waits for compression.\ndisposable #4..#9 dropped: it covers the person's words.")
 })

@@ -5,8 +5,9 @@ import { applyEdits, collectMedia, DESCRIBE_DROPS, formatReport, listRows, NO_ME
 import { matchPrompts } from '../hooks/media'
 import { EMPTY_ALIASES } from '../hooks/aliases'
 import { buildSeed, SUMMARY_OPENER } from '../hooks/handoff'
-import { EMPTY_QUEUE, hasMediaFrom, needsApi, queueEdits, type Queue } from '../hooks/queue'
+import { EMPTY_QUEUE, hasMediaFrom, needsApi, personRefusal, personRow, queueEdits, type Queue } from '../hooks/queue'
 import { EMPTY_REGISTRY } from '../hooks/tags'
+import { isDescribedText } from '../hooks/rows'
 import { DUMPS } from './media-fixtures'
 import { prompt, reply, missingRead, okRead } from './row-fixtures'
 
@@ -162,7 +163,7 @@ test('collectMedia — промпт: a tied prompt row owns its media by row ind
   expect(ok.errors).toEqual([])
   expect(ok.queued[0]!.anchors!.length).toBe(1)
   const none = prepare(rows, [{ op: 'describe', index: 0, description: 'a red square' }])
-  expect(none.errors[0]).toContain('no media found in that row')
+  expect(none.errors[0]).toContain('no media or pasted text found in that row')
 })
 
 test('context_edit — describe: queueEdits checks the row\'s media through hasMedia', async () => {
@@ -173,7 +174,7 @@ test('context_edit — describe: queueEdits checks the row\'s media through hasM
   expect('queue' in out && out.queue.edits.length).toBe(1)
   expect('warnings' in out && out.warnings).toEqual([DESCRIBE_DROPS])
   const no = queueEdits(q, rows, args)
-  expect('errors' in no && no.errors[0]).toContain('no media found')
+  expect('errors' in no && no.errors[0]).toContain('no media or pasted text found')
 })
 
 test('ApplyEdits — describe: the row is rebuilt without handle, its text kept after the description and the media path', async () => {
@@ -195,6 +196,37 @@ test('ApplyEdits — describe: the row is rebuilt without handle, its text kept 
   expect(unmatched.report.applied).toEqual([])
   expect(unmatched.report.failed[0]).toBe(`describe #0: ${NO_MEDIA_NOW}`)
   expect(formatReport(res.report, '/a.json', 'compaction')).toContain(DESCRIBE_DROPS)
+})
+
+// [SP_CTX_02_59] DescribePasted
+const PASTED = 'Лог: <pasted_content id="a1b2">line 1\nline 2</pasted_content id="a1b2"> що не так?'
+
+test('DescribePasted — лише вставка: the paste block becomes a mark after the description; the typed text stays; the original goes to the archive', async () => {
+  const rows = [prompt(PASTED, 'h0'), reply('ok', 'h1')]
+  const { queued, errors } = prepare(rows, [{ op: 'describe', index: 0, description: 'a log of two lines' }])
+  expect(errors).toEqual([])
+  const res = applyEdits(rows, queued, '/a.json', new Map(), new Set())
+  expect(res.report.applied).toEqual(['describe #0'])
+  expect(res.rows[0]!.text).toBe(
+    'Later, your context_edit describe call replaced the pasted text you had seen here with your own description (original: /a.json, open with Read): a log of two lines\n\nЛог: [pasted text 1, 13 chars: see your description above] що не так?',
+  )
+  expect(res.report.originals[0]!.rows[0]!.text).toBe(PASTED)
+  // the described prompt is still the person's words
+  expect(isDescribedText(res.rows[0]!.text)).toBe(true)
+})
+
+test('DescribePasted — медіа і вставка, нічого замінювати: both kinds name both; a prompt with neither is refused', async () => {
+  const rows = [prompt(`${PASTED} <pasted_content>more</pasted_content>`, 'h0'), reply('ok', 'h1')]
+  const key = ownerKey({ row: 0 })
+  const { queued } = prepare(rows, [{ op: 'describe', index: 0, description: 'd' }], () => true)
+  const res = applyEdits(rows, queued, '/a.json', new Map([[key, ['/m/1.png']]]), new Set([key]))
+  expect(res.rows[0]!.text.startsWith('Later, your context_edit describe call replaced the media and the pasted text you had seen here with your own description')).toBe(true)
+  expect(res.rows[0]!.text.endsWith('[pasted text 1, 13 chars: see your description above] що не так? [pasted text 2, 4 chars: see your description above]')).toBe(true)
+  const plain = [prompt('just typed', 'h0'), reply('ok', 'h1')]
+  expect(prepare(plain, [{ op: 'describe', index: 0, description: 'd' }]).errors[0]).toContain('no media or pasted text found in that row')
+  // a paste beside media the apply could not match is not described: that media would go unarchived
+  const unseen = applyEdits(rows, prepare(rows, [{ op: 'describe', index: 0, description: 'd' }]).queued, '/a.json', new Map(), new Set(), { unmatchedPromptMedia: 1 })
+  expect(unseen.report.failed[0]).toBe('describe #0: the prompt may hold media that cannot be archived')
 })
 
 test('HandleCompaction — describe: the prompt media is archived from the API form and the row described; an untouched prompt with media keeps its handle', async () => {
@@ -294,7 +326,7 @@ const drifted = () => ({
   api: [{ role: 'user', content: [text('see this'), img('cmVk')] }, asst('red'), { role: 'user', content: [text('next')] }, asst('ok')],
 })
 
-test('HandleCompaction — describe без зіставлення при застосуванні: no media archived, the edit fails "no media found in that row now", the row keeps its handle', async () => {
+test('HandleCompaction — describe без зіставлення при застосуванні: no media archived, the edit fails "no media or pasted text found in that row now", the row keeps its handle', async () => {
   const { rows, api } = drifted()
   const q: Queue = { ...EMPTY_QUEUE, edits: prepare(rows, [{ op: 'describe', index: 0, description: 'a red square' }], () => true).queued }
   const media: string[] = []
@@ -306,7 +338,7 @@ test('HandleCompaction — describe без зіставлення при зас�
   expect(saved.at(-1)!.report).toContain(`describe #0: ${NO_MEDIA_NOW}`)
 })
 
-test('BuildSeed — describe без зіставлення: the edit fails "no media found in that row now", the prompt text stays as it was', async () => {
+test('BuildSeed — describe без зіставлення: the edit fails "no media or pasted text found in that row now", the prompt text stays as it was', async () => {
   const { rows, api } = drifted()
   const written: string[] = []
   const out = await buildSeed({
@@ -403,4 +435,47 @@ test('PromptMatch — два промпти в одній одиниці: two pe
   // the same unit with one person row ties the media to it
   const one = [prompt('task'), reply('ok'), prompt('part onepart two'), reply('Blue')]
   expect(matched(api, one)).toEqual({ '2': 2 })
+})
+
+// [SP_CTX_02_59] media found but not archived beside a paste: never rebuilt away
+test('DescribePasted — медіа не заархівовано: a prompt with media and a paste whose media failed to archive is refused; its text stays', async () => {
+  const rows = [prompt(PASTED, 'h0'), reply('ok', 'h1')]
+  const key = ownerKey({ row: 0 })
+  const { queued } = prepare(rows, [{ op: 'describe', index: 0, description: 'd' }], () => true)
+  const res = applyEdits(rows, queued, '/a.json', new Map(), new Set([key]))
+  expect(res.report.failed).toEqual(['describe #0: media could not be archived'])
+  expect(res.rows[0]!.text).toBe(PASTED)
+  expect(res.rows[0]!.handle).toBe('h0')
+})
+
+test('DescribePasted — поза вікном API: a paste-only describe of a prompt before the first known result is refused while the API form is cut', async () => {
+  const rows = [prompt(PASTED, 'h0'), { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: 'r', tool: 'Bash', input: {} }], handle: 'h1' }, { role: 'user' as const, text: '', toolUses: [], toolResults: [{ tool_use_id: 'r', text: 'x', isError: false }], handle: 'h2' }]
+  const { queued } = prepare(rows, [{ op: 'describe', index: 0, description: 'd' }])
+  const res = applyEdits(rows, queued, '/a.json', new Map(), new Set(), { apiTruncated: true, knownResults: new Set(['r']) })
+  expect(res.report.failed).toEqual(['describe #0: outside the API window; media unknown'])
+  expect(res.rows[0]!.text).toBe(PASTED)
+})
+
+// [SP_CTX_02_58] [SP_CTX_05_08] a described prompt stays the person's words
+test('PersonWords — описаний промпт: a collapse over it names "(described prompt)"; a paste-only prompt keeps only the mark and stays protected', async () => {
+  const only = '<pasted_content id="f1">a log</pasted_content id="f1">'
+  const rows = [prompt(only, 'h0'), reply('ok', 'h1')]
+  const done = applyEdits(rows, prepare(rows, [{ op: 'describe', index: 0, description: 'a log line' }]).queued, '/a.json', new Map(), new Set())
+  expect(done.rows[0]!.text.endsWith('\n\n[pasted text 1, 5 chars: see your description above]')).toBe(true)
+  const after = done.rows
+  expect(personRow(after, 0)).toBe(true)
+  const [collapse] = prepare(after, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).queued
+  expect(personRefusal(after, collapse!)).toContain('#0 (described prompt)')
+})
+
+test('PersonWords — промпт лише з медіа і описаний промпт плагіна: no person\'s words before a describe, the person\'s words after it', async () => {
+  const media = [prompt('', 'h0'), reply('ok', 'h1')]
+  expect(personRow(media, 0)).toBe(false)
+  const key = ownerKey({ row: 0 })
+  const described = applyEdits(media, prepare(media, [{ op: 'describe', index: 0, description: 'a red square' }], () => true).queued, '/a.json', new Map([[key, ['/m/1.png']]]), new Set([key]))
+  expect(personRow(described.rows, 0)).toBe(true)
+  const plugin = [prompt(`The other plugin sent a message:\n${PASTED}`, 'h0'), reply('ok', 'h1')]
+  expect(personRow(plugin, 0)).toBe(false)
+  const framed = applyEdits(plugin, prepare(plugin, [{ op: 'describe', index: 0, description: 'd' }]).queued, '/a.json', new Map(), new Set())
+  expect(personRow(framed.rows, 0)).toBe(true)
 })

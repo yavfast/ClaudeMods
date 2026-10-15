@@ -1,7 +1,7 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
 import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
-import { apiBlocks, BIG_ROW, collapsedWords, DESCRIBED, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, type Via } from './rows'
+import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -86,8 +86,9 @@ export function apiCut(api: readonly unknown[]): boolean {
 export const HOST_ID_WAIT_MS = 2000
 // The longest tool description the host passes to the model; it cuts the rest.
 export const MAX_DESCRIPTION = 2048
-// [SP_CTX_02_04] A describe whose row has no media found and archived at apply time.
-export const NO_MEDIA_NOW = 'no media found in that row now'
+// [SP_CTX_02_04] [SP_CTX_02_59] A describe whose row has neither media found
+// and archived nor pasted text at apply time.
+export const NO_MEDIA_NOW = 'no media or pasted text found in that row now'
 // [SP_CTX_02_02] [SP_CTX_02_04] What a describe takes along with the prompt's
 // media: the host's attachments carried by the row's handle (plugin-hooks 44).
 export const DESCRIBE_DROPS = "describe: attachments the host added to that prompt (file contents from @path, reminders) are dropped; re-read files if needed."
@@ -1002,7 +1003,8 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
       if (!row) return 'index out of range'
       if (!isPlainUserRow(row))
         return 'describe applies to a user prompt row; use summarize for tool results'
-      if (!hasMedia({ row: edit.index })) return 'no media found in that row'
+      // [SP_CTX_02_59] media of the row or the host's paste blocks in its text
+      if (!hasMedia({ row: edit.index }) && !pasteBlocks(row.text).length) return 'no media or pasted text found in that row'
       return { ...edit, anchors: [fingerprint(row)] }
     }
   }
@@ -1521,12 +1523,34 @@ export function applyEdits(
         }
         touched = [at]
         // [SP_CTX_02_04] describe replaces media only when this apply found
-        // and archived the row's media (PromptMatch here, not at queue time)
-        if (edit.op === 'describe' && !archived(ownerKey({ row: at }))) {
+        // and archived the row's media (PromptMatch here, not at queue time);
+        // [SP_CTX_02_59] pasted text it replaces from the row's text
+        const withMedia = edit.op === 'describe' && archived(ownerKey({ row: at }))
+        const pastes = edit.op === 'describe' ? pasteBlocks(rows[at]!.text) : []
+        if (edit.op === 'describe' && !withMedia && !pastes.length) {
           const key = ownerKey({ row: at })
           const seen = mediaOwners.has(key) || media.has(key)
           report.failed.push(`${name}: ${seen ? 'media could not be archived' : NO_MEDIA_NOW}`)
           continue
+        }
+        // [SP_CTX_02_59] a describe of pasted text alone rebuilds the row: media
+        // the apply could not see (unmatched, or outside a cut API form) would go unarchived
+        if (edit.op === 'describe' && !withMedia) {
+          // media this apply found but could not archive stays: never rebuilt away
+          if (mediaOwners.has(ownerKey({ row: at }))) {
+            report.failed.push(`${name}: media could not be archived`)
+            continue
+          }
+          const known = options.knownResults
+          const firstKnown = known ? rows.findIndex(r => resultsOf(r).some(t => known.has(t.tool_use_id))) : -1
+          if (!!options.apiTruncated && (firstKnown < 0 || at < firstKnown)) {
+            report.failed.push(`${name}: outside the API window; media unknown`)
+            continue
+          }
+          if ((options.unmatchedPromptMedia ?? 0) > 0) {
+            report.failed.push(`${name}: the prompt may hold media that cannot be archived`)
+            continue
+          }
         }
         run = () => {
           const row = rows[at]!
@@ -1534,7 +1558,7 @@ export function applyEdits(
           const text =
             edit.op === 'rewrite'
               ? `${rewrittenWords(viaOf(edit))}${note}: ${edit.text}`
-              : `${DESCRIBED}${note}${mediaNote([ownerKey({ row: at })])}: ${edit.description}\n\n${row.text}`
+              : `${describedWords(withMedia, pastes.length > 0)}${note}${withMedia ? mediaNote([ownerKey({ row: at })]) : ''}: ${edit.description}\n\n${withPasteMarks(row.text, pastes)}`
           rows[at] = plain(row, { text })
           made.push({ edit: name, text })
         }

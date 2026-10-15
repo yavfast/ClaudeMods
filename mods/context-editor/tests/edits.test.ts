@@ -283,7 +283,7 @@ test('prepare reports unknown ids, bad indexes, split ranges and wrong targets',
   expect(errors[1]).toContain('out of range')
   expect(errors[2]).toContain('splits a tool call')
   expect(errors[3]).toContain('only an assistant text row')
-  expect(errors[4]).toContain('no media found')
+  expect(errors[4]).toContain('no media or pasted text found')
 })
 
 test('rewrite replaces an assistant text row and marks it', async () => {

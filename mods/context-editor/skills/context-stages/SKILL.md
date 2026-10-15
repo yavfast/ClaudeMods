@@ -21,7 +21,7 @@ A stage is a logical block of your work: a phase, a sub-task, a fix.
 
 ## Compressing a block
 
-After a close, review the block as a whole and queue ONE `context_edit` for what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media you have already looked at (a description, if the task allows: `summarize` for a tool result, `describe` for an image or document in the person's prompt, whose words stay verbatim; attachments the host added to that prompt, such as file contents from `@path` and reminders, go with it, so re-read files if needed). If nothing needs compressing, queue nothing.
+After a close, review the block as a whole and queue ONE `context_edit` for what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media you have already looked at (a description, if the task allows: `summarize` for a tool result, `describe` for an image, document or pasted text in the person's prompt, whose typed words stay verbatim; attachments the host added to that prompt, such as file contents from `@path` and reminders, go with it, so re-read files if needed). If nothing needs compressing, queue nothing.
 
 Write a stage record in place of the processed rows, e.g. as the summary of a `collapse`:
 
@@ -31,9 +31,9 @@ Write a stage record in place of the processed rows, e.g. as the summary of a `c
 - changed artifacts (files, commits, settings);
 - open questions.
 
-Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: shrink them to a pointer (what, where, what was found; read again if needed). Everything else needs a careful summary or stays: live probes, subagent reports, web content, and above all the person's messages, including answers to your questions (`AskUserQuestion`); `context_edit` warns when an edit covers them.
+Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: shrink them to a pointer (what, where, what was found; read again if needed). Everything else needs a careful summary or stays: live probes, subagent reports, web content. The person's messages, including answers to your questions (`AskUserQuestion`), stay verbatim in this session: `context_edit` and `context_tag` refuse an edit that covers them; split the range around them.
 
-Usually keep verbatim: the person's messages, the rules and skills still in force, and the conclusions you need next. A `[pin]` target cannot be edited (the person's first prompt is pinned for you).
+Usually keep verbatim the rules and skills still in force and the conclusions you need next. A `[pin]` target cannot be edited; pins are yours to set and remove (the mod pins only a handoff's document or seed summary).
 
 Edits apply when your turn ends: end it with a one-line status, and the session resumes by itself (`context_edit` gives the options). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line). Your `context_*` calls leave the conversation; tags and notes stay.
 

@@ -108,7 +108,7 @@
 | RunHandoff | людина активна перед відправкою | засів вдався, але `MovedSince(turnsClear)` перед відправкою звіту | звіт — у черзі нової сесії з `reportResume = false`, промпту немає |
 | PinSummary | реєстр нової сесії | реєстру немає / повний (MAX_TAGS) / нечитабельний | створено з одним `pin` / `pin` не поставлено, звіт називає причину / те саме |
 | BuildSeed | вікно посеред пари | перший рядок — результат без виклику | сирітські результати прибрано, перший рядок — людини; без рядка людини — відмова EMPTY |
-| BuildSeed | describe без зіставлення | те саме для засіву | файлів немає; `failed = [describe #0: no media found in that row now]`; текст промпту без змін |
+| BuildSeed | describe без зіставлення | те саме для засіву | файлів немає; `failed = [describe #0: no media or pasted text found in that row now]`; текст промпту без змін |
 | BuildSeed | медіа в промпті після підсумку | рядки: результат поза API, рядок-підсумок, відповідь, промпт; API починається з підсумку, далі промпт з image; `describe` промпту | PromptMatch на видимих рядках; один файл, шлях у рядку з описом; `fromSummary = true`; `unmatchedPromptMedia = 0` [тест: «BuildSeed — після підсумку: prompt media in the rows after a built-in compaction summary»] |
 | BuildSeed | медіа в промптах | два промпти з медіа, `describe #0` | записано лише медіа #0, шлях — у його рядку; `unmatchedPromptMedia = 1` (незмінений #2) |
 | BuildSeed | паралельні виклики в окремих рядках | незмінені `tool_use a`, `tool_use c` окремими рядками, спільний рядок результатів | у засіві один рядок з обома викликами, за ним результати; CheckSeed приймає |

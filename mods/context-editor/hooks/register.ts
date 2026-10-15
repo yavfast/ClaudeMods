@@ -485,8 +485,9 @@ function storageNow($: EngineInterface): Promise<string | undefined> {
   return storageDir($).catch(() => undefined)
 }
 
-// [SP_CTX_02_02] [SP_CTX_02_11] The deliveries not yet rows, for the person
-// warnings only: none when the file is missing or unreadable. `within`: the
+// [SP_CTX_02_02] [SP_CTX_02_11] [SP_CTX_02_58] The deliveries not yet rows,
+// for the refusals over the person's words: none when the file is missing or
+// unreadable (the rows still count). `within`: the
 // chains the caller holds.
 async function deliveredNow($: EngineInterface, dir: string, within?: Held): Promise<readonly QueuedDelivery[]> {
   const d = stores($, dir).deliveries
@@ -1234,7 +1235,9 @@ export const register: Register = on => {
           })
           return name
         },
-        replace: () => queueTagReplacements(tagIO($, dir, snap)),
+        // [SP_CTX_02_58] the tags over the person's words leave the registry on its chain
+        replace: () =>
+          queueTagReplacements({ ...tagIO($, dir, snap), onRegistry: work => chainOf($, 'tags')(() => work(), held), deliveries: () => deliveredNow($, dir, held) }),
       }
       return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
     })
@@ -1250,8 +1253,9 @@ export const register: Register = on => {
     const snap = snapshot($)
     const { dir, down, refs, stale } = await registryCall($, e, snap)
     // the registry's read-modify-write on its chain; the replacements on the
-    // queue's afterwards, never one chain inside the other; the deliveries
-    // read inside the registry's chain (tags → deliveries)
+    // queue's afterwards, which may take the registry's chain inside it to
+    // drop a tag over the person's words (queue → tags); the deliveries read
+    // inside the registry's chain (tags → deliveries)
     let held: Held | undefined
     const { rows: _rows, ...registry } = tagIO($, dir, snap)
     const io = tagCallIO(

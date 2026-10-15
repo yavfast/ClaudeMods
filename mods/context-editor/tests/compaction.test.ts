@@ -768,7 +768,8 @@ test('HandleCompaction — звіт і розмір з доставками: one
       { op: 'summarize', tool_use_id: 'b', summary: 's' },
       { op: 'drop', tool_use_id: 'c' },
     ],
-    [delivery('d1', 'a', REPORTED), delivery('d2', 'c')],
+    // a subagent's report goes with its anchor; a person's message would refuse the drop ([SP_CTX_02_58])
+    [delivery('d1', 'a', REPORTED), { ...delivery('d2', 'c'), kind: 'agent' }],
   )
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
@@ -782,6 +783,24 @@ test('HandleCompaction — звіт і розмір з доставками: one
   const freed = /~(\d+) -> ~(\d+) chars/.exec(written.queue!.report!)!
   expect(Number(freed[2])).toBe(totalChars(out.messages) - REPORTED.length)
   expect(pruned).toEqual([['d1', 'd2']])
+})
+
+// [SP_CTX_02_58] ScreenPerson: the queue holds a drop the tools would refuse now
+test('PersonWords — перевірка при застосуванні: a drop whose person\'s delivery would go with it fails PERSON_WORDS_NOW first; the message stands as a row; the rest applies', async () => {
+  const rows = withPairs('b', 'c')
+  const { io, written } = deliveryHarness(
+    rows,
+    [
+      { op: 'summarize', tool_use_id: 'b', summary: 's' },
+      { op: 'drop', tool_use_id: 'c' },
+    ],
+    [delivery('d2', 'c')],
+  )
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(out.messages.some(r => r.text === DELIVERED)).toBe(true)
+  expect(written.queue!.report).toContain("Not applied: drop c: covers the person's words now; they stay verbatim.")
+  expect(written.queue!.report).toContain('applied 1 edit(s)')
 })
 
 test('HandleCompaction — файл доставок після застосування: a delivery behind a row kept with its handle stays in the file', async () => {
@@ -1150,4 +1169,21 @@ test('HandleCompaction — уже компактизовано тут: the ledge
   expect(reads).toBe(0)
   expect(written.queue!.report).not.toContain('resuming the session')
   expect(out.messages.filter(r => r.toolUses.some(u => u.tool_use_id === 'q')).length).toBe(2)
+})
+
+// [SP_CTX_02_58] [SP_CTX_02_07] the queue changed outside the tools: a collapse over a prompt and a pinned target
+test('PersonWords — перевірка при застосуванні, collapse і пін: ScreenPinned first, then PERSON_WORDS_NOW; the prompt row stays verbatim; nothing applies', async () => {
+  const conv = conversation()
+  const pinned: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }] }
+  const batch = queued([
+    { op: 'collapse', from_index: 0, to_index: 2, summary: 'start' },
+    { op: 'drop', tool_use_id: 'a' },
+  ])
+  const { io, written } = harness(batch, {}, okRead(pinned))
+  await handleCompaction(io, conv)
+  const report = written.queue!.report!
+  const pin = report.indexOf('drop a: target is pinned')
+  const person = report.indexOf("collapse #0..#2: covers the person's words now; they stay verbatim")
+  expect(pin >= 0 && person > pin).toBe(true)
+  expect(report).toContain('no edit was applied')
 })

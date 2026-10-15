@@ -25,7 +25,7 @@ import {
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { applyEntry, type JournalEntry } from './journal'
-import { appendReport, keepOtherSteps, markerKind, withCommandNote, type Queue } from './queue'
+import { appendReport, keepOtherSteps, markerKind, screenPerson, withCommandNote, type Queue } from './queue'
 import { dropPulled, type Pulled } from './repair'
 import { apiChars, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
@@ -188,7 +188,13 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
 
   const tokensBefore = await (io.requestTokens?.() ?? Promise.resolve(undefined)).catch(() => undefined)
   const tagsRead = await io.readTags()
-  const { edits, refused } = screenPinned(messages, q.edits, tagsRead)
+  // [SP_CTX_02_58] ScreenPerson beside ScreenPinned, on these rows and the
+  // deliveries file; refused edits go first in report.failed
+  const delivered = await readDeliveries(io)
+  const pins = screenPinned(messages, q.edits, tagsRead)
+  const person = screenPerson(messages, pins.edits, delivered.items)
+  const edits = person.edits
+  const refused = [...pins.refused, ...person.refused]
   // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
   const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
   const api = await io.readApi()
@@ -235,7 +241,6 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // [SP_CTX_02_05] the count goes into the report's P13 sentence ([SP_CTX_01_05])
   // [SP_CTX_02_36] the host's deliveries behind rebuilt rows go back as rows,
   // before DropOwnCalls: one behind an own call's result keeps its place
-  const delivered = await readDeliveries(io)
   // a row of own results kept by its handle (outside the API window) is
   // removed by DropOwnCalls below: the host would not carry its attachments
   const own = new Set(messages.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))

@@ -2257,3 +2257,12 @@ test('Передача — обхід: context_handoff and /handoff refuse and w
   expect(q.handoff).toBeUndefined()
   expect(q.report).toContain(HANDOFF_PASSED_OVER)
 })
+
+// [SP_CTX_02_58] ScreenPerson in BuildSeed, as at an application
+test('BuildSeed — ScreenPerson: a collapse over the person\'s prompt is refused; the prompt goes into the seed verbatim; the rest applies', async () => {
+  const rows = conversation()
+  const seed = built((await seedOf({}, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }, { op: 'drop', tool_use_id: 'c' }])).out)
+  expect(seed.report.failed).toEqual(["collapse #0..#1: covers the person's words now; they stay verbatim"])
+  expect(seed.report.applied).toEqual(['drop c'])
+  expect(seed.rows[0]!.text).toBe(rows[0]!.text)
+})
