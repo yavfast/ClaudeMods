@@ -10,7 +10,7 @@
 - [CLAUDE.md](../CLAUDE.md) — що робить мод, команди, патерн портів, список модулів і їхніх IO-інтерфейсів, поведінка хоста.
 - [.dev_flow/skills/claude-code/plugin-hooks.md](../.dev_flow/skills/claude-code/plugin-hooks.md) — пастки хоста (форма хука, `.catch`, `$.command.run`, `session.compact`, межі `$.fs`).
 - [docs/_index.md](./_index.md) — маршрутизатор документів і карта префіксів ID.
-- Концепт: [context_editor.concept.md](./context_editor.concept.md) + [context_editor.mechanisms.concept.md](./context_editor.mechanisms.concept.md); специфікація: [context_editor.sp.md](./context_editor.sp.md) і дочірні `context_editor.<module>.sp.md`; план: [context_editor.plan.md](./context_editor.plan.md).
+- Концепт: [context_editor.concept.md](./context_editor.concept.md) (парасолька) + [ядро й інструменти](./context_editor.core.concept.md), [методи оптимізації](./context_editor.methods.concept.md), [курування історії](./context_editor.curation.concept.md); специфікація: [context_editor.sp.md](./context_editor.sp.md) і дочірні `context_editor.<module>.sp.md`; план: [context_editor.plan.md](./context_editor.plan.md).
 - Останній аудит: [.dev_flow/audit/context-editor_20261011_182951.plan.md](../.dev_flow/audit/context-editor_20261011_182951.plan.md) (CF-ідентифікатори нижче).
 
 ## Патерн портів
@@ -38,7 +38,7 @@
 
 ## Де живе стан
 
-- **Диск, на сесію:** `$HOME/.claude/context-editor/<session_id>/` (700): `pending.json` (черга), `tags.json` (реєстр: теги, етапи, нотатки, підказка, `lastApply` — один файл за [C_CTX_DEC_07](./context_editor.concept.md#C_CTX_DEC_07), [C_CTX_DEC_20](./context_editor.concept.md#C_CTX_DEC_20)), `aliases.json`, `boundary.json` (довіра — [SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)), `journal.json`, `deliveries.json`, `hostattach.json` (рішення про вкладення хоста, Ф24), архіви замінених оригіналів і медіа, файли засіву. Структури — [SP_CTX_01](./context_editor.structures.sp.md).
+- **Диск, на сесію:** `$HOME/.claude/context-editor/<session_id>/` (700): `pending.json` (черга), `tags.json` (реєстр: теги, етапи, нотатки, підказка, `lastApply` — один файл за [C_CTX_DEC_07](./context_editor.core.concept.md#C_CTX_DEC_07), [C_CTX_DEC_20](./context_editor.core.concept.md#C_CTX_DEC_20)), `aliases.json`, `boundary.json` (довіра — [SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)), `journal.json`, `deliveries.json`, `hostattach.json` (рішення про вкладення хоста, Ф24), архіви замінених оригіналів і медіа, файли засіву. Структури — [SP_CTX_01](./context_editor.structures.sp.md).
 - **Пам'ять інстансу модуля** (`register.ts`): опублікована пара сесія + тека сховища і підготовки в польоті (`store.ts`), id останнього звіту застосування, ідентичність хост-процесу, власна межа, ключ останнього перегляду, лічильник ходів, стан Flush і передачі, скопійовані id результатів, якір доставки, мемо підказки, каталог вкладень хоста з останнього проходу (`hostattach.ts`, AttachMemory), ланцюги `serial` на файл.
 - **Порядок RMW:** один ланцюг `serial` на вид файлу, типізовані ключі з рангами (`CHAIN_RANK` у `store.ts`): queue (1) → tags (2) → aliases (3) → deliveries | journal | hostattach (4); вкладення лише queue → tags → aliases (крок фіксації компактизації), queue → deliveries, tags → deliveries; вкладення нижчого чи того самого рангу з явно переданим тримачем → налагоджувальний журнал.
 

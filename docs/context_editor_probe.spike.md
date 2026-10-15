@@ -2,7 +2,7 @@
 
 > **Status:** completed
 > **Date:** 2026-10-14
-> **Feeds:** [C_CTX_DEC_31](./context_editor.concept.md#C_CTX_DEC_31) (а) D, [SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38)
+> **Feeds:** [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31) (а) D, [SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38)
 > **Evidence:** `.dev_flow/cache/live-test/probe-spike/` (git-ignored): `probe/` — плагін-зонд рівня `user`, `parent/` — плагін, що запускає дочірній процес, `probe-run.sh`, `runs/` — журнали налагодження, stdout і лічильники.
 
 ## Питання і відповіді

@@ -140,7 +140,7 @@ Errors:
 | REPAIR_REFUSED | `$.command.run` відхилено (немає прив'язаної сесії, неприпустиме походження) | одна спроба; рядок стану з текстом відмови; розмова як є; наступний новий процес хоста спробує знову |
 | — | NeedsRepair: сховища немає, журнал нечитабельний, межа довірена | команди немає, мовчки (журнал налагодження) |
 
-Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54), [C_CTX_DEC_31](./context_editor.concept.md#C_CTX_DEC_31) (д)): з 2026-10-14 ScheduleRepair не викликається з `session.start`: новий процес хоста ставить `repairAtTurnEnd = true`, і ремонт планується на кінці першого ходу основної розмови, коли вердикт `compact` уже з кешу чи зонда ([SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)); при `passed` ремонту немає, при зонді, що йде, RunRepair чекає його не довше PROBE_WAIT_MS. Ремонт до першого промпту (stream-json) і рядок «Хости» вище про `session.start` — історія.
+Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31) (д)): з 2026-10-14 ScheduleRepair не викликається з `session.start`: новий процес хоста ставить `repairAtTurnEnd = true`, і ремонт планується на кінці першого ходу основної розмови, коли вердикт `compact` уже з кешу чи зонда ([SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)); при `passed` ремонту немає, при зонді, що йде, RunRepair чекає його не довше PROBE_WAIT_MS. Ремонт до першого промпту (stream-json) і рядок «Хости» вище про `session.start` — історія.
 
 ### 02_47. HandleRepair  {#SP_CTX_02_47}
 

@@ -6,7 +6,7 @@
 > **Updated:** 2026-10-13
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
-> §02 Contracts 02_50–02_52 специфікації [SP_CTX](./context_editor.sp.md): видалення даних сесій, чий транскрипт хост уже видалив, пакування давно не відкритих сесій у `.zip` і відновлення запакованої сесії ([C_CTX_03_10](./context_editor.mechanisms.concept.md#C_CTX_03_10), [C_CTX_DEC_29](./context_editor.concept.md#C_CTX_DEC_29)). Читати перед зміною `hooks/cleanup.ts` або підготовки сховища.
+> §02 Contracts 02_50–02_52 специфікації [SP_CTX](./context_editor.sp.md): видалення даних сесій, чий транскрипт хост уже видалив, пакування давно не відкритих сесій у `.zip` і відновлення запакованої сесії ([C_CTX_03_10](./context_editor.core.concept.md#C_CTX_03_10), [C_CTX_DEC_29](./context_editor.core.concept.md#C_CTX_DEC_29)). Читати перед зміною `hooks/cleanup.ts` або підготовки сховища.
 
 ## Contents
 
