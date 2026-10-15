@@ -69,6 +69,8 @@ Processing logic (pseudocode):
 
 ### 02_21. RunHandoff  {#SP_CTX_02_21}
 
+> **Курування:** пін документа в новій сесії — [SP_CTX_02_68](./context_editor.curation.sp.md#SP_CTX_02_68).
+
 > **Criticality:** core
 
 Purpose: виконати запит передачі. Для `transcript` — зібрати засів у старій сесії, очистити сесію вбудованою командою `/clear` і засіяти нову власною компактизацією з HANDOFF_MARKER ([C_CTX_DEC_11](./context_editor.methods.concept.md#C_CTX_DEC_11), S); для `document` або коли засів не зібрався — передати документ першим промптом очищеної сесії. Засів спирається лише на вбудовані команди `/clear` і `/compact`, тож розрахований і на інтерактивний термінал, і на неінтерактивний хост з потоковим входом (stream-json: розширення VS Code, SDK streaming), де команди відновлення сесії немає. Спосіб `document` без документа агента додатково спирається на окремий запит до моделі (`$.model.fork`), перевірений лише в терміналі; у stream-json його підтверджує обов'язковий сценарій «Запасний шлях до очищення» ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)).
@@ -290,6 +292,8 @@ Errors: відмови не виходять назовні — кожна пр�
 Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): запит, поставлений до вердикту, при `passed` на запуску не виконується — стан `done` зі звітом HANDOFF_PASSED_OVER, команди немає.
 
 ### 02_22. BuildSeed  {#SP_CTX_02_22}
+
+> **Курування:** ScreenPerson — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); слід власних викликів — [SP_CTX_02_64](./context_editor.curation.sp.md#SP_CTX_02_64); правки `state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67).
 
 Purpose: зібрати рядки нової сесії з того, що бачить модель, і правок черги ([C_CTX_DEC_12](./context_editor.methods.concept.md#C_CTX_DEC_12), C). Чиста функція, крім запису медіа-файлів через порт. До 2026-10-09 — BuildTranscript, що збирав записи файлу сесії.
 

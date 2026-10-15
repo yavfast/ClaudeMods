@@ -54,6 +54,8 @@ Invariants:
 
 ### 01_02. Edit  {#SP_CTX_01_02}
 
+> **Курування:** `status` і операція `state` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+
 Правка, як її передає агент. Варіант визначає поле `op`; кожне поле варіанта обов'язкове.
 
 | op | Поля | Значення |
@@ -67,6 +69,8 @@ Invariants:
 Обмеження: `summary`, `text`, `description` — непорожні після обрізання пробілів, не довші за MAX_TEXT. Для `summarize` і `drop` задається рівно одне з `tool_use_id` і `ref`; `ref` — псевдонім виклику або `last` ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)), у черзі правка зберігається вже з `tool_use_id`. Індекси — позиції в переліку [SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01).
 
 ### 01_03. QueuedEdit  {#SP_CTX_01_03}
+
+> **Курування:** `status`, `quoted`, `changes` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
 
 Edit плюс `anchors: list<string>?` — відбитки рядків для правок за індексом: для `collapse` — `[fingerprint(row[from_index]), fingerprint(row[to_index])]`, для `rewrite` і `describe` — `[fingerprint(row[index])]`, для правок за ідентифікатором — відсутні.
 
@@ -181,6 +185,8 @@ MediaRef живе лише під час перегляду і застосув�
 
 ### 01_09. Tag  {#SP_CTX_01_09}
 
+> **Курування:** `status` для `disposable` і причина `superseded` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
 | kind | `pin` \| `disposable` \| `review` \| `state` | yes | — | — | Значення тегу ([C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04)) |
@@ -197,6 +203,8 @@ Invariants:
 - `review` активний, коли `ttl_turns` відсутній або `turn - created_turn >= ttl_turns`; `reason` є в кожному тезі `review`, який пише ця версія.
 
 ### 01_10. TagRegistry  {#SP_CTX_01_10}
+
+> **Курування:** `items`, `nextItem`, `docChecked` — [SP_CTX_01_29](./context_editor.curation.sp.md#SP_CTX_01_29).
 
 Файл `<storage>/tags.json`. Пише лише мод.
 
@@ -219,6 +227,8 @@ Invariants:
 Стани читання — як у Queue (`missing`, `ok`, `unreadable`); `unreadable` не трактується як порожній реєстр. Поле `stage` або `lastClosed`, що не проходить своїх обмежень, робить реєстр `unreadable`, як і погане поле тегу.
 
 ### 01_11. AutoTagRules  {#SP_CTX_01_11}
+
+> **Курування:** R1 прибрано — [SP_CTX_02_68](./context_editor.curation.sp.md#SP_CTX_02_68); R6 — [SP_CTX_02_65](./context_editor.curation.sp.md#SP_CTX_02_65).
 
 | Rule | Event and condition | Tag |
 |------|---------------------|-----|

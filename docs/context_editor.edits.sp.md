@@ -27,6 +27,8 @@
 
 ### 02_01. context_list  {#SP_CTX_02_01}
 
+> **Курування:** рядок заголовка й секція рядків хоста — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61); причина `superseded` — [SP_CTX_02_65](./context_editor.curation.sp.md#SP_CTX_02_65); `"rules": true` — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
+
 Purpose: інструмент агента; показує рядки основної розмови ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) від найстарішого, сторінками.
 
 Логіка — чиста функція ContextList (`contextList` у `hooks/stages.ts`) за портом ListIO: CurrentRows і їхній ключ, API-подання, тека сховища (взята один раз), читання реєстру тегів і реєстру псевдонімів у цій теці, використання контексту, порт Update реєстру (калібрування), журнал, належні нагадування, запис `listedKey`; мітки рядків — ListLabels (позначки етапів, потім теги, потім нотатки; нечитабельний реєстр — рядок з причиною), псевдоніми — ListAliases; зв'язування з хостом — у реєстрації мода (аудит PL_AUD_CTX, фаза 10, CF-19). Тексти опису й схема інструмента — у `hooks/tools.ts` (ліміти MAX_LIST_COUNT, MAX_FULL_ROW, ROW_WINDOW підставлено з констант, CF-20).
@@ -57,6 +59,8 @@ Errors:
 | DENIED_FAILURE | збій під час побудови переліку | повторити пізніше; причина в повідомленні |
 
 ### 02_02. context_edit  {#SP_CTX_02_02}
+
+> **Курування:** відмова на слова людини замість попередження — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); `status` — [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62); перевірка залежностей — [SP_CTX_02_63](./context_editor.curation.sp.md#SP_CTX_02_63); операція `state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); `describe` вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59).
 
 Purpose: інструмент агента; перевіряє правки і дописує прийняті до черги.
 
@@ -146,6 +150,8 @@ Processing logic (pseudocode):
 
 ### 02_03. PrepareEdits  {#SP_CTX_02_03}
 
+> **Курування:** шоста операція `state` і її винятки з правила `state` і ScreenPinned — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); ціль `host` правки `drop` (HOST_EXCLUSIVE, HOST_UNKNOWN, HOST_TWICE; HOST_MEDIA — лише при застосуванні) — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61); описаний промпт — слова людини, [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58).
+
 Purpose: перевірити правки на поточній розмові і поставити якорі. Відхилення однієї правки не зупиняє інших.
 
 | Правка | Приймається, якщо | Інакше (причина) |
@@ -171,6 +177,8 @@ Purpose: перевірити правки на поточній розмові 
 Перевірка `state` живе всередині ScreenPinned, а не окремим кроком викликача: так застосування і засів не розходяться (код фаз 3–17 — `screenPinned` у `hooks/compaction.ts`, його викликають обробник і BuildSeed). Рядок перевірки межі поточної розмови (`listedKey`) діє лише для правок агента з `context_edit`; заміни з тегів (QueueTagReplacements, [SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13)) проходять PrepareEdits без нього (`checkListedKey = false`).
 
 ### 02_04. ApplyEdits  {#SP_CTX_02_04}
+
+> **Курування:** тексти замін з походженням і статусом — [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62); `describe` для вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59); `run state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); Detach попередника рядка хоста — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61).
 
 > **Criticality:** core
 
@@ -338,6 +346,8 @@ Processing logic (pseudocode):
 
 ### 02_05. DropOwnCalls  {#SP_CTX_02_05}
 
+> **Курування:** слід власних викликів — [SP_CTX_02_64](./context_editor.curation.sp.md#SP_CTX_02_64).
+
 Purpose: прибрати з результату ApplyEdits виклики інструментів мода та їхні результати.
 
 Input: рядки, `mediaOwners`, `knownResults`, `frozen` — рядки замороженого префікса ([SP_CTX_02_04](#SP_CTX_02_04); у засіві й поза компактизацією — жодного). Logic: множина ідентифікаторів викликів, чия назва починається з OWN_TOOLS, крім тих службових пар, у рядку результату яких є інший результат з власником у `mediaOwners` або з id поза `knownResults` — такі пари лишаються разом із рядками, бо перезбирання знищило б незаархівоване медіа, — і крім пар, виклик чи результат яких стоїть у `frozen` (фаза 23, лише з `keep_cache`): їхні байти тримають кеш промпту до першої зміни ([SP_CTX_DEC_22](./context_editor.sp.md#SP_CTX_DEC_22)). Типово `frozen` порожній, і власні виклики прибираються всі, як до фази 23; з `keep_cache` виклики до першої зміни лишаються в розмові. Кожен рядок, що містить решту службових викликів або результатів, перезбирається без них; потім рядки проходять KeepResponsesWhole з тим самим `frozen` ([SP_CTX_02_04](#SP_CTX_02_04)), бо перезібраний рядок асистента зі службовим викликом теж розриває відповідь; рядки без `handle`, що стали порожніми, видаляються, а виклики однієї відповіді без `handle` зливаються в один рядок (MergeCallRows, [SP_CTX_02_04](#SP_CTX_02_04)): прибраний службовий рядок посеред паралельних викликів інакше лишив би два окремі перезібрані рядки викликів. Рядок-носій `collapse` ніколи не є службовим викликом ([SP_CTX_02_04](#SP_CTX_02_04)).
@@ -457,6 +467,8 @@ Errors:
 Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): AfterTurn першим кроком виконує NoteTurn Capabilities ([SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)), ще до DetectOptimize. При `compact = passed` Flush не планується, а запланований раніше не запускає команди (FLUSH_PASSED_OVER); при `unknown` під час зонда Flush чекає його не довше PROBE_WAIT_MS ([SP_CTX_02_56](./context_editor.bypass.sp.md#SP_CTX_02_56)): черга лишається для брифу `/compact` людини ([SP_CTX_02_55](./context_editor.bypass.sp.md#SP_CTX_02_55)). Ремонт планується з кінця першого ходу процесу ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)).
 
 ### 02_07. HandleCompaction  {#SP_CTX_02_07}
+
+> **Курування:** ScreenPerson поряд із ScreenPinned — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); запис рядків хоста в кроці фіксації — [SP_CTX_02_60](./context_editor.curation.sp.md#SP_CTX_02_60).
 
 > **Criticality:** core
 

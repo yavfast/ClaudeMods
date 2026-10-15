@@ -4,7 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
-- `/dev-flow resume task_C_CTX` — `concept` — концепт C_CTX поділено на парасольку і три дочірні концепти (ядро й інструменти, методи оптимізації, [курування історії](../docs/context_editor.curation.concept.md) — draft, рішення C_CTX_DEC_32–DEC_37 погоджено розробником; три раунди рев'ю, закомічено); далі — специфікація курування (`spec`); перед планом — «Розділити план PL_CTX» (queued у backlog) — 2026-10-15
+- `/dev-flow resume task_C_CTX` — `spec` — специфікацію курування історії написано й закомічено ([context_editor.curation.sp.md](../docs/context_editor.curation.sp.md), draft; SP_CTX_02_58–02_69, SP_CTX_DEC_39–DEC_43; концепт C_CTX_DEC_38–DEC_39; спайк [context_editor_hostrows](../docs/context_editor_hostrows.spike.md)); далі — поділ великих файлів специфікації (queued у backlog PL_CTX), поділ плану PL_CTX, потім `plan` — branch `feat/context-editor` — 2026-10-15
 - `/dev-flow resume task_C_CTX` також бере backlog рефакторингу CF-28…CF-53 ([план PL_AUD_CTX](audit/context-editor_20261011_182951.plan.md#PL_AUD_CTX_BACKLOG), кожен пункт з тригером)
 - `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog PL_CTX (ремонт після відновлення, згортання хвоста, `/compact` мода приписують людині, R2 доставок, спайк «підсумок рядком асистента», I, K); усі фази 1–23 закомічені (152f694) — branch `feat/context-editor` — 2026-10-11
 - `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: практика — реальна довга задача з модом (≥150k, opus), потім розбір сесії → P23+ — branch `feat/context-editor` — 2026-10-11
@@ -22,4 +22,4 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Deferred (todos)
 
-_2 candidate · 1 queued · 0 contested — у [backlog PL_CTX](../docs/context_editor.plan.md#PL_CTX_BACKLOG): «Згода людини при першому використанні мода» (candidate), «Дані мода без слідів на диску» (candidate), «Розділити план PL_CTX» (queued, перед наступною суттєвою правкою плану)_
+_3 candidate · 2 queued · 0 contested — у [backlog PL_CTX](../docs/context_editor.plan.md#PL_CTX_BACKLOG): «Згода людини при першому використанні мода» (candidate), «Дані мода без слідів на диску» (candidate), «Навичка, відкрита інструментом `Skill`, зникає після застосування» (candidate), «Розділити план PL_CTX» (queued, перед наступною суттєвою правкою плану), «Розділити великі файли специфікації SP_CTX» (queued, перед наступним суттєвим додаванням у них)_
