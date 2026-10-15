@@ -1,7 +1,11 @@
-updated: 2026-10-11
+updated: 2026-10-15
 
 domains:
   - path: claude-code/
     description: API function hooks Claude Code для модів — події, сервіси `$`, обмеження хоста
     topics: [claude-code, plugin, hooks, mod, session.compact, session.append, tool.call, prompt.submit, command.run, prompt-cache, install]
     applies_to: { paths: ["mods/**"], phases: [implement, fix, test, review, verify] }
+  - path: context-editing/
+    description: Редагування агентом власної історії — виміряні ефекти, правила дизайну й ризики (спайк context_editor_uses)
+    topics: [context-editing, self-editing, history, lessons, interference, provenance, trust-framing, prompt-injection, thinking-signatures, auto-mode]
+    applies_to: { paths: ["mods/context-editor/**", "docs/context_editor*"], phases: [research, concept, spec, plan, implement, review] }

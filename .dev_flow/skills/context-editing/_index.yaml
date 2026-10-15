@@ -1,0 +1,12 @@
+domain: context-editing
+description: Знання для дизайну мода context-editor — що виміряно про редагування агентом власної історії, правила й ризики
+updated: 2026-10-15
+
+skills:
+  - file: history-editing-evidence.md
+    skill: HistoryEditingEvidence
+    topics: [context-editing, self-editing, history, summarize, collapse, rewrite, lessons, interference, self-conditioning, consolidation, provenance, trust-framing, prompt-injection, thinking-signatures, auto-mode, handoff]
+    source: research
+    updated: 2026-10-15
+    written_against: 'література до 2026-09 (заморожені моделі); документація Claude API 2026-10; Claude Code 2.1.296'
+    promotion: candidate

@@ -2,9 +2,9 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-14
+> **Last updated:** 2026-10-15
 > **Status:** `in-progress`
-> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`, `claude-session-4cdf50ec`
+> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`, `claude-session-4cdf50ec`, `claude-session-355660b2`
 > **Autonomy:** `checkpoints`
 
 ## Current Work Item
@@ -26,6 +26,12 @@
 Прототип мода складається з двох розширень Claude Code — `context-editor` і `context-editor-trigger` — і перевірений модульними та живими тестами в сесії bd80217a. Документи описують його поведінку зворотно, за кодом і результатами тестів. — claude-session-bd80217a
 
 ## Subtasks
+
+### Subtask: Спайк — інші застосування вільного редагування попередніх повідомлень
+**Contributor:** claude-session-355660b2 · **Status:** `done` · **Started:** 2026-10-15 · **Phase:** `research`
+Запит розробника: «Як ще можна використовувати можливість вільного редагування попередніх повідомлень у контексті сесії? Пошукай в Інтернеті наявні дослідження на цю тему. Можеш сам запропонувати свої орігінальні варіанти з точки зору різних філософських проєкцій.»
+Спайк [`docs/context_editor_uses.spike.md`](../../docs/context_editor_uses.spike.md): панель із 4 лінз (емпірична ML, безпека й нагляд, практика й взаємодія, філософія), по субагенту на лінзу; попередні звіти `.dev_flow/cache/practice/context-self-editing*.md` охоплюють лише стиснення — їх не повторюємо.
+Progress: [x] рамка спайку · [x] звіти лінз (4 субагенти; ключові твердження звірено за першоджерелами, одне не підтвердилося) · [x] синтез і власні варіанти (таблиця з 38 рядків, напруги Т1–Т7) · [x] висновок спайку (concluded) · [x] знахідки → backlog PL_CTX (8 нових, 2 оновлені), P24 задачі stage-cleanup, навички `context-editing/history-editing-evidence.md` і plugin-hooks 69–70, кеш `research/context-editor-uses/` · [x] рев'ю перед комітом (раунд 1: pass with fixes, must — 0; 6 should і 10 prefer виправлено: порядок пунктів 68–70, номери рядків у backlog, кандидати в навичці, цифри MINJA, Chia, Monea, Nasr; P24 уточнено за транскриптом) · [x] передача розробнику (коміт погоджено: «Так»; разом із ним — пункти backlog «Згода людини при першому використанні мода» і «Розділити план PL_CTX»). Далі: зміна концепту C_CTX за напругами Т1/Т2 спайку (design sign-off); перед наступною суттєвою правкою плану — поділ PL_CTX.
 
 ### Subtask: Фази 29–31 PL_CTX — калібрування перед застосуванням, теги зниклих рядків, дрібні вади (CF-34, CF-43, CF-52, CF-53)
 > Author: `claude-session-d5614704` — Created: 2026-10-12 — Last updated: 2026-10-12 18:25 — Status: `done` — Phase: `commit`

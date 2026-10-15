@@ -29,6 +29,7 @@
 | [context_editor_host_attachments.spike.md](context_editor_host_attachments.spike.md) | concluded | Застарілі вкладення хоста (`instructions`, `skill_listing`) після застосувань |
 | [context_editor_authorship.spike.md](context_editor_authorship.spike.md) | concluded | Форма стиснутого рядка, у якій haiku і sonnet бачать своє авторство (заглушка + власний рядок, збережені виклики, тексти без префікса) |
 | [context_editor_resume.spike.md](context_editor_resume.spike.md) | concluded | Дублікати відповідей після `--resume` сесії із застосуваннями мода (злиття за `message.id`, ремонт після відновлення, ToolSearch) |
+| [context_editor_uses.spike.md](context_editor_uses.spike.md) | concluded | Інші застосування вільного редагування попередніх повідомлень, крім стиснення: правка історії як важіль поведінки, урок замість сирої невдачі, «вигляд ≠ запис», «присвоювати дію, а не зміст»; thinking-підписи й авто-режим як обмеження |
 
 ## ID prefixes
 
