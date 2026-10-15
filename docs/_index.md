@@ -7,7 +7,7 @@
 | File | ID | Status | Що це |
 |------|----|--------|-------|
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): спільні філософія й обмеження хоста, склад набору, покажчик рішень C_CTX_DEC_*; дочірні концепти — ядро й інструменти, методи оптимізації контексту, курування історії (draft) |
-| [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, рішення SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
+| [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, покажчик рішень SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
 | [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–37 виконано, 38 (можливості хоста) — у роботі, 39–46 — курування історії (спершу живі ворота) |
 
 ## Maps
@@ -40,11 +40,17 @@
 | `C_CTX_02`, `C_CTX_03` (крім 03_02, 03_06, 03_09), `C_CTX_04`; `C_CTX_DEC_01`–`03`, `05`–`10`, `18`, `20`–`22`, `24`–`26`, `28`, `29`, `31` | [context_editor.core.concept.md](context_editor.core.concept.md) |
 | `C_CTX_03_02`, `C_CTX_03_06`, `C_CTX_03_09`; `C_CTX_DEC_04`, `11`–`17`, `19`, `23`, `27`, `30` | [context_editor.methods.concept.md](context_editor.methods.concept.md) |
 | `C_CTX_06`; `C_CTX_DEC_33`–`40` | [context_editor.curation.concept.md](context_editor.curation.concept.md) |
-| `SP_CTX_01` (структури, константи 01_12) | [context_editor.structures.sp.md](context_editor.structures.sp.md) |
-| `SP_CTX_02_01`–`02_10` (перегляд, правки, застосування, компактизація, медіа) | [context_editor.edits.sp.md](context_editor.edits.sp.md) |
+| `SP_CTX_01`, `01_01`–`01_11` (структури) | [context_editor.structures.sp.md](context_editor.structures.sp.md) |
+| `SP_CTX_01_12` (константи) | [context_editor.constants.sp.md](context_editor.constants.sp.md) |
+| `SP_CTX_01_13`–`01_26` (реєстри і стан сесії) | [context_editor.records.sp.md](context_editor.records.sp.md) |
+| `SP_CTX_02_01`–`02_03`, `02_05`, `02_09` (перегляд, правки) | [context_editor.edits.sp.md](context_editor.edits.sp.md) |
+| `SP_CTX_02_04`, `02_07`, `02_10` (застосування, обробник компактизації, медіа) | [context_editor.apply.sp.md](context_editor.apply.sp.md) |
+| `SP_CTX_02_06`, `02_08` (Flush, доставка звіту) | [context_editor.flush.sp.md](context_editor.flush.sp.md) |
 | `SP_CTX_02_11`–`02_18` (теги, псевдоніми, поточна розмова) | [context_editor.tags.sp.md](context_editor.tags.sp.md) |
 | `SP_CTX_02_19`–`02_26` (передача) | [context_editor.handoff.sp.md](context_editor.handoff.sp.md) |
-| `SP_CTX_02_27`–`02_38`, `02_42`–`02_43` (етапи, телеметрія, нотатки, доставки, нагадування, кеш, `/compact` людини, рядок людини після застосування) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
+| `SP_CTX_02_27`, `02_29`, `02_30`, `02_32`, `02_33`, `02_42`, `02_43` (вступ сесії, етапи, мітка, нотатки, `/compact` людини, рядок людини після застосування) | [context_editor.stages.sp.md](context_editor.stages.sp.md) |
+| `SP_CTX_02_28`, `02_31`, `02_34`, `02_37`, `02_38` (телеметрія, журнал ефекту, оцінки, м'яке нагадування, кеш) | [context_editor.telemetry.sp.md](context_editor.telemetry.sp.md) |
+| `SP_CTX_02_35`, `02_36` (доставки хоста посеред ходу) | [context_editor.deliveries.sp.md](context_editor.deliveries.sp.md) |
 | `SP_CTX_02_39`–`02_41` (вкладення хоста) | [context_editor.hostattach.sp.md](context_editor.hostattach.sp.md) |
 | `SP_CTX_02_44`–`02_48` (ремонт після відновлення: журнал входу, DropPulled, ремонт, ToolRefText) | [context_editor.resume.sp.md](context_editor.resume.sp.md) |
 | `SP_CTX_02_50`–`02_52` (старі сесії: SweepSessions, PackSession, RestoreSession) | [context_editor.cleanup.sp.md](context_editor.cleanup.sp.md) |
@@ -52,10 +58,13 @@
 | `SP_CTX_02_53`–`SP_CTX_02_57` (можливості хоста: Capabilities, дії при обході, CompactBrief, RunProbe, ProbeMode) | [context_editor.bypass.sp.md](context_editor.bypass.sp.md) |
 | `SP_CTX_01_27`–`01_32`, `02_58`–`02_69`, `03_03`–`03_04`, `04_08`–`04_09`, `05_05`–`05_08`, `06_02`, `SP_CTX_DEC_39`–`44` (курування історії) | [context_editor.curation.sp.md](context_editor.curation.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
-| `SP_CTX_05_01` (модульні очікування) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |
-| `SP_CTX_05_02`–`05_04` (інваріанти, сценарії, граничні випадки) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |
-| `SP_CTX_02`, `SP_CTX_03`, `SP_CTX_05`, `SP_CTX_06`, `SP_CTX_DEC` | [context_editor.sp.md](context_editor.sp.md) |
+| `SP_CTX_05_01` (модульні очікування; рядки — у `context_editor.expectations.<модуль>.sp.md`) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |
+| `SP_CTX_05_02`–`05_03` (інваріанти, сценарії) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |
+| `SP_CTX_05_04` (граничні випадки) | [context_editor.edges.sp.md](context_editor.edges.sp.md) |
+| `SP_CTX_DEC_01`–`DEC_20` | [context_editor.decisions-01.sp.md](context_editor.decisions-01.sp.md) |
+| `SP_CTX_DEC_21`–`DEC_38` | [context_editor.decisions-21.sp.md](context_editor.decisions-21.sp.md) |
+| `SP_CTX_02`, `SP_CTX_03`, `SP_CTX_05`, `SP_CTX_06`, `SP_CTX_DEC` (покажчик рішень) | [context_editor.sp.md](context_editor.sp.md) |
 | `PL_CTX` | [context_editor.plan.md](context_editor.plan.md) |
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
-Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` (поза перевірками цілісності).
+Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` і `context_editor.{edits,structures}.sp.log.md` (поза перевірками цілісності).

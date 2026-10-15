@@ -9,7 +9,7 @@
 > **Mode:** single
 >
 > **Target concept:** [C_CTX](./context_editor.concept.md)
-> **Serves:** пункт беклогу «Спайк: підсумок власним рядком асистента після заглушки результату» ([план](./context_editor.plan.md), розділ Backlog; [SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17)); знахідки живих прогонів фаз 26–27 (`.dev_flow/cache/live-test/phase26-results.md`, `phase27-results.md`)
+> **Serves:** пункт беклогу «Спайк: підсумок власним рядком асистента після заглушки результату» ([план](./context_editor.plan.md), розділ Backlog; [SP_CTX_DEC_17](./context_editor.decisions-01.sp.md#SP_CTX_DEC_17)); знахідки живих прогонів фаз 26–27 (`.dev_flow/cache/live-test/phase26-results.md`, `phase27-results.md`)
 > **Question(s):**
 > 1. У якій формі стиснутого рядка (summarize, collapse) haiku і sonnet визнають підсумок своєю роботою і пам'ятають, що самі робили виклики й бачили вивід?
 > 2. Чи приймає хост форми з новим рядком асистента і зі збереженими парами викликів (термінал, stream-json, `--resume`), що буває з рядками асистента підряд, thinking, `handle`, як це видно на екрані і що це робить з кешем промпту?
@@ -96,8 +96,8 @@
 - Нестача власних викликів `context_*` поруч із власним текстом «Queued the edits» підточує авторство незалежно від форми.
 
 **Recommendations for the concept / spec / code** (не впроваджено):
-- [SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17): нове рішення A″ — тексти замін без MARK, підмет — агент, названо виклик (`Later, your context_edit <op> call replaced …`); пункт беклогу «підсумок власним рядком асистента» закрити як відхилений з посиланням на цей спайк.
-- [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04) і §01_12 (`context_editor.structures.sp.md`): нові SUMMARIZED і collapsedWords; REWRITTEN і DESCRIBED — тим самим зразком (не перевірено, див. Open questions). Розпізнавання змінених рядків перенести з префікса MARK на набір відкривачів (напр. `REPLACED_OPENERS` у `rows.ts` і предикат `isReplacementText`), зі старими текстами `[context-editor] you …` як запасом для наявних сесій.
+- [SP_CTX_DEC_17](./context_editor.decisions-01.sp.md#SP_CTX_DEC_17): нове рішення A″ — тексти замін без MARK, підмет — агент, названо виклик (`Later, your context_edit <op> call replaced …`); пункт беклогу «підсумок власним рядком асистента» закрити як відхилений з посиланням на цей спайк.
+- [SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04) і §01_12 (`context_editor.structures.sp.md`, з 2026-10-15 — `context_editor.constants.sp.md`): нові SUMMARIZED і collapsedWords; REWRITTEN і DESCRIBED — тим самим зразком (не перевірено, див. Open questions). Розпізнавання змінених рядків перенести з префікса MARK на набір відкривачів (напр. `REPLACED_OPENERS` у `rows.ts` і предикат `isReplacementText`), зі старими текстами `[context-editor] you …` як запасом для наявних сесій.
 - Код (`mods/context-editor/hooks/`): `edits.ts` — збирання текстів (summarize, collapse, rewrite, describe), предикат зміненого рядка (`… .some(t => t.startsWith(MARK))`), `isCollapse…` для носія (`${MARK} ${COLLAPSED_OPENER}`), лічба промптів людини з `DESCRIBED`; `deliveries.ts` (PersonText пропускає рядки за MARK), `hints.ts` і `tags.ts` (пропуск уже замінених результатів за MARK); `rows.ts` — нові константи. MARK лишається для власних текстів мода (рядок псевдоніма `id cN`, нагадування нотаток, CarryNote, звіти).
 - §01_05 (звіт застосування): речення про прибрані виклики не прибирати, а прив'язати до замін, напр. «Your context_list / context_edit calls that made these replacements were removed after they applied; the replacements are your own text.» (не перевірено).
 - Навичка `skills/context-stages/SKILL.md`, розділ «Rows marked [context-editor]» і її опис — переписати під нові відкривачі.

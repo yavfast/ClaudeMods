@@ -8,7 +8,7 @@
 ### Phase 35 — Архіви основної розмови в проєкті [DONE]  {#PL_CTX_P35}
 
 **Depends on:** Phase 34 (каталог архівів субагентів).
-**Implements:** [C_CTX_DEC_28](./context_editor.core.concept.md#C_CTX_DEC_28); [SP_CTX_01_06](./context_editor.structures.sp.md#SP_CTX_01_06), [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) ArchiveRoot; шляхи в HandleCompaction ([SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07)), PrepareSeed і RemoveSeedFiles ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), HandleRepair ([SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47)), JournalReread ([SP_CTX_02_31](./context_editor.stages.sp.md#SP_CTX_02_31)).
+**Implements:** [C_CTX_DEC_28](./context_editor.core.concept.md#C_CTX_DEC_28); [SP_CTX_01_06](./context_editor.structures.sp.md#SP_CTX_01_06), [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) ArchiveRoot; шляхи в HandleCompaction ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)), PrepareSeed і RemoveSeedFiles ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), HandleRepair ([SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47)), JournalReread ([SP_CTX_02_31](./context_editor.telemetry.sp.md#SP_CTX_02_31)).
 **Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки ArchiveRoot, HandleCompaction «архів у каталозі архівів», PrepareSeed «файли засіву», MarkCall «читання архіву»; живий сценарій 05_03 «Архів основної розмови в проєкті» (stream-json, haiku, без `bypassPermissions`).
 
 | Що | Де |

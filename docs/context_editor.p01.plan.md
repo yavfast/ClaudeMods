@@ -8,7 +8,7 @@
 ### Phase 1 — Основний функціонал [DONE]  {#PL_CTX_P1}
 
 **Depends on:** none
-**Implements:** [SP_CTX_01_01](./context_editor.structures.sp.md#SP_CTX_01_01)–[01_07](./context_editor.structures.sp.md#SP_CTX_01_07), [01_12](./context_editor.structures.sp.md#SP_CTX_01_12); [02_01](./context_editor.edits.sp.md#SP_CTX_02_01)–[02_08](./context_editor.edits.sp.md#SP_CTX_02_08); [02_09](./context_editor.edits.sp.md#SP_CTX_02_09) без замін з тегів; [02_15](./context_editor.tags.sp.md#SP_CTX_02_15)
+**Implements:** [SP_CTX_01_01](./context_editor.structures.sp.md#SP_CTX_01_01)–[01_07](./context_editor.structures.sp.md#SP_CTX_01_07), [01_12](./context_editor.constants.sp.md#SP_CTX_01_12); [02_01](./context_editor.edits.sp.md#SP_CTX_02_01)–[02_08](./context_editor.flush.sp.md#SP_CTX_02_08); [02_09](./context_editor.edits.sp.md#SP_CTX_02_09) без замін з тегів; [02_15](./context_editor.tags.sp.md#SP_CTX_02_15)
 **Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки ApplyEdits (крім describe), PrepareEdits, DropOwnCalls, context_list, context_edit, HandleCompaction, DeliverReport, TriggerCompaction; [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Стиснення в межах сесії», «Три операції», «Нагадування з початку» — pass 2026-10-08 після раунду 3
 
 | Що | Де |

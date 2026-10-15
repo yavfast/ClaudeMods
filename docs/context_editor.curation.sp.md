@@ -7,7 +7,7 @@
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Concept:** [C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)
 > **Spikes:** [context_editor_uses](./context_editor_uses.spike.md), [context_editor_hostrows](./context_editor_hostrows.spike.md)
-> **Depends on:** [SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04), [SP_CTX_02_05](./context_editor.edits.sp.md#SP_CTX_02_05), [SP_CTX_02_07](./context_editor.edits.sp.md#SP_CTX_02_07), [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12), [SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16), [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18), [SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29), [SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)
+> **Depends on:** [SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04), [SP_CTX_02_05](./context_editor.edits.sp.md#SP_CTX_02_05), [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07), [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12), [SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16), [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18), [SP_CTX_02_27](./context_editor.stages.sp.md#SP_CTX_02_27), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29), [SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)
 > **Used by:** —
 >
 > Курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)) у термінах контрактів: структури (походження, пункти слота стану, нові поля правок і тегів, записи рядків хоста, константи), контракти (правило слів людини з відмовою при постановці й застосуванні, `describe` для вставок, запис рядків хоста і їх список з `id`, тексти замін з походженням, перевірка залежностей, слід власних викликів, застаріле читання й готові заміни, операція `state`, піни, правила й тексти навички), перевірки, життєві цикли, критерії перевірки, відкат і рішення SP_CTX_DEC_39–DEC_44. Наявні контракти, які курування змінює, лишаються у своїх файлах із посиланням сюди. Читати перед реалізацією будь-якого механізму курування.
@@ -30,7 +30,7 @@
 
 ### 01_28. Source  {#SP_CTX_01_28}
 
-Звідки взято замінений зміст ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06)): мод виводить його з виклику заміненої пари, а не зі слів агента. `SourceOf(call) → string`, не довше за MAX_SOURCE символів, обрізання — OneLine ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04): не розрізає сурогатної пари, кінець `…`).
+Звідки взято замінений зміст ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06)): мод виводить його з виклику заміненої пари, а не зі слів агента. `SourceOf(call) → string`, не довше за MAX_SOURCE символів, обрізання — OneLine ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04): не розрізає сурогатної пари, кінець `…`).
 
 | Tool of the call | Source |
 |------------------|--------|
@@ -41,7 +41,7 @@
 | `WebFetch` | `WebFetch <host><path>`: без userinfo, запиту й фрагмента (запит буває носієм токена) |
 | `WebSearch` | `WebSearch "<query>"` |
 | `Agent`, `Task` | `subagent "<description>"` |
-| інший | `<tool>` і, коли KeyArg ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) непорожній, ` <KeyArg>` |
+| інший | `<tool>` і, коли KeyArg ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)) непорожній, ` <KeyArg>` |
 
 Invariants: джерело ніколи не бере тексту результату; команда й шлях уже стоять у вході виклику, який `summarize` лишає в розмові, тож джерело не відкриває нічого нового.
 
@@ -165,13 +165,13 @@ Errors:
 | PERSON_TAG | `disposable` захоплює слова людини | так само |
 | PERSON_WORDS_NOW | при застосуванні правка захоплює слова людини (черга змінена поза інструментами, рядки зсунулись) | правку не застосовано; решта пакета йде |
 
-Файл доставок — виняток із правила «за рядками, а не за станом на диску»: повідомлення людини посеред ходу хост дає вкладенням, а не рядком, і `deliveries.json` — єдиний його запис до першого застосування ([SP_CTX_02_35](./context_editor.stages.sp.md#SP_CTX_02_35)). Оболонка може змінити й цей файл — та сама межа, що й для самого запису доставки ([C_CTX_06_10](./context_editor.curation.concept.md#C_CTX_06_10)).
+Файл доставок — виняток із правила «за рядками, а не за станом на диску»: повідомлення людини посеред ходу хост дає вкладенням, а не рядком, і `deliveries.json` — єдиний його запис до першого застосування ([SP_CTX_02_35](./context_editor.deliveries.sp.md#SP_CTX_02_35)). Оболонка може змінити й цей файл — та сама межа, що й для самого запису доставки ([C_CTX_06_10](./context_editor.curation.concept.md#C_CTX_06_10)).
 
 Правило діє лише в поточній сесії: передача «документом» — поза ним ([C_CTX_DEC_36](./context_editor.curation.concept.md#C_CTX_DEC_36)); засів «транскриптом» застосовує правки, тож ScreenPerson діє і в BuildSeed ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)). Команди, що знімала б відмову, немає.
 
 ### 02_59. DescribePasted  {#SP_CTX_02_59}
 
-Purpose: `describe` замінює медіа й вставлені блоки промпту людини описом агента; набраний людиною текст лишається дослівним, оригінал іде в архів ([C_CTX_DEC_39](./context_editor.curation.concept.md#C_CTX_DEC_39)). Розширює `run describe` ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)).
+Purpose: `describe` замінює медіа й вставлені блоки промпту людини описом агента; набраний людиною текст лишається дослівним, оригінал іде в архів ([C_CTX_DEC_39](./context_editor.curation.concept.md#C_CTX_DEC_39)). Розширює `run describe` ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)).
 
 Processing logic (pseudocode):
     PasteBlocks(text) = the spans <pasted_content id="X">…</pasted_content id="X"> (the closing tag repeats the id) and <pasted_content>…</pasted_content>, in order, not nested
@@ -264,7 +264,7 @@ Processing logic (pseudocode):
 
 Наслідки в наявних контрактах. Перелік ([SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01)) додає рядок заголовка й секцію списку; позначок рядків хоста серед рядків немає, і Key() ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) не змінюється. Правка `drop` бере нову ціль `host` ([SP_CTX_01_30](#SP_CTX_01_30)). Рядок хоста не буває ціллю `collapse`, `summarize`, `rewrite`, `describe` чи тегу: його немає серед рядків, а згортання рядка перед ним забирає його з собою, і звіт про це каже.
 
-Текст навички, яку відкрив інструмент `Skill`, — рядок хоста за рядком результату «Launching skill» (навичка plugin-hooks, п. 46; порядок дверей щодо цього рядка наживо не перевірено, SP_CTX_05_07). Перебудова незмінних рядків результатів ([SP_CTX_DEC_02](./context_editor.sp.md#SP_CTX_DEC_02)) повертає цей рядок без `handle`, тож перше ж застосування без `keep_cache` забирає текст навички, а повторний `Skill` хост не вставляє. Звіт називає такий запис серед рядків, що пішли з перебудованими; як зберегти таку навичку, вирішує пункт backlog PL_CTX «Навичка, відкрита інструментом `Skill`, зникає після застосування».
+Текст навички, яку відкрив інструмент `Skill`, — рядок хоста за рядком результату «Launching skill» (навичка plugin-hooks, п. 46; порядок дверей щодо цього рядка наживо не перевірено, SP_CTX_05_07). Перебудова незмінних рядків результатів ([SP_CTX_DEC_02](./context_editor.decisions-01.sp.md#SP_CTX_DEC_02)) повертає цей рядок без `handle`, тож перше ж застосування без `keep_cache` забирає текст навички, а повторний `Skill` хост не вставляє. Звіт називає такий запис серед рядків, що пішли з перебудованими; як зберегти таку навичку, вирішує пункт backlog PL_CTX «Навичка, відкрита інструментом `Skill`, зникає після застосування».
 
 Errors:
 | Code | Condition | Guidance |
@@ -274,11 +274,11 @@ Errors:
 | HOST_EXCLUSIVE | `drop` має `host` разом із `tool_use_id` чи `ref` | `edit <n>: host excludes tool_use_id and ref` |
 | HOST_TWICE | той самий `id` двічі в пакеті | `edit <n>: host row <id> is already in this batch` |
 
-Межа: два процеси хоста на одній сесії ведуть кожен свою пам'ять модуля й можуть дати однакові `h<n>` у тому самому файлі, як і з іншими файлами сховища ([SP_CTX_DEC_10](./context_editor.sp.md#SP_CTX_DEC_10)); `drop` тоді бере найновіший запис із цим `id`.
+Межа: два процеси хоста на одній сесії ведуть кожен свою пам'ять модуля й можуть дати однакові `h<n>` у тому самому файлі, як і з іншими файлами сховища ([SP_CTX_DEC_10](./context_editor.decisions-01.sp.md#SP_CTX_DEC_10)); `drop` тоді бере найновіший запис із цим `id`.
 
 ### 02_62. ReplacementOpeners  {#SP_CTX_02_62}
 
-Purpose: текст заміни говорить від імені агента і несе походження змісту; статусу змісту він не несе ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06), [C_CTX_DEC_33](./context_editor.curation.concept.md#C_CTX_DEC_33), [C_CTX_DEC_40](./context_editor.curation.concept.md#C_CTX_DEC_40), [SP_CTX_DEC_44](#SP_CTX_DEC_44)). Змінює тексти `run summarize`, `run collapse`, `run rewrite`, `run describe` ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)).
+Purpose: текст заміни говорить від імені агента і несе походження змісту; статусу змісту він не несе ([C_CTX_06_06](./context_editor.curation.concept.md#C_CTX_06_06), [C_CTX_DEC_33](./context_editor.curation.concept.md#C_CTX_DEC_33), [C_CTX_DEC_40](./context_editor.curation.concept.md#C_CTX_DEC_40), [SP_CTX_DEC_44](#SP_CTX_DEC_44)). Змінює тексти `run summarize`, `run collapse`, `run rewrite`, `run describe` ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)).
 
 Processing logic (pseudocode):
     Quoted(q) = q ? ", which you quoted from later," : ""
@@ -336,7 +336,7 @@ Processing logic (pseudocode):
             context_note → "context_note (<a> added, <r> removed)"
             context_handoff → "context_handoff"
 
-Опис іде за входом виклику, а не за результатом: виклик, який мод відхилив, теж названо, тож рядок каже «called», а не «queued». Пари замороженого префікса й пари біля медіа лишаються в розмові, і сліду для них немає; відрізок, де лишились усі власні пари, сліду не отримує. MergeCallRows ([SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04)) може влити рядок сліду в текст попереднього перезібраного рядка викликів — прийнято. Звіт застосування й далі каже OwnCallsText. BuildSeed робить так само.
+Опис іде за входом виклику, а не за результатом: виклик, який мод відхилив, теж названо, тож рядок каже «called», а не «queued». Пари замороженого префікса й пари біля медіа лишаються в розмові, і сліду для них немає; відрізок, де лишились усі власні пари, сліду не отримує. MergeCallRows ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)) може влити рядок сліду в текст попереднього перезібраного рядка викликів — прийнято. Звіт застосування й далі каже OwnCallsText. BuildSeed робить так само.
 
 ### 02_65. SupersededRead  {#SP_CTX_02_65}
 
@@ -357,7 +357,7 @@ Processing logic (pseudocode):
     Changed(a, b, same) = (same AND a ≠ b) OR some line number n is in both NumberedLines(a) and NumberedLines(b) with different text
     NumberedLines(text) = the lines matching ^\s*(\d+)\t(.*)$ → number → text   # форма виводу Read (cat -n)
 
-Діапазони без спільних рядків нічого не кажуть про зміну і тегу не дають. Зміни через оболонку правило бачить лише тоді, коли агент перечитав файл ([SP_CTX_DEC_13](./context_editor.sp.md#SP_CTX_DEC_13)). Тег показується `[review: superseded]`; він не заміняє `stale`, `pin`, `disposable` і `state`.
+Діапазони без спільних рядків нічого не кажуть про зміну і тегу не дають. Зміни через оболонку правило бачить лише тоді, коли агент перечитав файл ([SP_CTX_DEC_13](./context_editor.decisions-01.sp.md#SP_CTX_DEC_13)). Тег показується `[review: superseded]`; він не заміняє `stale`, `pin`, `disposable` і `state`.
 
 ### 02_66. ReadyReplacements  {#SP_CTX_02_66}
 
@@ -743,7 +743,7 @@ Transition rules:
 | 2026-10-15 | Рев'ю фази 39 (pass with fixes): числа воріт уточнено — авторство 28 з 28 з джерелом і статусом, контроль з поточними текстами 9 з 9 і 94.6; варіант лише з джерелом окремо не проганяли — рядок [SP_CTX_05_07](#SP_CTX_05_07) «Тексти замін з джерелом» для фази 41; надсилання вставок розширенням VS Code — за його кодом, не наживо |
 | 2026-10-15 | Ворота текстів замін (фаза 39): статус змісту знято ([SP_CTX_DEC_44](#SP_CTX_DEC_44), рішення розробника «Лише джерело, без статусу»; [SP_CTX_DEC_40](#SP_CTX_DEC_40) — `superseded`): 01_27 вилучено; поля `status` правок і тегів, STATUS_WORDS, StatusWords, STATUS_REQUIRED і BAD_STATUS прибрано з [SP_CTX_01_30](#SP_CTX_01_30), [SP_CTX_02_59](#SP_CTX_02_59), [SP_CTX_02_62](#SP_CTX_02_62), [SP_CTX_02_66](#SP_CTX_02_66), [SP_CTX_02_69](#SP_CTX_02_69), [SP_CTX_03_03](#SP_CTX_03_03), [SP_CTX_03_04](#SP_CTX_03_04), [SP_CTX_05_05](#SP_CTX_05_05), [SP_CTX_05_06](#SP_CTX_05_06), [SP_CTX_06_02](#SP_CTX_06_02); відкривач несе джерело і `which you quoted from later`; результат воріт — у [SP_CTX_05_07](#SP_CTX_05_07) |
 | 2026-10-15 | Вузьке рев'ю B″ (pass with fixes): PersonPrompt не бере рядків з маркером мода; вікно копій відкривається на вході хука `session.compact` гілки `pass`; тека сховища береться синхронно (CONC-01); прибирання записів — лише після точки фіксації; `drop` за `host`, чий попередник відсутній у вході, падає; HOST_MEDIA з перевірками `collapse`; HOST_EXCLUSIVE, HOST_TWICE; голова рядка команди; межа двох процесів ([SP_CTX_02_60](#SP_CTX_02_60), [SP_CTX_02_61](#SP_CTX_02_61)) |
-| 2026-10-15 | Рев'ю 2 (fail → виправлено): рядки хоста — окремий список з `id` ([SP_CTX_DEC_42](#SP_CTX_DEC_42), B″, рішення розробника «Окремий список з id (Recommended)»): запис при `session.append` з `handle`, видом і головою попередника, вікно копій від синхронного скидання на початку кожної гілки компактизації до `turn.start` чи промпту людини, список у `context_list`, `drop` з `host`; віртуальних рядків, WithHost, HOST_TARGET і HOST_GROUP немає; примітки до команд не записуються; DetachNote в результаті й звіті; запис прибирає фіксація того самого застосування; навичку інструмента `Skill` і [SP_CTX_DEC_02](./context_editor.sp.md#SP_CTX_DEC_02) названо. PersonRow — за DescribedText; тексти слота стану в [SP_CTX_02_69](#SP_CTX_02_69); коди збоїв `run state`; [SP_CTX_04_08](#SP_CTX_04_08) — `set` і `mark` позначеного пункту; промпт лише з медіа в [SP_CTX_05_08](#SP_CTX_05_08) |
+| 2026-10-15 | Рев'ю 2 (fail → виправлено): рядки хоста — окремий список з `id` ([SP_CTX_DEC_42](#SP_CTX_DEC_42), B″, рішення розробника «Окремий список з id (Recommended)»): запис при `session.append` з `handle`, видом і головою попередника, вікно копій від синхронного скидання на початку кожної гілки компактизації до `turn.start` чи промпту людини, список у `context_list`, `drop` з `host`; віртуальних рядків, WithHost, HOST_TARGET і HOST_GROUP немає; примітки до команд не записуються; DetachNote в результаті й звіті; запис прибирає фіксація того самого застосування; навичку інструмента `Skill` і [SP_CTX_DEC_02](./context_editor.decisions-01.sp.md#SP_CTX_DEC_02) названо. PersonRow — за DescribedText; тексти слота стану в [SP_CTX_02_69](#SP_CTX_02_69); коди збоїв `run state`; [SP_CTX_04_08](#SP_CTX_04_08) — `set` і `mark` позначеного пункту; промпт лише з медіа в [SP_CTX_05_08](#SP_CTX_05_08) |
 | 2026-10-15 | Живий зонд Q6: правило розміщення рядків хоста підтверджено; ворота «`uuid` = `handle`» знято, запасний якір із відбитків трьох рядків прибрано; після компактизації `lastVisible` порожній ([SP_CTX_02_60](#SP_CTX_02_60), [SP_CTX_05_07](#SP_CTX_05_07), [SP_CTX_DEC_42](#SP_CTX_DEC_42)) |
 | 2026-10-15 | Рев'ю 1 (fail → виправлено): рядки хоста записуються при `session.append` з якорем на попереднику і прибираються перебудовою попередника (Detach); спайк Q4 виправлено, додано Q6; DEC_42 — `proposed`. Описаний промпт лишається словами людини; `state` — шоста операція з винятками в 02_03, ScreenPinned і RebindTags, одна перебудова на пакет; ворота «Обгортка вставок»; ціль перевірки залежностей; місце рядка сліду; бюджет опису `context_edit`; відкат за фактичним розбором старішої версії; файл доставок — названий виняток |
 | 2026-10-15 | Initial version: курування історії за [C_CTX_06](./context_editor.curation.concept.md#C_CTX_06); рішення [SP_CTX_DEC_39](#SP_CTX_DEC_39)–[SP_CTX_DEC_43](#SP_CTX_DEC_43) з інтерв'ю специфікації; спайк [context_editor_hostrows](./context_editor_hostrows.spike.md) |

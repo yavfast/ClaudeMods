@@ -8,8 +8,8 @@
 ### Phase 3 — Теги [DONE]  {#PL_CTX_P3}
 
 **Depends on:** Phase 1 (виконується перед фазою 2, [PL_CTX_DEC_02](./context_editor.plan.md#PL_CTX_DEC_02))
-**Implements:** [SP_CTX_01_09](./context_editor.structures.sp.md#SP_CTX_01_09)–[01_11](./context_editor.structures.sp.md#SP_CTX_01_11), [02_11](./context_editor.tags.sp.md#SP_CTX_02_11)–[02_14](./context_editor.tags.sp.md#SP_CTX_02_14), заміни з тегів у [02_09](./context_editor.edits.sp.md#SP_CTX_02_09), перевірка `pin` у [02_03](./context_editor.edits.sp.md#SP_CTX_02_03) і [02_07](./context_editor.edits.sp.md#SP_CTX_02_07), теги в [02_01](./context_editor.edits.sp.md#SP_CTX_02_01); [C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04)
-**Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки PrepareEdits «pin», context_tag «помилки», AutoTag, QueueTagReplacements, Nudge «заміни достатньо», RebindTags; [SP_CTX_05_04](./context_editor.scenarios.sp.md#SP_CTX_05_04) рядки про теги; [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Автоматичне чищення з тегів», «Захист початкового завдання»
+**Implements:** [SP_CTX_01_09](./context_editor.structures.sp.md#SP_CTX_01_09)–[01_11](./context_editor.structures.sp.md#SP_CTX_01_11), [02_11](./context_editor.tags.sp.md#SP_CTX_02_11)–[02_14](./context_editor.tags.sp.md#SP_CTX_02_14), заміни з тегів у [02_09](./context_editor.edits.sp.md#SP_CTX_02_09), перевірка `pin` у [02_03](./context_editor.edits.sp.md#SP_CTX_02_03) і [02_07](./context_editor.apply.sp.md#SP_CTX_02_07), теги в [02_01](./context_editor.edits.sp.md#SP_CTX_02_01); [C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04)
+**Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки PrepareEdits «pin», context_tag «помилки», AutoTag, QueueTagReplacements, Nudge «заміни достатньо», RebindTags; [SP_CTX_05_04](./context_editor.edges.sp.md#SP_CTX_05_04) рядки про теги; [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Автоматичне чищення з тегів», «Захист початкового завдання»
 
 | Що | Де |
 |----|----|

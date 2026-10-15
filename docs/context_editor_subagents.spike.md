@@ -14,7 +14,7 @@
 
 ## Context
 
-Мод працює лише в основній розмові: виклики `context_*` із субагента відхиляються («a subagent's context cannot be edited; only the main conversation's»), посібник ([SP_CTX_DEC_36](./context_editor.sp.md#SP_CTX_DEC_36), фаза 33) приходить лише з `prompt.submit` основної розмови. Механізм застосування — `/compact` через `$.command.run` і власний обробник `session.compact`, — прив'язаний до сесії, а не до циклу агента. Розробник хоче, щоб мод працював і в субагентах; перед концептом треба знати, що дає хост.
+Мод працює лише в основній розмові: виклики `context_*` із субагента відхиляються («a subagent's context cannot be edited; only the main conversation's»), посібник ([SP_CTX_DEC_36](./context_editor.decisions-21.sp.md#SP_CTX_DEC_36), фаза 33) приходить лише з `prompt.submit` основної розмови. Механізм застосування — `/compact` через `$.command.run` і власний обробник `session.compact`, — прив'язаний до сесії, а не до циклу агента. Розробник хоче, щоб мод працював і в субагентах; перед концептом треба знати, що дає хост.
 
 ## Exploration Log
 

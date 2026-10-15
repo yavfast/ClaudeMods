@@ -8,7 +8,7 @@
 ### Phase 2 — Медіа в результатах інструментів [DONE]  {#PL_CTX_P2}
 
 **Depends on:** Phase 1; виконується після фаз 3 і 7 ([PL_CTX_DEC_02](./context_editor.plan.md#PL_CTX_DEC_02), [PL_CTX_DEC_03](./context_editor.plan.md#PL_CTX_DEC_03))
-**Implements:** [SP_CTX_01_08](./context_editor.structures.sp.md#SP_CTX_01_08), [SP_CTX_02_10](./context_editor.edits.sp.md#SP_CTX_02_10) для результатів інструментів, медіа-частини [02_04](./context_editor.edits.sp.md#SP_CTX_02_04), [02_05](./context_editor.edits.sp.md#SP_CTX_02_05), [02_07](./context_editor.edits.sp.md#SP_CTX_02_07); [C_CTX_DEC_06](./context_editor.core.concept.md#C_CTX_DEC_06)
+**Implements:** [SP_CTX_01_08](./context_editor.structures.sp.md#SP_CTX_01_08), [SP_CTX_02_10](./context_editor.apply.sp.md#SP_CTX_02_10) для результатів інструментів, медіа-частини [02_04](./context_editor.apply.sp.md#SP_CTX_02_04), [02_05](./context_editor.edits.sp.md#SP_CTX_02_05), [02_07](./context_editor.apply.sp.md#SP_CTX_02_07); [C_CTX_DEC_06](./context_editor.core.concept.md#C_CTX_DEC_06)
 **Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки CollectMedia, «незмінений рядок з медіа», «медіа не заархівовано», «медіа сусідньої пари», «вікно API», DropOwnCalls «спільний рядок» (модульні — є); [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Скриншот у результаті інструменту», «Документ у результаті інструменту», «Незмінене медіа» — плюс: медіа-файл в архіві відкривається інструментом читання і має права 0600
 
 Код і модульні тести вже є. Живі сценарії «Скриншот…», «Документ…», «Незмінене медіа» — pass (2026-10-09); тестові файли — `.dev_flow/cache/live-test/make-media.sh`. Припущення підтверджено наживо:

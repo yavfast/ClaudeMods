@@ -4,7 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
-- `/dev-flow resume task_C_CTX` — `implement` — фаза 39 (живі ворота) виконана: статус змісту знято за воротами (C_CTX_DEC_40, SP_CTX_DEC_44), обгортка вставок у тексті рядка, thinking `unobserved`; закомічено; далі — поділ великих файлів специфікації (queued, до фази 40), потім фаза 40 — 2026-10-15
+- `/dev-flow resume task_C_CTX` — `implement` — фаза 39 (живі ворота) виконана: статус змісту знято за воротами (C_CTX_DEC_40, SP_CTX_DEC_44), обгортка вставок у тексті рядка, thinking `unobserved`; закомічено; великі файли специфікації поділено за модулями (якорі ті самі); далі — фаза 40 (слова людини, піни, `describe` вставок) — 2026-10-15
 - `/dev-flow resume task_C_CTX` — `plan` — план курування історії: PL_CTX поділено по фазах (дочірні `context_editor.p<NN>.plan.md`), додано фази 39–46 і [PL_CTX_DEC_06](../docs/context_editor.plan.md#PL_CTX_DEC_06) (спершу живі ворота); закомічено; далі — поділ великих файлів специфікації (queued, до фази 40), потім `implement` фази 39 (живі ворота) — branch `feat/context-editor` — 2026-10-15
 - `/dev-flow resume task_C_CTX` також бере backlog рефакторингу CF-28…CF-53 ([план PL_AUD_CTX](audit/context-editor_20261011_182951.plan.md#PL_AUD_CTX_BACKLOG), кожен пункт з тригером)
 - `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog PL_CTX (ремонт після відновлення, згортання хвоста, `/compact` мода приписують людині, R2 доставок, спайк «підсумок рядком асистента», I, K); усі фази 1–23 закомічені (152f694) — branch `feat/context-editor` — 2026-10-11
@@ -23,4 +23,4 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Deferred (todos)
 
-_3 candidate · 2 queued · 0 contested — у [backlog PL_CTX](../docs/context_editor.plan.md#PL_CTX_BACKLOG): «Згода людини при першому використанні мода» (candidate), «Дані мода без слідів на диску» (candidate), «Навичка, відкрита інструментом `Skill`, зникає після застосування» (candidate), «Розділити план PL_CTX» — залишок (queued: довгі пункти backlog і `soft_split`), «Розділити великі файли специфікації SP_CTX» (queued, перед наступним суттєвим додаванням у них)_
+_3 candidate · 1 queued · 0 contested — у [backlog PL_CTX](../docs/context_editor.plan.md#PL_CTX_BACKLOG): «Згода людини при першому використанні мода» (candidate), «Дані мода без слідів на диску» (candidate), «Навичка, відкрита інструментом `Skill`, зникає після застосування» (candidate), «Розділити план PL_CTX» — залишок (queued: довгі пункти backlog і `soft_split`)_

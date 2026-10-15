@@ -8,7 +8,7 @@
 ### Phase 34 — Результати субагентів [DONE]  {#PL_CTX_P34}
 
 **Depends on:** спайк [context_editor_subagents](./context_editor_subagents.spike.md); Phase 20 (хук `session.append`, AppendRow).
-**Implements:** [C_CTX_DEC_27](./context_editor.methods.concept.md#C_CTX_DEC_27), [C_CTX_03_09](./context_editor.methods.concept.md#C_CTX_03_09); [SP_CTX_02_49](./context_editor.subagents.sp.md#SP_CTX_02_49) ShapeSubagentResult; [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) (архіви субагентів), [SP_CTX_01_12](./context_editor.structures.sp.md#SP_CTX_01_12) (SUB_CUT_AT, SUB_HEAD, SUB_TAIL, SUB_ID).
+**Implements:** [C_CTX_DEC_27](./context_editor.methods.concept.md#C_CTX_DEC_27), [C_CTX_03_09](./context_editor.methods.concept.md#C_CTX_03_09); [SP_CTX_02_49](./context_editor.subagents.sp.md#SP_CTX_02_49) ShapeSubagentResult; [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07) (архіви субагентів), [SP_CTX_01_12](./context_editor.constants.sp.md#SP_CTX_01_12) (SUB_CUT_AT, SUB_HEAD, SUB_TAIL, SUB_ID).
 **Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки ShapeSubagentResult; інваріант 05_02 «Основна розмова не обрізається»; живий сценарій 05_03 «Результати субагента» (stream-json, haiku).
 
 | Що | Де |

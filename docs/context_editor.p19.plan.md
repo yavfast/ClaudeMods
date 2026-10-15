@@ -7,8 +7,8 @@
 
 ### Phase 19 — Хто написав заміну (F1 фази 18) [DONE]  {#PL_CTX_P19}
 
-**Depends on:** Phase 18; [SP_CTX_DEC_17](./context_editor.sp.md#SP_CTX_DEC_17) — A′, рішення розробника 2026-10-11; пункт backlog «Агент не впізнає власних підсумків» (живий прогін фази 18, F1, `.dev_flow/cache/live-test/phase18-results.md`)
-**Implements:** [SP_CTX_02_04](./context_editor.edits.sp.md#SP_CTX_02_04) (тексти замін з автором і часом: `you read the full output here, then replaced it with your summary`, `you read these <n> rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`), [01_12](./context_editor.structures.sp.md#SP_CTX_01_12) (MARK — розпізнавання лише за префіксом)
+**Depends on:** Phase 18; [SP_CTX_DEC_17](./context_editor.decisions-01.sp.md#SP_CTX_DEC_17) — A′, рішення розробника 2026-10-11; пункт backlog «Агент не впізнає власних підсумків» (живий прогін фази 18, F1, `.dev_flow/cache/live-test/phase18-results.md`)
+**Implements:** [SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04) (тексти замін з автором і часом: `you read the full output here, then replaced it with your summary`, `you read these <n> rows, then collapsed them into your note`, `you rewrote this row`, `you saw the media here, then replaced it with your description`), [01_12](./context_editor.constants.sp.md#SP_CTX_01_12) (MARK — розпізнавання лише за префіксом)
 **Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки ApplyEdits «хто написав заміну», QueueTagReplacements «заміна з тегу називає автора», наявні рядки з текстами замін (NowIndex, RebindTags зі слотом стану, describe) з новими словами; EDIT_DESCRIPTION, SKILL.md і INTRO_TEXT не змінюються; `claude plugin test`, `claude plugin validate`, tsc; живий сценарій [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Хто написав підсумки» (stream-json, драйвер фази 18, haiku). Не пройде — спайк «підсумок власним рядком асистента після заглушки результату» (backlog)
 
 | Що | Де |
@@ -19,7 +19,7 @@
 
 Стан 2026-10-11: код і модульні тести готові (436 тестів після фази 19; тексти — константи `SUMMARIZED`, `REWRITTEN`, `DESCRIBED`, `collapsedWords` у `edits.ts`); живий сценарій — далі. EDIT_DESCRIPTION, SKILL.md і INTRO_TEXT не змінено.
 
-P16 (читання через `Bash`) у фазу не входить: [SP_CTX_DEC_18](./context_editor.sp.md#SP_CTX_DEC_18) = A, лише спостерігати (пункт backlog нижче).
+P16 (читання через `Bash`) у фазу не входить: [SP_CTX_DEC_18](./context_editor.decisions-01.sp.md#SP_CTX_DEC_18) = A, лише спостерігати (пункт backlog нижче).
 
 ## Changelog
 

@@ -6,7 +6,7 @@
 > **Updated:** 2026-10-14
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
-> §02 Contracts 02_53–02_57 специфікації [SP_CTX](./context_editor.sp.md): можливості хоста, від яких залежить мод, їх перевірка процесом-зондом раз на версію хоста і живими ознаками, і що мод вимикає, коли хост пропускає його хуки ([C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38); спайк [context_editor_probe](./context_editor_probe.spike.md)). Читати перед зміною `hooks/capabilities.ts`, хуків `prompt.attachment`, `session.start`, `turn.complete`, `command.run`, `session.compact` чи перевірок перед компактизацією мода.
+> §02 Contracts 02_53–02_57 специфікації [SP_CTX](./context_editor.sp.md): можливості хоста, від яких залежить мод, їх перевірка процесом-зондом раз на версію хоста і живими ознаками, і що мод вимикає, коли хост пропускає його хуки ([C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38); спайк [context_editor_probe](./context_editor_probe.spike.md)). Читати перед зміною `hooks/capabilities.ts`, хуків `prompt.attachment`, `session.start`, `turn.complete`, `command.run`, `session.compact` чи перевірок перед компактизацією мода.
 
 ## Contents
 
@@ -29,7 +29,7 @@ Purpose: для кожної можливості хоста, від якої з
 | `compact` | хук `session.compact` мода отримує власну компактизацію мода (`$.command.run` з міткою) | застосування черги (Flush), передача, ремонт, хід стискання `/compact` людини |
 | `attachments` | хук `prompt.attachment` мода викликається | відповіді про застарілі копії інструкцій і переліки навичок ([SP_CTX_02_39](./context_editor.hostattach.sp.md#SP_CTX_02_39)) |
 
-Логіка — чисті функції `hooks/capabilities.ts` (Verdict, Merge, NoteAttachment, NoteTurn, NoteOwnCompaction, NoteCommandUnseen, PassedText) за портом CapabilityIO; стан — пам'ять модуля `Capabilities` ([SP_CTX_01_25](./context_editor.structures.sp.md#SP_CTX_01_25)), один на процес хоста (хуки пропускає процес, а не сесія), і файл кешу `capabilities.json` ([SP_CTX_01_26](./context_editor.structures.sp.md#SP_CTX_01_26)). Зв'язування в `register.ts`: хук `prompt.attachment` без матчера (один на модуль; лише рахує і передає `next(e)` без змін, відповіді за типами не змінюються), крок NoteTurn першим у AfterTurn ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)), версія хоста — `$.session.version()` один раз на екземпляр (валідатор вимагає виклику на місці).
+Логіка — чисті функції `hooks/capabilities.ts` (Verdict, Merge, NoteAttachment, NoteTurn, NoteOwnCompaction, NoteCommandUnseen, PassedText) за портом CapabilityIO; стан — пам'ять модуля `Capabilities` ([SP_CTX_01_25](./context_editor.records.sp.md#SP_CTX_01_25)), один на процес хоста (хуки пропускає процес, а не сесія), і файл кешу `capabilities.json` ([SP_CTX_01_26](./context_editor.records.sp.md#SP_CTX_01_26)). Зв'язування в `register.ts`: хук `prompt.attachment` без матчера (один на модуль; лише рахує і передає `next(e)` без змін, відповіді за типами не змінюються), крок NoteTurn першим у AfterTurn ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)), версія хоста — `$.session.version()` один раз на екземпляр (валідатор вимагає виклику на місці).
 
 Джерела вердикту, від сильнішого: живі ознаки цього процесу (`live`) → результат зонда цього процесу (`probe`) → кеш за версією хоста (`cache`). Сильніше джерело переважає слабше для тієї самої можливості.
 
@@ -76,10 +76,10 @@ Purpose: при `Verdict(compact) = passed` мод не запускає жод�
 | `context_handoff` ([SP_CTX_02_19](./context_editor.handoff.sp.md#SP_CTX_02_19)) | відмова; запиту немає | DENIED_PASSED_OVER: `this host passes over the mod's compaction hook, so the handoff cannot seed a new session; nothing was queued.` |
 | `/handoff` ([SP_CTX_02_20](./context_editor.handoff.sp.md#SP_CTX_02_20)) | відмова; `cancel` працює як завжди | `handoff is off: this host passes over the mod's compaction hook (see the ClaudeMods README, section "Managed plugin")` |
 | RunHandoff ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)) | запит, поставлений до вердикту, не запускається: стан `done` зі звітом HANDOFF_PASSED_OVER | `context-editor: handoff not run: this host passes over the mod's compaction hook.` |
-| Flush ([SP_CTX_02_06](./context_editor.edits.sp.md#SP_CTX_02_06)) | не планується; запланований раніше — команди немає (FLUSH_PASSED_OVER), правки лишаються; запит ходу стискання, записаний до вердикту, знімається (його хід зустрів би лише відмови) | рядка немає: людина вже бачила PassedText |
+| Flush ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)) | не планується; запланований раніше — команди немає (FLUSH_PASSED_OVER), правки лишаються; запит ходу стискання, записаний до вердикту, знімається (його хід зустрів би лише відмови) | рядка немає: людина вже бачила PassedText |
 | RunRepair ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)) | команди немає | — |
 | `/compact` людини ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) | маршрут `brief`: підсумок хоста з CompactBrief ([SP_CTX_02_55](#SP_CTX_02_55)) | — |
-| DeliverReport ([SP_CTX_02_08](./context_editor.edits.sp.md#SP_CTX_02_08)), підказка ([SP_CTX_02_37](./context_editor.stages.sp.md#SP_CTX_02_37)) | WaitingAdvice і `[context-editor: suggestion]` не додаються: вони радять інструмент, який відмовить | — |
+| DeliverReport ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)), підказка ([SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37)) | WaitingAdvice і `[context-editor: suggestion]` не додаються: вони радять інструмент, який відмовить | — |
 | BlockReport ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) | замість STAGE_ADVICE — PASSED_ADVICE; речення про заміни з тегів `disposable` каже, що їх несе бриф `/compact`, а не застосування | `Compression is off on this host (context_edit refuses: the host passes over the mod's compaction hook); keep working.` |
 
 Інструменти перегляду, теги, етапи, нотатки й мітка працюють як завжди. Ремонт після відновлення планується з кінця першого ходу основної розмови в процесі, а не з `session.start`: тоді результат зонда чи кешу вже є, а ремонт на вердикті `unknown` першим запустив би справжній підсумок ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), (д)). Ремонт до першого промпту (stream-json) перестає діяти: перший хід після відновлення йде з дублікатами завантажувача, як уже було в терміналі, коли людина встигала надіслати промпт.
@@ -95,7 +95,7 @@ Errors:
 
 > **Criticality:** normal
 
-Purpose: голий `/compact` людини при `compact = passed` — підсумок хоста за інструкціями мода ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), (г) C, рішення розробника «Ok»), і після нього — те, що робив би спостерігач іншої компактизації ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)), якого хост мода не викликає ([SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38) (б)).
+Purpose: голий `/compact` людини при `compact = passed` — підсумок хоста за інструкціями мода ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), (г) C, рішення розробника «Ok»), і після нього — те, що робив би спостерігач іншої компактизації ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)), якого хост мода не викликає ([SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38) (б)).
 
 Логіка — чисті функції `hooks/capabilities.ts` (CompactBrief, ObservePassedCompact) за портом PassedCompactIO; зв'язування — хук `command.run` на `compact` у `register.ts` (той самий, що PersonCompact): маршрут `agent` при `compact = passed` стає `brief`.
 
@@ -135,7 +135,7 @@ Input: рядки основної розмови (CurrentRows), реєстр т
         queue: edits = [] (their summaries went into the brief); keepCache, resume, resumePrompt cleared   # QUEUE_BRIEFED
         attachments: the answers go (SP_CTX_02_41)
 
-Коли читання після компактизації не продовжує читання до неї, межа не пишеться (OBSERVE_NO_PREFIX): у цьому процесі перелік показує й рядки до підсумку, до наступного процесу; припущення перевіряє живий сценарій «/compact при обході» ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)). Автоматична компактизація хоста при `compact = passed` не видна моду зовсім: та сама межа процесу, прийняте обмеження ([SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38) (б)). `/compact <інструкції>` людини і `/compact host` ідуть до хоста без змін і без ObservePassedCompact.
+Коли читання після компактизації не продовжує читання до неї, межа не пишеться (OBSERVE_NO_PREFIX): у цьому процесі перелік показує й рядки до підсумку, до наступного процесу; припущення перевіряє живий сценарій «/compact при обході» ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)). Автоматична компактизація хоста при `compact = passed` не видна моду зовсім: та сама межа процесу, прийняте обмеження ([SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38) (б)). `/compact <інструкції>` людини і `/compact host` ідуть до хоста без змін і без ObservePassedCompact.
 
 Errors:
 | Code | Condition | Guidance |
@@ -211,7 +211,7 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лише
 
 | Date | Change |
 |------|--------|
-| 2026-10-14 | Створено: PassedOver, дії при обході, CompactBrief і ObservePassedCompact ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.sp.md#SP_CTX_DEC_38)) |
+| 2026-10-14 | Створено: PassedOver, дії при обході, CompactBrief і ObservePassedCompact ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38)) |
 | 2026-10-14 | Перевірка можливостей процесом-зондом раз на версію хоста замість межі версії (рішення розробника, [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31) (а) D): 02_53 Capabilities (живі ознаки, зонд, кеш), 02_56 RunProbe, 02_57 ProbeMode; `hooks/bypass.ts` → `hooks/capabilities.ts` |
 | 2026-10-14 | Код фази 38: Fit тримає BRIEF_HEAD і BRIEF_RECORDS; ProbeMode не реєструє інструментів; NoteCommandUnseen за лічильником `ownSeen`; Flush при обході знімає запит ходу стискання |
 | 2026-10-14 | Рев'ю фази 38: NeedsProbe (запис без вердикту зонда — новий зонд), HostBinary, NotePassCompaction і `passSeen`, рядок людині для кожної можливості, ObservePassedCompact лише з рядком підсумку хоста і з очищенням відповідей про вкладення, заміни з тегів при обході |
