@@ -30,7 +30,7 @@ import {
   responses,
   responseStart,
   ROW_WINDOW,
-  SUMMARIZED,
+  SUMMARIZED_OF,
   REWRITTEN,
   applyLine,
   estimate,
@@ -40,6 +40,9 @@ import {
   collapsedWords,
   COLLAPSED_KEY,
   keyArg,
+  MAX_SOURCE,
+  sourceOf,
+  type QueuedEdit,
   oneLine,
   MAX_COLLAPSED_ARG,
   MAX_COLLAPSED_LIST,
@@ -84,7 +87,7 @@ test('summarize rebuilds the pair under one fresh id and drops the copied result
   expect(id.startsWith('a_ce')).toBe(true)
   expect(out[2]!.toolUses[0]!.text).toBeUndefined()
   expect(out[3]!.toolResults![0]!.tool_use_id).toBe(id)
-  expect(out[3]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
+  expect(out[3]!.toolResults![0]!.text.startsWith(SUMMARIZED_OF)).toBe(true)
   expect(out[3]!.toolResults![0]!.text).toContain('found A')
   expect(out[0]!.handle).toBe('h0')
   // the text row before the rebuilt call, in the same stretch, is rebuilt too
@@ -603,6 +606,62 @@ test('KeyArg — at most MAX_COLLAPSED_ARG chars: file base name, quoted pattern
   expect(keyArg({ description: 'd'.repeat(100) }).length).toBe(MAX_COLLAPSED_ARG)
 })
 
+// [SP_CTX_01_28] phase 41: Source from the call's input only
+test('SourceOf — джерело заміни: a file path relative to cwd inside it, absolute outside; a quoted one-line command, pattern, query or description; a URL without userinfo, query and fragment; another tool by KeyArg; at most MAX_SOURCE chars', async () => {
+  const cwd = '/home/u/proj'
+  expect(sourceOf('Read', { file_path: '/home/u/proj/docs/x.md' }, cwd)).toBe('Read docs/x.md')
+  expect(sourceOf('Read', { file_path: '/etc/hosts' }, cwd)).toBe('Read /etc/hosts')
+  expect(sourceOf('Read', { file_path: '/home/u/project2/a.md' }, cwd)).toBe('Read /home/u/project2/a.md')
+  expect(sourceOf('Edit', { file_path: '/home/u/proj/a.ts' }, `${cwd}/`)).toBe('Edit a.ts')
+  expect(sourceOf('Write', { file_path: '/home/u/proj/a.ts' })).toBe('Write /home/u/proj/a.ts')
+  expect(sourceOf('NotebookEdit', { notebook_path: '/home/u/proj/n.ipynb' }, cwd)).toBe('NotebookEdit n.ipynb')
+  expect(sourceOf('Bash', { command: 'cd x &&\n  ls  -la' })).toBe('Bash "cd x && ls -la"')
+  expect(sourceOf('Grep', { pattern: 'KEY_[0-9]+', path: '/home/u/proj/hooks' }, cwd)).toBe('Grep "KEY_[0-9]+" in hooks')
+  expect(sourceOf('Grep', { pattern: 'x' })).toBe('Grep "x"')
+  // a trailing slash on either side; the cwd itself is "."; a cwd of "/" names no project
+  expect(sourceOf('Grep', { pattern: 'x', path: '/home/u/proj/' }, cwd)).toBe('Grep "x" in .')
+  expect(sourceOf('Read', { file_path: '/home/u/proj' }, `${cwd}/`)).toBe('Read .')
+  expect(sourceOf('Grep', { pattern: 'x', path: '/home/u/proj/hooks/' }, cwd)).toBe('Grep "x" in hooks')
+  expect(sourceOf('Read', { file_path: '/etc/hosts' }, '/')).toBe('Read /etc/hosts')
+  // a collapse carrier names the rows it stands for
+  expect(sourceOf('Read', { collapsed: 'Read a.md ×2; Bash ls' })).toBe('collapsed rows (Read a.md ×2; Bash ls)')
+  expect(sourceOf('Glob', { pattern: '**/*.md', path: '/a' })).toBe('Glob "**/*.md"')
+  expect(sourceOf('WebFetch', { url: 'https://user:secret@docs.example.com/a/b?token=t#frag' })).toBe('WebFetch docs.example.com/a/b')
+  expect(sourceOf('WebFetch', { url: 'https://u:p@ss@host.example/a' })).toBe('WebFetch host.example/a')
+  expect(sourceOf('WebSearch', { query: 'claude code hooks' })).toBe('WebSearch "claude code hooks"')
+  expect(sourceOf('Agent', { description: 'find the bug', prompt: 'long' })).toBe('subagent "find the bug"')
+  expect(sourceOf('Task', { description: 'scan' })).toBe('subagent "scan"')
+  expect(sourceOf('mcp__x__fetch', { url: 'https://h.example/p' })).toBe('mcp__x__fetch h.example')
+  expect(sourceOf('TodoWrite', { todos: [] })).toBe('TodoWrite')
+  expect(sourceOf('Read', {})).toBe('Read')
+  expect(sourceOf('Bash', undefined)).toBe('Bash')
+  // the cap keeps the closing quote; a path is cut with …
+  const long = sourceOf('Bash', { command: 'echo ' + 'y'.repeat(300) })
+  expect(long.length).toBe(MAX_SOURCE)
+  expect(long.endsWith('…"')).toBe(true)
+  const deep = sourceOf('Read', { file_path: '/x/' + 'd'.repeat(300) })
+  expect(deep.length).toBe(MAX_SOURCE)
+  expect(deep.endsWith('…')).toBe(true)
+  const grep = sourceOf('Grep', { pattern: 'p'.repeat(300), path: '/q/' + 'r'.repeat(300) })
+  expect(grep.length).toBeLessThanOrEqual(MAX_SOURCE)
+  expect(grep).toContain('" in /q/')
+  // a short pattern leaves its room to the path
+  expect(sourceOf('Grep', { pattern: 'p', path: '/q/' + 'r'.repeat(300) }).length).toBe(MAX_SOURCE)
+})
+
+// [SP_CTX_02_62] [SP_CTX_05_05] phase 41: the summarize opener with the source
+test('ApplyEdits — summarize з джерелом: Read docs/x.md under cwd gives the opener of §05_05; no cwd: the absolute path', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'h0' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: { file_path: '/p/docs/x.md' } }], handle: 'h1' },
+    result('a', 'the file', 'h2'),
+  ]
+  const edits: QueuedEdit[] = [{ op: 'summarize', tool_use_id: 'a', summary: 'x holds K' }]
+  const out = applyEdits(input, edits, '/s/1.json', new Map(), new Set(), { cwd: '/p' })
+  expect(out.rows[2]!.toolResults![0]!.text.startsWith('Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here with your own summary (original:')).toBe(true)
+  expect(applyEdits(input, edits, '/s/1.json').rows[2]!.toolResults![0]!.text).toContain('of Read /p/docs/x.md you had read here')
+})
+
 test('oneLine — a cut never splits a surrogate pair: an emoji right at the boundary goes whole, no lone surrogate stays', async () => {
   const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
   // the emoji's high surrogate is the 40th code unit
@@ -967,8 +1026,8 @@ test('ApplyEdits — хто написав заміну: each replacement opens 
   expect(out.report.applied.length).toBe(3)
   const note = ' (original: /s/1.json, open with Read): '
   expect(out.rows[1]!.text).toBe(`Later, your context_edit rewrite call replaced the text of this row with your own rewrite${note}right`)
-  expect(out.rows[3]!.toolResults![0]!.text).toBe(`${SUMMARIZED}${note}A holds K`)
-  expect(SUMMARIZED).toBe('Later, your context_edit summarize call replaced the full output you had read here with your own summary')
+  expect(out.rows[3]!.toolResults![0]!.text).toBe(`${SUMMARIZED_OF}Read you had read here with your own summary${note}A holds K`)
+  expect(SUMMARIZED_OF).toBe('Later, your context_edit summarize call replaced the full output of ')
   expect(out.rows[5]!.toolResults![0]!.text).toBe(`Later, your context_edit collapse call replaced these 4 rows you had read (Read ×2) with your own note${note}B and C`)
   for (const t of [out.rows[1]!.text, out.rows[3]!.toolResults![0]!.text, out.rows[5]!.toolResults![0]!.text]) expect(t.startsWith(MARK)).toBe(false)
   // the listing still flags every replaced row (isReplacementText)
@@ -1078,7 +1137,7 @@ test('FrozenPrefix — неглибока правка: rows before the response
   // the response of the edit is rebuilt: its thinking row went, the pair has the fresh id
   expect(out.rows[10]!.handle).toBeUndefined()
   expect(out.rows[10]!.toolUses[0]!.tool_use_id.startsWith('c_ce')).toBe(true)
-  expect(out.rows[11]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
+  expect(out.rows[11]!.toolResults![0]!.text.startsWith(SUMMARIZED_OF)).toBe(true)
   expect(out.rows[12]!.handle).toBeUndefined()
   expect(out.rows.length).toBe(13)
   // DropOwnCalls keeps the own pair of the frozen prefix

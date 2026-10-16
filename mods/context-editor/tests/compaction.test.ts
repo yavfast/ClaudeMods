@@ -32,7 +32,7 @@ import {
   type BoundaryMemory,
   type QueuedEdit,
 } from '../hooks/edits'
-import { isReplacementText, markerKind, pulledWords, REPAIR_MARKER, REWRITTEN, SUMMARIZED, totalChars } from '../hooks/rows'
+import { isReplacementText, markerKind, pulledWords, REPAIR_MARKER, REWRITTEN, SUMMARIZED_OF, totalChars } from '../hooks/rows'
 import type { Pulled } from '../hooks/repair'
 import { COMMAND_NOTE, EMPTY_QUEUE, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, withCommandNote, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
@@ -86,6 +86,15 @@ test('HandleCompaction — архів у каталозі архівів: the ar
   expect(out.messages.at(-1)!.toolResults![0]!.text).toContain('(original: /p/.claude/context-editor/s/1000.json, open with Read)')
   expect(written.queue!.edits).toEqual([])
   expect(written.journal).toEqual([expect.objectContaining({ kind: 'apply', archive: '/p/.claude/context-editor/s/1000.json' })])
+})
+
+// [SP_CTX_01_28] phase 41: CompactionIO.cwd reaches ApplyEdits
+test('HandleCompaction — джерело заміни: io.cwd makes the summarize name the file by its relative path', async () => {
+  const rows = conversation().map(r => ({ ...r, toolUses: r.toolUses.map(u => (u.tool_use_id === 'a' ? { ...u, input: { file_path: '/p/docs/x.md' } } : u)) }))
+  const { io } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), { cwd: '/p' })
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(out.messages.at(-1)!.toolResults![0]!.text.startsWith(`${SUMMARIZED_OF}Read docs/x.md you had read here with your own summary`)).toBe(true)
 })
 
 test('a batch that changes nothing leaves the boundary as it was', async () => {
@@ -597,7 +606,7 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
   if (!('messages' in out)) throw new Error(out.skip)
   // two own pairs went: the rewritten row is #3, the summarized result #2
   expect(out.messages[3]!.text).toContain(REWRITTEN)
-  expect(out.messages[2]!.toolResults![0]!.text).toContain(SUMMARIZED)
+  expect(out.messages[2]!.toolResults![0]!.text).toContain(SUMMARIZED_OF)
   expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #3); summarize a (now #2).')
   // the stage marks still follow the edits matched by their plain descriptions
   expect(written.tags).toBeDefined()
@@ -888,7 +897,7 @@ test('HandleCompaction — заморожений префікс (keep_cache): t
   expect(out.messages.some(r => r.text === REPORTED)).toBe(false)
   // from the response of b on: its thinking went, the pair rebuilt, the delivery behind b inserted, the final text rebuilt
   expect(out.messages[7]!.toolUses[0]!.tool_use_id.startsWith('b_ce')).toBe(true)
-  expect(out.messages[8]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
+  expect(out.messages[8]!.toolResults![0]!.text.startsWith(SUMMARIZED_OF)).toBe(true)
   expect(out.messages[9]!.text).toBe(DELIVERED)
   expect(out.messages[10]!.text).toBe('done')
   expect(out.messages[10]!.handle).toBeUndefined()

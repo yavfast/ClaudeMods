@@ -191,6 +191,8 @@ export type SeedInput = {
   tags: Read<TagRegistry>
   folder: string
   archive: string
+  // [SP_CTX_01_28] the session's working directory (SourceOf)
+  cwd?: string
   writeMedia: (path: string, base64: string) => Promise<boolean>
   // [SP_CTX_01_22] the old session's recorded deliveries; absent: none
   deliveries?: Read<Deliveries>
@@ -338,7 +340,7 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
 
   // every medium an edit replaces lies in a file and no seeded row keeps a
   // handle, so ApplyEdits needs no media owners
-  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia: unmatched, apiTruncated })
+  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia: unmatched, apiTruncated, ...(input.cwd ? { cwd: input.cwd } : {}) })
   const report = applied.report
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
@@ -523,6 +525,8 @@ export type HandoffIO = {
   // [SP_CTX_01_07] ArchiveRoot of a storage folder: where the seed's archive
   // and media go (the folder itself when the project has none)
   archives: (dir: string) => Promise<string>
+  // [SP_CTX_01_28] the session's working directory (SourceOf); none: absolute paths
+  cwd?: () => Promise<string | undefined>
   writeMedia: (path: string, base64: string) => Promise<boolean>
   // owner-only, through a host command (no 4 MiB limit), parents made
   writeText: (path: string, text: string) => Promise<boolean>
@@ -710,7 +714,8 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
     const tags = await io.readTags(run.oldDir)
     const deliveries = io.readDeliveries ? await io.readDeliveries(run.oldDir).catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
     const pulled = io.readLedger ? await io.readLedger(run.oldDir).catch(() => undefined) : undefined
-    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder: media, archive, writeMedia: io.writeMedia, deliveries, ...(pulled ? { pulled } : {}) })
+    const cwd = io.cwd ? await io.cwd().catch(() => undefined) : undefined
+    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder: media, archive, writeMedia: io.writeMedia, deliveries, ...(pulled ? { pulled } : {}), ...(cwd ? { cwd } : {}) })
     if ('refuse' in built) {
       await clean(false)
       return { reason: built.reason }

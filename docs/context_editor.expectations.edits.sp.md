@@ -205,7 +205,7 @@
 | DeliverReport | дописаний звіт | під час входу промпту дописано новий звіт | видалено лише доставлений текст [тест: «Flush: a report appended while the prompt went in stays»; «withoutReport removes only the delivered text»] |
 | Flush | відправка відхилена | `submit` падає або повертає `drop` | `lastSubmittedReportId` не змінюється; звіт лишається в черзі; попередження; наступний промпт людини отримує звіт через DeliverReport |
 | Flush | хост відмовляє | `compact` падає з текстом T | одна спроба, без очікувань; черга лишається; рядок стану містить T |
-| ApplyEdits | хто написав заміну (фаза 19; фаза 28 — A″) | summarize, collapse, rewrite одним пакетом | тексти починаються з `Later, your context_edit summarize call replaced the full output you had read here with your own summary`, `Later, your context_edit collapse call replaced these 4 rows you had read (Read ×2) with your own note`, `Later, your context_edit rewrite call replaced the text of this row with your own rewrite`, жоден не має MARK; позначка `*` переліку їх розпізнає (ReplacementText) [тест: «ApplyEdits — хто написав заміну»] |
+| ApplyEdits | хто написав заміну (фаза 19; фаза 28 — A″) | summarize, collapse, rewrite одним пакетом | тексти починаються з `Later, your context_edit summarize call replaced the full output of Read you had read here with your own summary` (з фази 41 — з джерелом, [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62)), `Later, your context_edit collapse call replaced these 4 rows you had read (Read ×2) with your own note`, `Later, your context_edit rewrite call replaced the text of this row with your own rewrite`, жоден не має MARK; позначка `*` переліку їх розпізнає (ReplacementText) [тест: «ApplyEdits — хто написав заміну»] |
 | PersonDelivered | паралельні результати | якір — рядок з результатами a і b; `drop a` / `drop` обох | без попередження / з попередженням |
 | HandleCompaction | доставка за службовим викликом | доставка за результатом `context_list`; summarize іншої пари | DropOwnCalls прибрав пару `context_list`, рядок доставки стоїть після попереднього рядка відповіді; кожен виклик має результат |
 | HandleCompaction | звіт і розмір з доставками | одна доставка вставлена, одна пішла разом з якорем, прибраним `drop` | звіт закінчується ` Messages delivered during your tool calls: 1 now stand as rows, 1 went with the rows your edits replaced.`; `charsAfter` без тексту вставленої; NowIndex рахує вставлений рядок |
@@ -237,4 +237,5 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-16 | Фаза 41: рядок «хто написав заміну» — відкривач `summarize` з джерелом |
 | 2026-10-15 | Рядки §05_01 перенесено дослівно з [context_editor.expectations.sp.md](./context_editor.expectations.sp.md): поділ таблиці за модулями (structural-event) |

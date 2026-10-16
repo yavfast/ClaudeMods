@@ -892,6 +892,7 @@ function handoffIO($: EngineInterface): HandoffIO {
     listSeeds: async dir =>
       parseSeedNames((await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])).stdout),
     archives: dir => archivesOf($, dir),
+    cwd: () => $.session.cwd(),
     writeMedia: (path, data) => writeMedia($, path, data),
     writeText: (path, text) => writeText($, path, text),
     remove: async path => {
@@ -1495,11 +1496,13 @@ export const register: Register = on => {
     let line: string | undefined
     const s = stores($, dir)
     const archives = await archivesOf($, dir)
+    const cwd = await $.session.cwd().catch(() => undefined)
     const outcome = await s.queue.onChain(async q => {
       const done = await handleCompaction(
         {
           dir,
           archives,
+          ...(cwd ? { cwd } : {}),
           now: () => Date.now(),
           readQueue: s.queue.read,
           writeQueue: s.queue.write,

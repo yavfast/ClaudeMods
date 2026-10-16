@@ -128,7 +128,7 @@
 | EnsureStorage | робота почата в сесії A | каталог A отримано, потім `/clear` | усі читання й записи цієї роботи — у каталозі A; нічого в `<cwd>/undefined/` і в каталозі нової сесії [live only: the unit test was tautological and was removed (PL_AUD_CTX phase 1); the live run .dev_flow/cache/live-test/audit-p1-results.md is the evidence] |
 | PrepareStorage | сесію покинуто під час підготовки | підготовка B, а сесія тим часом — C | B нічого не публікує; наступна операція готує C |
 | PrepareStorage | обробник компактизації приєднується | підготовка поза компактизацією чекає непрочитаний `hostId` | крок межі закінчує очікування: `hostId` відсутній, `host` межі лишається |
-| QueueTagReplacements | заміна з тегу називає автора (фаза 19; фаза 28 — `via: 'tag'`) | теги `disposable` на пару і на рядок, закриття етапу, застосування; ті самі правки без `via` | у черзі кожна правка з `via: 'tag'`; тексти — `Later, your context_tag disposable tag replaced the full output you had read here with your own note (original: …): <note>` і `Later, your context_tag disposable tag replaced the text of this row with your own note (original: …): <note>`; без `via` — тексти `context_edit` (SUMMARIZED, REWRITTEN); обидва — ReplacementText |
+| QueueTagReplacements | заміна з тегу називає автора (фаза 19; фаза 28 — `via: 'tag'`) | теги `disposable` на пару і на рядок, закриття етапу, застосування; ті самі правки без `via` | у черзі кожна правка з `via: 'tag'`; тексти — `Later, your context_tag disposable tag replaced the full output of Read you had read here with your own note (original: …): <note>` (з фази 41 — з джерелом) і `Later, your context_tag disposable tag replaced the text of this row with your own note (original: …): <note>`; без `via` — тексти `context_edit` (SUMMARIZED_OF, REWRITTEN); обидва — ReplacementText |
 | PruneDeadTags | чужа компактизація | реєстр: `pin` на рядку і `review big` на парі `a`, яких немає в `result.messages`; `review search` на парі `b`, що є; `state` на зниклому рядку; `disposable` діапазону, обидва кінці якого є; `lastApply` є | лишаються `review search` `b`, `state` і `disposable`; `lastApply` знято; один запис реєстру на ланцюжку `tags` |
 | PruneDeadTags | нічого прибирати | усі цілі є в `result.messages`, `lastApply` немає / `result` — `skip` / `agentId` / MarkerKind в інструкціях / `trigger = precompute` | реєстр не записується / спостерігач реєстру не чіпає |
 | AutoTag | повний реєстр | 1000 тегів; результат `Grep`; результат Read 5000 символів | тегу немає, реєстр не записується (як до фази 30; агенту каже телеметрія) |
@@ -141,4 +141,5 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-16 | Фаза 41: рядок «заміна з тегу називає автора» — відкривач з джерелом, без `via` — SUMMARIZED_OF |
 | 2026-10-15 | Рядки §05_01 перенесено дослівно з [context_editor.expectations.sp.md](./context_editor.expectations.sp.md): поділ таблиці за модулями (structural-event) |

@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, TAG_REWRITTEN, TAG_SUMMARIZED, touchedBy, type QueuedEdit } from '../hooks/edits'
+import { applyEdits, describeEdit, dropOwnCallsCounted, fingerprint, listRows, MAX_QUEUE_EDITS, prepare, REWRITTEN, STATE_SLOT, SUMMARIZED, SUMMARIZED_OF, TAG_REWRITTEN, TAG_SUMMARIZED_OF, touchedBy, type QueuedEdit } from '../hooks/edits'
 import { BIG_ROW, DOCUMENT_FRAME, isReplacementText } from '../hooks/rows'
 import { insertDeliveries } from '../hooks/deliveries'
 import { EMPTY_QUEUE, MAX_QUEUE_BYTES, queueEdits, type Queue } from '../hooks/queue'
@@ -422,6 +422,20 @@ const disposables = reg([
   { kind: 'disposable', target: { tool_use_id: 'gone' }, note: 'x', created_turn: 0 },
 ])
 
+// [SP_CTX_01_30] [SP_CTX_02_62] [SP_CTX_DEC_44] phase 41: a `status` key of a tag is ignored like any extra key
+test('ReplacementOpeners — зайве поле status тегу: a disposable with "status" is taken without it; its replacement names the source and no status word', async () => {
+  const { io, log } = harness(empty())
+  const out = await contextTag(io, { tags: [{ op: 'add', kind: 'disposable', tool_use_id: 'a', note: 'file A: KEY_0042 = ff', status: 'assumed' }] })
+  expect(out).not.toHaveProperty('deny')
+  expect(log.tags!.tags.length).toBe(1)
+  expect('status' in log.tags!.tags[0]!).toBe(false)
+  expect(parseRegistry(JSON.stringify(log.tags)).state).toBe('ok')
+  await queueTagReplacements(io)
+  const text = applyEdits(rows(), log.queue!.edits, '/s/1.json').rows[2]!.toolResults![0]!.text
+  expect(text).toBe(`${TAG_SUMMARIZED_OF}Read you had read here with your own note (original: /s/1.json, open with Read): file A: KEY_0042 = ff`)
+  expect(/assumed|inferred|verified/.test(text)).toBe(false)
+})
+
 test('two disposable tags on an empty queue become two edits of a tags-only batch; context_edit clears tagsOnly', async () => {
   const { io, log } = harness(okRead(disposables))
   const { queued, freed } = await queueTagReplacements(io)
@@ -441,13 +455,13 @@ test('QueueTagReplacements — заміна з тегу називає авто�
   expect(log.queue!.edits.every(e => e.via === 'tag')).toBe(true)
   const out = applyEdits(rows(), log.queue!.edits, '/s/1.json')
   expect(out.report.applied.length).toBe(2)
-  expect(out.rows[2]!.toolResults![0]!.text).toBe(`${TAG_SUMMARIZED} (original: /s/1.json, open with Read): file A: KEY_0042 = ff`)
-  expect(TAG_SUMMARIZED).toBe('Later, your context_tag disposable tag replaced the full output you had read here with your own note')
+  expect(out.rows[2]!.toolResults![0]!.text).toBe(`${TAG_SUMMARIZED_OF}Read you had read here with your own note (original: /s/1.json, open with Read): file A: KEY_0042 = ff`)
+  expect(TAG_SUMMARIZED_OF).toBe('Later, your context_tag disposable tag replaced the full output of ')
   expect(out.rows[3]!.text).toBe(`${TAG_REWRITTEN} (original: /s/1.json, open with Read): dead end`)
   expect(TAG_REWRITTEN).toBe('Later, your context_tag disposable tag replaced the text of this row with your own note')
   // the same edits from context_edit name the call
   const own = applyEdits(rows(), log.queue!.edits.map(({ via: _v, ...e }) => e), '/s/1.json')
-  expect(own.rows[2]!.toolResults![0]!.text.startsWith(SUMMARIZED)).toBe(true)
+  expect(own.rows[2]!.toolResults![0]!.text.startsWith(SUMMARIZED_OF)).toBe(true)
   expect(own.rows[3]!.text.startsWith(REWRITTEN)).toBe(true)
   for (const t of [out.rows[2]!.toolResults![0]!.text, out.rows[3]!.text]) expect(isReplacementText(t)).toBe(true)
 })

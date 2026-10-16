@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-15
+> **Last updated:** 2026-10-16
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`, `claude-session-4cdf50ec`, `claude-session-355660b2`
 > **Autonomy:** `checkpoints`
@@ -26,6 +26,11 @@
 Прототип мода складається з двох розширень Claude Code — `context-editor` і `context-editor-trigger` — і перевірений модульними та живими тестами в сесії bd80217a. Документи описують його поведінку зворотно, за кодом і результатами тестів. — claude-session-bd80217a
 
 ## Subtasks
+
+### Subtask: Фаза 41 — відкривачі замін з джерелом
+**Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
+Запит розробника: «/dev-flow do Продовжуй фазу 41 згідно плану». Зачеплено `hooks/rows.ts` (SUMMARIZED_OF, TAG_SUMMARIZED_OF, quotedWords, summarizedWords з джерелом), `edits.ts` (sourceOf, MAX_SOURCE, ApplyOptions `cwd`; SourceOf тут, а не в `rows.ts`, бо `rows.ts` — L0), `compaction.ts`/`handoff.ts`/`register.ts` (`cwd`), SKILL.md (речення «nothing you made up»).
+Progress: [x] код і тести (911 зелені, `tsc`, validate, skill-limits 8469/9000) · [x] документи (01_28, apply, constants, очікування, план) · [x] рев'ю перед комітом (pass with advisories; виправлено 1, 2, 4, 5, 6, 8; 7 — лапки без екранування — лишено) · [x] живий повтор «Тексти замін з джерелом» (`.dev_flow/cache/live-test/curation-p41/results.md`: 9/9 застосовано, авторство 9/9, «вмісту не бачив» 2/9 проти 3/9 у контролі фази 39) · [x] коміт (розробник: «/dev-flow commit»)
 
 ### Subtask: Поділ великих файлів специфікації SP_CTX
 **Contributor:** claude-session-355660b2 · **Status:** `done` · **Started:** 2026-10-15 · **Phase:** `do` (Docs Scaling)

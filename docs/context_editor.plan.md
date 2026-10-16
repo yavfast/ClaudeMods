@@ -87,7 +87,7 @@
 - [ ] [Phase 38 — Можливості хоста: зонд раз на версію, вимкнення пропущеного](./context_editor.p38.plan.md#PL_CTX_P38)
 - [x] [Phase 39 — Ворота курування наживо: тексти замін, обгортка вставок, thinking](./context_editor.p39.plan.md#PL_CTX_P39)
 - [x] [Phase 40 — Слова людини, піни і `describe` вставок](./context_editor.p40.plan.md#PL_CTX_P40)
-- [ ] [Phase 41 — Відкривачі замін з джерелом](./context_editor.p41.plan.md#PL_CTX_P41)
+- [x] [Phase 41 — Відкривачі замін з джерелом](./context_editor.p41.plan.md#PL_CTX_P41)
 - [ ] [Phase 42 — Перевірка залежностей і слід власних викликів](./context_editor.p42.plan.md#PL_CTX_P42)
 - [ ] [Phase 43 — Застаріле читання і готові заміни](./context_editor.p43.plan.md#PL_CTX_P43)
 - [ ] [Phase 44 — Пункти слота стану](./context_editor.p44.plan.md#PL_CTX_P44)
@@ -143,7 +143,7 @@
 | [Phase 38 — Можливості хоста: зонд раз на версію, вимкнення пропущеного](./context_editor.p38.plan.md#PL_CTX_P38) | `context_editor.p38.plan.md` | in-progress |
 | [Phase 39 — Ворота курування наживо: тексти замін, обгортка вставок, thinking](./context_editor.p39.plan.md#PL_CTX_P39) | `context_editor.p39.plan.md` | completed |
 | [Phase 40 — Слова людини, піни і `describe` вставок](./context_editor.p40.plan.md#PL_CTX_P40) | `context_editor.p40.plan.md` | completed |
-| [Phase 41 — Відкривачі замін з джерелом](./context_editor.p41.plan.md#PL_CTX_P41) | `context_editor.p41.plan.md` | todo |
+| [Phase 41 — Відкривачі замін з джерелом](./context_editor.p41.plan.md#PL_CTX_P41) | `context_editor.p41.plan.md` | completed |
 | [Phase 42 — Перевірка залежностей і слід власних викликів](./context_editor.p42.plan.md#PL_CTX_P42) | `context_editor.p42.plan.md` | todo |
 | [Phase 43 — Застаріле читання і готові заміни](./context_editor.p43.plan.md#PL_CTX_P43) | `context_editor.p43.plan.md` | todo |
 | [Phase 44 — Пункти слота стану](./context_editor.p44.plan.md#PL_CTX_P44) | `context_editor.p44.plan.md` | todo |

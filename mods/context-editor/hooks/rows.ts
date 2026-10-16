@@ -75,7 +75,13 @@ const BY_EDIT = `${REPLACED}edit `
 const BY_TAG = `${REPLACED}tag disposable tag replaced `
 // [SP_CTX_01_03] How the agent asked for a replacement: QueuedEdit.via
 export type Via = 'edit' | 'tag'
+// The summarize openers of phases 28–40 (no source): sessions applied before
+// phase 41 still carry them.
 export const SUMMARIZED = `${BY_EDIT}summarize call replaced the full output you had read here with your own summary`
+// [SP_CTX_01_32] [SP_CTX_02_62] The heads of the summarize openers with the
+// source (phase 41): SourceOf follows the head.
+export const SUMMARIZED_OF = `${BY_EDIT}summarize call replaced the full output of `
+export const TAG_SUMMARIZED_OF = `${BY_TAG}the full output of `
 export const REWRITTEN = `${BY_EDIT}rewrite call replaced the text of this row with your own rewrite`
 // [SP_CTX_01_32] The head of every describe opener: media, pasted text or both ([SP_CTX_02_59]).
 export const DESCRIBED_HEAD = `${BY_EDIT}describe call replaced the `
@@ -91,19 +97,28 @@ export const TAG_REWRITTEN = `${BY_TAG}the text of this row with your own note`
 // phase 27) in parentheses after the row count.
 export const COLLAPSED_OPENER = `${BY_EDIT}collapse call replaced these `
 export const TAG_COLLAPSED_OPENER = `${BY_TAG}these `
-export function collapsedWords(n: number, list = '', via: Via = 'edit'): string {
-  return `${via === 'tag' ? TAG_COLLAPSED_OPENER : COLLAPSED_OPENER}${n} rows you had read${list ? ` (${list})` : ''} with your own note`
+export function collapsedWords(n: number, list = '', via: Via = 'edit', quoted = false): string {
+  return `${via === 'tag' ? TAG_COLLAPSED_OPENER : COLLAPSED_OPENER}${n} rows you had read${list ? ` (${list})` : ''}${quotedWords(quoted)} with your own note`
 }
-export function summarizedWords(via: Via = 'edit'): string {
-  return via === 'tag' ? TAG_SUMMARIZED : SUMMARIZED
+// [SP_CTX_02_62] Quoted: the original's facts are quoted in later texts
+// (DependencyCheck, QueuedEdit.quoted).
+export function quotedWords(quoted: boolean): string {
+  return quoted ? ', which you quoted from later,' : ''
+}
+// [SP_CTX_02_62] The summarize opener names where the replaced content came
+// from (SourceOf of edits.ts); no epistemic status ([SP_CTX_DEC_44]).
+export function summarizedWords(source: string, via: Via = 'edit', quoted = false): string {
+  return `${via === 'tag' ? TAG_SUMMARIZED_OF : SUMMARIZED_OF}${source} you had read here${quotedWords(quoted)}${via === 'tag' ? ' with your own note' : ' with your own summary'}`
 }
 export function rewrittenWords(via: Via = 'edit'): string {
   return via === 'tag' ? TAG_REWRITTEN : REWRITTEN
 }
 // Every full opener of phase 28: the test of a replacement is the whole
 // opener, not REPLACED alone (a person quoting the start back is no replacement).
-// [SP_CTX_02_59] DESCRIBED_HEAD stands for every describe opener of phase 40.
-export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER]
+// [SP_CTX_02_59] DESCRIBED_HEAD stands for every describe opener of phase 40;
+// [SP_CTX_02_62] SUMMARIZED_OF and TAG_SUMMARIZED_OF for the summarize
+// openers with a source (phase 41); the full openers before them stay.
+export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF]
 // [SP_CTX_01_12] The openers of phases 19–27 (A′): sessions applied before
 // phase 28 still carry them.
 export const LEGACY_DESCRIBED = `${MARK} you saw the media here, then replaced it with your description`

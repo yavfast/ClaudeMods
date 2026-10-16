@@ -78,9 +78,9 @@ Write about the content, not row numbers: indexes change after an apply. A stage
 
 ## Compressed rows and mod texts
 
-Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. It is no loss and nothing you made up.
+Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. You made the replacement; the source it names (`the full output of Read docs/x.md`) says where its content came from. Before you call anything in it made up, open the archive.
 
-- `… summarize call replaced the full output …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours. Older ones read `[context-editor] you read …, then replaced …`.
+- `… summarize call replaced the full output of <source> you had read here …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours. Older ones read `[context-editor] you read …, then replaced …`.
 - `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
 - Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command; `… repair the resumed conversation …`: the mod dropped answers a resume had loaded twice; earlier thinking is gone.
 - `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the `/compact` turn, a handoff's document: service texts of the mod.

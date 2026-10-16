@@ -59,12 +59,14 @@ export type Made = { edit: string; resultId?: string; text?: string }
 // [SP_CTX_02_04] [SP_CTX_DEC_17] (A″) The replacement texts and their
 // predicates live in rows.ts (STRUCT-01); re-exported for the modules and
 // tests that import them from here.
-export { COLLAPSED_OPENER, collapsedWords, DESCRIBED, REWRITTEN, SUMMARIZED, TAG_COLLAPSED_OPENER, TAG_REWRITTEN, TAG_SUMMARIZED } from './rows'
+export { COLLAPSED_OPENER, collapsedWords, DESCRIBED, REWRITTEN, SUMMARIZED, SUMMARIZED_OF, TAG_COLLAPSED_OPENER, TAG_REWRITTEN, TAG_SUMMARIZED, TAG_SUMMARIZED_OF } from './rows'
 // [SP_CTX_01_12] The carrier call's one input field (phase 27), and the
 // bounds of CollapsedList and of one key argument in it.
 export const COLLAPSED_KEY = 'collapsed'
 export const MAX_COLLAPSED_LIST = 200
 export const MAX_COLLAPSED_ARG = 40
+// [SP_CTX_01_32] The longest Source of a summarize opener, chars.
+export const MAX_SOURCE = 120
 export const OWN_TOOLS = 'mcp__context-editor__'
 export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
@@ -1187,11 +1189,73 @@ export function keyArg(input: unknown): string {
   }
   const url = s('url')
   // the host without userinfo: a password in a URL never goes into the text
-  if (url) return clip((/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(url)?.[1] ?? url).replace(/^[^@]*@/, ''))
+  if (url) return clip((/^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(url)?.[1] ?? url).replace(/^.*@/, ''))
   const named = s('description') ?? s('query')
   if (named) return quote(named)
   const path = s('path')
   return path ? clip(base(path)) : ''
+}
+
+// [SP_CTX_01_28] SourceOf(call): where the replaced content came from, from
+// the call's input only (never its result), at most MAX_SOURCE chars (OneLine
+// cuts a quoted value, so its closing quote stays). A file path is relative to
+// `cwd` when inside it; a URL loses userinfo, query and fragment (a query may
+// carry a token).
+export function sourceOf(tool: string, input: unknown, cwd?: string): string {
+  const o = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
+  const s = (k: string) => (typeof o[k] === 'string' && (o[k] as string).trim() ? (o[k] as string).trim() : undefined)
+  // a cwd of "/" names no project: every path stays absolute
+  const root = cwd?.replace(/\/+$/, '')
+  const path = (v: string) => {
+    const p = v.replace(/\/+$/, '') || v
+    return !root ? v : p === root ? '.' : p.startsWith(`${root}/`) ? p.slice(root.length + 1) : v
+  }
+  const plain = (head: string, v: string) => oneLine(`${head} ${v}`, MAX_SOURCE - 1)
+  const quoted = (head: string, v: string) => `${head} "${oneLine(v, MAX_SOURCE - head.length - 4)}"`
+  // [SP_CTX_02_04] a collapse carrier names the rows it stands for, not its tool
+  const collapsed = s(COLLAPSED_KEY)
+  if (collapsed) return plain('collapsed rows', `(${collapsed})`)
+  switch (tool) {
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+    case 'NotebookEdit': {
+      const file = s(tool === 'NotebookEdit' ? 'notebook_path' : 'file_path')
+      return file ? plain(tool, path(file)) : tool
+    }
+    case 'Bash': {
+      const command = s('command')
+      return command ? quoted(tool, command) : tool
+    }
+    case 'Grep':
+    case 'Glob': {
+      const pattern = s('pattern')
+      if (!pattern) return tool
+      const where = tool === 'Grep' ? s('path') : undefined
+      if (!where) return quoted(tool, pattern)
+      // the pattern takes at most half; the path gets the room it leaves
+      const head = `${tool} "${oneLine(pattern, MAX_SOURCE / 2 - tool.length - 4)}"`
+      return `${head} ${oneLine(`in ${path(where)}`, MAX_SOURCE - head.length - 2)}`
+    }
+    case 'WebFetch': {
+      const url = s('url')
+      const m = url ? /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)([^?#]*)/i.exec(url) : null
+      return m ? plain(tool, `${m[1]!.replace(/^.*@/, '')}${m[2]}`) : tool
+    }
+    case 'WebSearch': {
+      const query = s('query')
+      return query ? quoted(tool, query) : tool
+    }
+    case 'Agent':
+    case 'Task': {
+      const description = s('description')
+      return description ? quoted('subagent', description) : 'subagent'
+    }
+    default: {
+      const arg = keyArg(input)
+      return oneLine(arg ? `${tool} ${arg}` : tool, MAX_SOURCE - 1)
+    }
+  }
 }
 
 // [SP_CTX_02_04] An edited call gets a new id. The suffix of an earlier edit
@@ -1335,6 +1399,9 @@ function mediaRef(block: Record<string, unknown>): MediaRef {
 export type ApplyOptions = {
   // tool_use ids the API form shows; rows outside it keep their handle
   knownResults?: ReadonlySet<string>
+  // [SP_CTX_01_28] the session's working directory: SourceOf names a file
+  // inside it by its relative path
+  cwd?: string
   // prompt messages with media that no row could be matched to
   unmatchedPromptMedia?: number
   // [SP_CTX_02_10] the API form is cut by the read window: rows before the
@@ -1435,6 +1502,8 @@ export function applyEdits(
                 const id = newId(edit.tool_use_id)
                 const use = rows[useAt]!
                 const res = rows[resAt]!
+                const call = use.toolUses.find(u => u.tool_use_id === edit.tool_use_id)!
+                const source = sourceOf(call.tool, call.input, options.cwd)
                 report.originals.push({ edit: name, rows: [use, res] })
                 rows[useAt] = plain(use, {
                   toolUses: use.toolUses.map(u => (u.tool_use_id === edit.tool_use_id ? editedUse(u, id) : stripUse(u))),
@@ -1442,7 +1511,7 @@ export function applyEdits(
                 rows[resAt] = plain(res, {
                   toolResults: resultsOf(res).map(r =>
                     r.tool_use_id === edit.tool_use_id
-                      ? { tool_use_id: id, isError: r.isError, text: `${summarizedWords(viaOf(edit))}${note}${mediaNote([pair!])}: ${edit.summary}` }
+                      ? { tool_use_id: id, isError: r.isError, text: `${summarizedWords(source, viaOf(edit))}${note}${mediaNote([pair!])}: ${edit.summary}` }
                       : stripResult(r),
                   ),
                 })

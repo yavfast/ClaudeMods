@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { MAX_QUEUE_EDITS, MAX_TEXT } from '../hooks/edits'
+import { applyEdits, MAX_QUEUE_EDITS, MAX_TEXT, SUMMARIZED_OF } from '../hooks/edits'
 import {
   appendReport,
   contextEdit,
@@ -122,6 +122,21 @@ test('queueEdits sets the batch fields and keeps rejections beside accepted edit
   expect(out.queue.tagsOnly).toBe(false)
   expect(out.queue.resume).toBe(false)
   expect(out.queue.resumePrompt).toBe('go on')
+})
+
+// [SP_CTX_01_30] [SP_CTX_02_62] [SP_CTX_DEC_44] phase 41: there is no status
+// field; a `status` key is an extra key like any other, neither refused nor queued
+test('ReplacementOpeners — зайве поле status: a summarize with "status": "inferred" is accepted; the queued edit has no status; the replacement names the source and no status word', async () => {
+  const out = queueEdits(EMPTY_QUEUE, rows, { edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'x holds K', status: 'inferred' }] })
+  if ('deny' in out) throw new Error(out.deny)
+  expect(out.errors).toEqual([])
+  expect(out.queued).toBe(1)
+  expect('status' in out.queue.edits[0]!).toBe(false)
+  expect(parseQueue(JSON.stringify(out.queue)).state).toBe('ok')
+  const applied = applyEdits(rows, out.queue.edits, '/s/1.json')
+  const text = applied.rows[2]!.toolResults![0]!.text
+  expect(text).toBe(`${SUMMARIZED_OF}Read you had read here with your own summary (original: /s/1.json, open with Read): x holds K`)
+  expect(/inferred|verified|assumed/.test(text)).toBe(false)
 })
 
 // [SP_CTX_02_02] [SP_CTX_DEC_16] phase 18: the batch of the optimization turn

@@ -36,8 +36,11 @@ import {
   TAG_COLLAPSED_OPENER,
   TAG_REWRITTEN,
   TAG_SUMMARIZED,
+  TAG_SUMMARIZED_OF,
   REWRITTEN,
   SUMMARIZED,
+  SUMMARIZED_OF,
+  summarizedWords,
   modText,
   PREFIX,
   sameText,
@@ -167,7 +170,7 @@ test('ReplacementText — тексти фази 28 і старі: the new opener
   expect(collapsedWords(5, 'Read cfg.txt; Bash ls')).toBe('Later, your context_edit collapse call replaced these 5 rows you had read (Read cfg.txt; Bash ls) with your own note')
   // [SP_CTX_02_13] a disposable tag's replacement names context_tag
   expect(collapsedWords(3, '', 'tag')).toBe('Later, your context_tag disposable tag replaced these 3 rows you had read with your own note')
-  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER])
+  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF])
   for (const t of REPLACEMENT_OPENERS) expect(t.startsWith(REPLACED) && !t.includes(MARK)).toBe(true)
   const now = [`${SUMMARIZED}: s`, `${REWRITTEN}: s`, `${DESCRIBED}: d\n\nwhat is it?`, `${collapsedWords(2)}: s`, `${TAG_SUMMARIZED}: s`, `${TAG_REWRITTEN}: s`, `${collapsedWords(2, 'Read a', 'tag')}: s`]
   const legacy = [
@@ -189,6 +192,24 @@ test('ReplacementText — тексти фази 28 і старі: the new opener
   for (const t of ['Later, your build failed', 'later, your context_edit summarize call', 'context_edit summarize', '', 'Later, your context_edit call looked odd', 'Later, your context_tag disposable tag replaced it?']) expect(isReplacementText(t)).toBe(false)
   expect(personText('Later, your context_edit call looked odd')).toBe('Later, your context_edit call looked odd')
   expect(personText('Later, your build failed')).toBe('Later, your build failed')
+})
+
+// [SP_CTX_02_62] [SP_CTX_DEC_44] phase 41: the summarize opener names the
+// source; Quoted only when DependencyCheck found quotes; no status words.
+test('ReplacementOpeners — відкривачі з джерелом: summarize and the tag\'s summarize name the source; Quoted before the tail; collapse takes Quoted; old and new openers are both replacements', () => {
+  expect(summarizedWords('Read docs/x.md')).toBe('Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here with your own summary')
+  expect(summarizedWords('Read docs/x.md', 'edit', true)).toBe('Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here, which you quoted from later, with your own summary')
+  expect(summarizedWords('Bash "ls -la"', 'tag')).toBe('Later, your context_tag disposable tag replaced the full output of Bash "ls -la" you had read here with your own note')
+  expect(collapsedWords(4, 'Read ×2', 'edit', true)).toBe('Later, your context_edit collapse call replaced these 4 rows you had read (Read ×2), which you quoted from later, with your own note')
+  expect(collapsedWords(4, 'Read ×2')).toBe('Later, your context_edit collapse call replaced these 4 rows you had read (Read ×2) with your own note')
+  const old = [`${SUMMARIZED}: s`, `${TAG_SUMMARIZED}: s`]
+  const fresh = [`${summarizedWords('Read a.md')} (original: /s/1.json, open with Read): s`, `${summarizedWords('WebSearch "q"', 'tag')}: s`]
+  for (const t of [...old, ...fresh]) {
+    expect(isReplacementText(t) ? t : `${t}: not a replacement`).toBe(t)
+    expect(personText(t)).toBe('')
+    expect(isCollapseText(t) || isDescribedText(t)).toBe(false)
+  }
+  for (const t of fresh) expect(/\b(verified|inferred|assumed)\b/.test(t)).toBe(false)
 })
 
 // [SP_CTX_02_58] [SP_CTX_02_59] [SP_CTX_02_68] phase 40

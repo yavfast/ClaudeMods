@@ -122,6 +122,15 @@ function built(out: Awaited<ReturnType<typeof buildSeed>>) {
 
 // ---- [SP_CTX_02_22] BuildSeed
 
+// [SP_CTX_01_28] phase 41: the seed's summarize names the source relative to the cwd it was given
+test('BuildSeed — джерело заміни: with cwd the summarize names Read and the relative path; without it the path as the call gave it', async () => {
+  const rows = conversation().map(r => ({ ...r, toolUses: r.toolUses.map(u => (u.tool_use_id === 'a' ? { ...u, input: { file_path: '/p/docs/big.txt' } } : u)) }))
+  const textOf = (seed: ReturnType<typeof built>) => seed.rows.flatMap(r => r.toolResults ?? []).find(t => t.text.includes('KEY_0042 = 2c5f'))!.text
+  const edits = [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }]
+  expect(textOf(built((await seedOf({ rows, cwd: '/p' }, edits)).out))).toContain('the full output of Read docs/big.txt you had read here')
+  expect(textOf(built((await seedOf({ rows }, edits)).out))).toContain('the full output of Read /p/docs/big.txt you had read here')
+})
+
 test('BuildSeed — правки й медіа: summarize and drop applied, the PNG of the untouched pair carried as a file, no context_handoff, no handle', async () => {
   const { out, written } = await seedOf({}, [
     { op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' },

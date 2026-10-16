@@ -4,6 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
+- `/dev-flow resume task_C_CTX` — `implement` — фаза 41 (відкривачі замін з джерелом) виконана: рев'ю pass with advisories, живий повтор 9/9; закомічено; далі — фаза 42 (перевірка залежностей і слід власних викликів) — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 40 (слова людини, піни, `describe` вставок) виконана й закомічена: рев'ю, живий прогін у stream-json (PinDocument шукає документ після рядків `/clear`); далі — фаза 41 (тексти замін з джерелом) — 2026-10-15
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 39 (живі ворота) виконана: статус змісту знято за воротами (C_CTX_DEC_40, SP_CTX_DEC_44), обгортка вставок у тексті рядка, thinking `unobserved`; закомічено; великі файли специфікації поділено за модулями (якорі ті самі); далі — фаза 40 (слова людини, піни, `describe` вставок) — 2026-10-15
 - `/dev-flow resume task_C_CTX` — `plan` — план курування історії: PL_CTX поділено по фазах (дочірні `context_editor.p<NN>.plan.md`), додано фази 39–46 і [PL_CTX_DEC_06](../docs/context_editor.plan.md#PL_CTX_DEC_06) (спершу живі ворота); закомічено; далі — поділ великих файлів специфікації (queued, до фази 40), потім `implement` фази 39 (живі ворота) — branch `feat/context-editor` — 2026-10-15
