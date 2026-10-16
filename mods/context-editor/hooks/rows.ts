@@ -110,6 +110,9 @@ export function quotedWords(quoted: boolean): string {
 export function summarizedWords(source: string, via: Via = 'edit', quoted = false): string {
   return `${via === 'tag' ? TAG_SUMMARIZED_OF : SUMMARIZED_OF}${source} you had read here${quotedWords(quoted)}${via === 'tag' ? ' with your own note' : ' with your own summary'}`
 }
+// [SP_CTX_01_32] [SP_CTX_02_64] The opener of a trace row: one row where
+// DropOwnCalls removed the agent's own context_* calls (TraceText of edits.ts).
+export const TRACE_OPENER = `${REPLACED}* calls here were removed when your edits applied`
 export function rewrittenWords(via: Via = 'edit'): string {
   return via === 'tag' ? TAG_REWRITTEN : REWRITTEN
 }
@@ -118,7 +121,8 @@ export function rewrittenWords(via: Via = 'edit'): string {
 // [SP_CTX_02_59] DESCRIBED_HEAD stands for every describe opener of phase 40;
 // [SP_CTX_02_62] SUMMARIZED_OF and TAG_SUMMARIZED_OF for the summarize
 // openers with a source (phase 41); the full openers before them stay.
-export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF]
+// [SP_CTX_02_64] TRACE_OPENER: the trace row of removed own calls (phase 42).
+export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF, TRACE_OPENER]
 // [SP_CTX_01_12] The openers of phases 19–27 (A′): sessions applied before
 // phase 28 still carry them.
 export const LEGACY_DESCRIBED = `${MARK} you saw the media here, then replaced it with your description`

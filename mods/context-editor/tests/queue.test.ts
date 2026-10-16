@@ -707,3 +707,34 @@ test('PersonWords — рядок прибраного тегу в результ
   const out = await contextEdit(waiting.port, rows, { edits: [{ op: 'drop', tool_use_id: 'a' }] })
   expect('result' in out && out.result).toContain("\nstage \"A\" no longer waits for compression.\ndisposable #4..#9 dropped: it covers the person's words.")
 })
+
+// ---- [SP_CTX_02_63] [SP_CTX_01_30] DependencyCheck at queueing (phase 42)
+
+test('queueEdits — DependencyCheck: an accepted summarize whose original is quoted later gets quoted: true and a Note in the result; it is never refused; no hit, no field', async () => {
+  const quoting: SessionMessage[] = [
+    { role: 'user', text: 'find the key', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: { file_path: '/p/keys.txt' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'KEY_0042 = 2c5f', isError: false }] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Read', input: { file_path: '/p/other.txt' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'b', text: 'nothing here', isError: false }] },
+    { role: 'assistant', text: 'The key is KEY_0042.', toolUses: [] },
+  ]
+  const out = queueEdits(EMPTY_QUEUE, quoting, { edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'the key' }, { op: 'drop', tool_use_id: 'b' }] })
+  if ('deny' in out) throw new Error(out.deny)
+  expect(out.queued).toBe(2)
+  expect(out.queue.edits).toEqual([{ op: 'summarize', tool_use_id: 'a', summary: 'the key', quoted: true }, { op: 'drop', tool_use_id: 'b' }])
+  expect(out.warnings).toEqual([
+    'Note: summarize a — facts from it are quoted in your later text #5 (e.g. "KEY_0042"); after the edit only your replacement holds their source: keep them in it.',
+  ])
+  expect(queuedText(out.queue, out.queued, out.errors, out.warnings)).toContain('Note: summarize a — facts from it are quoted')
+})
+
+test('ParseQueue — quoted: true is read; another value makes the queue unreadable; a queue before phase 42 has none', async () => {
+  const text = (quoted: unknown) => JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a', quoted }] })
+  const ok = parseQueue(text(true))
+  expect(ok.state === 'ok' && ok.value.edits[0]!.quoted).toBe(true)
+  expect(parseQueue(text(false)).state).toBe('unreadable')
+  expect(parseQueue(text('yes')).state).toBe('unreadable')
+  const old = parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a' }] }))
+  expect(old.state === 'ok' && old.value.edits[0]!.quoted).toBeUndefined()
+})

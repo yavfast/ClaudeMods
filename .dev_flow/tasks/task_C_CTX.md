@@ -27,6 +27,12 @@
 
 ## Subtasks
 
+### Subtask: Фаза 42 — перевірка залежностей і слід власних викликів
+**Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
+Запит розробника: «Ok. Продовжуй» (після коміту фази 41). Зачеплено `hooks/edits.ts` (fragments, dependencyHits, dependencyNote, traceText, слід у dropOwnCallsCounted, QueuedEdit.quoted, константи DEP_*, MAX_TRACE), `queue.ts` (DependencyCheck у queueEdits, `quoted` у parseQueue), `rows.ts` (TRACE_OPENER у REPLACEMENT_OPENERS), `repair.ts` (Repeats не рахує сліду).
+Progress: [x] код і тести (923 зелені, `tsc`, validate) · [x] рев'ю (pass with advisories; виправлено 1–4, 6–8 і прогалину тесту; 5 — хибні спрацювання від тексту тієї ж відповіді — лишено на практику) · [x] живий прогін 12 сесій проти коду фази 41 (`.dev_flow/cache/live-test/curation-p42/results.md`: слід 6/6, заперечення викликів 0/6 проти 1/6, обережне P23 щодо виводу лишилось; DependencyCheck 6/6) · [x] документи (curation.sp 02_63, 02_64, 05_07; resume.sp; p42 [DONE]; backlog: носій `collapse` як «malformed call») · [x] коміт (розробник: «/dev-flow commit»)
+Відхилення за прогоном: фрагменти DependencyCheck з пізніших текстів агента, токени з літер і цифр (пробна сесія з фрагментами з цілі не дала жодного застереження).
+
 ### Subtask: Фаза 41 — відкривачі замін з джерелом
 **Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
 Запит розробника: «/dev-flow do Продовжуй фазу 41 згідно плану». Зачеплено `hooks/rows.ts` (SUMMARIZED_OF, TAG_SUMMARIZED_OF, quotedWords, summarizedWords з джерелом), `edits.ts` (sourceOf, MAX_SOURCE, ApplyOptions `cwd`; SourceOf тут, а не в `rows.ts`, бо `rows.ts` — L0), `compaction.ts`/`handoff.ts`/`register.ts` (`cwd`), SKILL.md (речення «nothing you made up»).

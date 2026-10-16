@@ -1,7 +1,7 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
 import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
-import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, withPasteMarks, type Via } from './rows'
+import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -14,7 +14,9 @@ export type Edit =
 // [SP_CTX_01_03] Index-based edits carry fingerprints of the rows they named.
 // [SP_CTX_01_03] `via: 'tag'`: the replacement of a disposable tag the mod
 // queued (QueueTagReplacements); its text names context_tag, not context_edit.
-export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' }
+// [SP_CTX_01_30] `quoted`: DependencyCheck found the original's facts quoted
+// in later texts of the agent (summarize, drop, collapse; the mod writes it).
+export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag'; quoted?: true }
 
 // [SP_CTX_01_08] Whose media it is: a tool result or a person's prompt row.
 export type MediaOwner = { tool_use_id: string } | { row: number }
@@ -59,7 +61,7 @@ export type Made = { edit: string; resultId?: string; text?: string }
 // [SP_CTX_02_04] [SP_CTX_DEC_17] (A″) The replacement texts and their
 // predicates live in rows.ts (STRUCT-01); re-exported for the modules and
 // tests that import them from here.
-export { COLLAPSED_OPENER, collapsedWords, DESCRIBED, REWRITTEN, SUMMARIZED, SUMMARIZED_OF, TAG_COLLAPSED_OPENER, TAG_REWRITTEN, TAG_SUMMARIZED, TAG_SUMMARIZED_OF } from './rows'
+export { COLLAPSED_OPENER, collapsedWords, DESCRIBED, REWRITTEN, SUMMARIZED, SUMMARIZED_OF, TAG_COLLAPSED_OPENER, TAG_REWRITTEN, TAG_SUMMARIZED, TAG_SUMMARIZED_OF, TRACE_OPENER } from './rows'
 // [SP_CTX_01_12] The carrier call's one input field (phase 27), and the
 // bounds of CollapsedList and of one key argument in it.
 export const COLLAPSED_KEY = 'collapsed'
@@ -67,6 +69,13 @@ export const MAX_COLLAPSED_LIST = 200
 export const MAX_COLLAPSED_ARG = 40
 // [SP_CTX_01_32] The longest Source of a summarize opener, chars.
 export const MAX_SOURCE = 120
+// [SP_CTX_01_32] DependencyCheck: fragments of the original it looks for,
+// their length bounds and how many the note names; the longest trace row.
+export const MAX_DEP_FRAGMENTS = 100
+export const DEP_MIN = 6
+export const DEP_MAX = 120
+export const DEP_EXAMPLES = 3
+export const MAX_TRACE = 400
 export const OWN_TOOLS = 'mcp__context-editor__'
 export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
@@ -721,9 +730,189 @@ export function dropOwnCallsCounted(
       toolResults: r.toolResults?.filter(t => !ids.has(t.tool_use_id)).map(stripResult),
     })
   })
+  // [SP_CTX_02_64] TraceOwnCalls: one trace row per stretch from a prompt to
+  // the next with a removed own pair, right before the row of its first
+  // removed call (never between a call and its result); an emptied call row
+  // goes below, so the trace takes its place
+  const traced: SessionMessage[] = []
+  let stretch: ToolUseSummary[] = []
+  let at = -1
+  const flush = () => {
+    if (stretch.length) traced.splice(at, 0, { role: 'assistant', text: traceText(stretch), toolUses: [] })
+    stretch = []
+  }
+  input.forEach((r, i) => {
+    if (isPromptRow(r)) flush()
+    const calls = r.toolUses.filter(u => ids.has(u.tool_use_id))
+    if (calls.length && !stretch.length) at = traced.length
+    stretch.push(...calls)
+    traced.push(dropped[i]!)
+  })
+  flush()
   // [SP_CTX_02_04] a rebuilt assistant row splits its response (pitfall 30)
-  const kept2 = rebuildSplitResponses(dropped, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmptyRow(r))
+  const kept2 = rebuildSplitResponses(traced, frozen).filter(r => frozen.has(r) || r.handle !== undefined || !isEmptyRow(r))
   return { rows: mergeCallRows(kept2, frozen), removed: ids.size }
+}
+
+// [SP_CTX_02_63] Fragments: verbatim pieces of a text worth finding again
+// (quoted spans, identifiers, tokens of letters and digits such as hashes and
+// values, paths and URLs, long or decimal numbers), distinct, in text order,
+// DEP_MIN..DEP_MAX chars, at most MAX_DEP_FRAGMENTS.
+export function fragments(text: string): string[] {
+  const found: { at: number; f: string }[] = []
+  const take = (re: RegExp, pick: (m: RegExpMatchArray) => string | undefined) => {
+    for (const m of text.matchAll(re)) {
+      const f = pick(m)
+      if (f) found.push({ at: m.index!, f })
+    }
+  }
+  take(/"([^"\n]+)"|“([^”\n]+)”|«([^»\n]+)»|`([^`\n]+)`/g, m => m[1] ?? m[2] ?? m[3] ?? m[4])
+  // the lookaheads are bounded by DEP_MAX: unbounded, a long hyphenated run is quadratic
+  take(/\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b|\b(?=[\w-]{0,119}\d)(?=[\w-]{0,119}[A-Za-z])[A-Za-z0-9][\w-]{0,118}[A-Za-z0-9]\b/g, m => m[0])
+  take(/[^\s"'`()<>\[\]{},;«»“”]+/g, m => (/^(?:\/|\.\/|~\/|https?:\/\/)/.test(m[0]) || (m[0].includes('/') && m[0].includes('.')) ? m[0] : undefined))
+  take(/\d[\d,]*(?:\.\d+)?%?/g, m => (/%|\.\d/.test(m[0]) || (m[0].match(/\d/g) ?? []).length >= 4 ? m[0] : undefined))
+  const out: string[] = []
+  for (const { f: raw } of found.sort((a, b) => a.at - b.at)) {
+    // prose and markdown around a quote: a trailing stop or comma, emphasis marks
+    const f = raw.trim().replace(/[.,:;!?]+$/, '').replace(/^[*_]+|[*_]+$/g, '')
+    if (f.length < DEP_MIN || f.length > DEP_MAX || out.includes(f)) continue
+    out.push(f)
+    if (out.length >= MAX_DEP_FRAGMENTS) break
+  }
+  return out
+}
+
+// [SP_CTX_02_63] DependencyHits: the fragments of the agent's later texts
+// that the edit's original holds while no other row does, so after the edit
+// only the replacement would be their source. The fragments come from the
+// later texts (short, and where the quotes are), not from the original (its
+// first MAX_DEP_FRAGMENTS may all be filler). A heuristic: it warns and never
+// refuses. Summarize: the result (the call's input stays); drop: the
+// call's input and its result; collapse: texts, inputs and results of the span.
+// The values of a call's input as the agent reads and quotes them: its
+// strings and numbers, not the JSON text (which escapes quotes, backslashes
+// and line breaks).
+function inputText(v: unknown): string {
+  if (typeof v === 'string') return v
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v)
+  if (Array.isArray(v)) return v.map(inputText).join('\n')
+  if (typeof v === 'object' && v !== null) return Object.values(v).map(inputText).join('\n')
+  return ''
+}
+
+export function dependencyHits(rows: readonly SessionMessage[], edit: QueuedEdit, ix?: RowIndex): { rows: number[]; examples: string[] } {
+  const none = { rows: [], examples: [] }
+  const target: string[] = []
+  const inTarget = new Set<string>()
+  let end: number
+  const useKey = (i: number, k: number) => `u${i}:${k}`
+  const resKey = (i: number, k: number) => `r${i}:${k}`
+  if (edit.op === 'summarize' || edit.op === 'drop') {
+    const useAt = ix ? ix.useAt(edit.tool_use_id) : findToolUse(rows, edit.tool_use_id)
+    const resAt = ix ? ix.resultAt(edit.tool_use_id) : findToolResult(rows, edit.tool_use_id)
+    if (useAt < 0 || resAt < 0) return none
+    if (edit.op === 'drop') {
+      const u = rows[useAt]!.toolUses.findIndex(x => x.tool_use_id === edit.tool_use_id)
+      target.push(inputText(rows[useAt]!.toolUses[u]!.input))
+      inTarget.add(useKey(useAt, u))
+    }
+    const k = resultsOf(rows[resAt]!).findIndex(r => r.tool_use_id === edit.tool_use_id)
+    target.push(resultsOf(rows[resAt]!)[k]!.text)
+    inTarget.add(resKey(resAt, k))
+    end = resAt
+  } else if (edit.op === 'collapse') {
+    const { from, to } = spanOf(rows, edit, ix)
+    if (from < 0 || to < from || to >= rows.length) return none
+    for (let i = from; i <= to; i++) {
+      const r = rows[i]!
+      if (r.text) target.push(r.text)
+      r.toolUses.forEach((u, k) => (target.push(inputText(u.input)), inTarget.add(useKey(i, k))))
+      resultsOf(r).forEach((t, k) => (target.push(t.text), inTarget.add(resKey(i, k))))
+      inTarget.add(`t${i}`)
+    }
+    end = to
+  } else return none
+  const later = new Map<number, string>()
+  for (let i = end + 1; i < rows.length; i++) {
+    const r = rows[i]!
+    if (r.role === 'assistant' && r.text.trim() && !isReplacementText(r.text) && !inTarget.has(`t${i}`)) later.set(i, r.text)
+  }
+  // row by row in row order, at most MAX_DEP_FRAGMENTS in all (no match crosses rows)
+  const frags: string[] = []
+  for (const t of later.values()) {
+    for (const f of fragments(t)) if (!frags.includes(f)) frags.push(f)
+    if (frags.length >= MAX_DEP_FRAGMENTS) break
+  }
+  const original = target.join('\n')
+  const quoted = frags.slice(0, MAX_DEP_FRAGMENTS).filter(f => original.includes(f))
+  if (!quoted.length) return none
+  // every other text, input and result: one more source of the fragment
+  const others: string[] = []
+  rows.forEach((r, i) => {
+    if (r.text && !inTarget.has(`t${i}`) && !later.has(i)) others.push(r.text)
+    r.toolUses.forEach((u, k) => inTarget.has(useKey(i, k)) || others.push(inputText(u.input)))
+    resultsOf(r).forEach((t, k) => inTarget.has(resKey(i, k)) || others.push(t.text))
+  })
+  const hits = quoted.filter(f => !others.some(t => t.includes(f)))
+  if (!hits.length) return none
+  const at = [...later].filter(([, t]) => hits.some(f => t.includes(f))).map(([i]) => i)
+  return { rows: at.slice(0, MAX_BLOCK_INDEXES), examples: hits.slice(0, DEP_EXAMPLES) }
+}
+
+// [SP_CTX_02_63] The note of an accepted edit whose original is quoted later.
+export function dependencyNote(label: string, op: Edit['op'], hits: { rows: readonly number[]; examples: readonly string[] }): string {
+  const where = hits.rows.map(i => `#${i}`).join(', ')
+  const eg = hits.examples.map(f => JSON.stringify(f)).join(', ')
+  const keep = op === 'drop' ? 'after the edit no row holds their source: summarize it instead to keep them' : 'after the edit only your replacement holds their source: keep them in it'
+  return `Note: ${label} — facts from it are quoted in your later text ${where} (e.g. ${eg}); ${keep}.`
+}
+
+// [SP_CTX_02_64] TraceText: what the agent did with the removed own calls,
+// from their inputs (a refused call is named too: "called", not "queued"),
+// one item per tool in order of its first call; at most MAX_TRACE chars.
+export function traceText(calls: readonly ToolUseSummary[]): string {
+  const items = new Map<string, { n: number; edits: number; tag: Map<string, number>; added: number; removed: number }>()
+  for (const u of calls) {
+    const tool = u.tool.startsWith(OWN_TOOLS) ? u.tool.slice(OWN_TOOLS.length) : u.tool
+    const item = items.get(tool) ?? { n: 0, edits: 0, tag: new Map(), added: 0, removed: 0 }
+    items.set(tool, item)
+    item.n++
+    const input = (u.input ?? {}) as Record<string, unknown>
+    const list = (key: string) => (Array.isArray(input[key]) ? (input[key] as unknown[]) : []).map(x => (typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {}))
+    if (tool === 'context_edit') item.edits += list('edits').length
+    for (const t of tool === 'context_tag' ? list('tags') : []) {
+      const part =
+        t.op === 'open' ? (typeof t.stage === 'string' ? `open stage ${JSON.stringify(oneLine(t.stage, MAX_TRACE))}` : 'open a stage')
+        : t.op === 'close' ? 'close the stage'
+        : t.op === 'add' ? `add:${typeof t.kind === 'string' ? oneLine(t.kind, MAX_TRACE) : '?'}`
+        : t.op === 'remove' ? 'remove'
+        : undefined
+      if (part) item.tag.set(part, (item.tag.get(part) ?? 0) + 1)
+    }
+    for (const n of tool === 'context_note' ? list('notes') : []) {
+      if (n.op === 'add') item.added++
+      else if (n.op === 'remove') item.removed++
+    }
+  }
+  const words = [...items].map(([tool, item]) => {
+    switch (tool) {
+      case 'context_list':
+        return item.n > 1 ? `${tool} ${item.n} times` : tool
+      case 'context_edit':
+        return `${tool} with ${item.edits} edit(s)`
+      case 'context_tag': {
+        const parts = [...item.tag].map(([part, m]) =>
+          part.startsWith('add:') ? `add ${m} ${part.slice(4)} tag(s)` : part === 'remove' ? `remove ${m} tag(s)` : part,
+        )
+        return parts.length ? `${tool} to ${parts.join(', ')}` : tool
+      }
+      case 'context_note':
+        return `${tool} (${item.added} added, ${item.removed} removed)`
+      default:
+        return tool
+    }
+  })
+  return oneLine(`${TRACE_OPENER}; you had called ${words.join(', ')}.`, MAX_TRACE - 1)
 }
 
 // Every tool_use in rows[from..to] must have its result there too, and back.
@@ -1511,7 +1700,7 @@ export function applyEdits(
                 rows[resAt] = plain(res, {
                   toolResults: resultsOf(res).map(r =>
                     r.tool_use_id === edit.tool_use_id
-                      ? { tool_use_id: id, isError: r.isError, text: `${summarizedWords(source, viaOf(edit))}${note}${mediaNote([pair!])}: ${edit.summary}` }
+                      ? { tool_use_id: id, isError: r.isError, text: `${summarizedWords(source, viaOf(edit), edit.quoted === true)}${note}${mediaNote([pair!])}: ${edit.summary}` }
                       : stripResult(r),
                   ),
                 })
@@ -1564,7 +1753,7 @@ export function applyEdits(
           const span = rows.slice(from, to + 1)
           report.originals.push({ edit: name, rows: span })
           const list = collapsedList(span)
-          const text = `${collapsedWords(span.length, list, viaOf(edit))}${note}${mediaNote(keys)}: ${edit.summary}`
+          const text = `${collapsedWords(span.length, list, viaOf(edit), edit.quoted === true)}${note}${mediaNote(keys)}: ${edit.summary}`
           // The carrier keeps roles and pairing valid around the span; it is
           // never one of this plugin's own calls, which are dropped later. Its
           // name is a tool the session has; its input names what the span

@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, DESCRIBE_DROPS, describeEdit, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { personDelivered, personText, type QueuedDelivery } from './deliveries'
 import { isDescribedText, isPlainUserRow, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
@@ -173,9 +173,14 @@ function isHandoff(raw: unknown): boolean {
 
 function isQueuedEdit(raw: unknown): boolean {
   if (typeof checkShape(raw) === 'string') return false
-  const { anchors, via } = raw as { anchors?: unknown; via?: unknown }
+  const { anchors, via, quoted } = raw as { anchors?: unknown; via?: unknown; quoted?: unknown }
   // [SP_CTX_01_03] `via` names who asked for the replacement: only 'tag' is written
-  return (anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))) && (via === undefined || via === 'tag')
+  // [SP_CTX_01_30] `quoted`: only true is written; a queue before phase 42 has none
+  return (
+    (anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))) &&
+    (via === undefined || via === 'tag') &&
+    (quoted === undefined || quoted === true)
+  )
 }
 
 export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
@@ -332,10 +337,20 @@ export function queueEdits(
   const errors = prepared.errors
   // [SP_CTX_02_58] PERSON_WORDS: no edit over the person's words is queued
   const queued: QueuedEdit[] = []
+  const notes: string[] = []
+  let ix: RowIndex | undefined
   for (const e of prepared.queued) {
     const no = personRefusal(rows, e, delivered)
-    if (no) errors.push(no)
-    else queued.push(e)
+    if (no) {
+      errors.push(no)
+      continue
+    }
+    // [SP_CTX_02_63] DependencyCheck: warn, mark the edit, never refuse
+    const hits = dependencyHits(rows, e, (ix ??= indexRows(rows)))
+    if (hits.examples.length) {
+      notes.push(dependencyNote(describeEdit(e), e.op, hits))
+      queued.push({ ...e, quoted: true })
+    } else queued.push(e)
   }
   if (q.edits.length + queued.length > MAX_QUEUE_EDITS)
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
@@ -356,7 +371,7 @@ export function queueEdits(
   if (typeof args.keep_cache === 'boolean') next.keepCache = args.keep_cache
   if (bytes(next) > MAX_QUEUE_BYTES)
     return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
-  const warnings = queued.some(e => e.op === 'describe') ? [DESCRIBE_DROPS] : []
+  const warnings = [...notes, ...(queued.some(e => e.op === 'describe') ? [DESCRIBE_DROPS] : [])]
   return { queue: next, queued: queued.length, errors, warnings, refLines: refs.lines }
 }
 

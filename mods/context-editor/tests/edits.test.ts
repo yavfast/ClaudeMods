@@ -48,7 +48,7 @@ import {
   MAX_COLLAPSED_LIST,
 } from '../hooks/edits'
 import { findToolResult, findToolUse, isReplacementText, MARK, pulledWords, toolRefWords } from '../hooks/rows'
-import { checkPairs, toolRefText } from '../hooks/edits'
+import { checkPairs, DEP_MAX, dependencyHits, dependencyNote, fragments, MAX_DEP_FRAGMENTS, MAX_TRACE, toolRefText, TRACE_OPENER, traceText } from '../hooks/edits'
 import { emptyRowBetweenCalls, prompt, reply as replyRow, result, use as useRow } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
@@ -218,9 +218,11 @@ test('DropOwnCalls: an own call rebuilt out of a response rebuilds every assista
     { role: 'assistant', text: 'Done.', toolUses: [], handle: 't4' },
   ]
   const out = dropOwnCalls(input)
-  expect(out.map(r => r.handle)).toEqual(['p0', undefined, undefined, undefined, undefined])
+  // [SP_CTX_02_64] the trace row stands right before the row of the removed call
+  expect(out.map(r => r.handle)).toEqual(['p0', undefined, undefined, undefined, undefined, undefined])
   expect(out[1]!.text).toBe('Listing first.')
-  expect(out[4]!.text).toBe('Done.')
+  expect(out[2]!.text).toBe(`${TRACE_OPENER}; you had called context_list.`)
+  expect(out[5]!.text).toBe('Done.')
 })
 
 test('DropOwnCalls: the result row emptied by dropping an own call does not end the stretch', async () => {
@@ -233,8 +235,10 @@ test('DropOwnCalls: the result row emptied by dropping an own call does not end 
   ]
   const out = dropOwnCalls(input, new Set(['u:d']))
   // u1 is rebuilt without z; r2 is left empty and goes; d's use row follows the
-  // rebuilt row in the same response, so it is rebuilt too
-  expect(out.map(r => r.handle ?? '-')).toEqual(['p0', '-', '-', 'r4'])
+  // rebuilt row in the same response, so it is rebuilt too; the trace row
+  // stands before u1, whose text stays
+  expect(out.map(r => r.handle ?? '-')).toEqual(['p0', '-', '-', '-', 'r4'])
+  expect(out.map(r => r.text.slice(0, 12))).toEqual(['task', TRACE_OPENER.slice(0, 12), 'Listing.', '', ''])
 })
 
 test('a collapse starting with an own call keeps its summary after the own calls are dropped', async () => {
@@ -474,7 +478,8 @@ test('own calls whose result row shares media or unknown results with another pa
   const outside = dropOwnCalls(input, new Set(), new Set(['z']))
   expect(outside[1]!.handle).toBe('h2')
   const plainRow = dropOwnCalls(input, new Set(), new Set(['z', 'shot']))
-  expect(plainRow[1]!.toolResults!.map(r => r.tool_use_id)).toEqual(['shot'])
+  expect(plainRow[0]!.text.startsWith(TRACE_OPENER)).toBe(true)
+  expect(plainRow[2]!.toolResults!.map(r => r.tool_use_id)).toEqual(['shot'])
 })
 
 const OUTSIDE = 'outside the API window; media unknown'
@@ -720,7 +725,9 @@ test('listRows — a collapse carrier gets no reproducible flag', async () => {
 test('the plugin own calls are dropped with their results', async () => {
   const input = [...rows(), use('z', 'mcp__context-editor__context_list', 'h9'), result('z', 'listing', 'h10')]
   const out = dropOwnCalls(input)
-  expect(out.length).toBe(9)
+  // the pair goes; one trace row stands in its place
+  expect(out.length).toBe(10)
+  expect(out.filter(r => r.text.startsWith(TRACE_OPENER)).map(r => r.text)).toEqual([`${TRACE_OPENER}; you had called context_list.`])
   expect(out.some(r => r.toolUses.some(u => u.tool_use_id === 'z'))).toBe(false)
 })
 
@@ -778,11 +785,12 @@ test('ApplyEdits — produced після DropOwnCalls: a summarize whose result 
   const produced = producedRows(final, applied.made)
   expect(produced.length).toBe(1)
   expect(produced[0]!.edit).toBe('summarize a')
-  expect(produced[0]!.index).toBe(2)
-  expect(produced[0]!.fingerprint).toBe(fingerprint(final[2]!))
+  // the trace row of the context_list call stands before the call row
+  expect(produced[0]!.index).toBe(3)
+  expect(produced[0]!.fingerprint).toBe(fingerprint(final[3]!))
   expect(produced[0]!.fingerprint).not.toContain('r:l')
   // a made row no longer in the final list has no entry
-  expect(producedRows(final.slice(0, 2), applied.made)).toEqual([])
+  expect(producedRows(final.slice(0, 3), applied.made)).toEqual([])
 })
 
 test('ApplyEdits — примітка оригіналу: the replacement says where the original is and how to open it', async () => {
@@ -1499,4 +1507,191 @@ test('CheckPairs — ремонт: a row with a handle may be blank or hold a ha
   expect(checkPairs(rows, true)).toBeUndefined()
   expect(checkPairs(rows, false)).toBe('row 0: holds a handle')
   expect(checkPairs([prompt('go'), useRow('a', 'Bash'), prompt('next'), result('a', 'out')], true)).toBe('row 1: call a has no result before the next prompt')
+})
+
+// ---- [SP_CTX_02_64] TraceOwnCalls (phase 42)
+
+const ownCall = (id: string, tool: string, input: unknown, h?: string): SessionMessage => ({
+  role: 'assistant',
+  text: '',
+  toolUses: [{ tool_use_id: id, tool: `mcp__context-editor__${tool}`, input: input as Record<string, unknown> }],
+  ...(h ? { handle: h } : {}),
+})
+
+test('TraceText — §05_05: an open of a stage and a context_edit with three edits give one line; each tool by its input, in order of its first call; at most MAX_TRACE', async () => {
+  const u = (tool: string, input: unknown) => ownCall('x', tool, input).toolUses[0]!
+  expect(traceText([u('context_tag', { tags: [{ op: 'open', stage: 'x' }] }), u('context_edit', { edits: [{}, {}, {}] })])).toBe(
+    `${TRACE_OPENER}; you had called context_tag to open stage "x", context_edit with 3 edit(s).`,
+  )
+  const all = traceText([
+    u('context_list', { count: 0 }),
+    u('context_tag', { tags: [{ op: 'close' }, { op: 'add', kind: 'pin' }, { op: 'add', kind: 'pin' }, { op: 'remove' }] }),
+    u('context_list', {}),
+    u('context_note', { notes: [{ op: 'add' }, { op: 'add' }, { op: 'remove' }] }),
+    u('context_edit', { edits: [{}] }),
+    u('context_edit', { edits: [{}, {}] }),
+    u('context_handoff', {}),
+  ])
+  expect(all).toBe(
+    `${TRACE_OPENER}; you had called context_list 2 times, context_tag to close the stage, add 2 pin tag(s), remove 1 tag(s), context_note (2 added, 1 removed), context_edit with 3 edit(s), context_handoff.`,
+  )
+  // a refused call is named by its input too; a bad input names the tool alone
+  expect(traceText([u('context_tag', 'bad'), u('context_edit', null)])).toBe(`${TRACE_OPENER}; you had called context_tag, context_edit with 0 edit(s).`)
+  const long = traceText([u('context_tag', { tags: Array.from({ length: 30 }, (_, i) => ({ op: 'open', stage: `stage number ${i}` })) })])
+  expect(long.length).toBe(MAX_TRACE)
+  expect(long.endsWith('…')).toBe(true)
+})
+
+test('TraceOwnCalls — один рядок на відрізок: two stretches with own pairs get one trace row each, right before the first removed call; a stretch without one gets none', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'one', toolUses: [], handle: 'p0' },
+    ownCall('l1', 'context_list', {}, 'u1'),
+    result('l1', 'listing', 'r2'),
+    useRow('a', 'Read'),
+    result('a', 'A', 'r4'),
+    ownCall('t1', 'context_tag', { tags: [{ op: 'close' }] }, 'u5'),
+    result('t1', 'closed', 'r6'),
+    { role: 'user', text: 'two', toolUses: [], handle: 'p7' },
+    useRow('b', 'Read'),
+    result('b', 'B', 'r9'),
+    { role: 'user', text: 'three', toolUses: [], handle: 'p10' },
+    ownCall('e1', 'context_edit', { edits: [{}, {}] }, 'u11'),
+    result('e1', 'queued', 'r12'),
+  ]
+  const { rows: out, removed } = dropOwnCallsCounted(input)
+  expect(removed).toBe(3)
+  const traces = out.map((r, i) => [i, r.text] as const).filter(([, t]) => t.startsWith(TRACE_OPENER))
+  expect(traces).toEqual([
+    [1, `${TRACE_OPENER}; you had called context_list, context_tag to close the stage.`],
+    [8, `${TRACE_OPENER}; you had called context_edit with 2 edit(s).`],
+  ])
+  expect(out[1]!.role).toBe('assistant')
+  expect(out[1]!.handle).toBeUndefined()
+  expect(out[1]!.toolUses).toEqual([])
+  expect(out.map(r => r.text)).toEqual(['one', traces[0]![1], '', '', 'two', '', '', 'three', traces[1]![1]])
+})
+
+test('TraceOwnCalls — збережені пари (§05_06): own pairs of the frozen prefix and beside media stay, and their stretch gets no trace row', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'p0' },
+    ownCall('l1', 'context_list', {}, 'u1'),
+    result('l1', 'listing', 'r2'),
+    { role: 'user', text: 'next', toolUses: [], handle: 'p3' },
+    { role: 'assistant', text: '', handle: 'u4', toolUses: [{ tool_use_id: 'n1', tool: 'mcp__context-editor__context_note', input: {} }, { tool_use_id: 'shot', tool: 'Read', input: {} }] },
+    { role: 'user', text: '', handle: 'r5', toolUses: [], toolResults: [{ tool_use_id: 'n1', text: 'noted', isError: false }, { tool_use_id: 'shot', text: '', isError: false }] },
+  ]
+  const frozen = new Set(input.slice(0, 3))
+  const out = dropOwnCallsCounted(input, new Set([ownerKey({ tool_use_id: 'shot' })]), undefined, frozen)
+  expect(out.removed).toBe(0)
+  expect(out.rows.some(r => r.text.startsWith(TRACE_OPENER))).toBe(false)
+  // without the prefix the first stretch gets its trace; the media stretch still none
+  const open = dropOwnCallsCounted(input, new Set([ownerKey({ tool_use_id: 'shot' })]))
+  expect(open.rows.filter(r => r.text.startsWith(TRACE_OPENER)).map(r => r.text)).toEqual([`${TRACE_OPENER}; you had called context_list.`])
+})
+
+// ---- [SP_CTX_02_63] DependencyCheck (phase 42)
+
+test('Fragments: quoted spans, identifiers, tokens of letters and digits, paths and URLs, long or decimal numbers; distinct, in text order, DEP_MIN..DEP_MAX chars, at most MAX_DEP_FRAGMENTS', async () => {
+  const text = 'Set "retry budget" in KEY_0042 and ABC123 = secret-value-9f3a2b, 1d93cde7c71be664; see docs/x.md, /etc/hosts, https://ex.com/a?b=1 and `run it`. Took 12.75 s, 1234567 rows, 45.25% hit, 42 and 2026. "ab" «довге слово тут» KEY_0042 again'
+  expect(fragments(text)).toEqual(['retry budget', 'KEY_0042', 'ABC123', 'secret-value-9f3a2b', '1d93cde7c71be664', 'docs/x.md', '/etc/hosts', 'https://ex.com/a?b=1', 'run it', '1234567', '45.25%', 'довге слово тут'])
+  // 12.75 is 5 chars, under DEP_MIN; a quoted span over DEP_MAX is left out
+  expect(fragments(`"${'y'.repeat(DEP_MAX + 1)}" "${'z'.repeat(DEP_MAX)}"`)).toEqual(['z'.repeat(DEP_MAX)])
+  expect(fragments(Array.from({ length: 150 }, (_, i) => `ID_${i}x`).join(' ')).length).toBe(MAX_DEP_FRAGMENTS)
+})
+
+function quotedLater(): SessionMessage[] {
+  return [
+    { role: 'user', text: 'find the key', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: { file_path: '/p/keys.txt' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'KEY_0042 = 2c5f\nTOKEN_X = shared_one', isError: false }] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'b', tool: 'Bash', input: { command: 'echo shared_one' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'b', text: 'ok', isError: false }] },
+    { role: 'assistant', text: 'The key is KEY_0042; shared_one is used too.', toolUses: [] },
+  ]
+}
+
+test('DependencyCheck — §05_05: an identifier of the original only in a later text of the agent is a hit; the same fragment in another row outside the target is none', async () => {
+  const rows = quotedLater()
+  const hits = dependencyHits(rows, { op: 'summarize', tool_use_id: 'a', summary: 's' })
+  expect(hits).toEqual({ rows: [5], examples: ['KEY_0042'] })
+  // TOKEN_X is in no later text; shared_one stays in the Bash input
+  expect(dependencyNote('summarize a', 'summarize', hits)).toBe(
+    'Note: summarize a — facts from it are quoted in your later text #5 (e.g. "KEY_0042"); after the edit only your replacement holds their source: keep them in it.',
+  )
+  expect(dependencyNote('drop a', 'drop', hits)).toContain('after the edit no row holds their source: summarize it instead to keep them.')
+  // the later text is itself a replacement: no hit
+  const replaced = rows.map((r, i) => (i === 5 ? { ...r, text: `${REWRITTEN}: The key is KEY_0042.` } : r))
+  expect(dependencyHits(replaced, { op: 'summarize', tool_use_id: 'a', summary: 's' })).toEqual({ rows: [], examples: [] })
+  // the fragment stands in a prompt too: another source, no hit
+  const said = rows.map((r, i) => (i === 0 ? { ...r, text: 'find KEY_0042' } : r))
+  expect(dependencyHits(said, { op: 'summarize', tool_use_id: 'a', summary: 's' }).examples).toEqual([])
+  // live run of phase 42: the value is quoted, the key also stands in the prompt;
+  // the value sits past MAX_DEP_FRAGMENTS filler tokens of the original
+  const filler = Array.from({ length: 150 }, (_, i) => `ID_${i}x = 0f${i}aa`).join('\n')
+  const big: SessionMessage[] = [
+    { role: 'user', text: 'the value of KEY_7781?', toolUses: [] },
+    rows[1]!,
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: `${filler}\nKEY_7781 = secret-value-9f3a2b`, isError: false }] },
+    { role: 'assistant', text: '**KEY_7781:** `secret-value-9f3a2b` (from cfg.txt, line 173).', toolUses: [] },
+  ]
+  expect(dependencyHits(big, { op: 'summarize', tool_use_id: 'a', summary: 'config file' })).toEqual({ rows: [3], examples: ['secret-value-9f3a2b'] })
+})
+
+test('DependencyCheck — ціль за операцією: summarize keeps the call input as a source, drop takes it with the result; a collapse takes texts, inputs and results of its span', async () => {
+  const rows = quotedLater()
+  rows[5] = { ...rows[5]!, text: 'Read /p/keys.txt: KEY_0042.' }
+  expect(dependencyHits(rows, { op: 'summarize', tool_use_id: 'a', summary: 's' }).examples).toEqual(['KEY_0042'])
+  expect(dependencyHits(rows, { op: 'drop', tool_use_id: 'a' }).examples).toEqual(['/p/keys.txt', 'KEY_0042'])
+  const span = { op: 'collapse' as const, from_index: 1, to_index: 4, summary: 's' }
+  expect(dependencyHits(rows, span).examples).toEqual(['/p/keys.txt', 'KEY_0042'])
+  // the later text inside the span is no later text
+  expect(dependencyHits(rows, { ...span, to_index: 5 })).toEqual({ rows: [], examples: [] })
+  // an unknown target: nothing
+  expect(dependencyHits(rows, { op: 'summarize', tool_use_id: 'zz', summary: 's' })).toEqual({ rows: [], examples: [] })
+})
+
+test('ApplyEdits — quoted: a summarize and a collapse marked quoted say "which you quoted from later"; unmarked ones do not', async () => {
+  const input = rows()
+  const marked = applyEdits(input, [{ op: 'summarize', tool_use_id: 'a', summary: 's', quoted: true }], '/s/1.json')
+  expect(marked.rows[3]!.toolResults![0]!.text.startsWith(`${SUMMARIZED_OF}WebSearch you had read here, which you quoted from later, with your own summary`)).toBe(true)
+  const span = prepare(input, [{ op: 'collapse', from_index: 4, to_index: 5, summary: 's' }]).queued[0]!
+  const folded = applyEdits(input, [{ ...span, quoted: true }], '/s/1.json')
+  expect(folded.rows.some(r => (r.toolResults ?? []).some(t => t.text.includes('rows you had read (WebFetch), which you quoted from later, with your own note')))).toBe(true)
+  const plainOut = applyEdits(input, prepare(input, [{ op: 'summarize', tool_use_id: 'a', summary: 's' }]).queued, '/s/1.json')
+  expect(plainOut.rows[3]!.toolResults![0]!.text).not.toContain('quoted')
+})
+
+test('TraceOwnCalls — у відповіді з викликом, що лишається: a kept call before the removed own call in one response: the trace folds into the rebuilt call row (MergeCallRows), never between a call and its result', async () => {
+  const input: SessionMessage[] = [
+    { role: 'user', text: 'task', toolUses: [], handle: 'p0' },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'y', tool: 'Read', input: {} }], handle: 'u1' },
+    ownCall('x', 'context_list', {}, 'u2'),
+    result('y', 'Y', 'r3'),
+    result('x', 'listing', 'r4'),
+  ]
+  const { rows: out } = dropOwnCallsCounted(input)
+  out.forEach((r, i) => {
+    for (const u of r.toolUses) expect((out[i + 1]!.toolResults ?? []).some(t => t.tool_use_id === u.tool_use_id)).toBe(true)
+  })
+  const traceAt = out.findIndex(r => r.text.includes(TRACE_OPENER))
+  expect(out[traceAt]!.toolUses.map(u => u.tool_use_id)).toEqual(['y'])
+  expect((out[traceAt + 1]!.toolResults ?? []).map(t => t.tool_use_id)).toEqual(['y'])
+})
+
+test('TraceText — open без назви: a refused open with no string stage reads "open a stage"', async () => {
+  expect(traceText([ownCall('x', 'context_tag', { tags: [{ op: 'open' }] }).toolUses[0]!])).toBe(`${TRACE_OPENER}; you had called context_tag to open a stage.`)
+})
+
+test('DependencyCheck — проза й значення входу: a trailing comma and markdown emphasis leave the fragment; a drop matches the input values, not their JSON escapes; a long hyphen run stays fast', async () => {
+  expect(fragments('Saw 1234567, then **/home/u/a.ts** and **KEY_0042**.')).toEqual(['1234567', '/home/u/a.ts', 'KEY_0042'])
+  const rows: SessionMessage[] = [
+    { role: 'user', text: 'run it', toolUses: [] },
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Bash', input: { command: 'type "C:\\tmp\\x_y1.txt"' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'ok', isError: false }] },
+    { role: 'assistant', text: 'I ran `type "C:\\tmp\\x_y1.txt"` on x_y1.', toolUses: [] },
+  ]
+  expect(dependencyHits(rows, { op: 'drop', tool_use_id: 'a' }).examples).toEqual(['type "C:\\tmp\\x_y1.txt"'])
+  const started = Date.now()
+  fragments('a-'.repeat(20000))
+  expect(Date.now() - started).toBeLessThan(500)
 })

@@ -142,7 +142,9 @@ test('BuildSeed — правки й медіа: summarize and drop applied, the 
   const shot = seed.rows.flatMap(r => r.toolResults ?? []).find(t => t.tool_use_id === 'b')!
   expect(shot.text).toBe(`${MARK} media carried as files (open them with Read): image/png ${FOLDER}/1.png`)
   expect(shot.text.endsWith(carryNote([{ mediaType: 'image/png', bytes: 8, data: PNG }], [`${FOLDER}/1.png`]))).toBe(true)
-  expect(JSON.stringify(seed.rows)).not.toContain('context_handoff')
+  expect(seed.rows.some(r => r.toolUses.some(u => u.tool.endsWith('context_handoff')))).toBe(false)
+  // [SP_CTX_02_64] the trace row names the removed call instead
+  expect(seed.rows.some(r => r.text === 'Later, your context_* calls here were removed when your edits applied; you had called context_handoff.')).toBe(true)
   expect(JSON.stringify(seed.rows)).not.toContain('Grep')
   expect(JSON.stringify(seed.rows)).not.toContain('x'.repeat(100))
   expect(seed.rows.every(r => r.handle === undefined)).toBe(true)
@@ -190,8 +192,8 @@ test('BuildSeed — модель бачить усе: no head, fromSummary false
   const seed = built((await seedOf()).out)
   expect(seed.fromSummary).toBe(false)
   expect(seed.rows[0]!.text).toBe('task: find KEY_0042')
-  // the context_handoff pair is the only one gone
-  expect(seed.rows.length).toBe(conversation().length - 2)
+  // the context_handoff pair is the only one gone; its trace row stands in its place
+  expect(seed.rows.length).toBe(conversation().length - 1)
 })
 
 const SUMMARY = `${SUMMARY_OPENER} that ran out of context. The conversation is summarized below:\nKEY_0042 = 2c5f\nIf you need specific details from before compaction, read the full transcript at: /home/u/.claude/projects/p/old.jsonl`

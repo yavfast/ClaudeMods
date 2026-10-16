@@ -33,7 +33,7 @@ import {
   type RepairIO,
   type RepairMemory,
 } from '../hooks/repair'
-import { MARK, SUMMARIZED } from '../hooks/rows'
+import { MARK, SUMMARIZED, TRACE_OPENER } from '../hooks/rows'
 import { collectMedia } from '../hooks/edits'
 import type { Read } from '../hooks/store'
 import type { TagRegistry } from '../hooks/tags'
@@ -165,6 +165,9 @@ test('RepeatsIn — без handle: a call id twice, an answer twice in one stret
   const plain = (rows: SessionMessage[]) => rows.map(r => ({ ...r, handle: undefined }))
   expect(repeatsIn(plain(k1()))).toBe(true)
   expect(repeatsIn([prompt('T1'), reply('alpha'), reply('alpha')])).toBe(true)
+  // [SP_CTX_02_64] two trace rows of one stretch that read the same are no repeat
+  const trace = `${TRACE_OPENER}; you had called context_list.`
+  expect(repeatsIn([prompt('T1'), reply(trace), reply('beta'), reply(trace)])).toBe(false)
   expect(repeatsIn([prompt('T1'), reply('ok'), prompt('T2'), reply('ok')])).toBe(false)
   expect(repeatsIn([prompt('go'), use('a'), result('a'), reply('done')])).toBe(false)
 })

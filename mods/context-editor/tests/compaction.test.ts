@@ -146,6 +146,8 @@ test('media that cannot be written blocks the edit and keeps the media row', asy
   const media = kept.messages.find(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'a'))!
   expect(media).toBe(rows[4])
   expect(kept.messages.filter(r => isReplacementText(r.text) || (r.toolResults ?? []).some(t => isReplacementText(t.text))).map(r => r.text)).toEqual([
+    // [SP_CTX_02_64] the trace row of the removed context_list pair
+    'Later, your context_* calls here were removed when your edits applied; you had called context_list.',
     'Later, your context_edit rewrite call replaced the text of this row with your own rewrite (original: /s/1000.json, open with Read): short',
   ])
   expect(mixed.written.queue!.report).toContain('applied 1 edit(s): rewrite #5')
@@ -586,9 +588,9 @@ test('HandleCompaction — produced and the stage marks: the made row in the ret
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, tags)
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
-  // the context_list pair is gone: the made result row stands at #2 of the returned list
-  expect(out.messages.length).toBe(3)
-  expect(written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(out.messages[2]!), hint: 2 })
+  // the context_list pair is gone and its trace row stands at #1: the made result row is #3
+  expect(out.messages.length).toBe(4)
+  expect(written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(out.messages[3]!), hint: 3 })
   expect(written.tags!.stage!.after).toEqual({ anchor: fingerprint(rows[0]!), hint: 0 })
 })
 
@@ -604,10 +606,11 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
   const { io, written } = harness(okRead({ ...EMPTY_QUEUE, edits }))
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
-  // two own pairs went: the rewritten row is #3, the summarized result #2
-  expect(out.messages[3]!.text).toContain(REWRITTEN)
-  expect(out.messages[2]!.toolResults![0]!.text).toContain(SUMMARIZED_OF)
-  expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #3); summarize a (now #2).')
+  // two own pairs of one stretch went, one trace row came: the rewritten row is #4, the summarized result #3
+  expect(out.messages[1]!.text).toBe('Later, your context_* calls here were removed when your edits applied; you had called context_list, context_note (0 added, 0 removed).')
+  expect(out.messages[4]!.text).toContain(REWRITTEN)
+  expect(out.messages[3]!.toolResults![0]!.text).toContain(SUMMARIZED_OF)
+  expect(written.queue!.report).toContain('applied 2 edit(s): rewrite #7 (now #4); summarize a (now #3).')
   // the stage marks still follow the edits matched by their plain descriptions
   expect(written.tags).toBeDefined()
   // [PL_AUD_CTX_P6] TST-18: marks on the two replaced rows go to their made rows
@@ -619,8 +622,8 @@ test('HandleCompaction — NowIndex після DropOwnCalls: the report names th
   const marked = harness(okRead({ ...EMPTY_QUEUE, edits }), {}, tags)
   const again = await handleCompaction(marked.io, rows)
   if (!('messages' in again)) throw new Error(again.skip)
-  expect(marked.written.tags!.stage!.after).toEqual({ anchor: fingerprint(again.messages[2]!), hint: 2 })
-  expect(marked.written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(again.messages[3]!), hint: 3 })
+  expect(marked.written.tags!.stage!.after).toEqual({ anchor: fingerprint(again.messages[3]!), hint: 3 })
+  expect(marked.written.tags!.lastClosed!.end).toEqual({ anchor: fingerprint(again.messages[4]!), hint: 4 })
 })
 
 // [SP_CTX_02_14] [SP_CTX_01_05] notesDropped
@@ -633,7 +636,7 @@ test('HandleCompaction — notes: a note on a summarized pair moves; the report 
   const out = await handleCompaction(io, conversation())
   if (!('messages' in out)) throw new Error(out.skip)
   expect(written.tags!.notes.map(n => n.id)).toEqual(['n1'])
-  expect(written.tags!.notes[0]!.target).toEqual({ anchor: fingerprint(out.messages[2]!), hint: 2 })
+  expect(written.tags!.notes[0]!.target).toEqual({ anchor: fingerprint(out.messages[3]!), hint: 3 })
   expect(written.queue!.report).toContain('Notes dropped (their rows were removed): n2.')
   const failing = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 's' }]), {
     writeTags: async () => {
@@ -760,8 +763,10 @@ test('HandleCompaction — доставка за службовим виклик
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   const at = out.messages.findIndex(r => r.text === DELIVERED)
-  expect(at).toBe(1)
+  // the trace row of the context_list pair stands before it
+  expect(at).toBe(2)
   expect(out.messages[0]!.text).toBe('task')
+  expect(out.messages[1]!.text.startsWith('Later, your context_* calls here')).toBe(true)
   expect(out.messages.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
   // every call has its result in the next row
   out.messages.forEach((r, i) => {
@@ -831,7 +836,7 @@ test('HandleCompaction — доставка за службовим виклик
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   expect(out.messages.some(r => r.toolUses.some(u => u.tool_use_id === 'z'))).toBe(false)
-  expect(out.messages.findIndex(r => r.text === DELIVERED)).toBe(1)
+  expect(out.messages.findIndex(r => r.text === DELIVERED)).toBe(2)
 })
 
 test('HandleCompaction — нечитабельний файл доставок: the edits apply without inserts; the report says why', async () => {

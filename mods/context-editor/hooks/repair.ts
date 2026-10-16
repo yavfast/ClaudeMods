@@ -19,7 +19,7 @@ import { boundaryOf, checkPairs, collectMedia, mediaExt, mergeCallRows, ownerKey
 import type { Journal } from './journal'
 import { rebindAfter } from './notes'
 import { MAX_QUEUE_BYTES } from './queue'
-import { errorText, isBlankRow, isPromptRow, isReplacementText, modText, resultsOf, squash } from './rows'
+import { errorText, isBlankRow, isPromptRow, isReplacementText, modText, resultsOf, squash, TRACE_OPENER } from './rows'
 import { bytes, isCount, jsonObject, type Held, type Read } from './store'
 import type { TagRegistry } from './tags'
 
@@ -270,7 +270,8 @@ export function repeatsIn(rows: readonly SessionMessage[]): boolean {
       if (ids.has(key)) return true
       ids.add(key)
     }
-    if (r.role === 'assistant' && r.text.trim()) {
+    // [SP_CTX_02_64] two trace rows of one stretch may read the same: no repeat
+    if (r.role === 'assistant' && r.text.trim() && !r.text.startsWith(TRACE_OPENER)) {
       const key = `${at}:${squash(r.text)}`
       if (texts.has(key)) return true
       texts.add(key)
