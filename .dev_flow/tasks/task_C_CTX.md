@@ -27,6 +27,11 @@
 
 ## Subtasks
 
+### Subtask: Фаза 46 — правила курування і тексти навички
+**Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
+Запит розробника: «Ok. Продовжуй». Рішення перед фазою (AskUserQuestion, дослівно): «Вмикати, пакетом (Recommended)» — правила виправлень без прогону на акаунті від 2026-08-31. Зачеплено новий `skills/context-stages/curation.md`, `hooks/stages.ts` (CurationRules, RULES_FILE, INTRO_TEXT, STAGE_ADVICE), `register.ts` (ListIO.rules), `tools.ts` (поле `rules`, речення в описі `context_list`), SKILL.md, `tests/skill-limits.sh`, тести stages/boundary; CLAUDE.md; навичка history-editing-evidence.
+Progress: [x] код і тести (979 зелені, `tsc`, validate, skill-limits) · [x] документи (curation.sp 02_69 «Реалізація», 03_03, 05_05, changelog; constants.sp INTRO_TEXT/STAGE_ADVICE; p46 [DONE]) · [x] рев'ю (pass with advisories; виправлено 1–6: план (4 рядки, прогін), thinking на всіх акаунтах, перша `state` замінює текст слота, відмова `drop` при медіа і де стоїть список, текст правил зникає при застосуванні, «no rules port») · [x] живий прогін «Правила курування» 2/2 (`.dev_flow/cache/live-test/curation-p46/`) · [x] коміт (розробник: «ok»)
+
 ### Subtask: Фаза 45 — рядки хоста: запис і список з `id`
 **Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
 Запит розробника: «/dev-flow do продовжуй реалізацію наступних фаз згідно плану», далі «/dev-flow do продовжуй». Зачеплено новий `hooks/hostrows.ts`, `edits.ts` (варіант `drop` з `host`, Detach, `hostLines`), `compaction.ts` (записи, рядок про рядки, що пішли, KeepHostRows, спостерігач), `register.ts` (сховище, запис у `session.append`, вікно копій, порти), `queue.ts`, `handoff.ts`, `stages.ts`, `store.ts` (ланцюжок `hostrows`), `rows.ts` (`hostKind`), `tools.ts` (2043/2048), `capabilities.ts`, `tags.ts`, CLAUDE.md.

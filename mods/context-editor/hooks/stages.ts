@@ -67,7 +67,7 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT = modText(
-  'you can manage your own context. At the start of a logical stage of the task call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when the stage is done, {"tags":[{"op":"close"}]} returns its rows, size, cleanup candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages stay verbatim; rules and skills in use usually too). If you end your turn with the block done, make [context-editor: optimize] the last line of your final answer: the block waits, and you compress it when the next stage begins. context_list with "count":0 shows context telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages.',
+  'you can manage your own context. At the start of a logical stage call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when it is done, {"tags":[{"op":"close"}]} returns its rows, size, candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages stay verbatim; rules and skills in use usually too). If you end your turn with the block done, make [context-editor: optimize] the last line of your answer: the block waits; compress it when the next stage begins. context_list with "count":0 shows telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages; curation rules: context_list with "rules":true.',
 )
 
 // [SP_CTX_02_27] [SP_CTX_DEC_36] The opener of the skill's guide in the
@@ -80,7 +80,7 @@ export const GUIDE_FRAME = modText(
 // waiting for compression and of the /compact turn; it names the reproducible pairs by the listing's `~`
 // flag (REPRO_FLAG, [SP_CTX_01_12]).
 export const STAGE_ADVICE =
-  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), stay verbatim: edits that cover them are refused. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Usually keep verbatim the rules and skills still in force, and the conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
+  "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. The person's messages, including answers to your questions (AskUserQuestion), stay verbatim: edits that cover them are refused. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Compress failed attempts into a lesson: tried X ×N → failed because Y → do Z. Usually keep verbatim the rules and skills still in force, and the conclusions you need next. Originals stay readable with Read. If nothing needs compressing, queue nothing."
 
 export { distinctive, estimate }
 
@@ -638,9 +638,15 @@ export type ListIO = {
   hostAttach?: (dir: string) => Promise<{ copies: number; chars: number } | undefined>
   // [SP_CTX_02_61] the host rows' records in `dir`; absent or none: no list
   hostRows?: (dir: string) => Promise<readonly HostRowRecord[]>
+  // [SP_CTX_02_69] the text of RULES_FILE from the plugin's root; throws when unreadable
+  rules?: () => Promise<string>
 }
 
-export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown }
+export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown; rules?: unknown }
+
+// [SP_CTX_02_69] The curation rules: the skill's second file, which
+// context_list with "rules": true returns ([SP_CTX_DEC_43]).
+export const RULES_FILE = 'curation.md'
 
 // [SP_CTX_02_01] The listing's labels: stage marks, then tag labels, then
 // note marks; the note lines under the page. None without storage; an
@@ -670,8 +676,24 @@ export function listAliases(read: Read<AliasRegistry> | undefined): { aliases: M
 // telemetry, or one row whole. [SP_CTX_02_18] Only a page with rows renews
 // listedKey: `count: 0` and `full` do not. The due reminders go with the
 // result once it is built ([SP_CTX_02_33]).
+// [SP_CTX_02_69] [SP_CTX_03_03] "rules": true returns the curation rules in
+// place of the listing and takes no other parameter (BAD_RULES); an unreadable
+// file is the mod's line, not a refusal.
+async function curationRules(io: ListIO, args: ListArgs): Promise<{ result: string } | { deny: string }> {
+  if (args.rules !== true) return { deny: '"rules" takes only true: it returns the curation rules (BAD_RULES)' }
+  const other = (['from', 'count', 'index', 'full'] as const).filter(k => args[k] !== undefined)
+  if (other.length) return { deny: `"rules": true takes no other parameter (${other.join(', ')}) (BAD_RULES)` }
+  try {
+    if (!io.rules) throw new Error('no rules port')
+    return { result: await io.rules() }
+  } catch (err) {
+    return { result: modText(`the curation rules could not be read: ${errorText(err)}`) }
+  }
+}
+
 export async function contextList(io: ListIO, args: ListArgs): Promise<{ result: string } | { deny: string }> {
   if (args.agentId) return { deny: 'only the main conversation can be listed and edited.' }
+  if (args.rules !== undefined) return curationRules(io, args)
   const { rows, key } = await io.view()
   const mode = listMode(args, rows.length)
   if ('bad' in mode) return { deny: mode.bad }

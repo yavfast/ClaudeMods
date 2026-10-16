@@ -134,6 +134,8 @@ test('опис інструмента (phase 15): the state slot, the range, the
   expect(LIST_DESCRIPTION).toContain('[review: reason]')
   expect(LIST_DESCRIPTION).toContain('[state]')
   expect(LIST_DESCRIPTION).toContain('[disposable #a..#b: note]')
+  // [SP_CTX_02_69] the curation rules
+  expect(LIST_DESCRIPTION).toContain('{"rules":true} gives the curation rules')
 })
 
 test('stale indexes: collapse and rewrite are refused, edits by id still queue', async () => {

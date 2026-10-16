@@ -30,7 +30,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, contextList, detectOptimize, endWaiting, guideText, introFor, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, contextList, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { modText, REPAIR_MARKER } from './rows'
 import {
@@ -1031,6 +1031,8 @@ function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
     },
     // [SP_CTX_02_61] the host rows' records
     hostRows: dir => hostRowsNow($, dir),
+    // [SP_CTX_02_69] the mod reads its own file: no permission asked
+    rules: () => $.fs.read(`${$.plugin.root}/skills/${SKILL}/${RULES_FILE}`),
   }
 }
 

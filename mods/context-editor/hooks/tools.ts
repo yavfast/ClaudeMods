@@ -21,7 +21,7 @@ export const NOTE = 'context_note'
 // [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
 export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
 
-The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, the cleanup candidates by reason with their rows, and, when there is something to show, the effect of applications and your state slot. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest ${ROW_WINDOW} rows are visible.`
+The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, the cleanup candidates by reason with their rows, and, when there is something to show, the effect of applications and your state slot. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest ${ROW_WINDOW} rows are visible. {"rules":true} gives the curation rules.`
 
 const LIST_SCHEMA = {
   type: 'object',
@@ -32,6 +32,10 @@ const LIST_SCHEMA = {
     full: {
       type: 'boolean',
       description: `Show the row "index" whole (up to ${MAX_FULL_ROW} chars), e.g. to check a summary before reading an archive; from and count are ignored.`,
+    },
+    rules: {
+      type: 'boolean',
+      description: 'true: return the curation rules (lessons from failures, corrections, quoting, the state op, host rows) in place of the listing; takes no other parameter.',
     },
   },
 }

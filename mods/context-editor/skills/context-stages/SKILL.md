@@ -7,7 +7,7 @@ description: Open this for a long or multi-stage task with the context-editor mo
 
 The context-editor mod lets you edit your own conversation. You decide when to clean, by the logical state of the work. Attention degrades as the context grows: compress what is processed once a piece of work is done. The host's auto-compaction is only a safety net.
 
-Tools: `context_tag`, `context_list`, `context_edit`, `context_note`.
+Tools: `context_tag`, `context_list`, `context_edit`, `context_note`. Curation rules (lessons from failures, corrections, quoting, state items, host rows): `context_list` with `"rules": true`.
 
 ## Stages
 

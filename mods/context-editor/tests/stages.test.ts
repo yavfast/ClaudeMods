@@ -649,7 +649,9 @@ test('SessionIntro — introFor and withIntroduced with reintroduce', async () =
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
-  expect(INTRO_TEXT.length).toBe(998)
+  expect(INTRO_TEXT.length).toBe(997)
+  // [SP_CTX_02_69] the curation rules
+  expect(INTRO_TEXT).toContain('curation rules: context_list with "rules":true')
   // [SP_CTX_02_37] the suggestion line in a few words: it only informs (phase 23)
   expect(INTRO_TEXT).toContain('A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work.')
   expect(INTRO_TEXT.includes('Nothing reminds you by size')).toBe(false)
@@ -1316,6 +1318,34 @@ test('contextList — a page with rows renews listedKey; its aliases, labels and
   expect(out.result.endsWith('\nDUE')).toBe(true)
   // the telemetry reads the API form again for its Cache line ([SP_CTX_02_38])
   expect(log.calls).toEqual(['view', 'api', 'storage', 'tags /s', 'aliases /s', 'journal /s', 'api', 'due'])
+})
+
+test('CurationTexts — "rules": true returns the curation rules in place of the listing; it reads no rows and renews no listedKey', async () => {
+  const { io, log } = listHarness({ rules: async () => '# Curation rules\n…' })
+  const out = await contextList(io, { rules: true })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(out.result).toBe('# Curation rules\n…')
+  expect(log.calls).toEqual([])
+  expect(log.listed).toBe(undefined)
+})
+
+test('CurationTexts — the rules file cannot be read: the mod\'s line with the error, not a refusal', async () => {
+  const gone = await contextList(listHarness({ rules: async () => { throw new Error('ENOENT: curation.md') } }).io, { rules: true })
+  const none = await contextList(listHarness().io, { rules: true })
+  expect(gone).toEqual({ result: 'context-editor: the curation rules could not be read: ENOENT: curation.md' })
+  expect(none).toEqual({ result: 'context-editor: the curation rules could not be read: no rules port' })
+})
+
+test('CurationTexts — "rules" takes no other parameter and only true (BAD_RULES); a subagent is refused first', async () => {
+  const io = listHarness({ rules: async () => 'R' }).io
+  const withCount = await contextList(io, { rules: true, count: 0 })
+  const withFull = await contextList(io, { rules: true, index: 1, full: true })
+  const notTrue = await contextList(io, { rules: 'yes' })
+  const sub = await contextList(io, { rules: true, agentId: 'a1' })
+  expect(withCount).toEqual({ deny: '"rules": true takes no other parameter (count) (BAD_RULES)' })
+  expect(withFull).toEqual({ deny: '"rules": true takes no other parameter (index, full) (BAD_RULES)' })
+  expect(notTrue).toEqual({ deny: '"rules" takes only true: it returns the curation rules (BAD_RULES)' })
+  expect(sub).toEqual({ deny: 'only the main conversation can be listed and edited.' })
 })
 
 test('contextList — рядки хоста: the header line names them (count 0 too), the list follows a page that holds the newest row; the indexes stay', async () => {
