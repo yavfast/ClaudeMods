@@ -552,6 +552,14 @@ export type PassedCompactIO = {
   boundaryOf: (rows: readonly SessionMessage[], host?: string) => Boundary | undefined
 }
 
+// [SP_CTX_02_55] OBSERVE_LATER: right after the host's summary the read may
+// not hold it yet (host 2.1.299); the observer runs again at the next turn
+// start, only in the same session and while the handler saw no compaction.
+export type BriefWait = { before: readonly SessionMessage[]; session: string | undefined; seen: number }
+export function briefLater(wait: BriefWait | undefined, session: string | undefined, seen: number): readonly SessionMessage[] | undefined {
+  return wait && wait.session === session && wait.seen === seen ? wait.before : undefined
+}
+
 // [SP_CTX_02_55] OBSERVE_NO_PREFIX: no boundary; the tags and the queue as for any compaction.
 export async function observePassedCompact(io: PassedCompactIO, before: readonly SessionMessage[], after: readonly SessionMessage[]): Promise<'none' | 'boundary' | 'no-prefix'> {
   const { compacted, copies } = passedCopies(before, after)

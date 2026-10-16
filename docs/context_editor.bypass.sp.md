@@ -122,8 +122,13 @@ Input: рядки основної розмови (CurrentRows), реєстр т
         brief = CompactBrief(...) ; on failure: brief = BRIEF_HEAD             # BRIEF_FAILED: команда все одно йде з коротким брифом
         before = main conversation rows (one read)
         result = await next(e with args = brief)                               # підсумок хоста; хук на нього чекає
-        IF the host compacted (result has no skip/error) AND storage ready:
+        IF the host compacted (next resolved: a failed summary rejects it, and the hook's .catch runs) AND storage ready:
             ObservePassedCompact(before, rows now)
+            IF it found no summary in the rows now:                            # OBSERVE_LATER: хост 2.1.299 показує підсумок у читанні не одразу після next
+                remember (before, session, passSeen)                           # новий /compact з брифом спершу забуває попереднє
+    ON prompt.submit (before the report), else ON turn.start:                  # до вступу після компактизації і до того, як модель прочитає рядки
+        IF remembered AND same session AND passSeen unchanged: ObservePassedCompact(before, rows now)
+        forget
 
     ObservePassedCompact(before, after) =                                      # SP_CTX_02_18 без події компактизації
         added = after rows from len(before) on when after starts with before (by fingerprint), else after
@@ -203,6 +208,9 @@ Purpose: мод у процесі-зонді (`$.env.get('CONTEXT_EDITOR_PROBE')
         session.append (any door): counts.doors[door] + 1; next(e) unchanged
         turn.complete: write PROBE_FILE in cwd = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано
         session.compact with instructions = PROBE_MARKER: write PROBE_FILE; RETURN { skip: PROBE_PREFIX + " " + JSON(counts) }
+        session.compact, other instructions: next(e) unchanged   # без спостерігача: межі не пише
+        tool.call (any tool): the result unchanged   # без псевдонімів, тегів, сховища
+        command.run compact, handoff: next(e) unchanged   # нічого не ставить у чергу: сховища немає; /handoff іншого плагіна з тим самим іменем іде далі
         tools context_*: not registered (the probe makes no model request, so no tool call comes)
 
 Errors: запис PROBE_FILE не вдався — ParseProbe бере лише `result` (компактизація є, вкладень немає); інші хуки — як без ProbeMode.
@@ -215,3 +223,6 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лише
 | 2026-10-14 | Перевірка можливостей процесом-зондом раз на версію хоста замість межі версії (рішення розробника, [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31) (а) D): 02_53 Capabilities (живі ознаки, зонд, кеш), 02_56 RunProbe, 02_57 ProbeMode; `hooks/bypass.ts` → `hooks/capabilities.ts` |
 | 2026-10-14 | Код фази 38: Fit тримає BRIEF_HEAD і BRIEF_RECORDS; ProbeMode не реєструє інструментів; NoteCommandUnseen за лічильником `ownSeen`; Flush при обході знімає запит ходу стискання |
 | 2026-10-14 | Рев'ю фази 38: NeedsProbe (запис без вердикту зонда — новий зонд), HostBinary, NotePassCompaction і `passSeen`, рядок людині для кожної можливості, ObservePassedCompact лише з рядком підсумку хоста і з очищенням відповідей про вкладення, заміни з тегів при обході |
+| 2026-10-16 | 02_57: у ProbeMode `/compact` і `/handoff` людини йдуть далі без змін: наживо керований мод у ProbeMode відповів на `/handoff` копії мода і записав чергу в сховище (живий сценарій обходу з копією поруч із керованим модом); так само `session.compact` з іншими інструкціями і `tool.call` — без сховища: наживо спостерігач чужої компактизації записав межу, а хук виклику створив теку сесії |
+| 2026-10-16 | 02_55: OBSERVE_LATER — наживо (хост 2.1.299, копія мода поруч із керованим) читання одразу після `next` у хуку `/compact` ще не мало підсумку (18 рядків до і після): межі не було, черга лишилась, `context_list` показував рядки до підсумку; спостерігач повторюється на початку наступного ходу |
+| 2026-10-16 | 02_55 за рев'ю: OBSERVE_LATER спершу на промпті людини (до звіту, щоб вступ після компактизації не запізнився), інакше на початку ходу; новий `/compact` з брифом забуває попереднє очікування; «хост зробив підсумок» — `next` розв'язався (тип результату `command.run` не має skip/error) |

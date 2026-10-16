@@ -1,14 +1,15 @@
 # Редактор контексту агента — Implementation Plan: фаза 38 — Можливості хоста: зонд раз на версію, вимкнення пропущеного
 
 > **Code:** PL_CTX (дочірній файл набору)
-> **Status:** in-progress
-> **Updated:** 2026-10-15
+> **Status:** completed
+> **Updated:** 2026-10-16
 > **Umbrella:** [PL_CTX](./context_editor.plan.md)
 
-### Phase 38 — Можливості хоста: зонд раз на версію, вимкнення пропущеного [IN PROGRESS]  {#PL_CTX_P38}
+### Phase 38 — Можливості хоста: зонд раз на версію, вимкнення пропущеного [DONE]  {#PL_CTX_P38}
 
 **Depends on:** Phase 37 (BlockReport, WaitingAdvice), Phase 32 (ремонт), Phase 25 (`/compact` людини).
 **Status (2026-10-14):** код, тести (889 pass), рев'ю з чистим контекстом (1 must і 11 should/prefer виправлено) і живі сценарії з керованим модом (зонд на 2.1.296 і 2.1.299, кеш, живе проти кешу, ProbeMode) — зроблено. Живий сценарій самого обходу на 2.1.299 (`--plugin-dir` без керованого мода) відкладено рішенням розробника; файли — `.dev_flow/cache/live-test/phase38b/`.
+**Result (2026-10-16):** живі сценарії в stream-json пройдено (`.dev_flow/cache/live-test/phase38c/results.md`): обхід — копією мода (`ce-gate`) через `--plugin-dir` поруч із керованими налаштуваннями, без зміни `/etc`; кеш і живі ознаки, керований мод, ремонт з першого ходу (2.1.296). Прогін дав два виправлення: ProbeMode не пише в сховище і пропускає `/compact`, `/handoff`, чужу компактизацію і `tool.call` ([SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57)); OBSERVE_LATER — спостерігач `/compact` з брифом повторюється на початку наступного ходу, бо хост 2.1.299 показує підсумок у читанні не одразу ([SP_CTX_02_55](./context_editor.bypass.sp.md#SP_CTX_02_55)). Термінал не перевірено.
 **Implements:** [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11); [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38); [SP_CTX_01_25](./context_editor.records.sp.md#SP_CTX_01_25), [SP_CTX_01_26](./context_editor.records.sp.md#SP_CTX_01_26), [SP_CTX_02_53](./context_editor.bypass.sp.md#SP_CTX_02_53)–[SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57); спайк [context_editor_probe](./context_editor_probe.spike.md); посилання в 02_02, 02_06, 02_08, 02_19–02_21, 02_29, 02_37, 02_42, 02_46.
 **Verify:** [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) рядки Capabilities, RunProbe, ParseProbe, ProbeMode, context_edit/context_handoff/HandoffCommand/RunHandoff/Flush/DeliverReport/BlockReport «обхід», CompactRoute «обхід», CompactBrief, ObservePassedCompact, ScheduleRepair «перший хід процесу»; [SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Зонд на 2.1.296 і 2.1.299», «Кеш і живі ознаки», «Обхід: виявлення і відмови», «/compact при обході», «Керований мод», «Ремонт з першого ходу»; tsc, `claude plugin test`, `claude plugin validate`, skill-limits.
 
@@ -32,3 +33,4 @@
 | Date | Change |
 |------|--------|
 | 2026-10-15 | Розділ перенесено дослівно з [context_editor.plan.md](./context_editor.plan.md): поділ плану по фазах (structural-event) |
+| 2026-10-16 | Фазу завершено: живі сценарії обходу в stream-json, виправлення ProbeMode і OBSERVE_LATER |

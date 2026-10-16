@@ -86,6 +86,8 @@ import {
   noteTurn,
   noticeOnce,
   observePassedCompact,
+  briefLater,
+  type BriefWait,
   parseCapCache,
   PROBE_FILE,
   PROBE_MARKER,
@@ -201,6 +203,8 @@ const repairMem = newRepairMemory()
 // [SP_CTX_01_25] the host's capabilities: one per host process
 const caps = newCapabilities()
 let capsLoaded = false
+// [SP_CTX_02_55] a /compact with the brief whose summary the read did not show yet
+let briefWait: BriefWait | undefined
 // [SP_CTX_02_57] the mod in a probe process, read once; what it counted
 let probeFlag: Promise<boolean> | undefined
 const probeCounts: ProbeCounts = { attachments: 0, doors: {} }
@@ -1194,12 +1198,12 @@ async function briefNow($: EngineInterface): Promise<string> {
 }
 
 // [SP_CTX_02_55] ObservePassedCompact after the host's summary under the brief.
-async function observeBrief($: EngineInterface, before: readonly SessionMessage[]): Promise<void> {
+async function observeBrief($: EngineInterface, before: readonly SessionMessage[]): Promise<'none' | 'boundary' | 'no-prefix' | undefined> {
   const after = await $.session.messages()
   const dir = await storageDir($)
-  if (!dir) return
+  if (!dir) return undefined
   const s = stores($, dir)
-  await observePassedCompact(
+  return observePassedCompact(
     {
       hostId: () => peekHostId(hostId),
       writeBoundary: b => writeBoundaryAt($, dir, b),
@@ -1215,6 +1219,16 @@ async function observeBrief($: EngineInterface, before: readonly SessionMessage[
     before,
     after,
   )
+}
+
+// [SP_CTX_02_55] OBSERVE_LATER: the host's summary under the brief, observed
+// at the person's next prompt or the next turn start, whichever comes first.
+async function observeLater($: EngineInterface): Promise<void> {
+  const wait = briefWait
+  if (!wait) return
+  briefWait = undefined
+  const before = briefLater(wait, await $.session.id().catch(() => undefined), caps.passSeen)
+  if (before) await observeBrief($, before).catch(() => undefined)
 }
 
 // [SP_CTX_02_57] The probe process's counts, in its working folder.
@@ -1340,6 +1354,8 @@ export const register: Register = on => {
     copied.clear()
     // [SP_CTX_02_60] so did the rows of the mod's own commands
     closeWindow(hostMem)
+    // [SP_CTX_02_55] OBSERVE_LATER, for a turn the person's prompt did not start
+    await observeLater($)
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -1353,7 +1369,11 @@ export const register: Register = on => {
   }).catch(($, e, next) => (next.called ? next(e) : deny(`handoff failed: ${next.error.kind}`)))
 
   // [SP_CTX_02_20] A handler no turn waits on: its deferred action may run commands.
-  on('command.run', { command: 'handoff' }, async ($, e) => ({ text: await handoffCommand(handoffIO($), handoff, e.args) })).catch(($, e, next) =>
+  on('command.run', { command: 'handoff' }, async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode registers no /handoff: another plugin's goes on unchanged
+    if (await isProbe($)) return next(e)
+    return { text: await handoffCommand(handoffIO($), handoff, e.args) }
+  }).catch(($, e, next) =>
     // [SP_CTX_02_20] no mod prefix: the host shows the reply under the plugin's name
     next.called ? next(e) : { text: `handoff failed: ${next.error.kind}` },
   )
@@ -1364,15 +1384,23 @@ export const register: Register = on => {
   // A run the host raised beneath the mod's own $.command.run skips this hook
   // (re-entry): the handler lets it through, as it does after `next`.
   on('command.run', { command: 'compact' }, async ($, e, next) => {
+    // [SP_CTX_02_57] ProbeMode: the person's /compact goes on unchanged
+    if (await isProbe($)) return next(e)
     const out = await personCompact(personCompactIO($, () => next.signal.aborted), e, () => isPlanned(flushState, Date.now()))
     if ('text' in out) return { text: out.text }
     if (!out.brief) return out.next === e.args ? next(e) : next({ ...e, args: out.next })
     // [SP_CTX_02_55] the host's summary under the brief, then ObservePassedCompact
     const before = await $.session.messages().catch(() => undefined)
     const seen = caps.passSeen
+    // an earlier brief's wait: this summary supersedes it
+    briefWait = undefined
     const done = await next({ ...e, args: out.next })
     // the handler saw it after all: its observer did the work
-    if (before && caps.passSeen === seen) await observeBrief($, before).catch(() => undefined)
+    if (before && caps.passSeen === seen) {
+      const seenNow = await observeBrief($, before).catch(() => undefined)
+      // OBSERVE_LATER: the read does not hold the summary yet
+      if (seenNow === 'none') briefWait = { before, session: await $.session.id().catch(() => undefined), seen }
+    }
     return done
   }).catch(($, e, next) => {
     const out = compactFailure(e, { called: next.called, kind: next.error.kind })
@@ -1460,7 +1488,8 @@ export const register: Register = on => {
   // `session.compact` hook per module.)
   on('session.compact', async ($, e, next) => {
     // [SP_CTX_02_57] ProbeMode: the probe's marker is answered with the counts
-    if (e.instructions === PROBE_MARKER && (await isProbe($))) {
+    if (await isProbe($)) {
+      if (e.instructions !== PROBE_MARKER) return next(e)
       await writeCounts($)
       return { skip: probeSkip(probeCounts) }
     }
@@ -1653,6 +1682,8 @@ export const register: Register = on => {
   on('tool.call', async ($, e, next) => {
     const done = await next(e)
     if (e.agentId || done.deny !== undefined || String(e.tool).startsWith(OWN_TOOLS)) return done
+    // [SP_CTX_02_57] ProbeMode: no aliases, tags or storage
+    if (await isProbe($)) return done
     const facts = callFacts(e, done)
     if (!remindable(facts)) return done
     const lines: string[] = []
@@ -1713,6 +1744,8 @@ export const register: Register = on => {
     // [SP_CTX_02_52] a sweep of another process packed this session's storage
     const st = storage.state
     if (await needsRestore({ exists: path => $.fs.exists(path).catch(() => false) }, dirOf(st), 'reason' in st ? st.reason : undefined)) await prepareStorage($)
+    // [SP_CTX_02_55] OBSERVE_LATER: before the report reads the tags and the boundary
+    await observeLater($)
     const dir = await storageDir($)
     if (!dir) return next(e)
     const s = stores($, dir)

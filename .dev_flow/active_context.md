@@ -4,6 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
+- `/dev-flow resume task_C_CTX` — `implement` — фаза 38 (можливості хоста) завершується: живі сценарії обходу в stream-json пройдено копією мода поруч із керованими налаштуваннями (без `/etc`), виправлено ProbeMode і OBSERVE_LATER; рев'ю pass with advisories (виправлено); закомічено; усі фази PL_CTX виконано, далі — backlog — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 46 (правила курування і тексти навички) реалізована: рішення розробника «Вмикати, пакетом»; рев'ю pass with advisories (виправлено), живий прогін 2/2; закомічено; фази 39–46 курування — останні в плані — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 45 (рядки хоста) реалізована: рев'ю pass with advisories (виправлено), живий прогін 4 сесії (RebaseHostRows за знахідкою прогону); повторне рев'ю pass with advisories (перевірка голови); закомічено; далі — фаза 46 (правила курування і тексти навички) — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 44 (пункти слота стану) виконана: рев'ю pass with advisories (виправлено), живий прогін 2/2 на 2.1.296; закомічено; далі — фаза 45 (рядки хоста) — 2026-10-16

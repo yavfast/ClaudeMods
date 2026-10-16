@@ -2,6 +2,7 @@ import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import {
   BRIEF_HEAD,
+  briefLater,
   briefedQueue,
   briefedTags,
   hostBinary,
@@ -391,4 +392,13 @@ test('ObservePassedCompact — реєстр і черга: lastApply goes, intro
   const q: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a' }], keepCache: true, resume: false, resumePrompt: 'go', resumeSet: true }
   expect(briefedQueue(q, EMPTY_QUEUE)).toEqual({ ...q, edits: [], keepCache: false, resume: EMPTY_QUEUE.resume, resumePrompt: EMPTY_QUEUE.resumePrompt, resumeSet: false })
   expect(briefedQueue({ ...EMPTY_QUEUE }, EMPTY_QUEUE)).toBeUndefined()
+})
+
+test('BriefLater — OBSERVE_LATER: the rows before come back only in the same session while the handler saw no compaction', () => {
+  const before = [] as SessionMessage[]
+  const wait = { before, session: 's1', seen: 2 }
+  expect(briefLater(wait, 's1', 2)).toBe(before)
+  expect(briefLater(wait, 's2', 2)).toBeUndefined()
+  expect(briefLater(wait, 's1', 3)).toBeUndefined()
+  expect(briefLater(undefined, 's1', 2)).toBeUndefined()
 })
