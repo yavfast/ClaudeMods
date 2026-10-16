@@ -100,7 +100,7 @@ Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its bloc
 Kinds (op "add"):
 - "pin": nothing may edit the target, neither you nor the replacements of disposable tags. Pins are yours to set and remove.
 - "disposable" + "note": once you close a stage or move on from a block you marked, the target is replaced by your note (a tool result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
-- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (the file changed since), duplicate.
+- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
 - "state": your one state slot (task state, plan), an assistant text row by "index"; change it only by a rewrite of that row, never append a new one. A new state tag moves the slot.
 
 A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PLUGIN}:${SKILL}.`

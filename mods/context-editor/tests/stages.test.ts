@@ -1,12 +1,15 @@
 import type { SessionMessage } from 'claude-code'
 import { PASSED_ADVICE } from '../hooks/capabilities'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, describeEdit, dropOwnCalls, fingerprint, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, ROW_WINDOW, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
+import { SUMMARIZED_OF } from '../hooks/rows'
+import { applyEdits, describeEdit, dropOwnCalls, fingerprint, indexRows, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, ROW_WINDOW, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import type { AliasRegistry } from '../hooks/aliases'
 import {
   blockReport,
+  READY_HEAD,
+  readyReplacements,
   calibrate,
   calibrateBeforeApply,
   CALIB_MAX,
@@ -465,6 +468,47 @@ test('BlockReport — без рядків: a lost end says its end row is gone, 
   expect(text).not.toContain('no rows in it')
   expect(text).not.toContain(STAGE_ADVICE)
   expect(listed.key).toBeUndefined()
+})
+
+// ---- [SP_CTX_02_66] ReadyReplacements
+
+test('ReadyReplacements — блок із застарілим читанням: the close report names each outdated or duplicate Read with its ready text, alias and relative path', async () => {
+  const list = [prompt('p'), use('a'), result('a'), use('b'), result('b'), use('c'), result('c'), use('d', 'Grep'), result('d')]
+  const tags = reg({
+    tags: [
+      { kind: 'review', reason: 'superseded', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'review', reason: 'stale', target: { tool_use_id: 'b' }, created_turn: 0 },
+      { kind: 'review', reason: 'duplicate', target: { tool_use_id: 'c' }, created_turn: 0 },
+      { kind: 'review', reason: 'duplicate', target: { tool_use_id: 'd' }, created_turn: 0 },
+    ],
+  })
+  const io: BlockIO = { ...blockIO(list, tags), readAliases: async () => ({ state: 'ok', value: { next: 46, map: { c45: 'a' } } }), cwd: async () => '/f' }
+  const text = await blockReport(io, { name: 'A', after: mark(list, 0), end: mark(list, list.length - 1), turn: 0 })
+  const line = text.split('\n').find(l => l.startsWith('Ready replacements'))!
+  expect(line).toBe(
+    `${READY_HEAD}#1 c45 "Outdated: a was read again later and its content had changed."; #3 b "Outdated: you changed b later."; #5 c "Duplicate: a later read repeated this read of c.".`,
+  )
+})
+
+test('ReadyReplacements — нічого готового: a big review, a compressed result or a pair outside the block gives no line', async () => {
+  const list = [prompt('p'), use('a'), result('a'), use('b'), { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'b', text: `${SUMMARIZED_OF}Read b`, isError: false }] } as SessionMessage, use('c'), result('c')]
+  const tags = reg({
+    tags: [
+      { kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 },
+      { kind: 'review', reason: 'stale', target: { tool_use_id: 'b' }, created_turn: 0 },
+      { kind: 'review', reason: 'stale', target: { tool_use_id: 'c' }, created_turn: 0 },
+    ],
+  })
+  expect(readyReplacements(list, tags, 0, 5, indexRows(list), new Map())).toBe('')
+  expect(readyReplacements(list, tags, 0, 6, indexRows(list), new Map())).toContain('#5 c "Outdated: you changed /f/c later."')
+})
+
+test('ReadyReplacements — 30 застарілих читань: 20 entries, then "+10 more"', async () => {
+  const list = [prompt('p'), ...Array.from({ length: 30 }, (_, i) => [use(`r${i}`), result(`r${i}`)]).flat()]
+  const tags = reg({ tags: Array.from({ length: 30 }, (_, i): Tag => ({ kind: 'review', reason: 'superseded', target: { tool_use_id: `r${i}` }, created_turn: 0 })) })
+  const line = readyReplacements(list, tags, 0, list.length - 1, indexRows(list), new Map())
+  expect(line.match(/Outdated:/g)!.length).toBe(MAX_BLOCK_INDEXES)
+  expect(line.endsWith('; +10 more.')).toBe(true)
 })
 
 // ---- [SP_CTX_02_28] Telemetry

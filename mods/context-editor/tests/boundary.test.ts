@@ -128,7 +128,7 @@ test('опис інструмента (phase 15): the state slot, the range, the
   expect(EDIT_DESCRIPTION).toContain('unless "resume" is false; in a /compact turn only on "resume": true or "resume_prompt".')
   expect(TAG_DESCRIPTION).toContain('"state"')
   expect(TAG_DESCRIPTION).toContain('"index" and "to"')
-  expect(TAG_DESCRIPTION).toContain('big, search, stale (the file changed since), duplicate')
+  expect(TAG_DESCRIPTION).toContain('big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate')
   expect(TAG_DESCRIPTION).toContain('A new tag on a target replaces the old one; "remove" drops it.')
   expect(LIST_DESCRIPTION).toContain('~ after tool_use/tool_result')
   expect(LIST_DESCRIPTION).toContain('[review: reason]')

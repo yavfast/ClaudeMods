@@ -30,6 +30,11 @@ import {
   isCompactionCopy,
   markDuplicates,
   markStale,
+  markSuperseded,
+  changedRead,
+  numberedLines,
+  seenRead,
+  supersededReads,
   rebindTags,
   resolveTarget,
   resultIds,
@@ -1349,4 +1354,101 @@ test('AutoTag — повний реєстр: 1000 tags; a Grep result and a 5000
   await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Grep', ids: ['b'], size: 10, results: [{ id: 'b', text: 'match list' }] }))
   await autoTag(io, fact({ door: 'tool-result', origin: 'tool', tool: 'Read', ids: ['a'], size: 5000, results: [{ id: 'a', text: BIG }] }))
   expect(log.tagWrites).toBe(0)
+})
+
+// ---- [SP_CTX_02_65] R6
+
+const lines = (from: number, texts: string[]) => texts.map((t, i) => `${from + i}\t${t}`).join('\n')
+
+test('SupersededRead — той самий діапазон, інший текст: a second Read of the file after a change marks the earlier pair superseded, replacing review big', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', lines(1, ['x', 'y'])), readUse('b', { file_path: '/f' }), result('b', lines(1, ['x', 'z']))]
+  const out = markSuperseded(reg([{ kind: 'review', reason: 'big', target: { tool_use_id: 'a' }, created_turn: 0 }], { turn: 2 }), r, '/f', 'b', { file_path: '/f' }, lines(1, ['x', 'z']))
+  expect(out.tags).toEqual([{ kind: 'review', reason: 'superseded', target: { tool_use_id: 'a' }, created_turn: 2 }])
+  // the same text: nothing changed
+  const start = reg([])
+  expect(markSuperseded(start, r, '/f', 'b', { file_path: '/f' }, lines(1, ['x', 'y']))).toBe(start)
+})
+
+test('SupersededRead — інший діапазон, спільні рядки різні: lines 40–60 after a full read with line 50 changed: superseded', async () => {
+  const full = lines(1, Array.from({ length: 100 }, (_, i) => `line ${i + 1}`))
+  const part = lines(40, Array.from({ length: 21 }, (_, i) => (i + 40 === 50 ? 'changed' : `line ${i + 40}`)))
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', full), readUse('b', { file_path: '/f', offset: 40, limit: 21 }), result('b', part)]
+  expect(markSuperseded(reg([]), r, '/f', 'b', { file_path: '/f', offset: 40, limit: 21 }, part).tags[0]!.reason).toBe('superseded')
+  // the common lines equal: no tag
+  const same = lines(40, Array.from({ length: 21 }, (_, i) => `line ${i + 40}`))
+  expect(markSuperseded(reg([]), r, '/f', 'b', { file_path: '/f', offset: 40, limit: 21 }, same).tags).toEqual([])
+})
+
+test('SupersededRead — без спільних рядків: lines 1–10, then 200–210: no tag', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f', limit: 10 }), result('a', lines(1, Array(10).fill('a'))), readUse('b', { file_path: '/f', offset: 200, limit: 11 })]
+  const start = reg([])
+  expect(markSuperseded(start, r, '/f', 'b', { file_path: '/f', offset: 200, limit: 11 }, lines(200, Array(11).fill('b')))).toBe(start)
+  expect(changedRead(lines(1, ['a']), lines(1, ['a']), false)).toBe(false)
+  expect(numberedLines('     7\tseven\nno number\n12\t')).toEqual(new Map([[7, 'seven'], [12, '']]))
+})
+
+test('SupersededRead — R6 не чіпає pin, disposable, state, stale: those tags stay; duplicate becomes superseded; an error, a compressed result or another path is skipped', async () => {
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', lines(1, ['x'])), readUse('b', { file_path: '/f' })]
+  const after = lines(1, ['y'])
+  for (const t of [
+    { kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'disposable', target: { tool_use_id: 'a' }, note: 'n', created_turn: 0 },
+    { kind: 'state', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', reason: 'stale', target: { tool_use_id: 'a' }, created_turn: 0 },
+    { kind: 'review', reason: 'agent', target: { tool_use_id: 'a' }, created_turn: 0 },
+  ] as Tag[]) {
+    const start = reg([t])
+    expect(markSuperseded(start, r, '/f', 'b', { file_path: '/f' }, after)).toBe(start)
+  }
+  expect(markSuperseded(reg([{ kind: 'review', reason: 'duplicate', target: { tool_use_id: 'a' }, created_turn: 0 }]), r, '/f', 'b', { file_path: '/f' }, after).tags[0]!.reason).toBe('superseded')
+  const failed: SessionMessage[] = [readUse('a', { file_path: '/f' }), { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'x', isError: true }] }, readUse('b', { file_path: '/f' })]
+  expect(markSuperseded(reg([]), failed, '/f', 'b', { file_path: '/f' }, after).tags).toEqual([])
+  const compressed: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', `${SUMMARIZED_OF}Read f`), readUse('b', { file_path: '/f' })]
+  expect(markSuperseded(reg([]), compressed, '/f', 'b', { file_path: '/f' }, after).tags).toEqual([])
+  expect(markSuperseded(reg([]), r, '/g', 'b', { file_path: '/g' }, after).tags).toEqual([])
+})
+
+test('SupersededRead — ReadPaths: the first read of a path only records it; supersededReads writes once on a change and not over an unreadable registry', async () => {
+  const paths = new Set<string>()
+  expect(seenRead(paths, '/f')).toBe(false)
+  expect(seenRead(paths, '/f')).toBe(true)
+  expect(seenRead(paths, '/g')).toBe(false)
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', lines(1, ['x'])), readUse('b', { file_path: '/f' })]
+  const { io, log } = harness(okRead(reg([])), undefined, { rows: async () => r })
+  await supersededReads(io, '/f', 'b', { file_path: '/f' }, lines(1, ['y']))
+  expect(log.tags!.tags[0]!.reason).toBe('superseded')
+  const bad = harness({ state: 'unreadable', reason: 'x' }, undefined, { rows: async () => r })
+  await supersededReads(bad.io, '/f', 'b', { file_path: '/f' }, lines(1, ['y']))
+  expect(bad.log.tagWrites).toBe(0)
+})
+
+test('Tag reason superseded parses; an unknown reason is unreadable', async () => {
+  expect(parseRegistry(JSON.stringify(reg([{ kind: 'review', reason: 'superseded', target: { tool_use_id: 'a' }, created_turn: 0 }]))).state).toBe('ok')
+  expect(parseRegistry(JSON.stringify(reg([{ kind: 'review', reason: 'outdated' as 'stale', target: { tool_use_id: 'a' }, created_turn: 0 }]))).state).toBe('unreadable')
+})
+
+test('SupersededRead — незмінений файл: the host\'s "File unchanged" stub, a reminder after the lines or an error output gives no tag; the same range losing a line does', async () => {
+  const stub = 'File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.'
+  const first = lines(1, ['x', 'y'])
+  const r: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', first), readUse('b', { file_path: '/f' })]
+  const start = reg([])
+  expect(markSuperseded(start, r, '/f', 'b', { file_path: '/f' }, stub)).toBe(start)
+  expect(markSuperseded(start, r, '/f', 'b', { file_path: '/f' }, first + '\n\n<system-reminder>fresh</system-reminder>')).toBe(start)
+  expect(changedRead(first, lines(1, ['x']), true)).toBe(true)
+  expect(changedRead(first, lines(1, ['x']), false)).toBe(false)
+  expect(changedRead(lines(1, ['x']), lines(2, ['x']), true)).toBe(true)
+})
+
+test('SupersededRead — порядок рядків: a Read after the current call, a parallel Read of the same path in its row, or a current call not found gives no tag', async () => {
+  const before = lines(1, ['x'])
+  const after = lines(1, ['y'])
+  const later: SessionMessage[] = [readUse('b', { file_path: '/f' }), result('b', after), readUse('c', { file_path: '/f' }), result('c', before)]
+  expect(markSuperseded(reg([]), later, '/f', 'b', { file_path: '/f' }, after).tags).toEqual([])
+  const parallel: SessionMessage[] = [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: { file_path: '/f' } }, { tool_use_id: 'b', tool: 'Read', input: { file_path: '/f' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: before, isError: false }, { tool_use_id: 'b', text: after, isError: false }] },
+  ]
+  expect(markSuperseded(reg([]), parallel, '/f', 'b', { file_path: '/f' }, after).tags).toEqual([])
+  const gone: SessionMessage[] = [readUse('a', { file_path: '/f' }), result('a', before)]
+  expect(markSuperseded(reg([]), gone, '/f', 'b', { file_path: '/f' }, after).tags).toEqual([])
 })

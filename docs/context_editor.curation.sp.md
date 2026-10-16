@@ -360,15 +360,15 @@ Processing logic (pseudocode):
         IF path NOT IN ReadPaths: ReadPaths += path; RETURN
         in the background, on the registry chain, IF storage ready AND TagRegistry not unreadable:
             rows = CurrentRows()
-            FOR each earlier Read pair e (its call row before this call's row) WITH input.file_path = path, result not error, result not ReplacementText:
+            FOR each earlier Read pair e (its call row before this call's row; this call's row not found: none) WITH input.file_path = path, result not error, result not ReplacementText:
                 IF e has a tag other than review big, search or duplicate: CONTINUE
                 same = offset, limit, pages of the two calls equal (absent equals only absent)
                 IF Changed(e.result, this result, same): tag e { review, reason superseded }   # заміняє review big, search, duplicate
             write TagRegistry if changed
-    Changed(a, b, same) = (same AND a ≠ b) OR some line number n is in both NumberedLines(a) and NumberedLines(b) with different text
+    Changed(a, b, same) = NumberedLines(a) and NumberedLines(b) both non-empty AND ((same AND the two maps differ in numbers or text) OR some line number n is in both with different text)
     NumberedLines(text) = the lines matching ^\s*(\d+)\t(.*)$ → number → text   # форма виводу Read (cat -n)
 
-Діапазони без спільних рядків нічого не кажуть про зміну і тегу не дають. Зміни через оболонку правило бачить лише тоді, коли агент перечитав файл ([SP_CTX_DEC_13](./context_editor.decisions-01.sp.md#SP_CTX_DEC_13)). Тег показується `[review: superseded]`; він не заміняє `stale`, `pin`, `disposable` і `state`.
+Діапазони без спільних рядків нічого не кажуть про зміну і тегу не дають. Зміни через оболонку правило бачить лише тоді, коли агент перечитав файл ([SP_CTX_DEC_13](./context_editor.decisions-01.sp.md#SP_CTX_DEC_13)). Тег показується `[review: superseded]`; він не заміняє `stale`, `pin`, `disposable` і `state`. Вивід цього виклику — `text` результату `tool.call`, як його читає модель; без нього (відповідь хука) R6 не діє. Дім: `markSuperseded`, `changedRead`, `numberedLines`, `seenRead` і `supersededReads` у `hooks/tags.ts`; ReadPaths — у пам'яті модуля `register.ts`, R6 — гілка читання того самого `afterCall`, що для запису запускає R4, на ланцюжку реєстру; шлях іде в ReadPaths і тоді, коли `text` немає. Тег `review` з причиною `agent` R6 теж не заміняє; як і R4, R6 бачить лише теги з ціллю `tool_use_id` пари (діапазон `disposable` чи пін за якорем рядка її не захищають). Порівнюються лише пронумеровані рядки: на повторне `Read` незміненого файлу хост (2.1.299) відповідає заглушкою «File unchanged since last read…» без рядків, а текст навколо рядків (нагадування хоста) змінюється сам; вивід без пронумерованих рядків тегу не дає (рев'ю фази 43).
 
 ### 02_66. ReadyReplacements  {#SP_CTX_02_66}
 
@@ -381,10 +381,10 @@ Processing logic (pseudocode):
                        + ("#<i> <alias or tool_use_id> \"<Ready(tag, path)>\"" for each, ≤ MAX_BLOCK_INDEXES, then "+<n> more") joined "; " + "."
     Ready: superseded → "Outdated: <path> was read again later and its content had changed."
            stale → "Outdated: you changed <path> later."
-           duplicate → "Duplicate: a later read of <path> returned the same output."
+           duplicate → "Duplicate: a later read repeated this read of <path>."
     path = the path part of SourceOf (SP_CTX_01_28)
 
-Тексти не мають індексів: після застосування індекси зсуваються, а текст заміни лишається. Агент копіює текст у `summarize` разом із тим, що зі старої версії ще потрібно; джерело в заміну ставить мод ([SP_CTX_02_62](#SP_CTX_02_62)).
+Понад MAX_BLOCK_INDEXES записів рядок закінчується `; +<n> more.`. Текст `duplicate` не каже «той самий вивід»: R5 позначає і те саме читання діапазону з іншим текстом, коли R6 не спрацював (перше перечитування після перезавантаження). Пара `Read` без шляху запису не дає. Псевдонім і cwd BlockReport бере з BlockIO (`readAliases`, `cwd`, обидва — погляди); без них — `tool_use_id` і абсолютний шлях. Дім: `readyReplacements` у `hooks/stages.ts`. Тексти не мають індексів: після застосування індекси зсуваються, а текст заміни лишається. Агент копіює текст у `summarize` разом із тим, що зі старої версії ще потрібно; джерело в заміну ставить мод ([SP_CTX_02_62](#SP_CTX_02_62)).
 
 ### 02_67. StateEdit  {#SP_CTX_02_67}
 
@@ -752,6 +752,7 @@ Transition rules:
 
 | Date | Change |
 |------|--------|
+| 2026-10-16 | Фаза 43 реалізована: SupersededRead ([SP_CTX_02_65](#SP_CTX_02_65)) — вивід із `text` виклику, `agent` не заміняється, дім у `tags.ts`; за рев'ю Changed порівнює лише пронумеровані рядки (заглушка хоста «File unchanged» тегу не дає), рядок поточного виклику не знайдено — тегу немає; текст `duplicate` — «a later read repeated this read of <path>»; ReadyReplacements ([SP_CTX_02_66](#SP_CTX_02_66)) — `; +<n> more.`, псевдонім і cwd з BlockIO; легенда переліку й опис `context_tag` називають `superseded` |
 | 2026-10-16 | Фаза 42 реалізована: DependencyCheck ([SP_CTX_02_63](#SP_CTX_02_63)) — за живим прогоном фрагменти беруться з пізніших текстів агента (рядок за рядком), Fragments бере токени з літер і цифр; за рев'ю — вхід за значеннями, а не за JSON, обрізання прози й markdown; Keep(op): застереження `drop` радить `summarize`; `later` — лише текст рядків; дім у `edits.ts`, виклик у QueueEdits. TraceOwnCalls ([SP_CTX_02_64](#SP_CTX_02_64)) — `add <m> <kind> tag(s)` замість `<kind> <m>`, лічильники по всіх викликах відрізка, вхід не тієї форми — ім'я інструмента |
 | 2026-10-16 | Фаза 41 реалізована: Source ([SP_CTX_01_28](#SP_CTX_01_28)) — дім `sourceOf` у `hooks/edits.ts` (`rows.ts` — ядро L0), робочий каталог через CompactionIO/HandoffIO `cwd`; за рев'ю — рядок носія `collapse`, правило шляху (кінцеві `/`, cwd `/`), місце шляху `Grep`, userinfo до останнього `@` |
 | 2026-10-15 | Рев'ю фази 40: `describe` вставки поряд із незаархівованим медіа відхиляється (`media could not be archived`); межа блоку без id і межа «немає тегу» PinDocument записані в 02_59 і 02_68 |

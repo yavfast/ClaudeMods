@@ -528,7 +528,7 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
 // [SP_CTX_02_01] The legend of the listing's header.
 export const LIST_LEGEND =
   `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media; ${REPRO_FLAG} after tool_use/tool_result: reproducible (Read, Grep, Glob). Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
-  `Tags: [pin] no edit may touch it, [state] your state slot (rewrite only), [disposable: note] (a range: [disposable #a..#b: note]) replaced by its note when you close a stage or move on from a block you marked, [review: reason] worth a look. ` +
+  `Tags: [pin] no edit may touch it, [state] your state slot (rewrite only), [disposable: note] (a range: [disposable #a..#b: note]) replaced by its note when you close a stage or move on from a block you marked, [review: reason] worth a look (superseded: a later read of the file showed changed content). ` +
   `[nN] your note (full text under the page).`
 
 // [SP_CTX_02_01] One note for the listing: the row it shows on (undefined:

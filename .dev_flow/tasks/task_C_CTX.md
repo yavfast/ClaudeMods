@@ -27,6 +27,11 @@
 
 ## Subtasks
 
+### Subtask: Фаза 43 — застаріле читання і готові заміни
+**Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
+Запит розробника: «/dev-flow do продовжуй реалізацію наступних фаз згідно плану». Зачеплено `hooks/tags.ts` (R6: markSuperseded, changedRead, numberedLines, seenRead, supersededReads; причина `superseded`), `register.ts` (ReadPaths, R6 в afterCall з `text` виклику; readAliases і cwd у blockHost), `stages.ts` (readyReplacements у BlockReport), `edits.ts` (легенда), `tools.ts` (опис `context_tag`), SKILL.md (8628/9000).
+Progress: [x] код і тести (934 зелені, `tsc`, validate) · [x] документи (curation.sp 02_65, 02_66; p43 [DONE]; навичка plugin-hooks п. 75) · [x] рев'ю (fail → виправлено: must 1 — заглушка хоста «File unchanged» давала хибний `superseded`, тепер порівнюються лише пронумеровані рядки; should 2 — текст `duplicate`, 3 — тести порядку рядків, без запасного «всі пари»; advisory 4–6; 7 — як у R4, записано в 02_65) · [x] живий прогін 2 сесії, 2.1.299 (`.dev_flow/cache/live-test/curation-p43/results.md`: superseded і stale 2/2, рядок готових замін 2/2) · [x] коміт (розробник: «Ok»)
+
 ### Subtask: Фаза 42 — перевірка залежностей і слід власних викликів
 **Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
 Запит розробника: «Ok. Продовжуй» (після коміту фази 41). Зачеплено `hooks/edits.ts` (fragments, dependencyHits, dependencyNote, traceText, слід у dropOwnCallsCounted, QueuedEdit.quoted, константи DEP_*, MAX_TRACE), `queue.ts` (DependencyCheck у queueEdits, `quoted` у parseQueue), `rows.ts` (TRACE_OPENER у REPLACEMENT_OPENERS), `repair.ts` (Repeats не рахує сліду).

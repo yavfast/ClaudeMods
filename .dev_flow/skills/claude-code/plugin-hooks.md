@@ -3,7 +3,7 @@ skill: ClaudeCodePluginHooks
 domain: claude-code
 topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript, headless, stream-json, vscode, prompt-cache, install, prompt.attachment, thinking, auto-mode]
 source: implementation
-updated: 2026-10-15
+updated: 2026-10-16
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.296
@@ -134,6 +134,8 @@ state: current
 73. **Вставлений текст — у самому тексті рядка, в обгортці `<pasted_content id="X">…</pasted_content id="X">`** (фаза 39, 2.1.296 і 2.1.299, пробний плагін `.dev_flow/cache/live-test/curation-gate/paste-probe/`). Обгортку бачать `prompt.submit`, `session.append` (двері `prompt`), `$.session.messages()`, `{ as: 'api' }` і транскрипт. Обгорнуто: велику вставку в терміналі (згорнуту в «[Pasted text #1 +N lines]»; 12 рядків — так), поле stream-json `pasted_content` (масив; текст дописано після набраного через `\n\n`) і `inline_pastes` (масив рядків, що вже стоять у `message.content`; обгортка — на їхньому місці) — обидва поля описано в схемі введення SDK; розширення VS Code (OSS, 2.1.299 і 2.1.300) за своїм кодом (`webview/index.js`) шле вставки в `inline_pastes`, якщо віддалений прапор `tengu_vscode_inline_pastes` не `false` — наживо не спостережено. Коротку вставку в терміналі (не згорнуту) не обгорнуто (спостережено на 2.1.299): вона — звичайний набраний текст. Id — один на сесію (4 hex), тож блоки різнить лише порядок.
 
 74. **Thinking після правки посередині: недокументована поведінка хоста — лише спостереження, не основа дизайну** (фаза 39, 2.1.299, `.dev_flow/cache/live-test/curation-gate/thinking/`). хост ставить `block_binding` за віддаленим прапором `tengu_polished_dewdrop` або змінною `CLAUDE_CODE_POLISHED_DEWDROP` (`drop` → `drop_block`, `block` → `error`, `off` — без поля); з `block` на старшому акаунті thinking-блок незмінної відповіді після правки дав 400, а хост записав «[thinking] prefix-lock rejection: stripped 1 of 1 thinking block(s) (partial) and retrying» і хід минув (рядок є і в 2.1.295–2.1.296); перебудовані рядки мода thinking і так гублять. У `-p` thinking з'являється лише з `--settings '{"alwaysThinkingEnabled":true}'` (sonnet і на такому — рідко, opus — у кожній текстовій відповіді).
+
+75. **Повторне `Read` незміненого файлу — заглушка, а не вміст** (бінарник 2.1.299, рев'ю фази 43, 2026-10-16; наживо не прогнано). На `Read` з тими самими аргументами файлу, що не змінився з попереднього читання в цій розмові, хост відповідає текстом «File unchanged since last read. The content from the earlier Read tool_result in this conversation is still current — refer to that instead of re-reading.» без пронумерованих рядків. Порівнювати два читання за сирим текстом не можна: правило R6 (`changedRead`, [SP_CTX_02_65]) дивиться лише на пронумеровані рядки, а вивід без них тегу не дає. Стиснути раннє читання тут — значить прибрати єдину справжню копію.
 
 ## References
 

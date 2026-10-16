@@ -138,6 +138,8 @@ import {
   queueTagReplacements,
   resultIds,
   staleReads,
+  seenRead,
+  supersededReads,
   type TagArgs,
   type TagIO,
   type TagRegistry,
@@ -843,6 +845,9 @@ function blockHost($: EngineInterface, dir: string): BlockHost {
       listed.key = key
     },
     passed: () => isPassed(caps),
+    // [SP_CTX_02_66] views: the cache
+    readAliases: s.aliases.cached,
+    cwd: () => $.session.cwd(),
   }
 }
 
@@ -947,11 +952,15 @@ function tagIO($: EngineInterface, dir: string | undefined, snap: Snapshot = sna
   }
 }
 
+// [SP_CTX_02_65] ReadPaths: the paths whose reads this module instance saw; a reload empties it.
+const readPaths = new Set<string>()
+
 // [SP_CTX_02_16] [SP_CTX_02_31] After a call without error: a write tool
 // marks the earlier reads of its path stale (R4) and journals the change of a
 // compressed path; a Read journals a reread of compressed content or of an
-// archive. Each on its own chain, in the background.
-function afterCall($: EngineInterface, tool: string, input: Record<string, unknown>, id: string, isError: boolean): void {
+// archive and, on a path read before, marks the earlier reads whose content
+// changed superseded (R6, [SP_CTX_02_65]). Each on its own chain, in the background.
+function afterCall($: EngineInterface, tool: string, input: Record<string, unknown>, id: string, isError: boolean, text: unknown): void {
   const next = callFollowUp(tool, input, isError)
   if (!next) return
   // the folder of the session the call ran in, taken now
@@ -962,7 +971,14 @@ function afterCall($: EngineInterface, tool: string, input: Record<string, unkno
       if (dir) await staleReads(tagIO($, dir), next.write, id)
     }).catch(() => undefined)
     onJournal($, io => journalChanged(io, next.write, Date.now()), at)
-  } else onJournal($, io => journalReread(io, next.read, id, Date.now()), at)
+    return
+  }
+  onJournal($, io => journalReread(io, next.read, id, Date.now()), at)
+  if (!seenRead(readPaths, next.read) || typeof text !== 'string') return
+  void chainOf($, 'tags')(async () => {
+    const dir = await at
+    if (dir) await supersededReads(tagIO($, dir), next.read, id, input, text)
+  }).catch(() => undefined)
 }
 
 function deny(reason: string) {
@@ -1591,10 +1607,10 @@ export const register: Register = on => {
     const hint = marked ? await hintFor($).catch(() => undefined) : undefined
     lines.push(...callLines(marked, alias, hint))
     lines.push(...(await dueLines($)))
-    // [SP_CTX_02_16] R4 and the journal in the background, queued only once the
+    // [SP_CTX_02_16] R4, R6 and the journal in the background, queued only once the
     // lines are built: the result waits for neither (the reminders above share
     // the registry's chain with R4)
-    afterCall($, String(e.tool), e as unknown as Record<string, unknown>, facts.tool_use_id!, done.isError === true)
+    afterCall($, String(e.tool), e as unknown as Record<string, unknown>, facts.tool_use_id!, done.isError === true, done.text)
     return withContext(done, lines)
   }).catch(($, e, next) => next(e))
 

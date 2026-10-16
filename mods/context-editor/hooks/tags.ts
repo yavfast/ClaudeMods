@@ -62,8 +62,9 @@ export const MAX_REGISTRY_BYTES = MAX_QUEUE_BYTES
 // [SP_CTX_01_09] A range ({ anchor .. toAnchor }) only for `disposable`;
 // `reason` only for `review`: absent on a tag written before phase 15.
 export type TagKind = 'pin' | 'disposable' | 'review' | 'state'
-export type ReviewReason = 'big' | 'search' | 'stale' | 'duplicate' | 'agent'
-export const REVIEW_REASONS: readonly ReviewReason[] = ['big', 'search', 'stale', 'duplicate', 'agent']
+// [SP_CTX_01_30] `superseded`: R6 (phase 43)
+export type ReviewReason = 'big' | 'search' | 'stale' | 'superseded' | 'duplicate' | 'agent'
+export const REVIEW_REASONS: readonly ReviewReason[] = ['big', 'search', 'stale', 'superseded', 'duplicate', 'agent']
 export type RangeTarget = { anchor: string; hint: number; toAnchor: string; toHint: number }
 export type TagTarget = { tool_use_id: string } | { anchor: string; hint: number } | RangeTarget
 export type Tag = { kind: TagKind; target: TagTarget; note?: string; reason?: ReviewReason; ttl_turns?: number; created_turn: number }
@@ -765,6 +766,80 @@ export function markStale(reg: TagRegistry, rows: readonly SessionMessage[], pat
       add.put({ kind: 'review', reason: 'stale', target: { tool_use_id: u.tool_use_id }, created_turn: reg.turn }, old => old.kind === 'review' && old.reason !== 'stale')
     }
   return add.changed() ? { ...reg, tags: add.tags } : reg
+}
+
+// [SP_CTX_02_65] The lines of a Read output (cat -n form) by number.
+export function numberedLines(text: string): Map<number, string> {
+  const out = new Map<number, string>()
+  for (const line of text.split('\n')) {
+    const m = /^\s*(\d+)\t(.*)$/.exec(line)
+    if (m) out.set(Number(m[1]), m[2]!)
+  }
+  return out
+}
+
+// [SP_CTX_02_65] Changed, over the numbered lines only: the same range with
+// other lines (another number set or text), or a line number both outputs hold
+// with different text. An output without numbered lines (the host's "File
+// unchanged since last read" stub, an error) says nothing, nor do ranges with
+// no common line, nor text around the lines (a reminder the host adds). Pure.
+export function changedRead(a: string, b: string, same: boolean): boolean {
+  const first = numberedLines(a)
+  const second = numberedLines(b)
+  if (!first.size || !second.size) return false
+  if (same && first.size !== second.size) return true
+  for (const [n, text] of second) {
+    const old = first.get(n)
+    if (old === undefined ? same : old !== text) return true
+  }
+  return false
+}
+
+const RANGE_FIELDS = ['offset', 'limit', 'pages']
+
+// [SP_CTX_02_65] R6: each earlier Read pair of `path` (its call row before the
+// row of `readId`; that row not found: none) whose output `changedRead` says differs
+// from `text`, the output of `readId` read with `input`, becomes `review`
+// `superseded`. It replaces a review `big`, `search` or `duplicate` only, so
+// `stale`, `agent`, `pin`, `disposable` and `state` stay. A compressed or
+// failed earlier result is skipped. Pure.
+export function markSuperseded(reg: TagRegistry, rows: readonly SessionMessage[], path: string, readId: string, input: Record<string, unknown>, text: string): TagRegistry {
+  const add = tagAdder(reg)
+  const ix = indexRows(rows)
+  // the call row of `readId` not found: no earlier pair is known
+  const stop = ix.useAt(readId)
+  const replaceable = reviewOf('big', 'search', 'duplicate')
+  for (let i = 0; i < stop; i++)
+    for (const u of rows[i]!.toolUses) {
+      const earlier = (u.input ?? {}) as Record<string, unknown>
+      if (u.tool !== 'Read' || u.tool_use_id === readId || earlier.file_path !== path) continue
+      const at = ix.resultAt(u.tool_use_id)
+      const res = at < 0 ? undefined : resultsOf(rows[at]!).find(t => t.tool_use_id === u.tool_use_id)
+      if (!res || res.isError || isReplacementText(res.text)) continue
+      const tag = reg.tags.find(t => sameTarget(t.target, { tool_use_id: u.tool_use_id }))
+      if (tag && !replaceable(tag)) continue
+      const same = RANGE_FIELDS.every(k => JSON.stringify(earlier[k]) === JSON.stringify(input[k]))
+      if (!changedRead(res.text, text, same)) continue
+      add.put({ kind: 'review', reason: 'superseded', target: { tool_use_id: u.tool_use_id }, created_turn: reg.turn }, replaceable)
+    }
+  return add.changed() ? { ...reg, tags: add.tags } : reg
+}
+
+// [SP_CTX_02_65] ReadPaths: whether `path` was read before by this module
+// instance; the first read only records it.
+export function seenRead(paths: Set<string>, path: string): boolean {
+  if (paths.has(path)) return true
+  paths.add(path)
+  return false
+}
+
+// [SP_CTX_02_65] R6 after a Read that succeeded; the caller runs it on the
+// registry's chain, in the background.
+export async function supersededReads(io: Pick<TagIO, 'rows' | 'readTags' | 'writeTags'>, path: string, readId: string, input: Record<string, unknown>, text: string): Promise<void> {
+  const read = await io.readTags()
+  if (read.state === 'unreadable') return
+  const next = markSuperseded(read.value, await io.rows(), path, readId, input, text)
+  if (next !== read.value) await io.writeTags(next)
 }
 
 // [SP_CTX_02_16] What follows a finished call of the main loop, not denied,

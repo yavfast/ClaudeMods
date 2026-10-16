@@ -26,6 +26,7 @@ import {
   ownerKey,
   REPRO_FLAG,
   REPRODUCIBLE_TOOLS,
+  sourceOf,
   touchedBy,
   type MediaSizes,
   type Produced,
@@ -34,7 +35,7 @@ import {
   type Snapshot,
 } from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
-import { apiChars, charsOf, errorText, findToolUse, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
+import { apiChars, charsOf, errorText, findToolUse, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -724,6 +725,9 @@ export type BlockIO = {
   // [SP_CTX_02_54] the host passes over the mod's compaction hook: PASSED_ADVICE
   // ends the report; absent: never
   passed?: () => boolean
+  // [SP_CTX_02_66] the call aliases and the cwd of the ready replacements; absent: ids, absolute paths
+  readAliases?: () => Promise<Read<AliasRegistry>>
+  cwd?: () => Promise<string | undefined>
 }
 
 // [SP_CTX_02_29] What BlockReport takes from the host besides the conversation.
@@ -779,6 +783,43 @@ function reproduciblePairs(rows: readonly SessionMessage[], a: number, e: number
       if (res >= a && res <= e) n++
     }
   return n
+}
+
+// [SP_CTX_02_66] The ready text of a review reason, or undefined: none.
+function readyText(reason: Tag['reason'], path: string): string | undefined {
+  if (reason === 'superseded') return `Outdated: ${path} was read again later and its content had changed.`
+  if (reason === 'stale') return `Outdated: you changed ${path} later.`
+  if (reason === 'duplicate') return `Duplicate: a later read repeated this read of ${path}.`
+  return undefined
+}
+
+export const READY_HEAD = 'Ready replacements (summarize each with its text and what you still need from it): '
+
+// [SP_CTX_02_66] ReadyReplacements: the Read pairs with call and result in
+// a..e under an active review `superseded`, `stale` or `duplicate`, not
+// compressed yet, each with the text of its summarize, in row order (at most
+// MAX_BLOCK_INDEXES, then "+<n> more"); "" when none. The texts hold no index:
+// it shifts after an apply. Pure.
+export function readyReplacements(rows: readonly SessionMessage[], reg: TagRegistry, a: number, e: number, ix: RowIndex, aliases: ReadonlyMap<string, string>, cwd?: string): string {
+  const ready: { at: number; line: string }[] = []
+  for (const tag of reg.tags) {
+    if (tag.kind !== 'review' || !isActive(tag, reg.turn) || !('tool_use_id' in tag.target)) continue
+    const id = tag.target.tool_use_id
+    const at = ix.useAt(id)
+    const res = ix.resultAt(id)
+    if (at < a || at > e || res < a || res > e) continue
+    const use = rows[at]!.toolUses.find(u => u.tool_use_id === id)
+    const result = resultsOf(rows[res]!).find(t => t.tool_use_id === id)
+    if (use?.tool !== 'Read' || !result || isReplacementText(result.text)) continue
+    const path = sourceOf('Read', use.input, cwd).slice('Read '.length)
+    const text = path ? readyText(tag.reason, path) : undefined
+    if (text) ready.push({ at, line: `#${at} ${aliases.get(id) ?? id} "${text}"` })
+  }
+  if (!ready.length) return ''
+  ready.sort((x, y) => x.at - y.at)
+  const shown = ready.slice(0, MAX_BLOCK_INDEXES).map(r => r.line)
+  if (ready.length > MAX_BLOCK_INDEXES) shown.push(`+${ready.length - MAX_BLOCK_INDEXES} more`)
+  return READY_HEAD + shown.join('; ') + '.'
 }
 
 // [SP_CTX_02_29] BlockReport: only for a close by the tool, where no
@@ -844,6 +885,13 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
       .filter(Boolean)
       .join('; ')
     text += `\nCandidates in the block: ${cand || 'none'}.`
+    // [SP_CTX_02_66] the ready replacements of the block's outdated and duplicate reads
+    if (reg) {
+      const aliasRead = await io.readAliases?.().catch(() => undefined)
+      const aliases = aliasRead && aliasRead.state !== 'unreadable' ? aliasesById(aliasRead.value) : new Map<string, string>()
+      const ready = readyReplacements(rows, reg, a, e as number, ix, aliases, await io.cwd?.().catch(() => undefined))
+      if (ready) text += '\n' + ready
+    }
     // [SP_CTX_02_32] the agent's notes on rows of the block
     const notes = reg ? blockNotes(rows, reg, a, e as number, MAX_BLOCK_INDEXES) : ''
     if (notes) text += `\nYour notes in the block: ${notes}`

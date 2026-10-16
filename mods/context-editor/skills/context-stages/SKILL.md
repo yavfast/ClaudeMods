@@ -58,10 +58,10 @@ When you finish your turn for the person and the block is done, end your answer 
 
 ## Candidates
 
-- `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
+- `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: superseded]` a read of a file whose later read showed changed content: outdated too; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
 - `[disposable: note]`: your own replacement (see Dead ends).
 
-The close report lists the block's candidates by reason and counts its `~` pairs.
+The close report lists the block's candidates by reason, counts its `~` pairs and gives ready replacement texts for outdated and duplicate reads.
 
 ## State slot
 
