@@ -436,7 +436,9 @@ export function targets(rows: readonly SessionMessage[], e: QueuedEdit): string 
     const last = rowAt(rows, e.anchors, e.to_index, (e.anchors?.length ?? 1) - 1)
     return first && last ? `the rows from "${preview(first)}" to "${preview(last)}"` : undefined
   }
-  const row = rowAt(rows, e.anchors, e.index, 0)
+  // [SP_CTX_02_67] a state edit's slot: the row it was stamped with
+  if (e.op === 'state' && e.index === undefined) return 'your state slot'
+  const row = rowAt(rows, e.anchors, e.index ?? -1, 0)
   return row ? `the row "${preview(row)}"` : undefined
 }
 

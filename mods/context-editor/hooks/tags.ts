@@ -24,9 +24,11 @@ import {
   type QueuedEdit,
   type RefResolver,
   type RowIndex,
+  type StateInput,
 } from './edits'
 import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
+import { badItemFields, type StateItem } from './state'
 import {
   blockName,
   carrierRow,
@@ -90,6 +92,10 @@ export type TagRegistry = {
   reintroduce?: boolean
   // [SP_CTX_02_68] PinDocument looked at row 0 of this session
   docChecked?: boolean
+  // [SP_CTX_01_29] the items of the state slot and the number of the next
+  // one (phase 44); absent: none yet, the next is 1
+  items?: StateItem[]
+  nextItem?: number
   // [SP_CTX_01_21] the agent's service notes, and the number of the next one
   notes: Note[]
   nextNote: number
@@ -193,6 +199,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     typeof reg.introduced !== 'boolean' && 'introduced',
     reg.reintroduce !== undefined && typeof reg.reintroduce !== 'boolean' && 'reintroduce',
     reg.docChecked !== undefined && typeof reg.docChecked !== 'boolean' && 'docChecked',
+    badItemFields(reg.items, reg.nextItem),
     badNoteFields(reg.notes, reg.nextNote),
     reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
     reg.hint !== undefined && !isHintState(reg.hint) && 'hint',
@@ -247,7 +254,15 @@ export function pinnedTargets(rows: readonly SessionMessage[], reg: TagRegistry,
     else for (const i of resolveTarget(rows, tag.target, ix) ?? []) at.add(i)
   }
   const state = stateRow(rows, reg, ix)
-  return state !== undefined && state >= 0 ? { ids, rows: at, state } : { ids, rows: at }
+  // [SP_CTX_02_67] the slot's items: what a state edit's changes name
+  const items = reg.items?.length ? { items: reg.items } : {}
+  return state !== undefined && state >= 0 ? { ids, rows: at, state, ...items } : { ids, rows: at, ...items }
+}
+
+// [SP_CTX_02_67] What run state starts from: the registry's items, the next
+// number and the turn.
+export function stateInput(reg: TagRegistry): StateInput {
+  return { items: reg.items ?? [], nextItem: reg.nextItem ?? 1, turn: reg.turn }
 }
 
 // [SP_CTX_02_03] The pinned targets on `rows` as the registry read gives
@@ -497,9 +512,9 @@ export function applyTagRequests(
       target = { ...(target as { anchor: string; hint: number }), toAnchor: fingerprint(rows[to as number]!), toHint: to as number }
     } else if (kind === 'disposable' && row && (row.role !== 'assistant' || row.toolUses.length > 0))
       return reject('BAD_TARGET', 'by index without "to" only an assistant text row can be disposable; tag a tool result by its tool_use_id, a span by "index" and "to"')
-    // [SP_CTX_01_09] the state slot changes only by a rewrite of its row: no disposable replaces it
+    // [SP_CTX_01_09] the state slot changes only by a rewrite of its row or the state op: no disposable replaces it
     else if (kind === 'disposable' && row && pinnedTargets(rows, { ...reg, tags }, ix).state === r.index)
-      return reject('BAD_TARGET', 'that row holds the state slot; change it only by a rewrite of that row, or remove its state tag first')
+      return reject('BAD_TARGET', 'that row holds the state slot; change it by a rewrite of that row, or by the state op once it has items, or remove its state tag first')
     if (kind === 'state' && (!row || row.role !== 'assistant' || row.toolUses.length > 0 || !row.text.trim()))
       return reject('BAD_TARGET', 'the state slot is one of your own assistant text rows, by "index"')
     if (r.ttl_turns !== undefined && (kind !== 'review' || !isCount(r.ttl_turns, 1)))
@@ -1181,8 +1196,9 @@ export function rebindTags(
     }
     const was = locate(before, t.anchor, t.hint, was0)
     if (was >= 0 && editedRows.has(was)) {
-      // [SP_CTX_02_14] the state slot follows the rewrite of its own row
-      const rewrite = tag.kind === 'state' ? applied.find(e => e.op === 'rewrite' && touchedBy(before, e, was0)?.rows[0] === was) : undefined
+      // [SP_CTX_02_14] [SP_CTX_02_67] the state slot follows the rewrite of
+      // its own row, or the rebuild of a state edit
+      const rewrite = tag.kind === 'state' ? applied.find(e => (e.op === 'rewrite' || e.op === 'state') && touchedBy(before, e, was0)?.rows[0] === was) : undefined
       const made = rewrite ? produced.find(p => p.edit === describeEdit(rewrite)) : undefined
       if (made) tags.push({ ...tag, target: { anchor: made.fingerprint, hint: made.index } })
       continue

@@ -198,7 +198,7 @@ MediaRef живе лише під час перегляду і застосув�
 
 Invariants:
 - На одній цілі не більше одного тегу; новий тег на ту саму ціль заміняє попередній. Ціль-рядок і ціль-діапазон ототожнюються за `anchor` першого рядка: на рядку починається не більше одного тегу рядка чи діапазону; тег рядка всередині чужого діапазону допустимий.
-- `disposable` з `{ anchor }` без діапазону допустимий лише для рядка `assistant` без викликів, який не несе тегу `state` (слот змінює лише `rewrite` його рядка, [C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)); діапазон містить кожен виклик разом з його результатом (правило `collapse`, [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) і не захоплює рядка чи пари з тегом `pin` або `state` на момент тегування.
+- `disposable` з `{ anchor }` без діапазону допустимий лише для рядка `assistant` без викликів, який не несе тегу `state` (слот змінює лише `rewrite` його рядка чи, коли він має пункти, операція `state`, [C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)); діапазон містить кожен виклик разом з його результатом (правило `collapse`, [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) і не захоплює рядка чи пари з тегом `pin` або `state` на момент тегування.
 - `state` — лише на `{ anchor }` рядка `assistant` без викликів з непорожнім текстом; у реєстрі не більше одного тегу `state`: новий заміняє попередній, де б той не стояв ([C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)).
 - `review` активний, коли `ttl_turns` відсутній або `turn - created_turn >= ttl_turns`; `reason` є в кожному тезі `review`, який пише ця версія.
 
@@ -244,6 +244,7 @@ Invariants:
 
 | Date | Change |
 |------|--------|
+| 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)) |
 | — | Старіші 4 записи — у [context_editor.structures.sp.log.md](./context_editor.structures.sp.log.md) |
 | 2026-10-11 | PL_AUD_CTX фаза 4 (CF-6, CF-7): 01_04 — розбір черги перевіряє обмеження (`edits` ≤ MAX_QUEUE_EDITS, тексти продовження ≤ MAX_TEXT, `report` разом з `reportId`); `keepCache` у переліку виборів пакета; KeepOtherSteps і AppendReport — один крок для кожного запису, що закінчує пакет |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8, CF-9): 01_12 — RESUME_FRAME, HANDOFF_RESUME_FRAME, DOCUMENT_FRAME (рамки автора тексту моделі в промпті, SP_CTX_DEC_17), DEFAULT_RESUME у промпті — з префіксом мода, REMINDER_CLOSE поруч із REMINDER_PREFIX, MAX_DELIVERY_TEXT — обрізання в рамці; 01_22 — `text` і `cut` обрізаної доставки |

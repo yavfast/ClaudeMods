@@ -4,6 +4,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 ## Resume
 
+- `/dev-flow resume task_C_CTX` — `implement` — фаза 44 (пункти слота стану) виконана: рев'ю pass with advisories (виправлено), живий прогін 2/2 на 2.1.296; закомічено; далі — фаза 45 (рядки хоста) — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 43 (застаріле читання і готові заміни) виконана: рев'ю fail → виправлено (заглушка хоста «File unchanged») → pass with advisories, живий прогін 2/2; закомічено; далі — фаза 44 (пункти слота стану) — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 42 (перевірка залежностей і слід власних викликів) виконана: рев'ю pass with advisories, живий прогін 12 сесій (слід знімає P13; обережне P23 щодо виводу лишилось); закомічено; далі — фаза 43 — 2026-10-16
 - `/dev-flow resume task_C_CTX` — `implement` — фаза 41 (відкривачі замін з джерелом) виконана: рев'ю pass with advisories, живий повтор 9/9; закомічено; далі — фаза 42 (перевірка залежностей і слід власних викликів) — 2026-10-16

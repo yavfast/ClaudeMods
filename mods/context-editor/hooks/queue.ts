@@ -173,10 +173,12 @@ function isHandoff(raw: unknown): boolean {
 
 function isQueuedEdit(raw: unknown): boolean {
   if (typeof checkShape(raw) === 'string') return false
-  const { anchors, via, quoted } = raw as { anchors?: unknown; via?: unknown; quoted?: unknown }
+  const { op, index, anchors, via, quoted } = raw as { op?: unknown; index?: unknown; anchors?: unknown; via?: unknown; quoted?: unknown }
   // [SP_CTX_01_03] `via` names who asked for the replacement: only 'tag' is written
   // [SP_CTX_01_30] `quoted`: only true is written; a queue before phase 42 has none
+  // [SP_CTX_02_67] a state edit's stamped slot index, when it has one
   return (
+    (op !== 'state' || index === undefined || (typeof index === 'number' && Number.isInteger(index))) &&
     (anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))) &&
     (via === undefined || via === 'tag') &&
     (quoted === undefined || quoted === true)
@@ -333,7 +335,8 @@ export function queueEdits(
     return { deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` }
   // [SP_CTX_02_17] refs resolve on these rows; "last" names its call
   const refs = resolveEditRefs(args.edits, resolve, rows)
-  const prepared = prepare(rows, refs.edits, hasMedia, pinned, staleIndexes)
+  // [SP_CTX_02_67] the queued batch: STATE_CONFLICT and the items a state edit sees
+  const prepared = prepare(rows, refs.edits, hasMedia, pinned, staleIndexes, q.edits)
   const errors = prepared.errors
   // [SP_CTX_02_58] PERSON_WORDS: no edit over the person's words is queued
   const queued: QueuedEdit[] = []

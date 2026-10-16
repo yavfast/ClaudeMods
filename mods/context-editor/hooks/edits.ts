@@ -1,6 +1,7 @@
 import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-code'
 import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
+import { applyChanges, checkChanges, draftChanges, MAX_STATE_ITEMS, NO_ITEM_NOW, TOO_MANY_ITEMS, NO_STATE_SLOT, SLOT_TOO_LONG, STATE_CONFLICT, STATE_GONE, STATE_ITEMS, stateText, type DraftItem, type StateChange, type StateItem } from './state'
 import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
@@ -10,6 +11,9 @@ export type Edit =
   | { op: 'collapse'; from_index: number; to_index: number; summary: string }
   | { op: 'rewrite'; index: number; text: string }
   | { op: 'describe'; index: number; description: string }
+  // [SP_CTX_01_30] [SP_CTX_02_67] the slot is the row with the state tag;
+  // PrepareEdits and ScreenPinned stamp its anchor and index (never the agent)
+  | { op: 'state'; changes: StateChange[]; index?: number }
 
 // [SP_CTX_01_03] Index-based edits carry fingerprints of the rows they named.
 // [SP_CTX_01_03] `via: 'tag'`: the replacement of a disposable tag the mod
@@ -528,7 +532,7 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
 // [SP_CTX_02_01] The legend of the listing's header.
 export const LIST_LEGEND =
   `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media; ${REPRO_FLAG} after tool_use/tool_result: reproducible (Read, Grep, Glob). Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
-  `Tags: [pin] no edit may touch it, [state] your state slot (rewrite only), [disposable: note] (a range: [disposable #a..#b: note]) replaced by its note when you close a stage or move on from a block you marked, [review: reason] worth a look (superseded: a later read of the file showed changed content). ` +
+  `Tags: [pin] no edit may touch it, [state] your state slot (rewrite, or the state op once it has items), [disposable: note] (a range: [disposable #a..#b: note]) replaced by its note when you close a stage or move on from a block you marked, [review: reason] worth a look (superseded: a later read of the file showed changed content). ` +
   `[nN] your note (full text under the page).`
 
 // [SP_CTX_02_01] One note for the listing: the row it shows on (undefined:
@@ -984,6 +988,8 @@ export function describeEdit(edit: Edit): string {
     case 'rewrite':
     case 'describe':
       return `${edit.op} #${edit.index}`
+    case 'state':
+      return `state (${edit.changes.map(c => (c.do === 'add' ? `add ${c.kind}` : `${c.do} ${c.id}`)).join(', ')})`
   }
 }
 
@@ -1072,6 +1078,11 @@ export function checkShape(raw: unknown): Edit | string {
     case 'describe':
       if (!isIndex(e.index)) return 'index is required'
       return textError(e.description, 'description') ?? { op: 'describe', index: e.index, description: e.description as string }
+    case 'state': {
+      // [SP_CTX_02_67] BAD_CHANGE
+      const changes = checkChanges(e.changes)
+      return typeof changes === 'string' ? changes : { op: 'state', changes }
+    }
     default:
       return `unknown op ${JSON.stringify(e.op)}`
   }
@@ -1080,7 +1091,8 @@ export function checkShape(raw: unknown): Edit | string {
 // [SP_CTX_02_03] Targets carrying a `pin` tag, resolved on one row list:
 // pairs by tool_use_id and rows by index; `state`: the row of the state slot,
 // if it is found. Data, so prepare stays pure.
-export type Pinned = { ids: ReadonlySet<string>; rows: ReadonlySet<number>; state?: number }
+// [SP_CTX_02_67] `items`: the slot's items the registry holds (phase 44).
+export type Pinned = { ids: ReadonlySet<string>; rows: ReadonlySet<number>; state?: number; items?: readonly StateItem[] }
 export const NO_PINS: Pinned = { ids: new Set(), rows: new Set() }
 
 // The rows and pairs an edit changes, resolved on `rows` (anchors through
@@ -1105,6 +1117,12 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit, ix?
       const at = edit.anchors?.[0] ? locate(rows, edit.anchors[0], edit.index, ix) : edit.index
       return at < 0 || !rows[at] ? undefined : { rows: [at], ids: [] }
     }
+    // [SP_CTX_02_67] the slot row it was stamped with; none: not stamped
+    case 'state': {
+      if (edit.index === undefined || !edit.anchors?.[0]) return undefined
+      const at = locate(rows, edit.anchors[0], edit.index, ix)
+      return at < 0 ? undefined : { rows: [at], ids: [] }
+    }
   }
 }
 
@@ -1119,15 +1137,59 @@ export function touchesPin(rows: readonly SessionMessage[], edit: QueuedEdit, pi
 export const PINNED = 'target is pinned; remove the pin with context_tag first'
 
 // [SP_CTX_02_03] [C_CTX_DEC_19] Whether an edit would change the row of the
-// state slot: only a rewrite of that very row may.
+// state slot: only a rewrite of that very row or a state edit may.
 export function touchesState(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned): boolean {
   if (pinned.state === undefined) return false
   const t = touchedBy(rows, edit)
   if (!t || !t.rows.includes(pinned.state)) return false
-  return !(edit.op === 'rewrite' && t.rows[0] === pinned.state)
+  return !((edit.op === 'rewrite' || edit.op === 'state') && t.rows[0] === pinned.state)
 }
 
-export const STATE_SLOT = 'target holds the state slot; change it only by rewrite of that row, or remove its state tag first'
+export const STATE_SLOT = 'target holds the state slot; change it by rewrite of that row, or by the state op once it has items, or remove its state tag first'
+
+// [SP_CTX_01_32] [SP_CTX_02_67] SLOT_TOO_LONG at queue time leaves this room
+// for the archive line the apply writes (its path is not known yet: about the
+// cwd's length + 110) and for the ids the batch's new items get (counted as
+// `p?` here, up to ~4 chars each once numbered).
+export const ARCHIVE_ROOM = 600
+
+// [SP_CTX_02_67] A state edit stamped with the slot row (anchor, index) or,
+// without a slot, without them: the apply then fails it STATE_GONE.
+export function stampState(rows: readonly SessionMessage[], edit: Extract<QueuedEdit, { op: 'state' }>, slot: number | undefined): QueuedEdit {
+  const { anchors: _a, index: _i, ...rest } = edit
+  return slot === undefined || slot < 0 || !rows[slot] ? rest : { ...rest, index: slot, anchors: [fingerprint(rows[slot]!)] }
+}
+
+// [SP_CTX_02_67] PrepareEdits of a state edit: the slot, no rewrite of it in
+// the batch (`batch`: the queued edits, then the earlier ones of this call),
+// the changes against the items with the batch's state edits applied, and
+// the room of the assembled slot.
+function prepareState(rows: readonly SessionMessage[], edit: Extract<Edit, { op: 'state' }>, pinned: Pinned, batch: readonly QueuedEdit[]): QueuedEdit | string {
+  const slot = pinned.state
+  if (slot === undefined || !rows[slot]) return NO_STATE_SLOT
+  if (batch.some(e => e.op === 'rewrite' && touchedBy(rows, e)?.rows[0] === slot)) return STATE_CONFLICT('rewrite')
+  let drafts: DraftItem[] = [...(pinned.items ?? [])]
+  for (const e of batch) {
+    if (e.op !== 'state') continue
+    const d = draftChanges(drafts, e.changes, true)
+    if ('items' in d) drafts = d.items
+  }
+  const d = draftChanges(drafts, edit.changes)
+  if ('error' in d) return d.error
+  if (stateText(' '.repeat(ARCHIVE_ROOM), d.items).length > MAX_TEXT) return SLOT_TOO_LONG(MAX_TEXT - ARCHIVE_ROOM - STATE_HEAD)
+  return stampState(rows, edit, slot)
+}
+
+// The length of STATE_REBUILT and the ":\n" after the archive line.
+const STATE_HEAD = stateText('', []).length - '(no items)'.length
+
+// [SP_CTX_02_67] A rewrite of the slot row: refused while the slot has items
+// (STATE_ITEMS) or beside a state edit in the batch (STATE_CONFLICT).
+function slotRewriteError(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned, batch: readonly QueuedEdit[]): string | undefined {
+  if (edit.op !== 'rewrite' || pinned.state === undefined || touchedBy(rows, edit)?.rows[0] !== pinned.state) return undefined
+  if (pinned.items?.length) return STATE_ITEMS
+  return batch.some(e => e.op === 'state') ? STATE_CONFLICT('state') : undefined
+}
 
 // [SP_CTX_02_03] Checks raw edits against the conversation as it is now and
 // stamps the index-based ones with anchors. `hasMedia` answers whether a
@@ -1140,6 +1202,9 @@ export function prepare(
   pinned: Pinned = NO_PINS,
   // [SP_CTX_02_18] the indexes the agent holds may name other rows now
   staleIndexes = false,
+  // [SP_CTX_02_67] the edits already in pending.json (STATE_CONFLICT, the
+  // items a state edit sees)
+  pending: readonly QueuedEdit[] = [],
 ): { queued: QueuedEdit[]; errors: string[] } {
   const queued: QueuedEdit[] = []
   const errors: string[] = []
@@ -1151,10 +1216,12 @@ export function prepare(
     }
     const name = describeEdit(edit)
     if (staleIndexes && (edit.op === 'collapse' || edit.op === 'rewrite' || edit.op === 'describe')) return void errors.push(`${name}: ${STALE_INDEXES}`)
-    const checked = checkTarget(rows, edit, hasMedia)
+    const checked = edit.op === 'state' ? prepareState(rows, edit, pinned, [...pending, ...queued]) : checkTarget(rows, edit, hasMedia)
     if (typeof checked === 'string') return void errors.push(`${name}: ${checked}`)
     if (touchesPin(rows, checked, pinned)) return void errors.push(`${name}: ${PINNED}`)
     if (touchesState(rows, checked, pinned)) return void errors.push(`${name}: ${STATE_SLOT}`)
+    const slotError = slotRewriteError(rows, checked, pinned, [...pending, ...queued])
+    if (slotError) return void errors.push(`${name}: ${slotError}`)
     queued.push(checked)
   })
   return { queued, errors }
@@ -1198,6 +1265,8 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
       if (!hasMedia({ row: edit.index }) && !pasteBlocks(row.text).length) return 'no media or pasted text found in that row'
       return { ...edit, anchors: [fingerprint(row)] }
     }
+    case 'state':
+      return 'state edits are prepared by prepareState'
   }
 }
 
@@ -1470,6 +1539,7 @@ function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: re
     case 'describe':
       return [ownerKey({ row: touched[0]! })]
     case 'rewrite':
+    case 'state':
       return []
   }
 }
@@ -1606,7 +1676,15 @@ export type ApplyOptions = {
   // [SP_CTX_02_48] CollectMedia's toolRefs: a ToolSearch result rebuilt
   // without its handle names the tools it loaded (ToolRefText)
   toolRefs?: ReadonlyMap<string, readonly string[]>
+  // [SP_CTX_02_67] run state: the items, the next number and the turn of the
+  // registry read for this apply; absent: none, the next is 1, turn 0
+  state?: StateInput
 }
+
+// [SP_CTX_02_67] What run state starts from, and (ApplyEdits' `state`) what
+// the commit writes.
+export type StateInput = { items: readonly StateItem[]; nextItem: number; turn: number }
+export type StateOutput = { items: StateItem[]; nextItem: number }
 
 // [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
 // `media`: archived file paths by owner key; `mediaOwners`: keys of every
@@ -1618,7 +1696,7 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number } {
+): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; state?: StateOutput } {
   const rows = [...input]
   const report: ApplyReport = {
     applied: [],
@@ -1650,10 +1728,14 @@ export function applyEdits(
 
   // A pair edit conflicts only on its own pair and on rows a row edit takes;
   // a row edit (collapse, rewrite, describe) takes its rows exclusively.
-  type Step = { edit: QueuedEdit; touched: number[]; pair?: string; hi: number; owners: string[]; run: () => void }
+  // `names`: the edits one step applies (every state edit of the batch)
+  type Step = { edit: QueuedEdit; names?: string[]; touched: number[]; pair?: string; hi: number; owners: string[]; run: () => void }
   const plan: Step[] = []
   // [SP_CTX_02_04] the first row each applied step touches
   const firsts: number[] = []
+  // [SP_CTX_02_67] the state edits of the batch: one rebuild of the slot
+  const stateEdits: Extract<QueuedEdit, { op: 'state' }>[] = []
+  let stateOut: StateOutput | undefined
 
   for (const edit of edits) {
     const name = describeEdit(edit)
@@ -1661,6 +1743,9 @@ export function applyEdits(
     let pair: string | undefined
     let run: () => void
     switch (edit.op) {
+      case 'state':
+        stateEdits.push(edit)
+        continue
       case 'summarize':
       case 'drop': {
         const useAt = findToolUse(rows, edit.tool_use_id)
@@ -1830,6 +1915,8 @@ export function applyEdits(
     }
     plan.push({ edit, touched, pair, hi: Math.max(...touched), owners, run })
   }
+  const stateStep = stateEdits.length ? runState(rows, stateEdits, note, options.state, report, made, out => (stateOut = out)) : undefined
+  if (stateStep) plan.push(stateStep)
 
   // Positions were resolved on the untouched list; applying from the end keeps
   // every earlier position valid (pair edits never splice).
@@ -1842,11 +1929,11 @@ export function applyEdits(
       ? pairs.has(step.pair) || step.touched.some(i => exclusiveRow.has(i))
       : step.touched.some(i => anyRow.has(i))
     if (conflict) {
-      report.failed.push(`${describeEdit(step.edit)}: overlaps another edit`)
+      for (const name of step.names ?? [describeEdit(step.edit)]) report.failed.push(`${name}: overlaps another edit`)
       continue
     }
     step.run()
-    report.applied.push(describeEdit(step.edit))
+    report.applied.push(...(step.names ?? [describeEdit(step.edit)]))
     for (const i of step.touched) {
       anyRow.add(i)
       if (!step.pair) exclusiveRow.add(i)
@@ -1881,7 +1968,49 @@ export function applyEdits(
   )
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
-  return { rows: out, report, made, renamed, prefix }
+  return { rows: out, report, made, renamed, prefix, ...(stateOut ? { state: stateOut } : {}) }
+}
+
+// [SP_CTX_02_67] run state: every state edit of the batch together, one
+// rebuild of the slot row (stamped by ScreenPinned) from the items with all
+// their changes; a slot not found (STATE_GONE) or a change naming an id that
+// is not there (NO_ITEM_NOW) fails every state edit, items unchanged. The
+// step, or undefined when they failed; `done` receives the items once it runs.
+function runState(
+  rows: SessionMessage[],
+  edits: readonly Extract<QueuedEdit, { op: 'state' }>[],
+  note: string,
+  input: StateInput | undefined,
+  report: ApplyReport,
+  made: Made[],
+  done: (out: StateOutput) => void,
+): { edit: QueuedEdit; names: string[]; touched: number[]; hi: number; owners: string[]; run: () => void } | undefined {
+  const names = edits.map(describeEdit)
+  const fail = (why: string) => void report.failed.push(...names.map(n => `${n}: ${why}`))
+  const first = edits[0]!
+  const at = first.index !== undefined && first.anchors?.[0] ? locate(rows, first.anchors[0], first.index) : -1
+  if (at < 0 || !rows[at]) return fail(STATE_GONE)
+  const base = input ?? { items: [], nextItem: 1, turn: 0 }
+  const out = applyChanges(base.items, base.nextItem, base.turn, edits.flatMap(e => e.changes))
+  if ('missing' in out) return fail(NO_ITEM_NOW(out.missing))
+  // a queue changed outside the tools: more items would make the registry unreadable
+  if (out.items.length > MAX_STATE_ITEMS) return fail(TOO_MANY_ITEMS)
+  const text = stateText(note, out.items)
+  if (text.length > MAX_TEXT) return fail(SLOT_TOO_LONG(MAX_TEXT - ARCHIVE_ROOM - STATE_HEAD))
+  return {
+    edit: first,
+    names,
+    touched: [at],
+    hi: at,
+    owners: [],
+    run: () => {
+      const row = rows[at]!
+      report.originals.push({ edit: names[0]!, rows: [row] })
+      rows[at] = plain(row, { text })
+      made.push({ edit: names[0]!, text })
+      done(out)
+    },
+  }
 }
 
 // [SP_CTX_02_04] Responses(rows, api): the model responses of the rows, in

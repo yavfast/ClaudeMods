@@ -15,6 +15,7 @@ import {
   producedRows,
   replacedOwners,
   STATE_SLOT,
+  stampState,
   touchesPin,
   touchesState,
   type ApplyReport,
@@ -30,7 +31,8 @@ import { dropPulled, type Pulled } from './repair'
 import { apiChars, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
 import { rebindAfter } from './notes'
-import { dropLastApply, pinnedTargets, pruneDeadTags, type TagRegistry } from './tags'
+import { ITEMS_UNSAVED } from './state'
+import { dropLastApply, pinnedTargets, pruneDeadTags, stateInput, type TagRegistry } from './tags'
 
 // [SP_CTX_01_06] The file extension of a media file (its home: edits.ts).
 export { mediaExt } from './edits'
@@ -212,7 +214,9 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // it ("keep_cache"): the rows before the response of the first change come
   // back as they came, so the prompt cache holds up to it; by default the
   // stretch is rebuilt as before, and --resume stays clean
-  const options = { knownResults, unmatchedPromptMedia, apiTruncated, toolRefs, ...(io.cwd ? { cwd: io.cwd } : {}), ...(q.keepCache ? { freeze: { api } } : {}) }
+  // [SP_CTX_02_67] run state starts from the items of the registry read here
+  const state = tagsRead.state === 'unreadable' ? undefined : stateInput(tagsRead.value)
+  const options = { knownResults, unmatchedPromptMedia, apiTruncated, toolRefs, ...(io.cwd ? { cwd: io.cwd } : {}), ...(q.keepCache ? { freeze: { api } } : {}), ...(state ? { state } : {}) }
   const archive = `${io.archives}/${id}.json`
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
   const frozen = new Set(messages.slice(0, applied.prefix))
@@ -279,10 +283,13 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // before it: nothing after the queue's write can throw
   const entry = applyEntry(id, applied.report, archived, messages, edits)
   const boundary = boundaryOf(rows, io.hostId())
+  // [SP_CTX_02_67] the items run state made, written with the registry
+  const items = applied.state
   const rebind = (reg: TagRegistry) => {
     const out = rebindAfter(reg, messages, after, done, q.edits, produced)
+    const withItems = items ? { ...out.registry, items: items.items, nextItem: items.nextItem } : out.registry
     // [SP_CTX_02_28] the telemetry measures what this apply freed
-    return { registry: done.length && tokensBefore !== undefined ? { ...out.registry, lastApply: { at: id, tokensBefore } } : out.registry, dropped: out.dropped }
+    return { registry: done.length && tokensBefore !== undefined ? { ...withItems, lastApply: { at: id, tokensBefore } } : withItems, dropped: out.dropped }
   }
   // [SP_CTX_02_07] Commit: the waits for the registries' chains are over, so
   // every change is made from the registries as they are now, and nothing is
@@ -300,7 +307,13 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     if (io.isAborted()) return undefined
     // [SP_CTX_02_14] RelocateNote: notes on removed rows go and the report
     // names them, only once the registry is written
-    const tagsWritten = tags ? await io.writeTags(tags.registry).then(() => true, () => false) : false
+    let tagsError = tagsNow.state === 'unreadable' ? tagsNow.reason : ''
+    const tagsWritten = tags
+      ? await io.writeTags(tags.registry).then(
+          () => true,
+          (err: unknown) => ((tagsError = String(err)), false),
+        )
+      : false
     if (tags && tagsWritten) applied.report.notesDropped = tags.dropped
     const aliasesWritten = aliases && !io.isAborted() ? await io.writeAliases(aliases.next).then(() => true, () => false) : false
     // [SP_CTX_02_40] the attachments' decisions; a failure leaves the ones in force
@@ -316,7 +329,9 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     }
     // [SP_CTX_01_05] without an applied edit: "not changed", no size line
     // [SP_CTX_01_05] [SP_CTX_02_40] the attachments newly left out, after the rest
-    const report = [formatReport(applied.report, archived, 'compaction', ratio), attached?.text ?? ''].filter(Boolean).join(' ')
+    // [SP_CTX_02_67] ITEMS_UNSAVED: the slot shows items the registry lacks
+    const unsaved = items && !tagsWritten ? ITEMS_UNSAVED(tagsError || 'not written') : ''
+    const report = [formatReport(applied.report, archived, 'compaction', ratio), attached?.text ?? '', unsaved].filter(Boolean).join(' ')
     try {
       await io.writeQueue(reported(q, report, id))
     } catch (err) {
@@ -491,7 +506,9 @@ export function screenPinned(
   const pinned = pinnedTargets(messages, tags.value)
   const edits: QueuedEdit[] = []
   const refused: string[] = []
-  for (const e of queued) {
+  for (const raw of queued) {
+    // [SP_CTX_02_67] a state edit's target is the slot row now
+    const e = raw.op === 'state' ? stampState(messages, raw, pinned.state) : raw
     if (touchesPin(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${PINNED}`)
     else if (touchesState(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${STATE_SLOT}`)
     else edits.push(e)

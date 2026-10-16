@@ -132,7 +132,7 @@
 | COLLAPSED_KEY | `collapsed` | Єдине поле входу пари-носія `collapse`; значення — CollapsedList ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04), фаза 27, [SP_CTX_DEC_29](./context_editor.decisions-21.sp.md#SP_CTX_DEC_29)) |
 | MAX_COLLAPSED_LIST | 200 | Найбільша довжина CollapsedList, символи; лічильники рядків не обрізаються, виклики — `, …` і `…, +<n> more` (CapCalls) |
 | MAX_COLLAPSED_ARG | 40 | Найбільша довжина одного ключового аргументу KeyArg, символи (обрізаний закінчується `…`; обрізання не розрізає сурогатної пари) |
-| PINNED / STATE_SLOT | `target is pinned; remove the pin with context_tag first` / `target holds the state slot; change it only by rewrite of that row, or remove its state tag first` | Причини відхилення правки на `pin` і `state` ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) |
+| PINNED / STATE_SLOT | `target is pinned; remove the pin with context_tag first` / `target holds the state slot; change it by rewrite of that row, or by the state op once it has items, or remove its state tag first` | Причини відхилення правки на `pin` і `state` ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) |
 | STALE_INDEXES | `the conversation was compacted since your last context_list; call context_list with a page of rows (count > 0) for current indexes — count 0 and "full" do not renew them` | Причина відхилення цілі за індексом після зміни межі ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03), [SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) |
 | UNTRACKED_ROW / UNTRACKED_END / UNTRACKABLE | `row #<i> cannot be tracked (no text, no tool call); use a neighbouring row` / `row #<i> holds only thinking and cannot end a range; end it at a row with text or a tool call` / `row #<i> cannot be tracked (no text, no tool call); note a neighbouring row` | Причини відхилення рядка лише з thinking: `rewrite` і тег за індексом / кінець діапазону / нотатка ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03), [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11), [SP_CTX_02_32](./context_editor.stages.sp.md#SP_CTX_02_32)) |
 | ALIAS_GONE | `alias <ref> is gone: aliases go when an apply changes their pair or the pair leaves the conversation; name the call by its tool_use_id from context_list` | Причина UNKNOWN_REF для `c<n>` з `n < next`, якого вже немає в `map` ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17); фаза 31, CF-53) |
@@ -177,5 +177,6 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)) |
 | 2026-10-16 | Фаза 41: REPLACEMENT_OPENERS — і голови SUMMARIZED_OF, TAG_SUMMARIZED_OF; SUMMARIZED і TAG_SUMMARIZED лишаються для збережених сесій ([SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62)) |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.structures.sp.md](./context_editor.structures.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |

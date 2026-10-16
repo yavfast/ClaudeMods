@@ -8,6 +8,7 @@ import { MAX_NOTE, MAX_NOTES, MAX_REMIND } from './notes'
 import { DEFAULT_RESUME, MAX_DOCUMENT } from './queue'
 import { MARK } from './rows'
 import { MAX_STAGE_NAME, SKILL } from './stages'
+import { MAX_STATE_ITEM, MAX_STATE_ITEMS, STATE_KINDS } from './state'
 import { MAX_TAGS } from './tags'
 
 export const PLUGIN = 'context-editor'
@@ -46,8 +47,9 @@ Ops (items of "edits"; every field shown is required):
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
 - {"op":"describe","index","description"}: replace the image, document or pasted text in a prompt row of the person (@ in ${LIST}) by your description; the text the person typed stays.
+- {"op":"state","changes"}: change the items of your state slot; the apply rebuilds the slot's text from them.
 
-A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row.
+A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row, or by the state op once it has items.
 
 Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
@@ -58,6 +60,23 @@ Compress a finished stage's block into a stage record. The person's messages (As
 const REF = {
   type: 'string',
   description: `Instead of tool_use_id: a call alias "cN" from the "${MARK} id cN" line after a call's result, or "last" for your latest call (context_* calls do not count); no ${LIST} needed.`,
+}
+
+// [SP_CTX_01_30] [SP_CTX_02_67] The changes of a state edit; the details
+// live here, not in EDIT_DESCRIPTION ([SP_CTX_02_69]).
+const CHANGES = {
+  type: 'array',
+  minItems: 1,
+  maxItems: MAX_STATE_ITEMS,
+  description: `Changes of your state slot's items, in order. An item's id (p3) is in the slot's text; an item added in this batch gets its id when the batch applies. Text: one line, at most ${MAX_STATE_ITEM} chars; at most ${MAX_STATE_ITEMS} items. Mark an item that proved harmful or outdated rather than removing it.`,
+  items: {
+    oneOf: [
+      { type: 'object', properties: { do: { const: 'add' }, kind: { enum: [...STATE_KINDS] }, text: { type: 'string' } }, required: ['do', 'kind', 'text'] },
+      { type: 'object', properties: { do: { const: 'set' }, id: { type: 'string' }, text: { type: 'string' } }, required: ['do', 'id', 'text'] },
+      { type: 'object', properties: { do: { const: 'mark' }, id: { type: 'string' }, as: { enum: ['harmful', 'outdated'] } }, required: ['do', 'id', 'as'] },
+      { type: 'object', properties: { do: { enum: ['unmark', 'remove'] }, id: { type: 'string' } }, required: ['do', 'id'] },
+    ],
+  },
 }
 
 const EDIT_SCHEMA = {
@@ -76,6 +95,7 @@ const EDIT_SCHEMA = {
           { type: 'object', properties: { op: { const: 'collapse' }, from_index: { type: 'integer' }, to_index: { type: 'integer' }, summary: { type: 'string' } }, required: ['op', 'from_index', 'to_index', 'summary'] },
           { type: 'object', properties: { op: { const: 'rewrite' }, index: { type: 'integer' }, text: { type: 'string' } }, required: ['op', 'index', 'text'] },
           { type: 'object', properties: { op: { const: 'describe' }, index: { type: 'integer' }, description: { type: 'string' } }, required: ['op', 'index', 'description'] },
+          { type: 'object', properties: { op: { const: 'state' }, changes: CHANGES }, required: ['op', 'changes'] },
         ],
       },
     },
@@ -101,7 +121,7 @@ Kinds (op "add"):
 - "pin": nothing may edit the target, neither you nor the replacements of disposable tags. Pins are yours to set and remove.
 - "disposable" + "note": once you close a stage or move on from a block you marked, the target is replaced by your note (a tool result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
 - "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
-- "state": your one state slot (task state, plan), an assistant text row by "index"; change it only by a rewrite of that row, never append a new one. A new state tag moves the slot.
+- "state": your one state slot (task state, plan), an assistant text row by "index"; change it by a rewrite of that row, or by the state op of ${EDIT} once it has items, never append a new one. A new state tag moves the slot.
 
 A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PLUGIN}:${SKILL}.`
 

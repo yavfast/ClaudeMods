@@ -122,7 +122,7 @@ test('описи інструментів (phase 40): the person\'s messages sta
 
 // [SP_CTX_02_01] [SP_CTX_02_02] [SP_CTX_02_11] the content phase 15 adds
 test('опис інструмента (phase 15): the state slot, the range, the review reasons and the ~ flag are named', async () => {
-  expect(EDIT_DESCRIPTION).toContain('A row tagged [state] changes only by a rewrite of that row.')
+  expect(EDIT_DESCRIPTION).toContain('A row tagged [state] changes only by a rewrite of that row, or by the state op once it has items.')
   expect(EDIT_DESCRIPTION).not.toContain('the working part')
   // [SP_CTX_DEC_16] phase 18, review 46 F2: the optimization turn's exception
   expect(EDIT_DESCRIPTION).toContain('unless "resume" is false; in a /compact turn only on "resume": true or "resume_prompt".')
@@ -500,7 +500,7 @@ test('RecordBoundary — host: with hostId the boundary carries it, without it n
 
 test('EDIT_DESCRIPTION — keep_cache (phase 23): a few words point to the field; the text stays within MAX_DESCRIPTION', async () => {
   expect(EDIT_DESCRIPTION).toContain('Batch edits in one call (see "keep_cache").')
-  expect(EDIT_DESCRIPTION.length).toBe(1888)
+  expect(EDIT_DESCRIPTION.length).toBe(2037)
 })
 
 // [PL_AUD_CTX_P6] TST-17: before the storage is ready

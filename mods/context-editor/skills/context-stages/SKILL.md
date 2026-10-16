@@ -65,7 +65,7 @@ The close report lists the block's candidates by reason, counts its `~` pairs an
 
 ## State slot
 
-Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state at the end; only that rewrite may change it, and the tag follows the rewritten row. A new `state` tag moves the slot. Each update is an apply: do it together with a block's edits, not on its own.
+Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state at the end. Or keep it as items: `context_edit` with `{"op":"state","changes":[{"do":"add","kind":"plan","text":"…"}]}` (`set`, `mark` harmful/outdated, `unmark`, `remove` by id such as `p3`); the apply rebuilds the slot from them, and while it has items only the `state` op changes it. The tag follows the rebuilt row. A new `state` tag moves the slot. Each update is an apply: do it together with a block's edits, not on its own.
 
 ## Notes
 

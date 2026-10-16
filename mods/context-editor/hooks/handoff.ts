@@ -19,6 +19,7 @@ import {
   producedRows,
   rebuild,
   replacedOwners,
+  stampState,
   ROW_WINDOW,
   toolRefText,
   touchedBy,
@@ -26,13 +27,14 @@ import {
   type ApplyReport,
   type Boundary,
   type QueuedEdit,
+  type StateOutput,
 } from './edits'
 import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, screenPerson, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
-import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, type Tag, type TagRegistry } from './tags'
+import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, stateInput, stateRow, type Tag, type TagRegistry } from './tags'
 import { movedSince, type Turns } from './turns'
 import { apiBlocks, DOCUMENT_FRAME, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
 import { dropPulled, type Pulled } from './repair'
@@ -91,6 +93,8 @@ export type HandoffSeed = {
   carried: string[]
   // [SP_CTX_02_34] TagRegistry.charsPerToken of the old session, for the report's estimate
   ratio?: number
+  // [SP_CTX_02_67] the items the seed's state edits made: the carried registry gets them
+  items?: StateOutput
   new?: string
   taken: boolean
 }
@@ -180,6 +184,10 @@ export type BuiltSeed = {
   media: Map<string, string[]>
   // the results that got CarryNote
   carried: string[]
+  // [SP_CTX_02_67] the items run state made
+  items?: StateOutput
+  // [SP_CTX_02_67] SeedInput.edits with every state edit stamped with the slot
+  batch: QueuedEdit[]
 }
 
 export type SeedInput = {
@@ -273,7 +281,11 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
     rows.some(r => resultsOf(r).some(t => !knownResults.has(t.tool_use_id))) ||
     rows.some((r, i) => i > 0 && r.role === 'user' && r.text.trim().startsWith(SUMMARY_OPENER))
   const early: string[] = []
-  let edits = [...input.edits]
+  // [SP_CTX_02_67] a state edit's target is the slot the tag names now; the
+  // stamped batch is also "the batch" of the registry step (BuiltSeed.batch)
+  const slot = input.tags.state === 'unreadable' ? undefined : stateRow(rows, input.tags.value)
+  const batch = input.edits.map(e => (e.op === 'state' ? stampState(rows, e, slot) : e))
+  let edits = [...batch]
   let head: SessionMessage | undefined
   let visible: readonly SessionMessage[]
   if (!hidden) {
@@ -340,7 +352,9 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
 
   // every medium an edit replaces lies in a file and no seeded row keeps a
   // handle, so ApplyEdits needs no media owners
-  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia: unmatched, apiTruncated, ...(input.cwd ? { cwd: input.cwd } : {}) })
+  // [SP_CTX_02_67] the seed applies state edits as an apply does, from the old registry's items
+  const state = input.tags.state === 'unreadable' ? undefined : stateInput(input.tags.value)
+  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia: unmatched, apiTruncated, ...(input.cwd ? { cwd: input.cwd } : {}), ...(state ? { state } : {}) })
   const report = applied.report
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
@@ -391,7 +405,7 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   // start with the summary row (a resumed session after /compact)
   const fromSummary = head !== undefined || seed[0]!.text.trim().startsWith(SUMMARY_OPENER)
   const seededIds = new Set(seed.flatMap(r => resultsOf(r).map(t => t.tool_use_id)))
-  return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media, carried: carried.filter(id => seededIds.has(id)) }
+  return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media, carried: carried.filter(id => seededIds.has(id)), batch, ...(applied.state ? { items: applied.state } : {}) }
 }
 
 // ---- [SP_CTX_02_23] CheckSeed
@@ -748,13 +762,14 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
         archive: archived,
         report: built.report,
         visible: built.visible,
-        // the batch as claimed: HandedOff empties the old queue later
-        edits: run.q.edits,
+        // the batch as claimed (state edits stamped with the slot): HandedOff empties the old queue later
+        edits: built.batch,
         fromSummary: built.fromSummary,
         unmatchedPromptMedia: built.unmatchedPromptMedia,
         carried: built.carried,
         // [SP_CTX_02_34] the old session's calibration, for the seed's report
         ratio: tags.state === 'unreadable' ? undefined : tags.value.charsPerToken,
+        ...(built.items ? { items: built.items } : {}),
         taken: false,
       },
     }
@@ -778,7 +793,7 @@ export const REGISTRIES_NOT_CARRIED = ' Tags and aliases were not carried over.'
 // other failure writes nothing for that registry and gives the sentence once.
 export async function carryRegistries(
   io: Pick<HandoffIO, 'carryTags' | 'carryAliases'>,
-  s: Pick<HandoffSeed, 'visible' | 'rows' | 'edits' | 'report' | 'carried'>,
+  s: Pick<HandoffSeed, 'visible' | 'rows' | 'edits' | 'report' | 'carried' | 'items'>,
   oldDir: string,
   newDir: string,
 ): Promise<{ note: string; error?: Error }> {
@@ -795,7 +810,8 @@ export async function carryRegistries(
         dropped = out.dropped
         // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one
         const { reintroduce: _, ...copy } = dropLastApply(out.registry)
-        return { ...copy, introduced: false }
+        // [SP_CTX_02_67] the registry's copy carries the items the seed's state edits made
+        return { ...copy, introduced: false, ...(s.items ? { items: s.items.items, nextItem: s.items.nextItem } : {}) }
       })
       if (carried === 'carried') s.report.notesDropped = dropped
       return carried

@@ -27,6 +27,11 @@
 
 ## Subtasks
 
+### Subtask: Фаза 44 — пункти слота стану
+**Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
+Запит розробника: «/dev-flow do продовжуй реалізацію наступних фаз згідно плану». Зачеплено новий `hooks/state.ts`, `edits.ts` (операція `state`: checkShape, prepareState, stampState, runState, Pinned.items, STATE_SLOT, легенда), `compaction.ts` (ScreenPinned ставить ціль, StateInput, запис `items`/`nextItem`, ITEMS_UNSAVED), `tags.ts` (поля реєстру, stateInput, RebindTags, відмова BAD_TARGET), `queue.ts` (`pending` у PrepareEdits, розбір), `handoff.ts` (засів несе пункти), `rows.ts` (STATE_REBUILT), `capabilities.ts`, `tools.ts` (опис 2037/2048, схема `changes`), SKILL.md (8858/9000), CLAUDE.md.
+Progress: [x] код і тести (952 зелені, `tsc`, validate, skill-limits 8864/9000) · [x] документи (curation.sp 01_29, 01_32, 02_67 «Реалізація», 02_69, 05_08; constants, edits, structures, tags; p44 [DONE]) · [x] рев'ю (pass with advisories; виправлено 1 — засів ставить ціль `state` до відбору й несе цей пакет у крок реєстрів, 2 — межа пунктів і довжини при застосуванні, 3 — тексти в сусідніх специфікаціях, 5 — ARCHIVE_ROOM 600, 8 — SKILL.md, 9 — тести; 4 і 6 записано в 02_67/05_08; 7 — DependencyCheck не бачить пунктів — лишено) · [x] живий прогін 2 сесії, 2.1.296 (`.dev_flow/cache/live-test/curation-p44/results.md`: застосування 4/4, реєстр і текст слота збігаються; на 2.1.299 запобіжник обходу відмовив, як задано) · [x] коміт (розробник: «Ок. Продовжуй»)
+
 ### Subtask: Фаза 43 — застаріле читання і готові заміни
 **Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
 Запит розробника: «/dev-flow do продовжуй реалізацію наступних фаз згідно плану». Зачеплено `hooks/tags.ts` (R6: markSuperseded, changedRead, numberedLines, seenRead, supersededReads; причина `superseded`), `register.ts` (ReadPaths, R6 в afterCall з `text` виклику; readAliases і cwd у blockHost), `stages.ts` (readyReplacements у BlockReport), `edits.ts` (легенда), `tools.ts` (опис `context_tag`), SKILL.md (8628/9000).
