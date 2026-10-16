@@ -131,6 +131,14 @@ test('BuildSeed — джерело заміни: with cwd the summarize names Re
   expect(textOf(built((await seedOf({ rows }, edits)).out))).toContain('the full output of Read /p/docs/big.txt you had read here')
 })
 
+// [SP_CTX_02_61] phase 45: the seed takes no host rows
+test('BuildSeed — рядки хоста: a drop with host counts as applied; the seed is the same as without it', async () => {
+  const seed = built((await seedOf({ edits: [{ op: 'drop', host: 'h1' }] })).out)
+  expect(seed.report.applied).toEqual(['drop h1'])
+  expect(seed.report.failed).toEqual([])
+  expect(seed.rows).toEqual(built((await seedOf()).out).rows)
+})
+
 test('BuildSeed — правки й медіа: summarize and drop applied, the PNG of the untouched pair carried as a file, no context_handoff, no handle', async () => {
   const { out, written } = await seedOf({}, [
     { op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' },

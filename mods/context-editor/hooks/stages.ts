@@ -23,6 +23,7 @@ import {
   listRows,
   locate,
   MAX_BLOCK_INDEXES,
+  MAX_LIST_COUNT,
   ownerKey,
   REPRO_FLAG,
   REPRODUCIBLE_TOOLS,
@@ -35,6 +36,7 @@ import {
   type Snapshot,
 } from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
+import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './hostrows'
 import { apiChars, charsOf, errorText, findToolUse, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
@@ -634,6 +636,8 @@ export type ListIO = {
   // [SP_CTX_02_28] [SP_CTX_02_40] what the host attachments' answers in `dir`
   // leave out; absent or undefined: no line
   hostAttach?: (dir: string) => Promise<{ copies: number; chars: number } | undefined>
+  // [SP_CTX_02_61] the host rows' records in `dir`; absent or none: no list
+  hostRows?: (dir: string) => Promise<readonly HostRowRecord[]>
 }
 
 export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown }
@@ -697,7 +701,14 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
   } catch (err) {
     tele = `Context: size unavailable (${errorText(err)})`
   }
-  const text = listRows(rows, from, count, found, tagged.labels, named.aliases, tele, tagged.notes, size)
+  // [SP_CTX_02_61] the host rows: a header line (count 0 too), and their list
+  // after a page that holds the newest row; the indexes stay as they are
+  const host: HostRows = { rows: dir && io.hostRows ? [...(await io.hostRows(dir).catch(() => []))] : [], next: 1 }
+  const header = hostHeader(host)
+  if (header) tele = `${tele}\n${header}`
+  const newest = count >= 1 && Math.min(Math.max(0, Math.trunc(from)), Math.max(0, rows.length - 1)) + Math.min(count, MAX_LIST_COUNT) >= rows.length
+  const section = newest ? hostSection(host) : ''
+  const text = listRows(rows, from, count, found, tagged.labels, named.aliases, tele, tagged.notes, size) + (section ? `\n${section}` : '')
   // [SP_CTX_02_18] only a listing with rows the agent receives renews its indexes
   if (count >= 1) io.setListed(key)
   return withReminderLines({ result: text + tagged.note + named.note }, await io.dueLines())

@@ -296,7 +296,7 @@ test('serialChains — порядок вкладення: queue → tags → ali
   // queue inside tags: the report inherited from the holder names both chains
   const ran = await serial('tags', t => serial('queue', async () => 'ran', { within: t }), { report })
   expect(ran).toBe('ran')
-  expect(problems).toEqual(['context-editor: chain order: "queue" (rank 1) entered inside "tags" (rank 2); the order is queue → tags → aliases → deliveries | journal | hostattach | ledger'])
+  expect(problems).toEqual(['context-editor: chain order: "queue" (rank 1) entered inside "tags" (rank 2); the order is queue → tags → aliases → deliveries | journal | hostattach | ledger | hostrows'])
   // the journal inside deliveries: one rank, never nested
   await serial('deliveries', d => serial('journal', async () => undefined, { within: d }), { report })
   expect(problems[1]).toContain('"journal" (rank 4) entered inside "deliveries" (rank 4)')
@@ -320,6 +320,10 @@ test('lockOrder: the rank table is the lock order in force; nothing held gives n
   const order: ChainKey[] = ['queue', 'tags', 'aliases', 'deliveries']
   expect(order.map(k => CHAIN_RANK[k])).toEqual([1, 2, 3, 4])
   expect(CHAIN_RANK.journal).toBe(CHAIN_RANK.deliveries)
+  // [SP_CTX_01_31] the host rows' chain (phase 45) beside the other files of rank 4
+  expect(CHAIN_RANK.hostrows).toBe(CHAIN_RANK.deliveries)
+  expect(lockOrder('hostrows', { keys: ['queue'] })).toBeUndefined()
+  expect(lockOrder('hostrows', { keys: ['deliveries'] })).toContain('"hostrows" (rank 4) entered inside "deliveries" (rank 4)')
   expect(lockOrder('queue', NOT_HELD)).toBeUndefined()
   expect(lockOrder('deliveries', { keys: ['tags'] })).toBeUndefined()
   expect(lockOrder('journal', { keys: ['queue', 'tags', 'aliases'] })).toBeUndefined()

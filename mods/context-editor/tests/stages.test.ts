@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { PASSED_ADVICE } from '../hooks/capabilities'
 import { expect, test } from 'claude-code/testing'
-import { SUMMARIZED_OF } from '../hooks/rows'
+import { SKILL_FRAME, SUMMARIZED_OF } from '../hooks/rows'
 import { applyEdits, describeEdit, dropOwnCalls, fingerprint, indexRows, listRows, MAX_BLOCK_INDEXES, prepare, producedRows, readView, ROW_WINDOW, snapshotOf, type QueuedEdit, type ViewIO } from '../hooks/edits'
 import { EMPTY_QUEUE, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
@@ -1316,6 +1316,27 @@ test('contextList — a page with rows renews listedKey; its aliases, labels and
   expect(out.result.endsWith('\nDUE')).toBe(true)
   // the telemetry reads the API form again for its Cache line ([SP_CTX_02_38])
   expect(log.calls).toEqual(['view', 'api', 'storage', 'tags /s', 'aliases /s', 'journal /s', 'api', 'due'])
+})
+
+test('contextList — рядки хоста: the header line names them (count 0 too), the list follows a page that holds the newest row; the indexes stay', async () => {
+  const text = `${SKILL_FRAME}/skills/x`
+  const recs = [{ id: 'h1', kind: 'skill' as const, after: 'u', afterKind: 'prompt' as const, afterHead: 'the prompt "p"', text, chars: text.length }]
+  const plain = await contextList(listHarness().io, { count: 20 })
+  const { io } = listHarness({ hostRows: async () => recs })
+  const page = await contextList(io, { count: 20 })
+  const head = await contextList(io, { count: 0 })
+  const first = await contextList(io, { from: 0, count: 1 })
+  if (!('result' in page) || !('result' in head) || !('result' in first) || !('result' in plain)) throw new Error('denied')
+  const header = `Host rows: 1 (~${text.length} chars), not in the indexes; drop one with {"op":"drop","host":"<id>"}: h1 skill`
+  expect(page.result).toContain(header)
+  expect(page.result).toContain(`Host rows (added by the host, not the person's words):\nh1 skill, ${text.length} chars, after the prompt "p": "${text}"`)
+  expect(head.result).toContain(header)
+  expect(head.result).not.toContain('added by the host')
+  expect(first.result).not.toContain('added by the host')
+  expect(plain.result).not.toContain('Host rows')
+  // the rows' lines are the same as without host rows
+  const rowsOf = (t: string) => t.split('\n').filter(l => /^#\d+ /.test(l))
+  expect(rowsOf(page.result)).toEqual(rowsOf(plain.result))
 })
 
 test('contextList — "count": 0 gives the header alone and does not renew listedKey', async () => {

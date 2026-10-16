@@ -966,6 +966,16 @@ function observer(start: TagRegistry, over: Partial<ObserveIO> = {}) {
 
 const MEASURED: TagRegistry = { ...EMPTY_REGISTRY, lastApply: { at: 1, tokensBefore: 90_000 } }
 
+test('ObserveCompaction — чужа компактизація прибирає записи рядків хоста: once it stands; a skipped one leaves them', async () => {
+  const rows = conversation()
+  const cleared: string[] = []
+  const { io } = observer(EMPTY_REGISTRY, { clearHostRows: async dir => void cleared.push(dir) })
+  await observeCompaction(io, { trigger: 'manual' }, { messages: rows })
+  expect(cleared).toEqual(['/s'])
+  await observeCompaction(io, { trigger: 'manual' }, { skip: 'no' })
+  expect(cleared).toEqual(['/s'])
+})
+
 test('ObserveCompaction — чужа компактизація: its rows are Copied, it records the boundary with hostId and drops lastApply', async () => {
   const rows = conversation()
   const { io, log } = observer(MEASURED)

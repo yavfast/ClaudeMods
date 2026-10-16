@@ -25,6 +25,7 @@ import {
 } from './edits'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { frozenAttachments, type AttachPort } from './hostattach'
+import { goneText, handlesOf, rebaseHostRows, type HostRows } from './hostrows'
 import { applyEntry, type JournalEntry } from './journal'
 import { appendReport, keepOtherSteps, markerKind, screenPerson, withCommandNote, type Queue } from './queue'
 import { dropPulled, type Pulled } from './repair'
@@ -166,6 +167,15 @@ export type CompactionIO = {
   // [SP_CTX_02_44] RecordInputs in the background, on the ledger's chain:
   // never awaited, its failure changes nothing
   recordInputs?: (messages: readonly SessionMessage[], id: number) => void
+  // [SP_CTX_02_61] the host rows' records, read for this apply (unreadable:
+  // none); absent: none
+  readHostRows?: () => Promise<Read<HostRows>>
+  // [SP_CTX_02_60] after the commit point, in the background on the host
+  // rows' chain, reading the file anew: the records whose row before came
+  // back with its handle stay, by its position among the returned rows
+  // (KeepHostRows over the handles of the input and of the rows returned);
+  // never awaited
+  keepHostRows?: (input: readonly SessionMessage[], out: readonly (string | undefined)[]) => void
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -216,7 +226,20 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // stretch is rebuilt as before, and --resume stays clean
   // [SP_CTX_02_67] run state starts from the items of the registry read here
   const state = tagsRead.state === 'unreadable' ? undefined : stateInput(tagsRead.value)
-  const options = { knownResults, unmatchedPromptMedia, apiTruncated, toolRefs, ...(io.cwd ? { cwd: io.cwd } : {}), ...(q.keepCache ? { freeze: { api } } : {}), ...(state ? { state } : {}) }
+  // [SP_CTX_02_61] the host rows' records a host drop names
+  const hostRead = io.readHostRows ? await io.readHostRows().catch((err): Read<HostRows> => ({ state: 'unreadable', reason: String(err) })) : undefined
+  // [SP_CTX_01_31] a record kept by an earlier apply names its row by position
+  const hostRows = hostRead && hostRead.state !== 'unreadable' ? rebaseHostRows(hostRead.value.rows, messages) : []
+  const options = {
+    knownResults,
+    unmatchedPromptMedia,
+    apiTruncated,
+    toolRefs,
+    hostRows,
+    ...(io.cwd ? { cwd: io.cwd } : {}),
+    ...(q.keepCache ? { freeze: { api } } : {}),
+    ...(state ? { state } : {}),
+  }
   const archive = `${io.archives}/${id}.json`
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
   const frozen = new Set(messages.slice(0, applied.prefix))
@@ -260,6 +283,11 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   applied.report.charsAfter = totalChars(rows) - put.added
   // [SP_CTX_01_05] where the made rows stand in the list returned
   applied.report.produced = producedRows(rows, applied.made)
+  // [SP_CTX_02_61] the records no drop named whose row before came back
+  // without its handle or not at all: the host leaves their rows out
+  const kept = handlesOf(rows)
+  const gone = goneText(hostRows.filter(r => !kept.has(r.after) && !applied.hostNamed.has(r.id)))
+  if (gone) applied.report.hostLines = [...(applied.report.hostLines ?? []), gone]
 
   // An abandoned dispatch changes nothing: the batch stays queued for the
   // next turn, and the files written so far are only orphans in the archive.
@@ -369,6 +397,16 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     } catch {
       // a later apply skips a delivery that is already a row
     }
+  // [SP_CTX_02_60] the records whose row before came back with its handle stay
+  if (io.keepHostRows && hostRows.length && !io.isAborted())
+    try {
+      io.keepHostRows(
+        messages,
+        rows.map(r => r.handle),
+      )
+    } catch {
+      // a record whose row went only names a host row that is no longer there
+    }
   // [SP_CTX_02_31] what this application compressed; never delays the answer
   if (entry && io.journal && !io.isAborted())
     try {
@@ -431,6 +469,9 @@ export type ObserveIO = {
   // [SP_CTX_02_41] the compaction stands: the catalog of attachments starts
   // over, and the answers in `dir` go (never awaited); absent: none
   attachments?: { passed: () => void; clear: (dir: string) => Promise<unknown> }
+  // [SP_CTX_02_60] the compaction stands: the host rows' records in `dir` go
+  // (never awaited); absent: none
+  clearHostRows?: (dir: string) => Promise<unknown>
 }
 
 // [SP_CTX_02_18] [SP_CTX_02_12] [SP_CTX_01_10] ON compaction that is not the
@@ -460,6 +501,7 @@ export async function observeCompaction(io: ObserveIO, e: CompactionEvent, done:
         return next === reg ? undefined : next
       }).catch(() => undefined)
       if (io.attachments) void io.attachments.clear(dir).catch(() => undefined)
+      if (io.clearHostRows) void io.clearHostRows(dir).catch(() => undefined)
     }
   } catch {
     // the previous boundary stays

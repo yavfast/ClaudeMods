@@ -27,6 +27,12 @@
 
 ## Subtasks
 
+### Subtask: Фаза 45 — рядки хоста: запис і список з `id`
+**Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
+Запит розробника: «/dev-flow do продовжуй реалізацію наступних фаз згідно плану», далі «/dev-flow do продовжуй». Зачеплено новий `hooks/hostrows.ts`, `edits.ts` (варіант `drop` з `host`, Detach, `hostLines`), `compaction.ts` (записи, рядок про рядки, що пішли, KeepHostRows, спостерігач), `register.ts` (сховище, запис у `session.append`, вікно копій, порти), `queue.ts`, `handoff.ts`, `stages.ts`, `store.ts` (ланцюжок `hostrows`), `rows.ts` (`hostKind`), `tools.ts` (2043/2048), `capabilities.ts`, `tags.ts`, CLAUDE.md.
+Progress: [x] код і тести (976 зелені, `tsc`, validate) · [x] документи (curation.sp 01_31, 02_60, 02_61 «Реалізація», 02_69, 04_09, 05_07; p45 [DONE]) · [x] рев'ю (pass with advisories; виправлено 1, 3, 4, 5, 6, 7; 2 — пам'ять на процес — записано межею) · [x] живий прогін 4 сесії, 2.1.296 (`.dev_flow/cache/live-test/curation-p45/results.md`: перша версія дала «no such row now» — хост пише повернуті рядки копіями з новими `uuid`; з позицією `#k` записи переживають застосування, `drop` за `id` прибирає навичку, навичка `Skill` іде з перебудованими) · [x] повторне рев'ю зміни `#k` (pass with advisories; виправлено should 1 — перевірка голови `afterHead` при перенесенні позиції, 3 — формулювання; 2 — ремонт не переносить позицій — лишено, записано; живий повтор haiku-5 — h1 перенесено й прибрано) · [x] коміт (розробник: «Ok»)
+Відхилення за прогоном: запис після застосування тримає позицію попередника `#<k>` серед повернутих рядків, а не його `handle` (RebaseHostRows, SP_CTX_01_31).
+
 ### Subtask: Фаза 44 — пункти слота стану
 **Contributor:** claude-session-af2d71e6 · **Status:** `done` · **Started:** 2026-10-16 · **Phase:** `implement`
 Запит розробника: «/dev-flow do продовжуй реалізацію наступних фаз згідно плану». Зачеплено новий `hooks/state.ts`, `edits.ts` (операція `state`: checkShape, prepareState, stampState, runState, Pinned.items, STATE_SLOT, легенда), `compaction.ts` (ScreenPinned ставить ціль, StateInput, запис `items`/`nextItem`, ITEMS_UNSAVED), `tags.ts` (поля реєстру, stateInput, RebindTags, відмова BAD_TARGET), `queue.ts` (`pending` у PrepareEdits, розбір), `handoff.ts` (засів несе пункти), `rows.ts` (STATE_REBUILT), `capabilities.ts`, `tools.ts` (опис 2037/2048, схема `changes`), SKILL.md (8858/9000), CLAUDE.md.

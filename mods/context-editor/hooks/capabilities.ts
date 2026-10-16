@@ -431,6 +431,8 @@ function rowAt(rows: readonly SessionMessage[], anchors: readonly string[] | und
 // The target of a queued edit as the brief names it; undefined: not in the rows.
 export function targets(rows: readonly SessionMessage[], e: QueuedEdit): string | undefined {
   if ('tool_use_id' in e) return callOf(rows, e.tool_use_id)
+  // [SP_CTX_02_61] a host row is no row the brief can name
+  if ('host' in e) return undefined
   if (e.op === 'collapse') {
     const first = rowAt(rows, e.anchors, e.from_index, 0)
     const last = rowAt(rows, e.anchors, e.to_index, (e.anchors?.length ?? 1) - 1)

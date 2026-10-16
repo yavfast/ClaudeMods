@@ -91,7 +91,7 @@
 - [x] [Phase 42 — Перевірка залежностей і слід власних викликів](./context_editor.p42.plan.md#PL_CTX_P42) (2026-10-16; слід знімає P13, обережне P23 щодо виводу лишилось)
 - [x] [Phase 43 — Застаріле читання і готові заміни](./context_editor.p43.plan.md#PL_CTX_P43)
 - [x] [Phase 44 — Пункти слота стану](./context_editor.p44.plan.md#PL_CTX_P44)
-- [ ] [Phase 45 — Рядки хоста: запис і список з `id`](./context_editor.p45.plan.md#PL_CTX_P45)
+- [x] [Phase 45 — Рядки хоста: запис і список з `id`](./context_editor.p45.plan.md#PL_CTX_P45)
 - [ ] [Phase 46 — Правила курування і тексти навички](./context_editor.p46.plan.md#PL_CTX_P46)
 
 Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02), [PL_CTX_DEC_04](#PL_CTX_DEC_04), [PL_CTX_DEC_05](#PL_CTX_DEC_05) і [PL_CTX_DEC_06](#PL_CTX_DEC_06); номери фаз — незмінні ідентифікатори, а не черговість.
@@ -147,7 +147,7 @@
 | [Phase 42 — Перевірка залежностей і слід власних викликів](./context_editor.p42.plan.md#PL_CTX_P42) | `context_editor.p42.plan.md` | completed |
 | [Phase 43 — Застаріле читання і готові заміни](./context_editor.p43.plan.md#PL_CTX_P43) | `context_editor.p43.plan.md` | completed |
 | [Phase 44 — Пункти слота стану](./context_editor.p44.plan.md#PL_CTX_P44) | `context_editor.p44.plan.md` | completed |
-| [Phase 45 — Рядки хоста: запис і список з `id`](./context_editor.p45.plan.md#PL_CTX_P45) | `context_editor.p45.plan.md` | todo |
+| [Phase 45 — Рядки хоста: запис і список з `id`](./context_editor.p45.plan.md#PL_CTX_P45) | `context_editor.p45.plan.md` | completed |
 | [Phase 46 — Правила курування і тексти навички](./context_editor.p46.plan.md#PL_CTX_P46) | `context_editor.p46.plan.md` | todo |
 
 ## Backlog  {#PL_CTX_BACKLOG}

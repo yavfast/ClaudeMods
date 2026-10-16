@@ -157,8 +157,14 @@ export function isDescribedText(text: string): boolean {
 // such a text is never the person's words.
 export const SKILL_FRAME = 'Base directory for this skill: '
 export const PEER_FRAME = 'Another Claude session sent a message:\n<agent-message'
+export type HostKind = 'skill' | 'peer'
+export function hostKind(text: string): HostKind | undefined {
+  if (text.startsWith(SKILL_FRAME)) return 'skill'
+  if (text.startsWith(PEER_FRAME)) return 'peer'
+  return undefined
+}
 export function hostFrame(text: string): boolean {
-  return text.startsWith(SKILL_FRAME) || text.startsWith(PEER_FRAME)
+  return hostKind(text) !== undefined
 }
 
 // [SP_CTX_02_59] PasteBlocks: the host's wrapper of pasted text in a

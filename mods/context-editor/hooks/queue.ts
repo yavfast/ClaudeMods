@@ -1,9 +1,10 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, isHostDrop, isPairEdit, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { personDelivered, personText, type QueuedDelivery } from './deliveries'
 import { isDescribedText, isPlainUserRow, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
 import type { Replaced } from './stages'
+import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -247,7 +248,7 @@ function personHits(rows: readonly SessionMessage[], e: QueuedEdit, delivered: r
       for (const t of resultsOf(rows[i]!)) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
       if (personDelivered(rows, i, delivered)) hits.push(`#${i} (${DELIVERED})`)
     }
-  } else if (e.op === 'summarize' || e.op === 'drop') {
+  } else if (isPairEdit(e)) {
     const res = touchedBy(rows, e)?.rows[1]
     if (res !== undefined && personPair(rows, e.tool_use_id)) hits.push(`#${res} (AskUserQuestion answer)`)
     // a drop of one of parallel results leaves the row, and the delivery, to the others
@@ -265,7 +266,7 @@ function named(hits: readonly string[]): string {
 export function personRefusal(rows: readonly SessionMessage[], e: QueuedEdit, delivered: readonly QueuedDelivery[] = [], label = describeEdit(e)): string | undefined {
   const hits = personHits(rows, e, delivered)
   if (!hits.length) return undefined
-  if (e.op === 'summarize' || e.op === 'drop')
+  if (isPairEdit(e))
     return personPair(rows, e.tool_use_id)
       ? `${label}: the AskUserQuestion answer is the person's words; it stays verbatim`
       : `${label}: the person's message sent during this tool call goes with it; summarize the call instead: the message stays after it`
@@ -328,6 +329,8 @@ export function queueEdits(
   hasMedia: (owner: MediaOwner) => boolean = () => false,
   // [SP_CTX_01_22] the host's deliveries not yet rows, for PersonWords only
   delivered: readonly QueuedDelivery[] = [],
+  // [SP_CTX_02_61] the host rows' records: HOST_UNKNOWN and DetachNote
+  hostRows: readonly HostRowRecord[] = [],
 ): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
@@ -336,13 +339,21 @@ export function queueEdits(
   // [SP_CTX_02_17] refs resolve on these rows; "last" names its call
   const refs = resolveEditRefs(args.edits, resolve, rows)
   // [SP_CTX_02_67] the queued batch: STATE_CONFLICT and the items a state edit sees
-  const prepared = prepare(rows, refs.edits, hasMedia, pinned, staleIndexes, q.edits)
+  const prepared = prepare(rows, refs.edits, hasMedia, pinned, staleIndexes, q.edits, hostRows)
   const errors = prepared.errors
   // [SP_CTX_02_58] PERSON_WORDS: no edit over the person's words is queued
   const queued: QueuedEdit[] = []
   const notes: string[] = []
   let ix: RowIndex | undefined
   for (const e of prepared.queued) {
+    // [SP_CTX_02_61] DetachNote: what the row before the host row loses
+    if (isHostDrop(e)) {
+      const rec = hostRecord(hostRows, e.host)
+      const detach = rec ? detachNote(rec) : ''
+      if (detach) notes.push(`${describeEdit(e)}: ${detach}.`)
+      queued.push(e)
+      continue
+    }
     const no = personRefusal(rows, e, delivered)
     if (no) {
       errors.push(no)
@@ -426,6 +437,9 @@ export type QueueIO = {
   endWaiting?: () => Promise<string | undefined>
   // [SP_CTX_02_13] QueueTagReplacements, on the queue's chain this call holds
   replace?: () => Promise<Replaced>
+  // [SP_CTX_02_61] the host rows' records, read only for a call with a host
+  // drop; an unreadable or missing file gives none
+  hostRows?: () => Promise<readonly HostRowRecord[]>
 }
 
 // [SP_CTX_02_02]
@@ -447,7 +461,9 @@ export async function contextEdit(
     notice = `The unreadable queue (${read.reason}) was moved to ${moved}; its edits are not applied.\n`
     read = { state: 'missing', value: { ...EMPTY_QUEUE } }
   }
-  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered)
+  const wantsHost = Array.isArray(args.edits) && args.edits.some(x => (x as { host?: unknown } | null)?.host !== undefined)
+  const hostRows = wantsHost && io.hostRows ? await io.hostRows().catch(() => []) : []
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

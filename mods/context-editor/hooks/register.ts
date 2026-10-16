@@ -125,6 +125,7 @@ import {
   STORAGE_BASE,
 } from './store'
 import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
+import { closeWindow, emptyHostRows, keepHostRows, newHostMemory, observeHostRow, openWindow, parseHostRows, recordHostRow, type HostRowRecord, type HostRows } from './hostrows'
 import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
   appendRow,
@@ -175,6 +176,9 @@ const copied = new Set<string>()
 // [SP_CTX_02_35] The result ids of the last tool-result row of the main
 // conversation: the anchor of a delivery that follows it.
 const anchorMem = newAnchorMemory()
+// [SP_CTX_02_60] The last visible row of the main conversation and the copy
+// window: what a host row is recorded after.
+const hostMem = newHostMemory()
 // [SP_CTX_02_37] The request size of the last size check without a hint.
 const hintMemo = newHintMemo()
 // [SP_CTX_02_27] the skill's guide, read once per module instance; a failed
@@ -238,6 +242,7 @@ type Stores = {
   journal: Store<Journal>
   hostattach: Store<HostAttachState>
   ledger: Store<ApplyLedger>
+  hostrows: Store<HostRows>
 }
 
 // [SP_CTX_01_07] The storage files of the session whose storage is `dir`,
@@ -259,7 +264,25 @@ function stores($: EngineInterface, dir: string): Stores {
     hostattach: jsonFile(fs, `${dir}/hostattach.json`, emptyHostAttach, parseHostAttach, { lock: chainOf($, 'hostattach'), cache: fileCache }),
     // [SP_CTX_01_24] the applies' inputs (phase 32)
     ledger: jsonFile(fs, `${dir}/ledger.json`, emptyLedger, parseLedger, { lock: chainOf($, 'ledger') }),
+    // [SP_CTX_01_31] the host rows' records (phase 45)
+    hostrows: jsonFile(fs, `${dir}/hostrows.json`, emptyHostRows, parseHostRows, { lock: chainOf($, 'hostrows') }),
   }
+}
+
+// [SP_CTX_02_60] After the commit point of an apply or a repair, in the
+// background on the host rows' chain, reading the file anew (CONC-02): the
+// records whose row before came back with its handle stay, by its position
+// among the returned rows (the host gives the copies new uuids).
+function keepHostRowsAt($: EngineInterface, dir: string, input: readonly SessionMessage[], out: readonly (string | undefined)[]): void {
+  void updateOf(stores($, dir).hostrows)(h => keepHostRows(h, input, out)).catch(() => undefined)
+}
+
+// [SP_CTX_02_61] The host rows' records in `dir` on their chain; a missing,
+// unreadable or failed read gives none. `within`: the chains the caller holds.
+async function hostRowsNow($: EngineInterface, dir: string, within?: Held): Promise<HostRowRecord[]> {
+  const h = stores($, dir).hostrows
+  const read = await h.onChain(() => h.read(), within).catch((): Read<HostRows> => ({ state: 'unreadable', reason: 'read failed' }))
+  return read.state === 'ok' ? read.value.rows : []
 }
 
 // [SP_CTX_02_45] The ledger and the journal of effect in `dir`, read without
@@ -1006,6 +1029,8 @@ function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
       const read = await stores($, dir).hostattach.cached()
       return read.state === 'unreadable' ? undefined : read.value.left
     },
+    // [SP_CTX_02_61] the host rows' records
+    hostRows: dir => hostRowsNow($, dir),
   }
 }
 
@@ -1255,6 +1280,7 @@ export const register: Register = on => {
         // [SP_CTX_02_58] the tags over the person's words leave the registry on its chain
         replace: () =>
           queueTagReplacements({ ...tagIO($, dir, snap), onRegistry: work => chainOf($, 'tags')(() => work(), held), deliveries: () => deliveredNow($, dir, held) }),
+        hostRows: () => hostRowsNow($, dir, held),
       }
       return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
     })
@@ -1310,6 +1336,8 @@ export const register: Register = on => {
     turnStarted(turns)
     // [SP_CTX_02_12] the copies of the last compaction came before this turn
     copied.clear()
+    // [SP_CTX_02_60] so did the rows of the mod's own commands
+    closeWindow(hostMem)
     return next(e)
   }).catch(($, e, next) => next(e))
 
@@ -1360,6 +1388,16 @@ export const register: Register = on => {
     }
     // [SP_CTX_02_49] a subagent's big tool result is cut before it is stored
     const row = e.agentId && e.door === 'tool-result' ? await shapeSubagentResult(shapeIO($), e).catch(() => e) : e
+    // [SP_CTX_02_60] RecordHostRows: observed synchronously, written in the
+    // background in the folder asked for at the event (CONC-01)
+    const host = observeHostRow(hostMem, row)
+    if (host) {
+      const at = storageNow($)
+      void chainOf($, 'hostrows')(async () => {
+        const dir = await at
+        if (dir) await recordHostRow(stores($, dir).hostrows, host, MAX_QUEUE_BYTES)
+      }).catch(() => undefined)
+    }
     return appendRow(
       {
         // observeAppend is sync and reads pinned fields only
@@ -1425,6 +1463,10 @@ export const register: Register = on => {
       return { skip: probeSkip(probeCounts) }
     }
     const route = compactionRoute(e)
+    // [SP_CTX_02_60] the copy window opens synchronously, before any await:
+    // no row from here to the next turn or prompt of the person is the one
+    // before a host row
+    if (route !== 'pass' || (!e.agentId && e.trigger !== 'precompute')) openWindow(hostMem)
     // [SP_CTX_02_53] the handler got one of the mod's own markers, or another
     // compaction of the main conversation: the hook is called
     if (route !== 'pass') ownCompactionSeen($)
@@ -1440,6 +1482,10 @@ export const register: Register = on => {
           updateTags: dir => updateOf(stores($, dir).tags),
           // [SP_CTX_02_41] a compaction that stands replaced the attachments
           attachments: { passed: () => voidAnswers(attachMem), clear: dir => updateOf(stores($, dir).hostattach)(clearedAnswers) },
+          // [SP_CTX_02_60] another compaction that stands: no record names a row now
+          // (the numbers go on: an id the agent still holds never names another row)
+          clearHostRows: dir =>
+            changeOf(stores($, dir).hostrows)(read => (read.state === 'unreadable' ? emptyHostRows() : read.value.rows.length ? { rows: [], next: read.value.next } : undefined)),
         },
         e,
         done,
@@ -1493,6 +1539,14 @@ export const register: Register = on => {
       )
       if ('messages' in done.outcome && !next.signal.aborted) {
         noteCopies(done.outcome.messages)
+        // [SP_CTX_02_60] after the repair's commit point: prompts keep their handle, the rest are rebuilt
+        // (a loaded chain holds originals beside copies: a position of an earlier apply is not rebased)
+        keepHostRowsAt(
+          $,
+          dir,
+          [],
+          done.outcome.messages.map(r => r.handle),
+        )
         // [SP_CTX_02_39] the host asks every attachment again; the decisions stay
         resetPass(attachMem)
         repairMem.compactedHere = session
@@ -1553,6 +1607,9 @@ export const register: Register = on => {
           readPulled: () => pulledAt($, dir),
           compactedHere: () => repairMem.compactedHere === session,
           recordInputs: (messages, id) => recordInputsAt($, dir, messages, id),
+          // [SP_CTX_02_61] [SP_CTX_02_60] the host rows' records on their chain (rank 4, inside the queue's)
+          readHostRows: () => s.hostrows.onChain(() => s.hostrows.read(), q),
+          keepHostRows: (input, out) => keepHostRowsAt($, dir, input, out),
         },
         e.messages,
       )

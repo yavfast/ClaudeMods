@@ -2,12 +2,15 @@ import type { SessionMessage, ToolResultSummary, ToolUseSummary } from 'claude-c
 import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
 import { applyChanges, checkChanges, draftChanges, MAX_STATE_ITEMS, NO_ITEM_NOW, TOO_MANY_ITEMS, NO_STATE_SLOT, SLOT_TOO_LONG, STATE_CONFLICT, STATE_GONE, STATE_ITEMS, stateText, type DraftItem, type StateChange, type StateItem } from './state'
+import { detachNote, HOST_EXCLUSIVE, HOST_ID, HOST_MEDIA, HOST_TWICE, HOST_UNKNOWN, hostRecord, type HostRowRecord } from './hostrows'
 import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
   | { op: 'summarize'; tool_use_id: string; summary: string }
   | { op: 'drop'; tool_use_id: string }
+  // [SP_CTX_01_30] [SP_CTX_02_61] a host row by the id of its record
+  | { op: 'drop'; host: string }
   | { op: 'collapse'; from_index: number; to_index: number; summary: string }
   | { op: 'rewrite'; index: number; text: string }
   | { op: 'describe'; index: number; description: string }
@@ -21,6 +24,14 @@ export type Edit =
 // [SP_CTX_01_30] `quoted`: DependencyCheck found the original's facts quoted
 // in later texts of the agent (summarize, drop, collapse; the mod writes it).
 export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag'; quoted?: true }
+
+// [SP_CTX_02_61] A summarize or drop of a tool call, and a drop of a host row.
+export function isPairEdit<E extends Edit>(e: E): e is Extract<E, { tool_use_id: string }> {
+  return (e.op === 'summarize' || e.op === 'drop') && 'tool_use_id' in e
+}
+export function isHostDrop<E extends Edit>(e: E): e is Extract<E, { host: string }> {
+  return e.op === 'drop' && 'host' in e
+}
 
 // [SP_CTX_01_08] Whose media it is: a tool result or a person's prompt row.
 export type MediaOwner = { tool_use_id: string } | { row: number }
@@ -51,6 +62,9 @@ export type ApplyReport = {
   // their copies, which DropPulled removed before the edits (phase 32); 0 or
   // absent in the process that applied
   pulledDropped?: number
+  // [SP_CTX_02_61] the lines on host rows: dropped ones, those that went
+  // with them, DetachNote, and those that went with rebuilt rows
+  hostLines?: string[]
 }
 
 // [SP_CTX_01_05] One entry of ApplyReport.produced.
@@ -811,7 +825,9 @@ export function dependencyHits(rows: readonly SessionMessage[], edit: QueuedEdit
   let end: number
   const useKey = (i: number, k: number) => `u${i}:${k}`
   const resKey = (i: number, k: number) => `r${i}:${k}`
-  if (edit.op === 'summarize' || edit.op === 'drop') {
+  // [SP_CTX_02_61] a host row is no row of the view: nothing quoted from it is checked
+  if (isHostDrop(edit)) return none
+  if (isPairEdit(edit)) {
     const useAt = ix ? ix.useAt(edit.tool_use_id) : findToolUse(rows, edit.tool_use_id)
     const resAt = ix ? ix.resultAt(edit.tool_use_id) : findToolResult(rows, edit.tool_use_id)
     if (useAt < 0 || resAt < 0) return none
@@ -982,7 +998,7 @@ export function describeEdit(edit: Edit): string {
   switch (edit.op) {
     case 'summarize':
     case 'drop':
-      return `${edit.op} ${edit.tool_use_id}`
+      return `${edit.op} ${'host' in edit ? edit.host : edit.tool_use_id}`
     case 'collapse':
       return `collapse #${edit.from_index}..#${edit.to_index}`
     case 'rewrite':
@@ -1046,7 +1062,8 @@ export function resolveEditRefs(raws: readonly unknown[], resolve: RefResolver, 
   const edits = raws.map(raw => {
     if (typeof raw !== 'object' || raw === null) return raw
     const { ref, ...rest } = raw as Record<string, unknown>
-    if ((rest.op !== 'summarize' && rest.op !== 'drop') || typeof ref !== 'string' || rest.tool_use_id !== undefined) return raw
+    // [SP_CTX_02_61] a ref beside host stays for checkShape (HOST_EXCLUSIVE)
+    if ((rest.op !== 'summarize' && rest.op !== 'drop') || typeof ref !== 'string' || rest.tool_use_id !== undefined || rest.host !== undefined) return raw
     const got = resolve(ref, rows)
     if ('error' in got) return { ...(raw as Record<string, unknown>), [REF_FAILURE]: got.error }
     if (got.line) lines.add(got.line)
@@ -1059,6 +1076,12 @@ export function resolveEditRefs(raws: readonly unknown[], resolve: RefResolver, 
 export function checkShape(raw: unknown): Edit | string {
   if (typeof raw !== 'object' || raw === null) return 'edit must be an object'
   const e = raw as Record<string, unknown>
+  // [SP_CTX_02_61] a host row by the id of its record
+  if (e.op === 'drop' && e.host !== undefined) {
+    if (e.tool_use_id !== undefined || e.ref !== undefined) return HOST_EXCLUSIVE
+    if (typeof e.host !== 'string' || !HOST_ID.test(e.host)) return 'host is the id of a host row from context_list (h1, h2, …)'
+    return { op: 'drop', host: e.host }
+  }
   const badRef = e.op === 'summarize' || e.op === 'drop' ? refError(e) : undefined
   if (badRef) return badRef
   switch (e.op) {
@@ -1101,6 +1124,8 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit, ix?
   switch (edit.op) {
     case 'summarize':
     case 'drop': {
+      // [SP_CTX_02_61] a host row is no row of the view
+      if ('host' in edit) return undefined
       const useAt = ix ? ix.useAt(edit.tool_use_id) : findToolUse(rows, edit.tool_use_id)
       const resAt = ix ? ix.resultAt(edit.tool_use_id) : findToolResult(rows, edit.tool_use_id)
       return useAt < 0 || resAt < 0 ? undefined : { rows: [useAt, resAt], ids: [edit.tool_use_id] }
@@ -1205,6 +1230,8 @@ export function prepare(
   // [SP_CTX_02_67] the edits already in pending.json (STATE_CONFLICT, the
   // items a state edit sees)
   pending: readonly QueuedEdit[] = [],
+  // [SP_CTX_02_61] the host rows' records (HOST_UNKNOWN)
+  hostRows: readonly HostRowRecord[] = [],
 ): { queued: QueuedEdit[]; errors: string[] } {
   const queued: QueuedEdit[] = []
   const errors: string[] = []
@@ -1213,6 +1240,13 @@ export function prepare(
     if (typeof edit === 'string') {
       errors.push(`edit ${n + 1}: ${edit}`)
       return
+    }
+    // [SP_CTX_02_61] HOST_UNKNOWN, HOST_TWICE; a host row is no row of the
+    // view: pins, the state slot and the indexes do not apply
+    if (isHostDrop(edit)) {
+      if (!hostRecord(hostRows, edit.host)) return void errors.push(`${describeEdit(edit)}: ${HOST_UNKNOWN(edit.host)}`)
+      if ([...pending, ...queued].some(q => isHostDrop(q) && q.host === edit.host)) return void errors.push(`edit ${n + 1}: ${HOST_TWICE(edit.host)}`)
+      return void queued.push(edit)
     }
     const name = describeEdit(edit)
     if (staleIndexes && (edit.op === 'collapse' || edit.op === 'rewrite' || edit.op === 'describe')) return void errors.push(`${name}: ${STALE_INDEXES}`)
@@ -1238,6 +1272,8 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
   switch (edit.op) {
     case 'summarize':
     case 'drop':
+      // [SP_CTX_02_61] a host drop is checked against the records by prepare
+      if ('host' in edit) return edit
       if (findToolUse(rows, edit.tool_use_id) < 0 || findToolResult(rows, edit.tool_use_id) < 0)
         return 'no completed tool call with that id'
       return edit
@@ -1530,7 +1566,7 @@ function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: re
   switch (edit.op) {
     case 'summarize':
     case 'drop':
-      return [ownerKey({ tool_use_id: edit.tool_use_id })]
+      return 'host' in edit ? [] : [ownerKey({ tool_use_id: edit.tool_use_id })]
     case 'collapse':
       return touched.flatMap(i => [
         ...resultsOf(rows[i]!).map(r => ownerKey({ tool_use_id: r.tool_use_id })),
@@ -1679,6 +1715,8 @@ export type ApplyOptions = {
   // [SP_CTX_02_67] run state: the items, the next number and the turn of the
   // registry read for this apply; absent: none, the next is 1, turn 0
   state?: StateInput
+  // [SP_CTX_02_61] the host rows' records read for this apply; absent: none
+  hostRows?: readonly HostRowRecord[]
 }
 
 // [SP_CTX_02_67] What run state starts from, and (ApplyEdits' `state`) what
@@ -1696,7 +1734,7 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; state?: StateOutput } {
+): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; hostNamed: Set<string>; state?: StateOutput } {
   const rows = [...input]
   const report: ApplyReport = {
     applied: [],
@@ -1723,7 +1761,7 @@ export function applyEdits(
   // Pairs this batch replaces with their media archived: a shared row may lose
   // their media when it is rebuilt.
   const batchPairs = new Set(
-    edits.flatMap(e => (e.op === 'summarize' || e.op === 'drop' ? [ownerKey({ tool_use_id: e.tool_use_id })] : [])),
+    edits.flatMap(e => (isPairEdit(e) ? [ownerKey({ tool_use_id: e.tool_use_id })] : [])),
   )
 
   // A pair edit conflicts only on its own pair and on rows a row edit takes;
@@ -1735,6 +1773,8 @@ export function applyEdits(
   const firsts: number[] = []
   // [SP_CTX_02_67] the state edits of the batch: one rebuild of the slot
   const stateEdits: Extract<QueuedEdit, { op: 'state' }>[] = []
+  // [SP_CTX_02_61] the host drops of the batch, run after every other step
+  const hostDrops: Extract<QueuedEdit, { host: string }>[] = []
   let stateOut: StateOutput | undefined
 
   for (const edit of edits) {
@@ -1748,6 +1788,11 @@ export function applyEdits(
         continue
       case 'summarize':
       case 'drop': {
+        // [SP_CTX_02_61] host drops run after every other step
+        if ('host' in edit) {
+          hostDrops.push(edit)
+          continue
+        }
         const useAt = findToolUse(rows, edit.tool_use_id)
         const resAt = findToolResult(rows, edit.tool_use_id)
         if (useAt < 0 || resAt < 0) {
@@ -1943,6 +1988,73 @@ export function applyEdits(
     firsts.push(Math.min(...step.touched))
   }
 
+  // [SP_CTX_02_61] Detach, after every other step: the row before a dropped
+  // host row comes back without its handle, so the host leaves out every host
+  // row after it; a row an earlier step rebuilt or removed took them already.
+  const hostLines: string[] = []
+  const hostNamed = new Set<string>()
+  const detached = new Set<string>()
+  const records = options.hostRows ?? []
+  for (const edit of hostDrops) {
+    const name = describeEdit(edit)
+    const rec = hostRecord(records, edit.host)
+    if (!rec) {
+      report.failed.push(`${name}: no such host row now`)
+      continue
+    }
+    const inAt = input.findIndex(r => r.handle === rec.after)
+    if (inAt < 0) {
+      report.failed.push(`${name}: no such row now`)
+      // named here: the line on rows that went with rebuilt rows leaves it out
+      hostNamed.add(rec.id)
+      continue
+    }
+    if (detached.has(rec.after)) {
+      report.applied.push(name)
+      continue
+    }
+    const at = rows.findIndex(r => r.handle === rec.after)
+    if (at < 0) {
+      report.applied.push(name)
+      hostNamed.add(rec.id)
+      hostLines.push(`${rec.id} went with the rows your edits replaced.`)
+      continue
+    }
+    const before = input[inAt]!
+    const results = resultsOf(before)
+    const known = options.knownResults
+    const prompt = isPlainUserRow(before)
+    // the checks of a collapse: without its handle the row's media would be lost
+    if (
+      results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id }))) ||
+      mediaOwners.has(ownerKey({ row: inAt })) ||
+      (prompt && (options.unmatchedPromptMedia ?? 0) > 0)
+    ) {
+      report.failed.push(`${name}: ${HOST_MEDIA(rec.id)}`)
+      continue
+    }
+    const firstKnown = known ? rows.findIndex(r => resultsOf(r).some(t => known.has(t.tool_use_id))) : -1
+    if ((known && results.some(t => !known.has(t.tool_use_id))) || (prompt && !!options.apiTruncated && (firstKnown < 0 || at < firstKnown))) {
+      report.failed.push(`${name}: outside the API window; media unknown`)
+      continue
+    }
+    const row = rows[at]!
+    rows[at] = results.length ? plain(row, { toolResults: results.map(t => ({ ...stripResult(t), text: toolRefText(t, options.toolRefs) })) }) : plain(row, {})
+    detached.add(rec.after)
+    const after = records.filter(r => r.after === rec.after)
+    report.originals.push({ edit: name, rows: after.map(r => ({ role: 'user' as const, text: r.text, toolUses: [] })) })
+    report.applied.push(name)
+    hostLines.push(`dropped host row ${rec.id} (${rec.kind}, ${rec.chars} chars)`)
+    for (const r of after) {
+      hostNamed.add(r.id)
+      if (r !== rec) hostLines.push(`${r.id} (${r.kind}) went with it: the host keeps them after the same row`)
+    }
+    const detach = detachNote(rec)
+    if (detach) hostLines.push(`${rec.id}: ${detach}`)
+    firsts.push(inAt)
+  }
+  if (hostLines.length) report.hostLines = hostLines
+
   // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix: every applied step touches
   // rows from the earliest of `firsts` on and splices only there, so the rows
   // before it stand at their input indexes, the same objects. Those before
@@ -1968,7 +2080,7 @@ export function applyEdits(
   )
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
-  return { rows: out, report, made, renamed, prefix, ...(stateOut ? { state: stateOut } : {}) }
+  return { rows: out, report, made, renamed, prefix, hostNamed, ...(stateOut ? { state: stateOut } : {}) }
 }
 
 // [SP_CTX_02_67] run state: every state edit of the batch together, one
@@ -2249,6 +2361,8 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length)) parts.push(ownCallsText(r.ownCallsRemoved, r.applied.length > 0))
   // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation
   if (r.deliveries && (kind === 'seed' || r.applied.length)) parts.push(deliveriesText(r.deliveries))
+  // [SP_CTX_02_61] the host rows, when the list replaces the conversation
+  if (r.hostLines?.length && (kind === 'seed' || r.applied.length)) parts.push(r.hostLines.map(l => (/[.:]$/.test(l) ? l : `${l}.`)).join(' '))
   // [SP_CTX_01_05] [SP_CTX_02_45] last: the originals a resume loaded twice, when the list replaces the conversation
   if ((r.pulledDropped ?? 0) > 0 && r.applied.length) parts.push(pulledWords(r.pulledDropped!))
   const text = parts.filter(Boolean).join(' ')

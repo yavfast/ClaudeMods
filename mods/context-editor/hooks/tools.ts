@@ -43,13 +43,13 @@ Edits apply when your turn ends: after this call, end your turn with a one-line 
 
 Ops (items of "edits"; every field shown is required):
 - {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
-- {"op":"drop","tool_use_id" or "ref"}: remove a useless tool call and its result.
+- {"op":"drop","tool_use_id", "ref" or "host"}: remove a useless call and its result, or a host row.
 - {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
 - {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
 - {"op":"describe","index","description"}: replace the image, document or pasted text in a prompt row of the person (@ in ${LIST}) by your description; the text the person typed stays.
 - {"op":"state","changes"}: change the items of your state slot; the apply rebuilds the slot's text from them.
 
-A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite of that row, or by the state op once it has items.
+A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite, or by the state op once it has items.
 
 Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
 
@@ -60,6 +60,13 @@ Compress a finished stage's block into a stage record. The person's messages (As
 const REF = {
   type: 'string',
   description: `Instead of tool_use_id: a call alias "cN" from the "${MARK} id cN" line after a call's result, or "last" for your latest call (context_* calls do not count); no ${LIST} needed.`,
+}
+
+// [SP_CTX_01_30] [SP_CTX_02_61] A host row by its id; the details live here,
+// not in EDIT_DESCRIPTION ([SP_CTX_02_69]).
+const HOST = {
+  type: 'string',
+  description: `Instead of tool_use_id or ref: the id of a host row (an expanded skill, a subagent's report) from the "Host rows" list of ${LIST}. The row before it comes back without its handle.`,
 }
 
 // [SP_CTX_01_30] [SP_CTX_02_67] The changes of a state edit; the details
@@ -92,6 +99,7 @@ const EDIT_SCHEMA = {
           { type: 'object', properties: { op: { const: 'summarize' }, ref: REF, summary: { type: 'string' } }, required: ['op', 'ref', 'summary'] },
           { type: 'object', properties: { op: { const: 'drop' }, tool_use_id: { type: 'string' } }, required: ['op', 'tool_use_id'] },
           { type: 'object', properties: { op: { const: 'drop' }, ref: REF }, required: ['op', 'ref'] },
+          { type: 'object', properties: { op: { const: 'drop' }, host: HOST }, required: ['op', 'host'] },
           { type: 'object', properties: { op: { const: 'collapse' }, from_index: { type: 'integer' }, to_index: { type: 'integer' }, summary: { type: 'string' } }, required: ['op', 'from_index', 'to_index', 'summary'] },
           { type: 'object', properties: { op: { const: 'rewrite' }, index: { type: 'integer' }, text: { type: 'string' } }, required: ['op', 'index', 'text'] },
           { type: 'object', properties: { op: { const: 'describe' }, index: { type: 'integer' }, description: { type: 'string' } }, required: ['op', 'index', 'description'] },

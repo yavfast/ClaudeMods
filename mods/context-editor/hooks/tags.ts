@@ -1094,7 +1094,7 @@ async function dropTagsOf(io: TagIO, edits: readonly QueuedEdit[]): Promise<stri
     return true
   }).catch(() => false)
   if (!done) return []
-  return edits.map(e => `disposable ${e.op === 'collapse' ? `#${e.from_index}..#${e.to_index}` : e.op === 'summarize' || e.op === 'drop' ? e.tool_use_id : e.op === 'rewrite' || e.op === 'describe' ? `#${e.index}` : '?'} dropped: it covers the person's words`)
+  return edits.map(e => `disposable ${e.op === 'collapse' ? `#${e.from_index}..#${e.to_index}` : 'tool_use_id' in e ? e.tool_use_id : e.op === 'rewrite' || e.op === 'describe' ? `#${e.index}` : '?'} dropped: it covers the person's words`)
 }
 
 // [SP_CTX_02_13] Whether a batch edit is the replacement a disposable tag

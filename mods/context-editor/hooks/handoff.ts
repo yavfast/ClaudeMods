@@ -13,6 +13,7 @@ import {
   applyLine,
   formatReport,
   HEAD_ROWS,
+  isHostDrop,
   mergeCallRows,
   MAX_TEXT,
   ownerKey,
@@ -354,8 +355,18 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   // handle, so ApplyEdits needs no media owners
   // [SP_CTX_02_67] the seed applies state edits as an apply does, from the old registry's items
   const state = input.tags.state === 'unreadable' ? undefined : stateInput(input.tags.value)
-  const applied = applyEdits(visible, screened.edits, input.archive, media, new Set(), { knownResults, unmatchedPromptMedia: unmatched, apiTruncated, ...(input.cwd ? { cwd: input.cwd } : {}), ...(state ? { state } : {}) })
+  // [SP_CTX_02_61] the seed takes no host rows: a host drop counts as applied
+  const hostDrops = screened.edits.filter(isHostDrop)
+  const applied = applyEdits(
+    visible,
+    screened.edits.filter(e => !isHostDrop(e)),
+    input.archive,
+    media,
+    new Set(),
+    { knownResults, unmatchedPromptMedia: unmatched, apiTruncated, ...(input.cwd ? { cwd: input.cwd } : {}), ...(state ? { state } : {}) },
+  )
   const report = applied.report
+  report.applied.push(...hostDrops.map(describeEdit))
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
   const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))))
