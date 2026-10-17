@@ -3,8 +3,9 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-15
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
+> **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_02](#SP_CTX_02_02), [SP_CTX_02_05](#SP_CTX_02_05)
 >
 > §02 Contracts 02_01–02_03, 02_05, 02_09 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_list`, `context_edit`, PrepareEdits, DropOwnCalls, Nudge (вилучено). Застосування, обробник компактизації й медіа (02_04, 02_07, 02_10) — у [apply](./context_editor.apply.sp.md), Flush і доставка звіту (02_06, 02_08) — у [flush](./context_editor.flush.sp.md). Читати перед зміною `hooks/edits.ts` (перегляд і перевірка правок) або `queue.ts`.
 
@@ -27,7 +28,7 @@
 
 ### 02_01. context_list  {#SP_CTX_02_01}
 
-> **Курування:** рядок заголовка й секція рядків хоста — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61); причина `superseded` — [SP_CTX_02_65](./context_editor.curation.sp.md#SP_CTX_02_65); `"rules": true` — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
+> **Курування:** рядок заголовка й секція рядків хоста — [SP_CTX_02_61](./context_editor.curation.hostrows.sp.md#SP_CTX_02_61); причина `superseded` — [SP_CTX_02_65](./context_editor.curation.edits.sp.md#SP_CTX_02_65); `"rules": true` — [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69).
 
 Purpose: інструмент агента; показує рядки основної розмови ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) від найстарішого, сторінками.
 
@@ -60,7 +61,7 @@ Errors:
 
 ### 02_02. context_edit  {#SP_CTX_02_02}
 
-> **Курування:** відмова на слова людини замість попередження — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); перевірка залежностей — [SP_CTX_02_63](./context_editor.curation.sp.md#SP_CTX_02_63); операція `state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); `describe` вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59).
+> **Курування:** відмова на слова людини замість попередження — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); перевірка залежностей — [SP_CTX_02_63](./context_editor.curation.edits.sp.md#SP_CTX_02_63); операція `state` — [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67); `describe` вставок — [SP_CTX_02_59](./context_editor.curation.edits.sp.md#SP_CTX_02_59).
 
 Purpose: інструмент агента; перевіряє правки і дописує прийняті до черги.
 
@@ -150,7 +151,7 @@ Processing logic (pseudocode):
 
 ### 02_03. PrepareEdits  {#SP_CTX_02_03}
 
-> **Курування:** шоста операція `state` і її винятки з правила `state` і ScreenPinned — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); ціль `host` правки `drop` (HOST_EXCLUSIVE, HOST_UNKNOWN, HOST_TWICE; HOST_MEDIA — лише при застосуванні) — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61); описаний промпт — слова людини, [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58).
+> **Курування:** шоста операція `state` і її винятки з правила `state` і ScreenPinned — [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67); ціль `host` правки `drop` (HOST_EXCLUSIVE, HOST_UNKNOWN, HOST_TWICE; HOST_MEDIA — лише при застосуванні) — [SP_CTX_02_61](./context_editor.curation.hostrows.sp.md#SP_CTX_02_61); описаний промпт — слова людини, [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58).
 
 Purpose: перевірити правки на поточній розмові і поставити якорі. Відхилення однієї правки не зупиняє інших.
 
@@ -166,7 +167,7 @@ Purpose: перевірити правки на поточній розмові 
 | будь-яка | ціль (пара разом з обома її рядками, рядок, будь-який рядок або пара діапазону `collapse`) не має тегу `pin` | `target is pinned; remove the pin with context_tag first` |
 | будь-яка, крім `rewrite` і `state` рядка з тегом `state` | ціль (як у рядку вище) не містить рядка з тегом `state` ([C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)) | `target holds the state slot; change it by rewrite of that row, or by the state op once it has items, or remove its state tag first` |
 
-Закріплені цілі й рядок слоту стану для `context_edit` дає PinsFrom (`pinsFrom` у `hooks/tags.ts`) з прочитаного реєстру тегів: нечитабельний реєстр — без закріплень (перевірка `pin` і `state` тоді не відхиляє нічого, а HandleCompaction відхилить кожну правку, ScreenPinned нижче). Рядок з тегом `state` змінює лише `rewrite` саме цього рядка або операція `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67)); `collapse`, що його захоплює, відхиляється так само, як для `pin`. Обидві перевірки (`pin` і `state`) повторюються при застосуванні ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)) і в засіві ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) на тодішньому реєстрі одним кроком:
+Закріплені цілі й рядок слоту стану для `context_edit` дає PinsFrom (`pinsFrom` у `hooks/tags.ts`) з прочитаного реєстру тегів: нечитабельний реєстр — без закріплень (перевірка `pin` і `state` тоді не відхиляє нічого, а HandleCompaction відхилить кожну правку, ScreenPinned нижче). Рядок з тегом `state` змінює лише `rewrite` саме цього рядка або операція `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67)); `collapse`, що його захоплює, відхиляється так само, як для `pin`. Обидві перевірки (`pin` і `state`) повторюються при застосуванні ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)) і в засіві ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) на тодішньому реєстрі одним кроком:
 
     FUNCTION ScreenPinned(rows, edits, reg) → (edits, refused):         # спільний для HandleCompaction і BuildSeed
         IF reg unreadable: RETURN ([], every edit "<edit>: tag registry unreadable")
@@ -178,7 +179,7 @@ Purpose: перевірити правки на поточній розмові 
 
 ### 02_05. DropOwnCalls  {#SP_CTX_02_05}
 
-> **Курування:** слід власних викликів — [SP_CTX_02_64](./context_editor.curation.sp.md#SP_CTX_02_64).
+> **Курування:** слід власних викликів — [SP_CTX_02_64](./context_editor.curation.edits.sp.md#SP_CTX_02_64).
 
 Purpose: прибрати з результату ApplyEdits виклики інструментів мода та їхні результати.
 
@@ -196,19 +197,8 @@ Output: рядки і `removed` — кількість прибраних слу
 
 | Date | Change |
 |------|--------|
-| 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)) |
-| — | Старіші 1 запис — у [context_editor.edits.sp.log.md](./context_editor.edits.sp.log.md) |
-| 2026-10-11 | PL_AUD_CTX фаза 2 (CF-2): HandleCompaction — крок фіксації під ланцюжками реєстру й псевдонімів, перевірка покинутої диспетчеризації перед кожним записом, черга — точка фіксації, повернення реєстрів, коли її запис не вдався; гілка збою нічого не пише, якщо черга вже має звіт цього застосування (02_07) |
-| 2026-10-11 | PL_AUD_CTX фаза 2, рев'ю: покинуто під час запису черги — черга й реєстри повертаються; межа у фоні, обробник після точки фіксації нічого не чекає; lastReported — лише після повернення без покинутої диспетчеризації; гілка збою пише в каталог застосування (02_07) |
-| 2026-10-11 | PL_AUD_CTX фаза 3 (CF-3): рядок лише з thinking — не ціль `rewrite` і не останній рядок `collapse` (рядки таблиці 02_03); LocateSpan знаходить перший рядок діапазону, що не розрізняльний, від останнього (02_04); 02_01 — хто може бути ціллю |
-| 2026-10-11 | PL_AUD_CTX фаза 3, рев'ю: відмови 02_03 — лише для рядка асистента лише з thinking (промпт людини з самих медіа — як раніше); 02_04 — обмеження LocateSpan (кількість рядків діапазону) і чому RebindTags спершу шукає за тотожністю |
-| 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): Flush надсилає текст продовження агента за рамкою автора RESUME_FRAME (`context-editor: the resume prompt you set before your edits applied: …`), текст за замовчуванням — з префіксом мода (ResumeText, 02_06; SP_CTX_DEC_17) |
-| 2026-10-11 | PL_AUD_CTX фаза 6 (CF-14): необов'язковий вхід ApplyEdits `newId` — фабрика FreshId для тестів; без неї поведінка та сама (02_04) |
-| 2026-10-11 | PL_AUD_CTX фаза 8 (аудит коду, CF-16): 02_04 — PromptRow (один предикат промпту) і Responses (відповіді рядків одним проходом зі `start`, `known`, `floor`); ResponseStart — похідна від Responses, з тією самою запасною межею відрізка; його бере і CacheCost ([SP_CTX_02_38](./context_editor.telemetry.sp.md#SP_CTX_02_38)). Зміна поведінки: текст, який API показує в повідомленні раніших викликів, приєднує свою відповідь і тоді, коли наступна відповідь іде одразу за ним (раніше межу давало лише найпізніше повідомлення прогону, і відповідь викликів ділилась між префіксом і перезібраним рядком) |
-| 2026-10-11 | PL_AUD_CTX фаза 8, рев'ю: 02_04 Responses — порожній рядок `user` без `handle`, який не притягнула жодна відповідь, невідомий (ResponseStart — початок відрізка, і без API-подання, і коли повідомлення відповіді поза вікном); притягнутий — відомий, як відповідь, що його притягнула |
-| 2026-10-11 | PL_AUD_CTX фаза 9 (аудит коду, CF-17, CF-18): 02_02 — PersonText відкидає текст, що починається з PREFIX (`context-editor:`; той самий літерал, тепер константа з тестом виробників); 02_04 — PromptRow, EmptyRow і пошук пари мають один дім `hooks/rows.ts`, варіант PromptRowStrict для ResolveLast названо. Без зміни поведінки |
-| 2026-10-11 | PL_AUD_CTX фаза 10 (аудит коду, CF-19, CF-20): 02_01 — логіка `context_list` — ContextList за портом ListIO (`hooks/stages.ts`), мітки — ListLabels, псевдоніми — ListAliases; правило «`count: 0` і `full` не оновлюють `listedKey`» має тести; опис і схема — у `hooks/tools.ts`; 02_06 — порядок кінця ходу — AfterTurn за портом TurnEndIO (`hooks/flush.ts`); 02_07 — гілка збою обробника — CompactionFailed за портом FailureIO. Без зміни поведінки |
-| 2026-10-11 | PL_AUD_CTX фаза 10, рев'ю: 02_03 — звідки PrepareEdits бере закріплення: PinsFrom (`hooks/tags.ts`) з прочитаного реєстру тегів, нечитабельний — без закріплень. Без зміни поведінки |
+| 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)) |
+| — | Старіші 12 записів — у [context_editor.edits.sp.log.md](./context_editor.edits.sp.log.md) |
 | 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-25): тексти коду дослівно — 02_02 відмови `context_edit` (DENIED_EMPTY і для списку, довшого за MAX_QUEUE_EDITS), 02_03 відмови PrepareEdits і ScreenPinned, 02_04 причини `failed` ApplyEdits, 02_07 `compaction abandoned; the batch stays queued`, звіт збою `… and the batch was dropped.`, префікс PREFIX у текстах `skip`, `lastApply` обмежено USAGE_WAIT_MS |
 | 2026-10-12 | Калібрування бачить вкладення хоста, рев'ю: 02_04 — Responses повертає й `message` (індекс повідомлення API-подання рядка асистента; поведінка не змінилась), CacheShape не має власного зіставлення; ApiCut — один предикат обрізаного подання для CollectMedia і калібрування |
 | 2026-10-12 | Фаза 24: 02_07 — крок рішень про вкладення хоста (читання файлів до фіксації, CommitAttachments у кроці фіксації після реєстрів і перед чергою з поверненням при покинутій диспетчеризації, AttachText останнім реченням звіту, ResetPass після відповіді рядками; [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) |

@@ -3,8 +3,9 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-15
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
+> **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_04](#SP_CTX_02_04), [SP_CTX_02_07](#SP_CTX_02_07)
 >
 > §02 Contracts 02_04, 02_07, 02_10 специфікації [SP_CTX](./context_editor.sp.md): ApplyEdits (перебудова рядків і тексти замін), HandleCompaction (обробник `session.compact` мода), CollectMedia. Читати, коли змінюєте застосування правок.
 
@@ -20,7 +21,7 @@
 
 ### 02_04. ApplyEdits  {#SP_CTX_02_04}
 
-> **Курування:** тексти замін з походженням — [SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62); `describe` для вставок — [SP_CTX_02_59](./context_editor.curation.sp.md#SP_CTX_02_59); `run state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67); Detach попередника рядка хоста — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61).
+> **Курування:** тексти замін з походженням — [SP_CTX_02_62](./context_editor.curation.edits.sp.md#SP_CTX_02_62); `describe` для вставок — [SP_CTX_02_59](./context_editor.curation.edits.sp.md#SP_CTX_02_59); `run state` — [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67); Detach попередника рядка хоста — [SP_CTX_02_61](./context_editor.curation.hostrows.sp.md#SP_CTX_02_61).
 
 > **Criticality:** core
 
@@ -136,7 +137,7 @@ Processing logic (pseudocode):
 
 Від імені агента, без позначки (фаза 28; [SP_CTX_DEC_17](./context_editor.decisions-01.sp.md#SP_CTX_DEC_17) — A″; спайк [context_editor_authorship](./context_editor_authorship.spike.md), V6). Тексти A′ вище — історія: з фази 28 текст кожної заміни починається REPLACED (`Later, your context_`), підмет — агент, і названо його власний пізніший виклик `context_edit` (заміни з тегів — `context_tag`, нижче): SUMMARIZED `Later, your context_edit summarize call replaced the full output you had read here with your own summary`, `collapsedWords` `Later, your context_edit collapse call replaced these <n> rows you had read (<перелік>) with your own note`, REWRITTEN `Later, your context_edit rewrite call replaced the text of this row with your own rewrite`, DESCRIBED `Later, your context_edit describe call replaced the media you had seen here with your own description`; далі, як і раніше, `(original: …)`, `(media: …)`, двокрапка і текст агента. Префікса MARK немає: у спайку haiku з тим самим текстом і префіксом `[context-editor]` визнав, що читав оригінал, у 2 з 12 прогонів, а без префікса — у 10 з 17 («the `[context-editor]` lines are the plugin's own wording»); форми із заглушкою на місці результату (підсумок окремим рядком асистента) дали 1 з 13 (haiku) і 0 з 6 (sonnet), бо модель вірить слоту `tool_result` як тому, що повернув інструмент. Будова заміни (пара з новим id, носій `collapse`, рядок `rewrite`/`describe`) не змінюється, тож перевірки хоста фаз 19–27 лишаються в силі; ціна — та сама (слова майже тієї самої довжини). Заміни з тегів `disposable` ставить у чергу мод за тегом агента (QueueTagReplacements, [SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13)), тож їхні правки несуть `via: "tag"` ([SP_CTX_01_03](./context_editor.structures.sp.md#SP_CTX_01_03)), і текст називає тег, а не виклик, якого не було (рев'ю фази 28): TAG_SUMMARIZED `Later, your context_tag disposable tag replaced the full output you had read here with your own note`, `collapsedWords(n, list, 'tag')` `Later, your context_tag disposable tag replaced these <n> rows you had read (<перелік>) with your own note`, TAG_REWRITTEN `Later, your context_tag disposable tag replaced the text of this row with your own note`. Живий прогін фази 28 ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03) «Авторство замін від імені агента»): summarize + collapse — haiku (b) «читав сам» 6/9 (A′ — 6/18), sonnet 3/3, (a) 12/12 «написав сам»; `rewrite` — своє; `describe` слабкий — haiku 0/3 каже, що бачило картинку, двоє з трьох відкликають і авторство опису (backlog плану: форма DESCRIBED).
 
-З фази 41 відкривач `summarize` (і `summarize` з тегу) називає джерело заміненого змісту, а `summarize` і `collapse` — Quoted, коли DependencyCheck знайшов цитати ([SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62)); тексти SUMMARIZED і TAG_SUMMARIZED вище лишаються в збережених сесіях.
+З фази 41 відкривач `summarize` (і `summarize` з тегу) називає джерело заміненого змісту, а `summarize` і `collapse` — Quoted, коли DependencyCheck знайшов цитати ([SP_CTX_02_62](./context_editor.curation.edits.sp.md#SP_CTX_02_62)); тексти SUMMARIZED і TAG_SUMMARIZED вище лишаються в збережених сесіях.
 
 Розпізнавання змінених рядків (ReplacementText, `isReplacementText` у `hooks/rows.ts`, STRUCT-01): текст починається з повного відкривача фази 28 (REPLACEMENT_OPENERS: чотири `context_edit` і три `context_tag`; `describe` — головою DESCRIBED_HEAD з фази 40, `summarize` з джерелом — головами SUMMARIZED_OF і TAG_SUMMARIZED_OF з фази 41) або з MARK. Спільного початку REPLACED (`Later, your context_`) замало: людина, що цитує початок заміни, чи документ репозиторію про неї — не заміна (рев'ю фази 28). Другий випадок — усі заміни до фази 28 (A′ і раніші `[context-editor] summarized …`) і власні рядки мода, що стоять самі (CarryNote результату без тексту): наявні сесії зберігають позначку `*` переліку, R5 (а) ([SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)), кандидатів м'якого нагадування ([SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37)) і PersonText ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) такими, як були. CollapseText (`isCollapseText`) приймає COLLAPSED_OPENER, TAG_COLLAPSED_OPENER і LEGACY_COLLAPSED_OPENER, DescribedText (`isDescribedText`) — відкривачі фази 28 і фаз 19–27 (LEGACY_COLLAPSED_OPENER, LEGACY_DESCRIBED). MARK лишається префіксом службових текстів мода: рядка псевдоніма, нагадування нотатки, CarryNote; звіти, рамки і статуси — з PREFIX.
 
@@ -190,7 +191,7 @@ Processing logic (pseudocode):
 
 ### 02_07. HandleCompaction  {#SP_CTX_02_07}
 
-> **Курування:** ScreenPerson поряд із ScreenPinned — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); запис рядків хоста в кроці фіксації — [SP_CTX_02_60](./context_editor.curation.sp.md#SP_CTX_02_60).
+> **Курування:** ScreenPerson поряд із ScreenPinned — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); запис рядків хоста в кроці фіксації — [SP_CTX_02_60](./context_editor.curation.hostrows.sp.md#SP_CTX_02_60).
 
 > **Criticality:** core
 
@@ -349,5 +350,5 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
-| 2026-10-16 | Фаза 41: `run summarize` пише SummarizedWords(SourceOf(call), via, quoted) — відкривач з джерелом ([SP_CTX_02_62](./context_editor.curation.sp.md#SP_CTX_02_62)); REPLACEMENT_OPENERS з головами SUMMARIZED_OF і TAG_SUMMARIZED_OF |
+| 2026-10-16 | Фаза 41: `run summarize` пише SummarizedWords(SourceOf(call), via, quoted) — відкривач з джерелом ([SP_CTX_02_62](./context_editor.curation.edits.sp.md#SP_CTX_02_62)); REPLACEMENT_OPENERS з головами SUMMARIZED_OF і TAG_SUMMARIZED_OF |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.edits.sp.md](./context_editor.edits.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |

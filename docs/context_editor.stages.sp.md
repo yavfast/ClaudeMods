@@ -3,8 +3,9 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-15
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
+> **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_27](#SP_CTX_02_27), [SP_CTX_02_29](#SP_CTX_02_29)
 >
 > §02 Contracts 02_27, 02_29, 02_30, 02_32, 02_33, 02_42, 02_43 специфікації [SP_CTX](./context_editor.sp.md): контракти SessionIntro, StageBlock, DetectOptimize, `context_note`, NoteReminders, PersonCompact (`/compact` людини, фаза 25), ApplyLine і LogApply. Телеметрія, журнал ефекту, оцінки, м'яке нагадування й ціна кешу — у [telemetry](./context_editor.telemetry.sp.md), доставки хоста — у [deliveries](./context_editor.deliveries.sp.md). Читати перед зміною `hooks/stages.ts`, `notes.ts` або `personcompact.ts`.
 
@@ -31,7 +32,7 @@
 
 ### 02_27. SessionIntro  {#SP_CTX_02_27}
 
-> **Курування:** зміни SKILL.md і INTRO_TEXT, файл правил `curation.md` — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
+> **Курування:** зміни SKILL.md і INTRO_TEXT, файл правил `curation.md` — [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69).
 
 Purpose: на початку кожної сесії сказати агенту, що він може позначати етапи, просити оптимізацію міткою і бачити телеметрію, а м'яке нагадування ([SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37)) лише інформує ([C_CTX_DEC_15](./context_editor.methods.concept.md#C_CTX_DEC_15); [SP_CTX_DEC_11](./context_editor.decisions-01.sp.md#SP_CTX_DEC_11)): з фази 33 ([SP_CTX_DEC_36](./context_editor.decisions-21.sp.md#SP_CTX_DEC_36)) — повний посібник навички мода прихованим контекстом першого промпту, а після чужої компактизації, що лишилась, — коротка інструкція INTRO_TEXT з наступним промптом (до фази 33 — лише INTRO_TEXT на першому промпті, а посібник — навичкою, яку агент мав відкрити сам).
 
@@ -76,7 +77,7 @@ Errors: відмов немає — інструкція або додаєтьс
 
 ### 02_29. StageBlock  {#SP_CTX_02_29}
 
-> **Курування:** готові заміни — [SP_CTX_02_66](./context_editor.curation.sp.md#SP_CTX_02_66); STAGE_ADVICE — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
+> **Курування:** готові заміни — [SP_CTX_02_66](./context_editor.curation.edits.sp.md#SP_CTX_02_66); STAGE_ADVICE — [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69).
 
 Purpose: закрити етап і скласти звіт закриття — межі, розмір, медіа, кандидати, телеметрія і порада — для закриття етапу інструментом ([SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11)); той самий звіт з індексами — для блоку, що чекав стискання, коли агент відкриває чи закриває етап ([C_CTX_DEC_30](./context_editor.methods.concept.md#C_CTX_DEC_30), [SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)); скласти без індексів пораду про блок, що чекає, з першим промптом наступного ходу (WaitingAdvice: DeliverReport [SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08) і промпт продовження Flush [SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)); STAGE_ADVICE одна для всіх ([C_CTX_DEC_17](./context_editor.methods.concept.md#C_CTX_DEC_17), A).
 

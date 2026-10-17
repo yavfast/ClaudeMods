@@ -2,14 +2,14 @@
 
 > **Code:** PL_CTX (дочірній файл набору)
 > **Status:** completed
-> **Updated:** 2026-10-16
+> **Updated:** 2026-10-17
 > **Umbrella:** [PL_CTX](./context_editor.plan.md)
 
 ### Phase 46 — Правила курування і тексти навички [DONE]  {#PL_CTX_P46}
 
 **Depends on:** Phases 40–45 (правила описують механізми, що вже працюють); ворота thinking фази 39 — `unobserved` стандартними засобами (немає акаунта, створеного від 2026-08-31), тож перед фазою 46 потрібне рішення розробника, чи вмикати правила, що закликають до виправлень посеред історії, без такого прогону (питання поставлено 2026-10-15 при коміті фази 39).
-**Implements:** [C_CTX_06_09](./context_editor.curation.concept.md#C_CTX_06_09) (зокрема урок [C_CTX_06_04](./context_editor.curation.concept.md#C_CTX_06_04) і виправлення за зовнішнім сигналом [C_CTX_06_05](./context_editor.curation.concept.md#C_CTX_06_05)), [SP_CTX_DEC_43](./context_editor.curation.sp.md#SP_CTX_DEC_43); [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69) (файл `curation.md`, `context_list` з `"rules": true`, решта змін текстів), пункт [SP_CTX_03_03](./context_editor.curation.sp.md#SP_CTX_03_03) про `"rules"`, CURATION_MAX з [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32).
-**Verify:** [SP_CTX_05_05](./context_editor.curation.sp.md#SP_CTX_05_05) рядки CurationTexts (4); [SP_CTX_05_07](./context_editor.curation.sp.md#SP_CTX_05_07) «Правила курування» (мод, встановлений поза проєктом); `tests/skill-limits.sh`: SKILL.md ≤ 9000, `curation.md` ≤ CURATION_MAX; описи `context_edit` і `context_tag` ≤ MAX_DESCRIPTION (`tests/boundary.test.ts`); відкат — [SP_CTX_06_02](./context_editor.curation.sp.md#SP_CTX_06_02).
+**Implements:** [C_CTX_06_09](./context_editor.curation.concept.md#C_CTX_06_09) (зокрема урок [C_CTX_06_04](./context_editor.curation.concept.md#C_CTX_06_04) і виправлення за зовнішнім сигналом [C_CTX_06_05](./context_editor.curation.concept.md#C_CTX_06_05)), [SP_CTX_DEC_43](./context_editor.curation.sp.md#SP_CTX_DEC_43); [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69) (файл `curation.md`, `context_list` з `"rules": true`, решта змін текстів), пункт [SP_CTX_03_03](./context_editor.curation.sp.md#SP_CTX_03_03) про `"rules"`, CURATION_MAX з [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32).
+**Verify:** [SP_CTX_05_05](./context_editor.curation.verification.sp.md#SP_CTX_05_05) рядки CurationTexts (4); [SP_CTX_05_07](./context_editor.curation.verification.sp.md#SP_CTX_05_07) «Правила курування» (мод, встановлений поза проєктом); `tests/skill-limits.sh`: SKILL.md ≤ 9000, `curation.md` ≤ CURATION_MAX; описи `context_edit` і `context_tag` ≤ MAX_DESCRIPTION (`tests/boundary.test.ts`); відкат — [SP_CTX_06_02](./context_editor.curation.sp.md#SP_CTX_06_02).
 
 | Що | Де |
 |----|----|
@@ -27,4 +27,4 @@
 |------|--------|
 | 2026-10-16 | Фазу виконано (див. Result) |
 | 2026-10-15 | Значень статусів у `curation.md` немає: статус змісту знято після воріт фази 39 ([SP_CTX_DEC_44](./context_editor.curation.sp.md#SP_CTX_DEC_44)) |
-| 2026-10-15 | Фазу додано: план курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)), рішення розробника [PL_CTX_DEC_06](./context_editor.plan.md#PL_CTX_DEC_06) |
+| 2026-10-15 | Фазу додано: план курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)), рішення розробника [PL_CTX_DEC_06](./context_editor.plan.md#PL_CTX_DEC_06) |

@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-12
-> **Updated:** 2026-10-12 (рев'ю і живий прогін фази 24)
+> **Updated:** 2026-10-15
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_39–02_41 специфікації [SP_CTX](./context_editor.sp.md): контракти AttachmentAnswer (хук `prompt.attachment`), PlanAttachments і CommitAttachments (рішення всередині застосування), ClearAttachments (інша компактизація). Читати перед зміною `hooks/hostattach.ts` або зв'язування `prompt.attachment` у `hooks/register.ts`.

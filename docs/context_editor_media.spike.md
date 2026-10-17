@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-10
-> **Updated:** 2026-10-10
+> **Updated:** 2026-10-15
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Time-box:** ~45 хвилин (витрачено ~25 хвилин живих прогонів і розбору)
 > **Scope:** codebase (`register.ts` `apiMessages`, `edits.ts` `collectMedia`, типи хоста), prototype (одноразовий плагін `mprobe`, малі сесії `--model haiku` на закріпленому бінарнику 2.1.296: два прогони stream-json через fifo і два в терміналі в tmux)

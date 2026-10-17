@@ -3,8 +3,9 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-12
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
+> **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_11](#SP_CTX_02_11), [SP_CTX_02_12](#SP_CTX_02_12), [SP_CTX_02_16](#SP_CTX_02_16), [SP_CTX_02_18](#SP_CTX_02_18)
 >
 > §02 Contracts 02_11–02_18 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_tag`, AutoTag, QueueTagReplacements, RebindTags, PrepareStorage, MarkCall, ResolveRef, CurrentRows. Читати перед зміною `hooks/tags.ts`, `aliases.ts` або межі поточної розмови в `edits.ts`.
 
@@ -25,7 +26,7 @@
 
 ### 02_11. context_tag  {#SP_CTX_02_11}
 
-> **Курування:** `disposable` над словами людини відхиляється — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); опис без автопіну — [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69).
+> **Курування:** `disposable` над словами людини відхиляється — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); опис без автопіну — [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69).
 
 Purpose: інструмент агента; ставить і знімає теги, відкриває і закриває етапи ([C_CTX_DEC_16](./context_editor.methods.concept.md#C_CTX_DEC_16), [C_CTX_DEC_17](./context_editor.methods.concept.md#C_CTX_DEC_17)).
 
@@ -103,11 +104,11 @@ Processing logic (pseudocode):
 
 Відкриття без `index` ставить межу перед рядком, що несе виклик `open`: блок починається з відповіді, в якій агент відкрив етап. Рядок виклику шукається за `callId` у поточній розмові; якщо хост ще не записав рядок асистента з цим викликом до хука `tool.call` (не перевірено), `carrier = len(rows)`, і межа — останній рядок розмови, тобто той самий рядок перед відповіддю. Межа ніколи не стоїть на рядку лише з thinking (MarkBefore пропускає такі рядки: їхні відбитки однакові й не знаходять рядка однозначно). Відкриття з `index` 0 дає `after = null` — блок від голови. Відкриття нового етапу при відкритому спершу закриває поточний: кінець його блоку — рядок перед рядком виклику, а звіт закриття входить у результат. Закриття і заміни з тегів відбуваються лише після вдалого запису реєстру; QueueTagReplacements після кількох закриттів одного виклику запускається один раз. Блок, що чекав стискання ([C_CTX_DEC_30](./context_editor.methods.concept.md#C_CTX_DEC_30)): перший прийнятий `open` чи `close` — це перехід агента до наступного етапу, зокрема без людини, коли агент іде за планом; результат несе звіт блоку з індексами, як звіт закриття, і заміни з тегів `disposable` ставляться в чергу так само, як при закритті; запит, відхилений перевіркою (наприклад, NO_STAGE), очікування не знімає. Агент стискає блок правкою в тому самому ході, завершує хід рядком стану, і після застосування мод продовжує сесію промптом з правки ([C_CTX_DEC_03](./context_editor.core.concept.md#C_CTX_DEC_03)). Збій запису реєстру (DENIED_REGISTRY_WRITE) лишає очікування як було. Порядок запитів має значення: `open` з `index` і `close` в одному виклику закривають блок, який агент не відкривав заздалегідь ([C_CTX_03_03](./context_editor.core.concept.md#C_CTX_03_03), «Закриття без відкритого етапу»).
 
-Опис інструмента (TAG_DESCRIPTION) не довший за MAX_DESCRIPTION. Після фази 17 текст — 1769 символів, тож на нове фази 15 лишається 279. Бюджет фази 15: `state` у пункті (4) — до 150 символів, діапазон `index`..`to` у пункті (2) — до 60, причини в пункті (5) — до 90 (разом до 300); ще щонайменше 30 символів звільняє скорочення пункту (6) до «A new tag on a target replaces the old one; "remove" drops it.» і пояснення `ref` у пункті (2) до «"ref" (a call alias "cN" or "last")». Обов'язковий зміст за пріоритетом: (1) теги живуть поза розмовою і не коштують токенів; обгортка `{"tags":[…]}`, запити по порядку; (2) цілі — `tool_use_id`, `ref` (рядки `[context-editor] id cN`, `last`), `index`, діапазон `index`..`to` для `disposable`; (3) `open` з `stage` і необов'язковим `index`, `close` — повертає межі блоку, кандидатів, телеметрію і пораду; `open` закриває відкритий етап; (4) види: `pin`; `disposable` з нотаткою — заміна ставиться в чергу, коли агент закриває етап або йде далі від блоку, позначеного міткою (з 2026-10-14; текст опису — у межах MAX_DESCRIPTION, напр. «when you close a stage or move on from a marked block»); `review` з `ttl_turns`; `state` — один власний текстовий рядок, що змінюється `rewrite` або, коли має пункти, операцією `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67)); причини `review` — також `superseded`; (5) автоматичні `review` мають причину (big, search, stale, duplicate); (6) `remove` і заміна тегу на тій самій цілі; (7) вказівка на навичку `context-editor:<SKILL>`. Лише в навичці: коли відкривати і закривати етапи, мітка оптимізації, шаблон запису етапу, що робити з кожною причиною `review`. Скорочується спершу текст пунктів (5) і (6); пункти (1)–(4) лишаються повністю.
+Опис інструмента (TAG_DESCRIPTION) не довший за MAX_DESCRIPTION. Після фази 17 текст — 1769 символів, тож на нове фази 15 лишається 279. Бюджет фази 15: `state` у пункті (4) — до 150 символів, діапазон `index`..`to` у пункті (2) — до 60, причини в пункті (5) — до 90 (разом до 300); ще щонайменше 30 символів звільняє скорочення пункту (6) до «A new tag on a target replaces the old one; "remove" drops it.» і пояснення `ref` у пункті (2) до «"ref" (a call alias "cN" or "last")». Обов'язковий зміст за пріоритетом: (1) теги живуть поза розмовою і не коштують токенів; обгортка `{"tags":[…]}`, запити по порядку; (2) цілі — `tool_use_id`, `ref` (рядки `[context-editor] id cN`, `last`), `index`, діапазон `index`..`to` для `disposable`; (3) `open` з `stage` і необов'язковим `index`, `close` — повертає межі блоку, кандидатів, телеметрію і пораду; `open` закриває відкритий етап; (4) види: `pin`; `disposable` з нотаткою — заміна ставиться в чергу, коли агент закриває етап або йде далі від блоку, позначеного міткою (з 2026-10-14; текст опису — у межах MAX_DESCRIPTION, напр. «when you close a stage or move on from a marked block»); `review` з `ttl_turns`; `state` — один власний текстовий рядок, що змінюється `rewrite` або, коли має пункти, операцією `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67)); причини `review` — також `superseded`; (5) автоматичні `review` мають причину (big, search, stale, duplicate); (6) `remove` і заміна тегу на тій самій цілі; (7) вказівка на навичку `context-editor:<SKILL>`. Лише в навичці: коли відкривати і закривати етапи, мітка оптимізації, шаблон запису етапу, що робити з кожною причиною `review`. Скорочується спершу текст пунктів (5) і (6); пункти (1)–(4) лишаються повністю.
 
 ### 02_12. AutoTag  {#SP_CTX_02_12}
 
-> **Курування:** правило R1 прибрано — [SP_CTX_02_68](./context_editor.curation.sp.md#SP_CTX_02_68).
+> **Курування:** правило R1 прибрано — [SP_CTX_02_68](./context_editor.curation.edits.sp.md#SP_CTX_02_68).
 
 Purpose: застосувати правила R1, R2, R3 і R5 [SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11) до кожного нового рядка основної розмови (R4 — у хуку викликів, [SP_CTX_02_16](#SP_CTX_02_16)).
 
@@ -151,7 +152,7 @@ R5 ([C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04), «Дублік�
 
 ### 02_13. QueueTagReplacements  {#SP_CTX_02_13}
 
-> **Курування:** тег над словами людини не стає в чергу — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58).
+> **Курування:** тег над словами людини не стає в чергу — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58).
 
 Purpose: поставити в чергу заміни з тегів `disposable` і оцінити звільнення. Запускають лише закриття етапу інструментом ([SP_CTX_02_11](#SP_CTX_02_11), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) і кінець очікування блоку, позначеного міткою оптимізації ([SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)): перший `open` чи `close` у context_tag або перший `context_edit` з прийнятою правкою агента ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) — усі читають поточну розмову посеред ходу, коли компактизація щойно не відбувалась; заміни йдуть тим самим пакетом, що й правки агента цього ходу. До 2026-10-14 заміни ставила мітка на кінці свого ходу (DetectOptimize). Ні Flush, ні DeliverReport замін не ставлять. Порогу розміру немає ([C_CTX_DEC_15](./context_editor.methods.concept.md#C_CTX_DEC_15)).
 
@@ -179,7 +180,7 @@ Processing logic (pseudocode):
 
 ### 02_14. RebindTags  {#SP_CTX_02_14}
 
-> **Курування:** тег `state` іде й за перебудовою слота правкою `state`, як за `rewrite` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67).
+> **Курування:** тег `state` іде й за перебудовою слота правкою `state`, як за `rewrite` — [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67).
 
 Purpose: тримати реєстр узгодженим з розмовою після застосування: теги, псевдоніми, межі етапів і слот стану.
 
@@ -263,7 +264,7 @@ Processing logic (pseudocode):
 
 ### 02_16. MarkCall  {#SP_CTX_02_16}
 
-> **Курування:** правило R6 (`superseded`) — [SP_CTX_02_65](./context_editor.curation.sp.md#SP_CTX_02_65).
+> **Курування:** правило R6 (`superseded`) — [SP_CTX_02_65](./context_editor.curation.edits.sp.md#SP_CTX_02_65).
 
 Purpose: загальний хук завершених викликів інструментів основної розмови: дати агенту псевдонім виклику, який варто редагувати, і після нього окремим рядком пропозицію каналу розміру м'якого нагадування ([SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37); до фази 23 — на місці рядка псевдоніма), доставити належні нагадування нотаток ([SP_CTX_02_33](./context_editor.stages.sp.md#SP_CTX_02_33); після інструментів мода їх додають самі інструменти), позначити застарілі читання (R4, [SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11)) і записати повторне читання вже стиснутого вмісту в журнал ефекту ([SP_CTX_02_31](./context_editor.telemetry.sp.md#SP_CTX_02_31)).
 
@@ -320,7 +321,7 @@ Logic: `c<число>` → `map[ref]` AliasRegistry; `last` → ResolveLast(rows
 
 ### 02_18. CurrentRows  {#SP_CTX_02_18}
 
-> **Курування:** спостерігач прибирає `hostrows.json` і відкриває вікно копій — [SP_CTX_02_60](./context_editor.curation.sp.md#SP_CTX_02_60); рядків хоста серед рядків знімка немає — [SP_CTX_02_61](./context_editor.curation.sp.md#SP_CTX_02_61).
+> **Курування:** спостерігач прибирає `hostrows.json` і відкриває вікно копій — [SP_CTX_02_60](./context_editor.curation.hostrows.sp.md#SP_CTX_02_60); рядків хоста серед рядків знімка немає — [SP_CTX_02_61](./context_editor.curation.hostrows.sp.md#SP_CTX_02_61).
 
 > **Criticality:** core
 
@@ -386,7 +387,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
-| 2026-10-16 | Фаза 44: слот стану змінює `rewrite` або, коли він має пункти, операція `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67)) |
+| 2026-10-16 | Фаза 44: слот стану змінює `rewrite` або, коли він має пункти, операція `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67)) |
 | 2026-10-13 | Фаза 36: PrepareStorage спершу розпаковує запаковану сесію (RestoreSession, [SP_CTX_02_52](./context_editor.cleanup.sp.md#SP_CTX_02_52)) |
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_11–02_18 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.tags.sp.md](./context_editor.tags.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фаза 1 (CF-1): PrepareStorage — одна підготовка на `session_id`, перевірка `HOME` і SESSION_ID перед побудовою шляху, публікація пари (id, стан) наприкінці і лише для поточної сесії; EnsureStorage дає операції каталог, який вона тримає до кінця (02_15, 02_18) |

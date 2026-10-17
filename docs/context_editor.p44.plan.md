@@ -2,14 +2,14 @@
 
 > **Code:** PL_CTX (дочірній файл набору)
 > **Status:** completed
-> **Updated:** 2026-10-16
+> **Updated:** 2026-10-17
 > **Umbrella:** [PL_CTX](./context_editor.plan.md)
 
 ### Phase 44 — Пункти слота стану [DONE]  {#PL_CTX_P44}
 
 **Depends on:** Phase 41 (тексти замін і список REPLACEMENT_OPENERS, у який ця фаза додає свою голову).
-**Implements:** [C_CTX_06_08](./context_editor.curation.concept.md#C_CTX_06_08) (пункти слота), [SP_CTX_DEC_41](./context_editor.curation.sp.md#SP_CTX_DEC_41); [SP_CTX_01_29](./context_editor.curation.sp.md#SP_CTX_01_29), операція `state` у [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30), [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67), MAX_STATE_ITEMS, MAX_STATE_ITEM і голова STATE_REBUILT з [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32), пункти [SP_CTX_03_03](./context_editor.curation.sp.md#SP_CTX_03_03) і [SP_CTX_03_04](./context_editor.curation.sp.md#SP_CTX_03_04) про `state`, [SP_CTX_04_08](./context_editor.curation.sp.md#SP_CTX_04_08); тексти STATE_SLOT, легенди, TAG_DESCRIPTION і рядок операції `state` в EDIT_DESCRIPTION ([SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)).
-**Verify:** [SP_CTX_05_05](./context_editor.curation.sp.md#SP_CTX_05_05) рядки StateEdit (5); [SP_CTX_05_06](./context_editor.curation.sp.md#SP_CTX_05_06) «Слот стану дорівнює зібраним пунктам»; [SP_CTX_05_08](./context_editor.curation.sp.md#SP_CTX_05_08) «Слот без пунктів і правка `state`», «Два `state` в одному пакеті», «`id` зник до застосування», «Реєстр не записався»; опис `context_edit` ≤ MAX_DESCRIPTION (`tests/boundary.test.ts` тримає точну довжину); відкат — [SP_CTX_06_02](./context_editor.curation.sp.md#SP_CTX_06_02).
+**Implements:** [C_CTX_06_08](./context_editor.curation.concept.md#C_CTX_06_08) (пункти слота), [SP_CTX_DEC_41](./context_editor.curation.sp.md#SP_CTX_DEC_41); [SP_CTX_01_29](./context_editor.curation.slot.sp.md#SP_CTX_01_29), операція `state` у [SP_CTX_01_30](./context_editor.curation.edits.sp.md#SP_CTX_01_30), [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67), MAX_STATE_ITEMS, MAX_STATE_ITEM і голова STATE_REBUILT з [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32), пункти [SP_CTX_03_03](./context_editor.curation.sp.md#SP_CTX_03_03) і [SP_CTX_03_04](./context_editor.curation.sp.md#SP_CTX_03_04) про `state`, [SP_CTX_04_08](./context_editor.curation.slot.sp.md#SP_CTX_04_08); тексти STATE_SLOT, легенди, TAG_DESCRIPTION і рядок операції `state` в EDIT_DESCRIPTION ([SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)).
+**Verify:** [SP_CTX_05_05](./context_editor.curation.verification.sp.md#SP_CTX_05_05) рядки StateEdit (5); [SP_CTX_05_06](./context_editor.curation.verification.sp.md#SP_CTX_05_06) «Слот стану дорівнює зібраним пунктам»; [SP_CTX_05_08](./context_editor.curation.verification.sp.md#SP_CTX_05_08) «Слот без пунктів і правка `state`», «Два `state` в одному пакеті», «`id` зник до застосування», «Реєстр не записався»; опис `context_edit` ≤ MAX_DESCRIPTION (`tests/boundary.test.ts` тримає точну довжину); відкат — [SP_CTX_06_02](./context_editor.curation.sp.md#SP_CTX_06_02).
 
 | Що | Де |
 |----|----|
@@ -28,4 +28,4 @@
 | Date | Change |
 |------|--------|
 | 2026-10-16 | Фазу виконано (див. Result) |
-| 2026-10-15 | Фазу додано: план курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)), рішення розробника [PL_CTX_DEC_06](./context_editor.plan.md#PL_CTX_DEC_06) |
+| 2026-10-15 | Фазу додано: план курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)), рішення розробника [PL_CTX_DEC_06](./context_editor.plan.md#PL_CTX_DEC_06) |

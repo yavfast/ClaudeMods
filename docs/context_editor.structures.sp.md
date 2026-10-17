@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-15
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §01 Data Structures 01_01–01_11 специфікації [SP_CTX](./context_editor.sp.md): рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила. Константи (01_12) — у [constants](./context_editor.constants.sp.md), реєстри і стан сесії (01_13–01_26) — у [records](./context_editor.records.sp.md). Читати перед зміною цих структур.
@@ -54,7 +54,7 @@ Invariants:
 
 ### 01_02. Edit  {#SP_CTX_01_02}
 
-> **Курування:** операція `state` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+> **Курування:** операція `state` — [SP_CTX_01_30](./context_editor.curation.edits.sp.md#SP_CTX_01_30).
 
 Правка, як її передає агент. Варіант визначає поле `op`; кожне поле варіанта обов'язкове.
 
@@ -70,7 +70,7 @@ Invariants:
 
 ### 01_03. QueuedEdit  {#SP_CTX_01_03}
 
-> **Курування:** `quoted`, `changes` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+> **Курування:** `quoted`, `changes` — [SP_CTX_01_30](./context_editor.curation.edits.sp.md#SP_CTX_01_30).
 
 Edit плюс `anchors: list<string>?` — відбитки рядків для правок за індексом: для `collapse` — `[fingerprint(row[from_index]), fingerprint(row[to_index])]`, для `rewrite` і `describe` — `[fingerprint(row[index])]`, для правок за ідентифікатором — відсутні.
 
@@ -185,7 +185,7 @@ MediaRef живе лише під час перегляду і застосув�
 
 ### 01_09. Tag  {#SP_CTX_01_09}
 
-> **Курування:** причина `superseded` — [SP_CTX_01_30](./context_editor.curation.sp.md#SP_CTX_01_30).
+> **Курування:** причина `superseded` — [SP_CTX_01_30](./context_editor.curation.edits.sp.md#SP_CTX_01_30).
 
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
@@ -204,7 +204,7 @@ Invariants:
 
 ### 01_10. TagRegistry  {#SP_CTX_01_10}
 
-> **Курування:** `items`, `nextItem`, `docChecked` — [SP_CTX_01_29](./context_editor.curation.sp.md#SP_CTX_01_29).
+> **Курування:** `items`, `nextItem`, `docChecked` — [SP_CTX_01_29](./context_editor.curation.slot.sp.md#SP_CTX_01_29).
 
 Файл `<storage>/tags.json`. Пише лише мод.
 
@@ -228,7 +228,7 @@ Invariants:
 
 ### 01_11. AutoTagRules  {#SP_CTX_01_11}
 
-> **Курування:** R1 прибрано — [SP_CTX_02_68](./context_editor.curation.sp.md#SP_CTX_02_68); R6 — [SP_CTX_02_65](./context_editor.curation.sp.md#SP_CTX_02_65).
+> **Курування:** R1 прибрано — [SP_CTX_02_68](./context_editor.curation.edits.sp.md#SP_CTX_02_68); R6 — [SP_CTX_02_65](./context_editor.curation.edits.sp.md#SP_CTX_02_65).
 
 | Rule | Event and condition | Tag |
 |------|---------------------|-----|
@@ -244,19 +244,8 @@ Invariants:
 
 | Date | Change |
 |------|--------|
-| 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.sp.md#SP_CTX_02_69)) |
-| — | Старіші 4 записи — у [context_editor.structures.sp.log.md](./context_editor.structures.sp.log.md) |
-| 2026-10-11 | PL_AUD_CTX фаза 4 (CF-6, CF-7): 01_04 — розбір черги перевіряє обмеження (`edits` ≤ MAX_QUEUE_EDITS, тексти продовження ≤ MAX_TEXT, `report` разом з `reportId`); `keepCache` у переліку виборів пакета; KeepOtherSteps і AppendReport — один крок для кожного запису, що закінчує пакет |
-| 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8, CF-9): 01_12 — RESUME_FRAME, HANDOFF_RESUME_FRAME, DOCUMENT_FRAME (рамки автора тексту моделі в промпті, SP_CTX_DEC_17), DEFAULT_RESUME у промпті — з префіксом мода, REMINDER_CLOSE поруч із REMINDER_PREFIX, MAX_DELIVERY_TEXT — обрізання в рамці; 01_22 — `text` і `cut` обрізаної доставки |
-| 2026-10-11 | PL_AUD_CTX фаза 6a (CF-41): копія недоставленого документа передачі `<storage>/<id>/document.txt` у сховищі старої сесії (01_06) |
-| 2026-10-11 | PL_AUD_CTX фаза 7 (CF-15): 01_07 — порт сховища: три стани читання для всіх JSON-файлів стану, один контракт читання-змінювання-запису на ланцюжку файлу (Update, Change; незмінене значення не пишеться; нечитабельний файл — лишити, передати зміні або перенести вбік, а коли перенести не вдалося — нічого не писати), карантин, перенесення реєстру в нову сесію; 01_13 — ланцюжок `aliases` з рангом 3 |
-| 2026-10-11 | PL_AUD_CTX фаза 9 (аудит коду, CF-17, CF-18): 01_12 — PREFIX (`context-editor:`, ModText) і PLAIN_RATIO (4) — нові іменовані константи для літералів, що вже були в коді; BIG_ROW — політика WorthEditing; MARK, PREFIX, BIG_ROW, SEARCH_TOOLS, PLAIN_RATIO мають один дім `hooks/rows.ts`. Значення й тексти не змінено |
-| 2026-10-11 | PL_AUD_CTX фаза 11 (аудит коду, CF-22): 01_07 — кеш реєстрів тегів і псевдонімів у пам'яті модуля з ключем (сесія, каталог, епоха): нова епоха на кожній публікації сховища, запис через порт замінює запис кешу, `unreadable` не кешується, перегляд без ланцюжка для воріт; 01_13 — витіснення псевдоніма на MAX_ALIASES номерів старшого за O(1) |
-| 2026-10-11 | PL_AUD_CTX фаза 11, рев'ю: 01_07 — кеш реєстрів лише для показу й воріт; кожне читання-змінювання-запис читає файл (другий записувач не губить змін); читання, що почалося до кінця запису чи перенесення, нічого не кладе |
-| 2026-10-11 | PL_AUD_CTX фаза 12 (аудит коду, CF-24…CF-26): 01_14 — тайм-аут читання `hostId` обмежує лише очікування читача, не запам'ятовується; читання без ідентичності повторює наступний читач до HOST_ID_READS ([SP_CTX_DEC_24](./context_editor.decisions-21.sp.md#SP_CTX_DEC_24)); 01_05 — порядок речень звіту як у FormatReport (нотатки → DESCRIBE_DROPS → власні виклики → доставки); 01_12 — усі константи верхнього рівня `hooks/*.ts`: HOST_ID_WAIT_MS, HOST_ID_READS, USAGE_WAIT_MS, MAX_WARNED_ROWS, MAX_REGISTRY_BYTES, STORAGE_BASE, тексти відмов і замін, метадані інструментів, внутрішні шаблони, назви з `_MS`; MAX_BLOCK_INDEXES замінив NOTES_ELSEWHERE; CostRatios — Opus 5.5 лише за ідентифікатором з 5.5 |
-| 2026-10-11 | PL_AUD_CTX фаза 12, рев'ю: 01_12 — рядки REMINDER_PREFIX/REMINDER_CLOSE, COMMAND_ROWS, EXT, KINDS (теги й доставки), HUMAN, REVIEW_REASONS/REVIEW_GROUPS, CHAIN_RANK, RANK; правило повноти: не перелічені лише порожні значення й сторожі, ABANDONED, TOOLS, COST_RATIOS; CostRatios — голий псевдонім `opus` / `opus[1m]` теж Opus 5.5 (іде за поточним Opus); 01_14 — читання, що не закінчується, тримає місце (повтору немає; хост завершує процес ~30 с, спостереження живого прогону), обробник компактизації запускає лише перше читання, ніколи повтор |
-| 2026-10-12 | Калібрування бачить вкладення хоста (беклог, сесія d5614704): 01_12 — FIXED_IN_MESSAGES; 01_10 — `charsPerToken` рахує символи API-подання на токен повідомлень запиту; 01_20 — поля `attached` і `chars`, `cache` несе токени хвоста (TailTokens) замість символів рядків |
-| 2026-10-12 | Рев'ю: 01_12 — `Custom agents` у FIXED_IN_MESSAGES лишається, але не підтверджений; 01_20 — `fixed` у тексті показано без `attached` |
+| 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)) |
+| — | Старіші 15 записів — у [context_editor.structures.sp.log.md](./context_editor.structures.sp.log.md) |
 | 2026-10-12 | Фаза 24 — вкладення хоста: 01_23 HostAttachState (`hostattach.json`, AttachDecision, TextHash, SectionKey); 01_07 — файл у переліку сховища; 01_05 — речення AttachText наприкінці звіту; 01_12 — ATTACH_TYPES, PREAMBLE_HEAD, REREAD_HEAD, LISTING_HEAD, SUPERSEDED, PASS_GAP_MS, MAX_ATTACH_*, `hostattach` у CHAIN_RANK; 01_20 — поле `hostAttach` |
 | 2026-10-12 | Рев'ю і живий прогін фази 24: 01_12 — SECTION_HEAD і LISTING_ITEM (правило повноти), LISTING_HEAD — і для інкрементних переліків; 01_23 — `copies` за серією і за проходом, `drop` переліку лише покритого новішим |
 | 2026-10-12 | Фаза 25: 01_12 — MARKER і HANDOFF_MARKER кажуть, хто запустив команду; LEGACY_MARKER, LEGACY_HANDOFF_MARKER (MarkerKind), COMMAND_NOTE, COMPACT_DELAY, HOST_ARG, COMPACT_REPLY, COMPACT_HANDOFF, COMPACT_BUSY, COMPACT_NOTHING; 01_05 — CommandNote наприкінці звіту застосування в черзі ([SP_CTX_DEC_26](./context_editor.decisions-21.sp.md#SP_CTX_DEC_26)) |

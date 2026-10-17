@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-12
-> **Updated:** 2026-10-12
+> **Updated:** 2026-10-15
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Time-box:** ~2 години (витрачено ~1 год 15 хв)
 > **Scope:** prototype (вісім копій мода в scratchpad з різними формами заміни в `hooks/edits.ts`, без змін у `mods/`), живі прогони на закріпленому 2.1.296: 105 сесій stream-json (75 haiku, 30 sonnet) і одна термінальна з `--resume`

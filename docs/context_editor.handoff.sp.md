@@ -3,8 +3,9 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-13
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
+> **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_21](#SP_CTX_02_21)
 >
 > §02 Contracts 02_19–02_26 специфікації [SP_CTX](./context_editor.sp.md): контракти `context_handoff`, `/handoff`, RunHandoff, BuildSeed, CheckSeed, CheckSeeded, ScrubCommandRows (вилучено), HandleSeed. Читати перед зміною `hooks/handoff.ts`.
 
@@ -69,7 +70,7 @@ Processing logic (pseudocode):
 
 ### 02_21. RunHandoff  {#SP_CTX_02_21}
 
-> **Курування:** пін документа в новій сесії — [SP_CTX_02_68](./context_editor.curation.sp.md#SP_CTX_02_68).
+> **Курування:** пін документа в новій сесії — [SP_CTX_02_68](./context_editor.curation.edits.sp.md#SP_CTX_02_68).
 
 > **Criticality:** core
 
@@ -293,7 +294,7 @@ Errors: відмови не виходять назовні — кожна пр�
 
 ### 02_22. BuildSeed  {#SP_CTX_02_22}
 
-> **Курування:** ScreenPerson — [SP_CTX_02_58](./context_editor.curation.sp.md#SP_CTX_02_58); слід власних викликів — [SP_CTX_02_64](./context_editor.curation.sp.md#SP_CTX_02_64); правки `state` — [SP_CTX_02_67](./context_editor.curation.sp.md#SP_CTX_02_67).
+> **Курування:** ScreenPerson — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); слід власних викликів — [SP_CTX_02_64](./context_editor.curation.edits.sp.md#SP_CTX_02_64); правки `state` — [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67).
 
 Purpose: зібрати рядки нової сесії з того, що бачить модель, і правок черги ([C_CTX_DEC_12](./context_editor.methods.concept.md#C_CTX_DEC_12), C). Чиста функція, крім запису медіа-файлів через порт. До 2026-10-09 — BuildTranscript, що збирав записи файлу сесії.
 

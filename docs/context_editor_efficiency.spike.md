@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-11
+> **Updated:** 2026-10-15
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Time-box:** ~2 години
 > **Scope:** codebase (транскрипти сесій, записи `usage` і `modelUsage`), prototype (симулятор на Python у `.dev_flow/cache/efficiency/`), external (огляди літератури з `.dev_flow/cache/practice/`)

@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-10
-> **Updated:** 2026-10-10
+> **Updated:** 2026-10-11
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Time-box:** ~1.5 години
 > **Scope:** codebase (типи хоста, `edits.ts`), prototype (одноразовий плагін `aprobe` у scratchpad, малі сесії `--model haiku` на закріпленому бінарнику 2.1.295: stream-json через fifo і термінал у tmux), розбір транскрипту робочої сесії `decd4bc6…`

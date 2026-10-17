@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-09
-> **Updated:** 2026-10-09
+> **Updated:** 2026-10-15
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Time-box:** 1 сесія
 > **Scope:** codebase (типи хоста, локальні транскрипти `~/.claude/projects/`), prototype (скрипти й тестові сесії в scratchpad, живі запуски в tmux)

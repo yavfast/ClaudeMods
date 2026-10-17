@@ -1,19 +1,34 @@
-# Derived router — regenerated from the rule files.
+# Derived router — regenerated from the rule headings (audit 2026-10-17; headings in the canonical `## {id} — {directive} ({severity})  {#id}` form).
 categories:
-  - name: concurrency
+  - category: concurrency
     file: concurrency.md
     summary: Storage folder and commit order in hook work that spans awaits, session switches and abandoned handlers.
     applies_to:
       paths: ["mods/*/hooks/**"]
       phases: [implement, fix, review]
     rules:
-      - { id: CONC-01, severity: should, directive: Take the storage folder once per operation }
-      - { id: CONC-02, severity: should, directive: Commit side effects only after the last abort check }
-  - name: structure
+      - name: CONC-01
+        severity: should
+        summary: Take the storage folder once per operation
+      - name: CONC-02
+        severity: should
+        summary: Commit side effects only after the last abort check
+  - category: structure
     file: structure.md
     summary: Where shared row predicates and host-matched literals live in hook modules.
     applies_to:
       paths: ["mods/*/hooks/**"]
       phases: [implement, fix, review]
     rules:
-      - { id: STRUCT-01, severity: should, directive: Give each row predicate and shared literal one home }
+      - name: STRUCT-01
+        severity: should
+        summary: Give each row predicate and shared literal one home
+  - category: process
+    file: process.md
+    summary: How task files and session history in .dev_flow record times.
+    applies_to:
+      paths: [".dev_flow/tasks/**", ".dev_flow/session_history/**", ".dev_flow/active_context.md"]
+    rules:
+      - name: PROC-01
+        severity: should
+        summary: Take log timestamps from git or the clock, never estimate them

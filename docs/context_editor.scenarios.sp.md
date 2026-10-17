@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-15
+> **Updated:** 2026-10-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §05_02–05_03 специфікації [SP_CTX](./context_editor.sp.md): перевірки інваріантів та інтеграційні (живі) сценарії; граничні випадки (05_04) — у [edges](./context_editor.edges.sp.md). Читати перед живим прогоном.

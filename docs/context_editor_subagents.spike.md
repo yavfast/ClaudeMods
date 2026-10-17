@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-13
-> **Updated:** 2026-10-13
+> **Updated:** 2026-10-15
 > **Author:** claude-session-4118db51
 > **Time-box:** 1 сесія дослідника (типи хоста 2.1.296, до ~6 живих проб на haiku, транскрипти субагентів з `~/.claude/projects`)
 > **Scope:** зовнішнє (хост Claude Code) + прототип-проба (одноразовий плагін у scratchpad)

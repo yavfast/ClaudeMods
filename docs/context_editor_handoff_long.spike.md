@@ -2,7 +2,7 @@
 
 > **Status:** concluded
 > **Created:** 2026-10-09
-> **Updated:** 2026-10-09
+> **Updated:** 2026-10-15
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Time-box:** 1 сесія
 > **Scope:** codebase (код передачі, типи хоста, рядки бінарників хоста 2.1.289 і 2.1.295), prototype (одноразові плагіни й малі тестові сесії в scratchpad, `claude -p`, режим stream-json, tmux; жодного ходу на великій сесії)

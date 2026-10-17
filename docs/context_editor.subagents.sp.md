@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-13
-> **Updated:** 2026-10-13
+> **Updated:** 2026-10-15
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_49 специфікації [SP_CTX](./context_editor.sp.md): обрізання великих результатів інструментів субагента в мить запису ([C_CTX_03_09](./context_editor.methods.concept.md#C_CTX_03_09), [C_CTX_DEC_27](./context_editor.methods.concept.md#C_CTX_DEC_27)). Читати перед зміною `hooks/subagents.ts` або хука `session.append`.
