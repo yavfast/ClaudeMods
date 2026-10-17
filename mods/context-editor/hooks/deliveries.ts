@@ -12,7 +12,7 @@
 import type { SessionMessage } from 'claude-code'
 import { hostFrame, isPlainUserRow, isReplacementText, markerKind, PLUGIN_FRAME, PREFIX, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
-import { isCount, jsonObject, trimOldest, type Read } from './store'
+import { isCount, jsonObject, trimOldest, type Read, type Renew, type Update } from './store'
 
 // [SP_CTX_01_12]
 export const MAX_DELIVERIES = 200
@@ -266,37 +266,22 @@ export function withDelivery(d: Deliveries, item: QueuedDelivery, maxBytes: numb
   return trimDeliveries({ items: [...d.items, item] }, maxBytes)
 }
 
-// What RecordDelivery and the apply need from the host: a part of the
-// deliveries' Store ([SP_CTX_01_07]); register.ts runs each change on the
-// deliveries' serial chain.
-export type DeliveryIO = {
-  read: () => Promise<Read<Deliveries>>
-  write: (d: Deliveries) => Promise<void>
-  // moves an unreadable file aside; the new path, or undefined when it could not
-  quarantine: () => Promise<string | undefined>
-}
-
-// [SP_CTX_02_35] Writes one item; an unreadable file is moved aside and the
-// list starts anew; one that cannot be moved aside is never overwritten. A
+// [SP_CTX_02_35] Writes one item through the Renew port of the deliveries'
+// Store ([SP_CTX_01_07]): an unreadable file is moved aside and the list
+// starts anew; one that cannot be moved aside is never overwritten. A
 // failure loses this item only.
-export async function recordDelivery(io: DeliveryIO, item: QueuedDelivery, maxBytes: number): Promise<void> {
-  let read = await io.read()
-  if (read.state === 'unreadable') {
-    if ((await io.quarantine()) === undefined) return
-    read = { state: 'missing', value: { items: [] } }
-  }
-  const next = withDelivery(read.value, item, maxBytes)
-  if (next) await io.write(next)
+export async function recordDelivery(renew: Renew<Deliveries>, item: QueuedDelivery, maxBytes: number): Promise<void> {
+  await renew(d => withDelivery(d, item, maxBytes))
 }
 
 // [SP_CTX_02_07] The items an apply no longer needs go; items recorded
-// meanwhile stay. An unreadable file is left alone.
-export async function pruneDeliveries(io: DeliveryIO, done: ReadonlySet<string>): Promise<void> {
+// meanwhile stay. An unreadable file is left alone (Update).
+export async function pruneDeliveries(update: Update<Deliveries>, done: ReadonlySet<string>): Promise<void> {
   if (!done.size) return
-  const read = await io.read()
-  if (read.state !== 'ok') return
-  const items = read.value.items.filter(x => !done.has(x.uuid))
-  if (items.length !== read.value.items.length) await io.write({ items })
+  await update(d => {
+    const items = d.items.filter(x => !done.has(x.uuid))
+    return items.length !== d.items.length ? { items } : undefined
+  })
 }
 
 // ---- [SP_CTX_02_36] InsertDeliveries

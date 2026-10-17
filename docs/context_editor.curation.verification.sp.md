@@ -24,36 +24,36 @@
 
 | Contract | Scenario | Input | Expected outcome |
 |----------|----------|-------|------------------|
-| PersonWords | діапазон над промптом | `collapse` #3..#6, #4 — промпт людини | відхилено PERSON_WORDS з #4 (prompt); правки з виклику не стали в чергу |
-| PersonWords | пара AskUserQuestion | `summarize` пари AskUserQuestion | відхилено: «the AskUserQuestion answer is the person's words» |
-| PersonWords | `drop` з доставкою | `drop` пари, за результатом якої висить доставка людини | відхилено з порадою `summarize` |
+| PersonWords | діапазон над промптом | `collapse` #3..#6, #4 — промпт людини | відхилено PERSON_WORDS з #4 (prompt); правки з виклику не стали в чергу [тест: «PersonWords — повідомлення людини»] |
+| PersonWords | пара AskUserQuestion | `summarize` пари AskUserQuestion | відхилено: «the AskUserQuestion answer is the person's words» [тест: «PersonWords — повідомлення людини»] |
+| PersonWords | `drop` з доставкою | `drop` пари, за результатом якої висить доставка людини | відхилено з порадою `summarize` [тест: «PersonWords — доставка від людини»] |
 | PersonWords | тег над промптом | `disposable` #2..#5 з промптом | запит відхилено, тегу немає |
 | PersonWords | перевірка при застосуванні | `pending.json` змінено поза інструментами: `collapse` над промптом | застосування: PERSON_WORDS_NOW першим у `failed`, рядки людини на місці |
-| PersonWords | рамка хоста | PersonText тексту, що починається з PEER_FRAME | порожній: не слова людини |
+| PersonWords | рамка хоста | PersonText тексту, що починається з PEER_FRAME | порожній: не слова людини [тест: «HostFrame, PasteBlocks, DescribedWords, DocumentRow»] |
 | PersonWords | описаний промпт | `collapse` діапазону з промптом після `describe` | відхилено PERSON_WORDS з `#i (described prompt)` |
 | PersonWords | тег у QueueTagReplacements | `disposable`, чия ціль тепер захоплює промпт | тег прибрано; рядок `disposable <target> dropped: it covers the person's words` у результаті виклику |
 | DescribePasted | лише вставка | `describe` промпту «Лог: <pasted_content id="a">…</pasted_content id="a"> що не так?» | текст: голова «…replaced the pasted text…», опис, далі «Лог: [pasted text 1, <n> chars: see your description above] що не так?»; оригінал в архіві |
 | DescribePasted | медіа і вставка | промпт із зображенням і вставкою | голова «…replaced the media and the pasted text…» |
-| DescribePasted | нічого замінювати | промпт без медіа й вставок | NO_MEDIA |
+| DescribePasted | нічого замінювати | промпт без медіа й вставок | NO_MEDIA [тест: «DescribePasted — медіа і вставка, нічого замінювати»] |
 | RecordHostRows | розгорнута навичка | `session.append` рядка `isMeta` з SKILL_FRAME після команди людини `/dev-flow spec` | запис `{ id: h1, kind: skill, after: <uuid команди>, afterKind: prompt, afterHead: 'the command "/dev-flow spec"' }` |
 | RecordHostRows | вікно копій | рядок `isMeta` з PEER_FRAME після рядків команди `/compact` мода, до промпту людини | запису немає |
-| RecordHostRows | копія асистента в stream-json | рядок дверима `response` з моделлю `<synthetic>` у вікні | `lastVisible` порожній, як був |
+| RecordHostRows | копія асистента в stream-json | рядок дверима `response` з моделлю `<synthetic>` у вікні | `lastVisible` порожній, як був [тест: «RecordHostRows — вікно копій»] |
 | RecordHostRows | промпт людини закриває вікно | промпт людини після застосування, за ним рядок навички | вікно закрито; запис за промптом |
 | HostList | список | `context_list` з двома записами | рядок заголовка `… h1 skill, h2 peer`; секція з двома рядками; індекси рядків ті самі |
 | HostList | `drop` за `id` | `{"op":"drop","host":"h1"}` | у результаті DetachNote; при застосуванні попередник без `handle`, звіт `dropped host row h1 (skill, <n> chars)`, текст рядка в архіві, запису немає |
 | HostList | два рядки за одним попередником | `drop` h3, за тим самим рядком стоїть h4 | обидва прибрано; звіт `h4 (peer) went with it` |
-| HostList | невідомий `id` | `drop` h9 | HOST_UNKNOWN |
-| HostList | попередник із медіа | `drop` рядка за промптом із зображенням | HOST_MEDIA |
-| HostList | попередника згорнуто | `collapse` над попередником h2 | звіт `Host rows that went with rebuilt rows: h2 (peer).`; запису немає |
-| HostList | навичка інструмента `Skill` | застосування без `keep_cache` після `Skill` | запис за рядком «Launching skill» зник; звіт його називає |
-| HostList | чужа компактизація | вбудована `/compact` | файл прибрано, списку немає |
-| ReplacementOpeners | `summarize` з джерелом | `Read docs/x.md` | текст починається `Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here with your own summary (original:` |
+| HostList | невідомий `id` | `drop` h9 | HOST_UNKNOWN [тест: «HostList — постановка»] |
+| HostList | попередник із медіа | `drop` рядка за промптом із зображенням | HOST_MEDIA [тест: «HostList — відмови при застосуванні»] |
+| HostList | попередника згорнуто | `collapse` над попередником h2 | звіт `Host rows that went with rebuilt rows: h2 (peer).`; запису немає [тест: «HandleCompaction — рядки хоста»; «HostList — попередника змінено іншою правкою»] |
+| HostList | навичка інструмента `Skill` | застосування без `keep_cache` після `Skill` | запис за рядком «Launching skill» зник; звіт його називає [тест: «KeepHostRows: a record stays only while its row before came back with its handle»; «HandleCompaction — рядки хоста»] |
+| HostList | чужа компактизація | вбудована `/compact` | файл прибрано, списку немає [тест: «ObserveCompaction — чужа компактизація прибирає записи рядків хоста»] |
+| ReplacementOpeners | `summarize` з джерелом | `Read docs/x.md` | текст починається `Later, your context_edit summarize call replaced the full output of Read docs/x.md you had read here with your own summary (original:` [тест: «ApplyEdits — summarize з джерелом»] |
 | ReplacementOpeners | зайве поле `status` | `summarize` з `"status": "inferred"` | прийнято; поле ігнорується, слів статусу в заміні немає |
-| ReplacementOpeners | розпізнавання | старі й нові відкривачі | ReplacementText — так для обох |
-| DependencyCheck | цитата в пізнішому тексті | ідентифікатор оригіналу є лише в пізнішому тексті агента | прийнято із застереженням, що називає рядок і фрагмент; заміна каже `which you quoted from later` |
-| DependencyCheck | інше джерело лишається | той самий фрагмент і в іншому рядку поза ціллю | застереження немає |
-| TraceOwnCalls | відрізок з `context_tag` і `context_edit` | `open` етапу й правка з трьома правками | один рядок `…; you had called context_tag to open stage "x", context_edit with 3 edit(s).` |
-| TraceOwnCalls | заморожений префікс | `keep_cache`, власні пари в префіксі | сліду для них немає |
+| ReplacementOpeners | розпізнавання | старі й нові відкривачі | ReplacementText — так для обох [тест: «ReplacementOpeners — відкривачі з джерелом»; «ReplacementText — тексти фази 28 і старі»] |
+| DependencyCheck | цитата в пізнішому тексті | ідентифікатор оригіналу є лише в пізнішому тексті агента | прийнято із застереженням, що називає рядок і фрагмент; заміна каже `which you quoted from later` [тест: «DependencyCheck — §05_05»; «queueEdits — DependencyCheck»; «ApplyEdits — quoted»] |
+| DependencyCheck | інше джерело лишається | той самий фрагмент і в іншому рядку поза ціллю | застереження немає [тест: «DependencyCheck — §05_05»] |
+| TraceOwnCalls | відрізок з `context_tag` і `context_edit` | `open` етапу й правка з трьома правками | один рядок `…; you had called context_tag to open stage "x", context_edit with 3 edit(s).` [тест: «TraceText — §05_05»] |
+| TraceOwnCalls | заморожений префікс | `keep_cache`, власні пари в префіксі | сліду для них немає [тест: «TraceOwnCalls — збережені пари (§05_06)»] |
 | SupersededRead | той самий діапазон, інший текст | друге `Read` того самого файлу після зміни | раннє читання — `review superseded` |
 | SupersededRead | інший діапазон, спільні рядки різні | `Read` рядків 40–60 після повного читання і зміни рядка 50 | `superseded` |
 | SupersededRead | без спільних рядків | рядки 1–10, потім 200–210 | тегу немає |
@@ -63,10 +63,10 @@
 | StateEdit | `rewrite` слота з пунктами | `rewrite` рядка слота | STATE_ITEMS |
 | Pins | перший промпт | початок сесії | пінів немає |
 | Pins | передача «документом» | перший кінець ходу нової сесії | пін на рядку 0; `docChecked` = true |
-| CurationTexts | правила курування | `context_list` з `"rules": true` | текст `curation.md` |
-| CurationTexts | файл понад межу | `curation.md` довший за CURATION_MAX | `tests/skill-limits.sh` падає |
-| CurationTexts | файл не прочитався | у `$.plugin.root` немає `curation.md` | `context-editor: the curation rules could not be read: <error>` |
-| CurationTexts | зайві параметри | `"rules": true` з `count`, `from`, `index` чи `full`, або `"rules"` не `true` | відмова BAD_RULES |
+| CurationTexts | правила курування | `context_list` з `"rules": true` | текст `curation.md` [тест: «CurationTexts — "rules": true returns the curation rules»] |
+| CurationTexts | файл понад межу | `curation.md` довший за CURATION_MAX | `tests/skill-limits.sh` падає [not covered by a unit test: `claude plugin test` runs without a file system; `sh mods/context-editor/tests/skill-limits.sh` checks `curation.md` against CURATION_MAX] |
+| CurationTexts | файл не прочитався | у `$.plugin.root` немає `curation.md` | `context-editor: the curation rules could not be read: <error>` [тест: «CurationTexts — the rules file cannot be read»] |
+| CurationTexts | зайві параметри | `"rules": true` з `count`, `from`, `index` чи `full`, або `"rules"` не `true` | відмова BAD_RULES [тест: «CurationTexts — "rules" takes no other parameter»] |
 | StateEdit | дві правки `state` | дві правки в одному пакеті | одна перебудова слота, обидві в `applied` |
 | StateEdit | `rewrite` і `state` слота разом | `state`, потім `rewrite` рядка слота | друга відхилена STATE_CONFLICT |
 
@@ -124,3 +124,4 @@
 | Date | Change |
 |------|--------|
 | 2026-10-17 | structural-event: розділи 05_05, 05_06, 05_07, 05_08 перенесено дослівно з [context_editor.curation.sp.md](./context_editor.curation.sp.md) (аудит dev-flow, Docs Scaling `hard_split`: 14 640 слів); якорі незмінні |
+| 2026-10-17 | Аудит коду (TST-5): рядки §05_05 без тесту за правилом [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) — `[тест: «…»]` на наявні тести (PersonWords, DescribePasted, RecordHostRows, HostList, ReplacementOpeners, DependencyCheck, TraceOwnCalls, CurationTexts); «CurationTexts — файл понад межу» — `[not covered]` (перевіряє `tests/skill-limits.sh`) |

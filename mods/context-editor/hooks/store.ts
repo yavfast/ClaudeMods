@@ -239,12 +239,43 @@ export function lockOrder(key: ChainKey, within: Held): string | undefined {
 export type Chains = <T>(key: ChainKey, work: (held: Held) => Promise<T>, nest?: Nest) => Promise<T>
 
 // [SP_CTX_02] [PL_AUD_CTX_P7] The serial chains of one module instance. An
-// order problem goes to the report and never throws: the work still runs (a
-// chain entered inside itself then waits forever, as before the check).
+// order problem goes to the report and never throws: the work still runs.
+// [PL_AUD2_CTX] X1: a chain entered again with a token whose holder of that
+// chain (the work that took it, nested tokens included) still runs is a
+// re-entry: the work runs on the holder's turn instead of behind it, where it
+// would wait forever. The re-entries of one holder run one after another, a
+// re-entry is a holder of its own (its nested re-entries run at once too), and
+// a holder releases its chain only once its re-entries settled. A token whose
+// holder of the chain has settled holds nothing: the work queues as usual.
 export function serialChains(): Chains {
   const tails = new Map<ChainKey, Promise<unknown>>()
+  // per token: the token that took each chain it holds
+  const takers = new WeakMap<Held, ReadonlyMap<ChainKey, Held>>()
+  // holders whose work (or its re-entries) still runs
+  const live = new WeakSet<Held>()
+  // per holder: the tail of its re-entries
+  const inner = new WeakMap<Held, Promise<unknown>>()
+  const hold = async <T>(held: Held, work: (held: Held) => Promise<T>): Promise<T> => {
+    live.add(held)
+    try {
+      return await work(held)
+    } finally {
+      // a re-entry not awaited by its holder still ends before the chain moves on
+      for (let tail = inner.get(held); tail; tail = tail === inner.get(held) ? undefined : inner.get(held)) await tail
+      live.delete(held)
+    }
+  }
   return <T>(key: ChainKey, work: (held: Held) => Promise<T>, nest: Nest = {}): Promise<T> => {
     const within = nest.within ?? NOT_HELD
+    const taker = takers.get(within)?.get(key)
+    if (taker && live.has(taker)) {
+      const again: Held = { ...within }
+      takers.set(again, new Map([...takers.get(within)!, [key, again]]))
+      const run = () => hold(again, work)
+      const next = (inner.get(taker) ?? Promise.resolve()).then(run, run)
+      inner.set(taker, next.catch(() => undefined))
+      return next
+    }
     const report = nest.report ?? within.report
     const problem = lockOrder(key, within)
     if (problem)
@@ -254,7 +285,8 @@ export function serialChains(): Chains {
         // a failed report never breaks the work
       }
     const held: Held = { keys: [...within.keys, key], ...(report ? { report } : {}) }
-    const run = () => work(held)
+    takers.set(held, new Map([...(takers.get(within) ?? []), [key, held]]))
+    const run = () => hold(held, work)
     const next = (tails.get(key) ?? Promise.resolve()).then(run, run)
     tails.set(key, next.catch(() => undefined))
     return next
@@ -476,9 +508,20 @@ export type Change<T> = (change: ChangeFn<T>) => Promise<boolean>
 // The change a Change port runs: the new value, or undefined to write nothing.
 export type ChangeFn<T> = (read: Read<T>) => T | undefined | Promise<T | undefined>
 
+// [SP_CTX_01_07] Renew: as Update, but an unreadable file is moved aside and
+// `change` sees the default value, as if missing; a file that could not be
+// moved aside is never overwritten (`change` is not called).
+export type Renew<T> = Update<T> & { readonly renews: true }
+
 // The Update port of `store`.
 export function updateOf<T>(store: Store<T>, within?: Held): Update<T> {
   return change => store.update(read => change(read.value), { skipUnchanged: true, ...(within ? { within } : {}) })
+}
+
+// The Renew port of `store`.
+export function renewOf<T>(store: Store<T>, within?: Held): Renew<T> {
+  const renew: Update<T> = change => store.update<'quarantine'>(read => change(read.value), { onUnreadable: 'quarantine', skipUnchanged: true, ...(within ? { within } : {}) })
+  return Object.assign(renew, { renews: true as const })
 }
 
 // The Change port of `store`.

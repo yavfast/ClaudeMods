@@ -6,7 +6,7 @@
 > **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
-> §01_12 Constants специфікації [SP_CTX](./context_editor.sp.md): повна таблиця констант мода (назва, значення, зміст). Читати, коли змінюєте межу чи текст мода.
+> §01_12 Constants специфікації [SP_CTX](./context_editor.sp.md): повна таблиця констант мода (назва, значення, зміст), крім констант курування — вони в [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32). Читати, коли змінюєте межу чи текст мода.
 
 ## Contents
 
@@ -91,11 +91,17 @@
 | PROBE_MARKER | `context-editor: capability probe (run by the mod in a throwaway process)` | Аргументи `/compact` у процесі-зонді |
 | PROBE_PREFIX | `context-editor-probe:` | Початок відповіді `skip` обробника на PROBE_MARKER ([SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57)) |
 | PROBE_FILE | `probe-counts.json` | Файл лічильників зонда в його тимчасовій теці |
+| PROBE_ENV | `CONTEXT_EDITOR_PROBE=1`, `ANTHROPIC_BASE_URL=http://127.0.0.1:9`, `CLAUDE_CODE_MAX_RETRIES=0`, `DISABLE_AUTOUPDATER=1` | Змінні середовища процесу-зонда ([SP_CTX_02_56](./context_editor.bypass.sp.md#SP_CTX_02_56)): ProbeMode і недосяжний API |
 | CAP_CACHE_VERSIONS | 5 | Найбільше версій хоста в `capabilities.json` |
+| CAP_CACHE_FILE | `capabilities.json` | Файл кешу можливостей у корені сховища ([SP_CTX_01_26](./context_editor.records.sp.md#SP_CTX_01_26)) |
 | BRIEF_MAX | 12000 | Межа CompactBrief у символах ([SP_CTX_02_55](./context_editor.bypass.sp.md#SP_CTX_02_55)): пункти цілими в порядку брифу, решта — рядок `(<n> more item(s) left out)` |
 | BRIEF_HEAD | `Summarize this conversation for the agent that goes on with it. Keep every message of the person verbatim.` | Перший рядок CompactBrief; при BRIEF_FAILED — увесь бриф |
 | BRIEF_RECORDS | `Keep verbatim the texts that start with "Later, your context_": they are the agent's own records.` | Останній пункт CompactBrief |
 | PASSED_ADVICE | `Compression is off on this host (context_edit refuses: the host passes over the mod's compaction hook); keep working.` | Кінець BlockReport при `passed` замість STAGE_ADVICE ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)) |
+| EDIT_PASSED_OVER | `this host passes over the mod's compaction hook, so queued edits would become the host's real summary; nothing was queued. Keep working; the person can run the mod as a managed plugin, or run /compact for the host's summary with the mod's brief.` | Відмова DENIED_PASSED_OVER `context_edit` ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)) |
+| HANDOFF_TOOL_PASSED_OVER | `this host passes over the mod's compaction hook, so the handoff cannot seed a new session; nothing was queued.` | Відмова DENIED_PASSED_OVER `context_handoff` |
+| HANDOFF_COMMAND_PASSED_OVER | `handoff is off: this host passes over the mod's compaction hook (see the ClaudeMods README, section "Managed plugin")` | Відповідь `/handoff` при `compact = passed` |
+| HANDOFF_PASSED_OVER | `context-editor: handoff not run: this host passes over the mod's compaction hook.` | Звіт запиту передачі, знятого RunHandoff при `compact = passed` на запуску |
 | HOST_ARG | `host` | Аргумент `/compact`, яким людина просить підсумок хоста: після обрізання пробільних символів, без урахування регістру; мод передає команду хосту з порожнім аргументом ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) |
 | COMPACT_REPLY | `the agent will compress the conversation itself; the person's messages stay verbatim. For the host's summary, run /compact host.` | Відповідь мода на `/compact` людини, коли хід стискання заплановано; без префікса мода: хост показує відповідь команди під назвою розширення (як відповіді `/handoff`); модель її теж бачить (рядок виводу команди) |
 | COMPACT_HANDOFF | `a handoff is pending; nothing was compressed. /compact host runs the host's summary.` | Відповідь на `/compact` людини, поки в черзі запит передачі |
@@ -163,20 +169,21 @@
 | MAX_ATTACH_KEYS | 400 | Найбільше ключів у `matched` і в `stale` одного рішення |
 | MAX_ATTACH_PATHS | 100 | Найбільше шляхів у `predicted` і `uncomparable` |
 | REPAIR_MARKER | `context-editor: repair the resumed conversation (run automatically by the mod: resuming loaded some answers twice; not by the person)` | Аргумент вбудованої команди компактизації, якою мод ремонтує завантажену після `--resume` розмову ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46), [SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47); фаза 32); будується з PREFIX (ModText), тож PersonText його відкидає; MarkerKind → `repair`; видимий моделі в рядку команди і, як MARKER, каже автора ([SP_CTX_DEC_26](./context_editor.decisions-21.sp.md#SP_CTX_DEC_26)); дім — `hooks/rows.ts` |
-| REPAIR_DELAY_MS | 1500 | Затримка `$.clock.after` від `session.start` (чи кінця ходу після перемикання) до RunRepair; значення спайку resume (cr2: команда виконалась до першого промпту) |
+| REPAIR_DELAY_MS | 1500 | Затримка `$.clock.after` від кінця першого ходу основної розмови в процесі (нового процесу хоста чи після перемикання сесії; з 2026-10-14 не від `session.start`, [SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)) до RunRepair; значення спайку resume (cr2: команда виконалась до першого промпту) |
 | MAX_LEDGER_HANDLES | 50 000 | Найбільше `handle` в ApplyLedger разом ([SP_CTX_01_24](./context_editor.records.sp.md#SP_CTX_01_24)); ~40 байт на `handle` — ~2 МБ, менше за MAX_QUEUE_BYTES; найстаріші записи йдуть першими |
 | REPAIR_REFUSED | `context-editor: could not repair the resumed conversation: ` | Рядок стану, коли хост відхилив команду ремонту; далі — текст відмови ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)) |
 | REPAIR_LINE | `repaired the resumed conversation: dropped <n> row(s) loaded twice` (+ `; media of <m> result(s) carried as files`) | Рядок людини `$.ui.log` після ремонту (LogRepair); спливне повідомлення обробника — `context-editor: repaired the resumed conversation (<n> rows loaded twice)` |
 | REPAIR_SKIPS | `storage unavailable`, `handoff running`, `ledger unreadable`, `nothing to repair`, `media could not be written`, `repair would break pairs: <reason>`, `compaction abandoned`, `repair failed` | Тексти `skip` обробника ремонту, з PREFIX ([SP_CTX_02_47](./context_editor.resume.sp.md#SP_CTX_02_47)) |
-| PULLED_TEXT | ` <n> row(s) that resuming the session had loaded a second time were dropped first.` | Речення звіту застосування, коли DropPulled у HandleCompaction щось прибрав (`pulledDropped` > 0, [SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)) |
+| PULLED_TEXT | ` <n> row(s) that resuming the session had loaded a second time were dropped first.` | Речення звіту застосування, коли DropPulled у HandleCompaction щось прибрав і застосовано хоч одну правку (`pulledDropped` > 0, `applied` непорожній; [SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)) |
 | TOOLREF_TEXT | `[context-editor] ToolSearch loaded: <names>. A rebuilt result cannot carry the loaded schemas: call these tools by name, or search again if a call fails.` | Текст перебудованого без `handle` результату ToolSearch, що був порожнім (ToolRefText, [SP_CTX_02_48](./context_editor.resume.sp.md#SP_CTX_02_48); CF-51); службовий рядок мода, тож з MARK |
 
-Не перелічені окремими рядками (правило повноти таблиці, аудит PL_AUD_CTX фаза 12): порожні значення і сторожі, що не несуть поведінки — EMPTY_QUEUE, EMPTY_REGISTRY, EMPTY_ALIASES, EMPTY_DELIVERIES, EMPTY_JOURNAL (порожній стан файлу: значення за замовчуванням полів 01_04, 01_10, 01_13, 01_22, 01_19), NO_PINS, NO_REFS, NO_LOCK, NOT_HELD, NOTHING, NONE_FROZEN; готові відповіді, зібрані з текстів цієї таблиці — ABANDONED (skip `compaction abandoned; the batch stays queued`, [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); збірки рядків цієї таблиці — TOOLS (рядок метаданих `tools.ts`), COST_RATIOS (рядок CostRatios). Кожна інша константа верхнього рівня `hooks/*.ts` має тут рядок.
+Не перелічені окремими рядками (правило повноти таблиці, аудит PL_AUD_CTX фаза 12): порожні значення і сторожі, що не несуть поведінки — EMPTY_QUEUE, EMPTY_REGISTRY, EMPTY_ALIASES, EMPTY_DELIVERIES, EMPTY_JOURNAL (порожній стан файлу: значення за замовчуванням полів 01_04, 01_10, 01_13, 01_22, 01_19), NO_PINS, NO_REFS, NO_LOCK, NOT_HELD, NOTHING, NONE_FROZEN; готові відповіді, зібрані з текстів цієї таблиці — ABANDONED (skip `compaction abandoned; the batch stays queued`, [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); збірки рядків цієї таблиці — TOOLS (рядок метаданих `tools.ts`), COST_RATIOS (рядок CostRatios). Константи курування (фази 40–46: MAX_SOURCE, MAX_STATE_ITEMS, MAX_STATE_ITEM, ARCHIVE_ROOM, MAX_DEP_FRAGMENTS, DEP_MIN, DEP_MAX, DEP_EXAMPLES, MAX_HOST_ROWS, MAX_HOST_TEXT, MAX_HEAD, MAX_HOST_LIST, MAX_TRACE, CURATION_MAX, SKILL_FRAME, PEER_FRAME, SUMMARIZED_OF, TAG_SUMMARIZED_OF, DESCRIBED_HEAD, STATE_REBUILT, TRACE_OPENER) мають рядки в [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32). Кожна інша константа верхнього рівня `hooks/*.ts` має тут рядок.
 
 ## Changelog
 
 | Date | Change |
 |------|--------|
+| 2026-10-17 | Аудит коду (SPEC-9, SPEC-11, SPEC-13): REPAIR_DELAY_MS — від кінця першого ходу процесу, не від `session.start`; PULLED_TEXT — лише із застосованою правкою; рядки PROBE_ENV, CAP_CACHE_FILE, EDIT_PASSED_OVER, HANDOFF_TOOL_PASSED_OVER, HANDOFF_COMMAND_PASSED_OVER, HANDOFF_PASSED_OVER; покажчик на константи курування [SP_CTX_01_32](./context_editor.curation.sp.md#SP_CTX_01_32) |
 | 2026-10-17 | Аудит dev-flow: CHAIN_RANK — `hostrows` 4 (фаза 45), як у `serialChains` (`hooks/store.ts`) |
 | 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)) |
 | 2026-10-16 | Фаза 41: REPLACEMENT_OPENERS — і голови SUMMARIZED_OF, TAG_SUMMARIZED_OF; SUMMARIZED і TAG_SUMMARIZED лишаються для збережених сесій ([SP_CTX_02_62](./context_editor.curation.edits.sp.md#SP_CTX_02_62)) |

@@ -32,7 +32,7 @@ import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandof
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
 import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, contextList, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
-import { modText, REPAIR_MARKER } from './rows'
+import { errorText, modText, REPAIR_MARKER } from './rows'
 import {
   cleanLedger,
   emptyLedger,
@@ -114,6 +114,7 @@ import {
   publishedDir,
   serialChains,
   storageRefusal,
+  renewOf,
   updateOf,
   type ChainKey,
   type FileIO,
@@ -236,6 +237,12 @@ function files($: EngineInterface): FileIO {
 // the debug log only, and the work still runs.
 function chainOf($: EngineInterface, key: ChainKey): Lock {
   return (work, within) => serial(key, work, { ...(within ? { within } : {}), report: text => $.ui.log(text, { to: 'debug' }) })
+}
+
+// [ERR-01] The trace of a swallowed failure of background work: the step and
+// the error, never content.
+function quietFailure($: EngineInterface, step: string): (err: unknown) => void {
+  return err => $.ui.log(modText(`${step} failed: ${errorText(err)}`), { to: 'debug' })
 }
 
 type Stores = {
@@ -1423,10 +1430,10 @@ export const register: Register = on => {
     const host = observeHostRow(hostMem, row)
     if (host) {
       const at = storageNow($)
-      void chainOf($, 'hostrows')(async () => {
+      void chainOf($, 'hostrows')(async held => {
         const dir = await at
-        if (dir) await recordHostRow(stores($, dir).hostrows, host, MAX_QUEUE_BYTES)
-      }).catch(() => undefined)
+        if (dir) await recordHostRow(renewOf(stores($, dir).hostrows, held), host, MAX_QUEUE_BYTES)
+      }).catch(quietFailure($, 'RecordHostRows'))
     }
     return appendRow(
       {
@@ -1434,10 +1441,10 @@ export const register: Register = on => {
         observe: () => observeAppend(anchorMem, row, Date.now()),
         storage: () => storageNow($),
         record: (at, item) =>
-          void chainOf($, 'deliveries')(async () => {
+          void chainOf($, 'deliveries')(async held => {
             const dir = await at
-            if (dir) await recordDelivery(stores($, dir).deliveries, item, MAX_QUEUE_BYTES)
-          }).catch(() => undefined),
+            if (dir) await recordDelivery(renewOf(stores($, dir).deliveries, held), item, MAX_QUEUE_BYTES)
+          }).catch(quietFailure($, 'RecordDelivery')),
         autoTag: (at, facts, copy) =>
           void chainOf($, 'tags')(async () => {
             const dir = await at
@@ -1563,7 +1570,7 @@ export const register: Register = on => {
             writeBoundary: b => writeBoundaryAt($, dir, b),
             clearLedger: () => void s.ledger.update<'change'>(() => emptyLedger(), { onUnreadable: 'change' }).catch(() => undefined),
             markClean: () => void s.ledger.update(read => cleanLedger(read.value)).catch(() => undefined),
-            pruneDeliveries: gone => void s.deliveries.onChain(() => pruneDeliveries(s.deliveries, gone), q).catch(() => undefined),
+            pruneDeliveries: gone => void pruneDeliveries(updateOf(s.deliveries, q), gone).catch(quietFailure($, 'PruneDeliveries')),
           },
           e.messages,
         ),
@@ -1631,7 +1638,7 @@ export const register: Register = on => {
           journal: entry => onJournal($, io => journalApply(io, entry), dir),
           // [SP_CTX_02_07] [SP_CTX_02_36] on the deliveries' chain
           readDeliveries: () => s.deliveries.onChain(() => s.deliveries.read(), q),
-          pruneDeliveries: done => void s.deliveries.onChain(() => pruneDeliveries(s.deliveries, done), q).catch(() => undefined),
+          pruneDeliveries: done => void pruneDeliveries(updateOf(s.deliveries, q), done).catch(quietFailure($, 'PruneDeliveries')),
           // [SP_CTX_02_40] the host attachments' decisions of this apply
           attachments: attachPort(attachMem, { store: s.hostattach, readFile: path => readFileText($, path) }),
           // [SP_CTX_02_45] [SP_CTX_02_44] the originals a resume put back, and this apply's inputs

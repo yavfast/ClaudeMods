@@ -217,7 +217,7 @@ function repairHost(over: Partial<RepairIO> = {}, mem: RepairMemory = newRepairM
   return { io, log, mem }
 }
 
-test('ScheduleRepair — одна спроба: session.start twice for one session plans one timer of REPAIR_DELAY_MS; none after a refusal', async () => {
+test('ScheduleRepair — одна спроба: called twice for one session plans one timer of REPAIR_DELAY_MS; none after a refusal', async () => {
   const { io, log, mem } = repairHost()
   expect(await scheduleRepair(io, mem)).toBe(true)
   expect(await scheduleRepair(io, mem)).toBe(false)

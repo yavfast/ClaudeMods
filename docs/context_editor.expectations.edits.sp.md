@@ -18,7 +18,7 @@
 
 | Contract | Scenario | Input | Expected outcome |
 |----------|----------|-------|------------------|
-| HandleCompaction | передача в черзі | правки + handoff | skip `handoff pending`, черга без змін |
+| HandleCompaction | передача в черзі | правки + handoff | skip `handoff pending`, черга без змін [тест: «a compaction waits while a handoff is queued (HandleCompaction — передача в черзі)»] |
 | HandleCompaction | збіг за інструкцією | MARKER з `trigger` `manual` / `plugin`; MARKER з `agentId`; інша інструкція з `manual` | застосування / застосування / далі / далі |
 | HandleCompaction | попереднє обчислення | `trigger = precompute`, інструкція MARKER або HANDOFF_MARKER | далі без змін; черга і засів не чіпаються |
 | HandleCompaction | збій гілки засіву | виняток у HandleSeed | skip `seeding failed` одразу, черга не чіпається |
@@ -110,20 +110,20 @@
 | context_list | повний рядок | `index: 12, full: true`, рядок з підсумком згортання 30 000 символів / `full: true` без `index` / `index` без `full` | весь вміст до MAX_FULL_ROW і хвіст `… (+10000 chars; …)`; `listedKey` не змінено / BAD_FULL / BAD_FULL |
 | context_list | нотатки поза сторінкою | сторінка 0..59, нотатки на #70 і #300, одна з ненайденою ціллю | заголовок `Notes elsewhere: n3 #70, n5 #300, n7 (row not found)` |
 | HandleCompaction | розмір перед застосуванням | застосовано ≥ 1 правку; `context.tokens = 574 000` / відсутній | `lastApply = { at: reportId, tokensBefore: 574000 }` / не записано |
-| context_edit | повідомлення людини | collapse 2..9, де #3 — промпт людини, #6 — результат AskUserQuestion; summarize пари AskUserQuestion; collapse без таких рядків | правки поставлено; попередження `covers the person's messages: #3 (prompt), #6 (AskUserQuestion answer)` / `#<рядок результату> (AskUserQuestion answer)` / без попередження |
+| context_edit | повідомлення людини | collapse 2..9, де #3 — промпт людини, #6 — результат AskUserQuestion; summarize пари AskUserQuestion; collapse без таких рядків | відмова PERSON_WORDS ([SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)), правку не поставлено: `collapse #2..#9: covers the person's words: #3 (prompt), #6 (AskUserQuestion answer); they stay verbatim in this session: narrow the range or split it around them` / `summarize <id>: the AskUserQuestion answer is the person's words; it stays verbatim` / правку поставлено; попереджень немає [тест: «PersonWords — повідомлення людини»] |
 | context_edit | не промпти людини | у діапазоні — рядок звіту мода (`context-editor: …`), рядок команди `/compact <MARKER>`, рядок з MARK, промпт розширення в рамці `The context-editor plugin sent a message:`, рядок `<local-command-stdout>Compacted`, `<command-name>`, `<task-notification>`, рядок-підсумок SUMMARY_OPENER | без попередження |
 | DeliverReport | один раз | звіт у черзі, два промпти людини поспіль | звіт додано лише до першого |
 | DeliverReport | порада про блок, що чекає ([SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)) | `waiting = marked`, `lastClosed` — етап «A», один `disposable` у ньому; `optimize` немає | прихований контекст — WaitingAdvice з назвою «A», реченнями про перехід і продовження етапу, ListHint і STAGE_ADVICE, без індексів; пропозиції м'якого нагадування немає; замін з тегів не поставлено, рядків розмови не читано; після входу `waiting = advised`, `listedKey` не змінено |
-| DeliverReport | порада один раз | `waiting = advised` / промпт відхилено (`drop`) при `marked` | поради немає / `waiting` лишається `marked`, порада з наступним промптом |
+| DeliverReport | порада один раз | `waiting = advised` / промпт відхилено (`drop`) при `marked` | поради немає / `waiting` лишається `marked`, порада з наступним промптом [тест: «DeliverReport — порада про блок, що чекає»; «DeliverReport — ADVICE_FAILED / нічого не чекає»] |
 | DeliverReport | `/compact` важливіший | `waiting = marked` і запит `optimize` з `compact`, хід стискання не почався | лише COMPACT_ADVICE; `waiting` лишається `marked` |
 | DeliverReport | OPTIMIZE_LEGACY | `optimize` без `compact` (файл попередньої версії) | поради немає; після входу `optimize = false` |
 | DeliverReport | ADVICE_FAILED | побудова WaitingAdvice кидає виняток | промпт без поради; `waiting` лишається `marked` |
-| DeliverReport | збій поради | побудова поради кидає виняток | промпт іде без поради (зі звітом, якщо він є); після входу `optimize` знято [тест: «DeliverReport — ADVICE_FAILED / без блоку»] |
-| DeliverReport | без блоку | `waiting` немає / реєстр `unreadable` | поради немає; `optimize` не чіпається (ADVICE_NO_BLOCK вилучено 2026-10-14) |
+| DeliverReport | збій поради | побудова поради кидає виняток | промпт іде без поради (зі звітом, якщо він є); після входу `optimize` знято [тест: «DeliverReport — ADVICE_FAILED / нічого не чекає»] |
+| DeliverReport | без блоку | `waiting` немає / реєстр `unreadable` | поради немає; `optimize` не чіпається (ADVICE_NO_BLOCK вилучено 2026-10-14) [тест: «DeliverReport — ADVICE_FAILED / нічого не чекає»] |
 | DeliverReport | INTRO_NOT_RECORDED | промпт з INTRO_TEXT увійшов, запис `introduced = true` падає | наступний промпт знову несе INTRO_TEXT [тест: «SessionIntro — промпт відхилено / реєстр нечитабельний / INTRO_NOT_RECORDED»] |
-| context_edit | обхід | `passed`; правка `drop` | DENIED_PASSED_OVER, черга не читається і не пишеться; при `unknown` — правку прийнято |
+| context_edit | обхід | `passed`; правка `drop` | DENIED_PASSED_OVER, черга не читається і не пишеться; при `unknown` — правку прийнято [live only: the pass-over check sits in the binding (`register.ts`), which no unit test runs; the live scenario «Обхід: виявлення і відмови» of SP_CTX_05_03 is the evidence; the `unknown` case has no test] |
 | Flush | обхід | непорожня черга; `passed` на кінці ходу; окремо — Flush заплановано при `unknown`, на запуску `passed` | не планується; запланований — без команди, `scheduled = false`, черга як є |
-| DeliverReport | обхід | `passed`, блок `marked` | WaitingAdvice немає, `waiting` лишається `marked`; підказки немає |
+| DeliverReport | обхід | `passed`, блок `marked` | WaitingAdvice немає, `waiting` лишається `marked`; підказки немає [not covered: the pass-over check sits in the binding (`register.ts`: no advice when `passed`), which no unit test runs; the live scenario «Обхід: виявлення і відмови» does not look at WaitingAdvice] |
 | Flush | запуск | хід завершено, у черзі 2 правки | після FLUSH_DELAY — одна команда `compact` з аргументом MARKER |
 | Flush | хід стискання без пакета | `optimize` з `compact`, черга порожня, хід не зсунувся | команди немає; рядків розмови не читано; один промпт CompactTurnText; перед відправкою `optimize = false`, `optimizePrompted = true` одним записом |
 | Flush | хід стискання після пакета | `optimize` з `compact`, у черзі 2 правки агента з `resume = true`, `resume_prompt = P` | `compact MARKER` одним пакетом; один промпт: звіт застосування + CompactTurnText; текст P не пересилається; окремого промпту продовження немає; RemoveDelivered(звіт) після входу |
@@ -237,5 +237,7 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-17 | Аудит коду (SPEC-21, TST-6): `context_edit` над повідомленнями людини — відмова PERSON_WORDS ([SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)), а не попередження; назва тесту «DeliverReport — ADVICE_FAILED / нічого не чекає» |
 | 2026-10-16 | Фаза 41: рядок «хто написав заміну» — відкривач `summarize` з джерелом |
 | 2026-10-15 | Рядки §05_01 перенесено дослівно з [context_editor.expectations.sp.md](./context_editor.expectations.sp.md): поділ таблиці за модулями (structural-event) |
+| 2026-10-17 | Аудит коду (TST-5): рядки без тесту за правилом [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) — `[тест: «…»]` на наявні тести (HandleCompaction — передача в черзі, DeliverReport — порада один раз / без блоку); `context_edit — обхід` — `[live only]`, `DeliverReport — обхід` — `[not covered]` |

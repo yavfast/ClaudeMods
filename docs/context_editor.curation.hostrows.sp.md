@@ -135,7 +135,7 @@ Errors:
 | HOST_EXCLUSIVE | `drop` має `host` разом із `tool_use_id` чи `ref` | `edit <n>: host excludes tool_use_id and ref` |
 | HOST_TWICE | той самий `id` двічі в пакеті | `edit <n>: host row <id> is already in this batch` |
 
-Межа: два процеси хоста на одній сесії ведуть кожен свою пам'ять модуля й можуть дати однакові `h<n>` у тому самому файлі, як і з іншими файлами сховища ([SP_CTX_DEC_10](./context_editor.decisions-01.sp.md#SP_CTX_DEC_10)); `drop` тоді бере найновіший запис із цим `id`.
+Межа: два процеси хоста на одній сесії пишуть файл кожен під своїм ланцюжком, як і інші файли сховища ([SP_CTX_DEC_10](./context_editor.decisions-01.sp.md#SP_CTX_DEC_10)). Номер `h<n>` береться з поля `next` файлу під ланцюжком, тож у файлі повторів `id` немає (файл із повтором — нечитабельний); одночасні записи двох процесів дають той самий номер, і виграє останній записувач: запис іншого процесу губиться, а його рядок хоста не потрапляє до списку.
 
 Реалізація (фаза 45). Список будує `contextList` (`hooks/stages.ts`) з `hostHeader` і `hostSection`; рядок заголовка стоїть після телеметрії. `drop` з `host` — окремий варіант Edit `{ op: 'drop', host }` (`isHostDrop`, `isPairEdit` у `edits.ts`); `id` не тієї форми відхиляє checkShape (`host is the id of a host row from context_list (h1, h2, …)`). HOST_UNKNOWN і HOST_TWICE перевіряє PrepareEdits до перевірок цілі: пін, слот стану й індекси рядка хоста не стосуються. Результат виклику додає `drop <id>: <DetachNote>.`. Detach іде в `applyEdits` після решти кроків. Друга правка того самого попередника в пакеті рахується застосованою без нового рядка звіту; правка, чийого попередника немає у вході («no such row now»), теж називає свій запис, тож рядок про рядки, що пішли, його не повторює. Нечитабельний `hostrows.json` при постановці дає HOST_UNKNOWN: записів, які можна назвати, немає. Рядки звіту (`ApplyReport.hostLines`) стоять після рядка про доставки, кожен закінчується крапкою; рядок DetachNote має вигляд `<id>: <DetachNote>.`. Рядок «Host rows that went with rebuilt rows» рахується на остаточних рядках, після InsertDeliveries і DropOwnCalls: рядок, який перебудувала DropOwnCalls, теж забирає рядки хоста за ним. Засів відбирає правки `drop` з `host` до `applyEdits` і додає їх до застосованих.
 
@@ -162,3 +162,4 @@ Transition rules:
 | Date | Change |
 |------|--------|
 | 2026-10-17 | structural-event: розділи 01_31, 02_60, 02_61, 04_09 перенесено дослівно з [context_editor.curation.sp.md](./context_editor.curation.sp.md) (аудит dev-flow, Docs Scaling `hard_split`: 14 640 слів); якорі незмінні |
+| 2026-10-17 | Аудит коду (SPEC-17): 02_61 — межа двох процесів: номер `h<n>` з файлу під ланцюжком, повторів `id` у файлі немає, одночасні записи гублять запис одного процесу |

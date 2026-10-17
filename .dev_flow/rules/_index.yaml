@@ -1,4 +1,4 @@
-# Derived router — regenerated from the rule headings (audit 2026-10-17; headings in the canonical `## {id} — {directive} ({severity})  {#id}` form).
+# Derived router — regenerated from the rule headings (audit 2026-10-17; headings in the canonical `## {id} — {directive} ({severity})  {#id}` form; STRUCT-02 and ERR-01 harvested by audit code 20261017_101904).
 categories:
   - category: concurrency
     file: concurrency.md
@@ -15,7 +15,7 @@ categories:
         summary: Commit side effects only after the last abort check
   - category: structure
     file: structure.md
-    summary: Where shared row predicates and host-matched literals live in hook modules.
+    summary: Where shared row predicates, host-matched literals and state decisions live in hook modules.
     applies_to:
       paths: ["mods/*/hooks/**"]
       phases: [implement, fix, review]
@@ -23,6 +23,19 @@ categories:
       - name: STRUCT-01
         severity: should
         summary: Give each row predicate and shared literal one home
+      - name: STRUCT-02
+        severity: should
+        summary: "Keep decisions out of register.ts: a branch over state goes into a ports module with a test"
+  - category: error-handling
+    file: errors.md
+    summary: How background hook work records the failures it swallows.
+    applies_to:
+      paths: ["mods/*/hooks/**"]
+      phases: [implement, fix, review]
+    rules:
+      - name: ERR-01
+        severity: should
+        summary: Let every swallowed failure of background work leave one debug line with a label and the error, never content
   - category: process
     file: process.md
     summary: How task files and session history in .dev_flow record times.

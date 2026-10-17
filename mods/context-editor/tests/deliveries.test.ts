@@ -17,14 +17,13 @@ import {
   trimDeliveries,
   type Deliveries,
   type DeliveryEvent,
-  type DeliveryIO,
   type QueuedDelivery,
 } from '../hooks/deliveries'
 import { MAX_QUEUE_BYTES } from '../hooks/queue'
-import type { Read } from '../hooks/store'
+import { renewOf, updateOf, type Read } from '../hooks/store'
 
 import { AGENT_TEXT, PERSON_TEXT, TASK_TEXT } from './delivery-fixtures'
-import { result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
+import { memStore, result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 function event(door: string, extra: Partial<DeliveryEvent> = {}, content: DeliveryEvent['message']['content'] = []): DeliveryEvent {
   return { door, uuid: `u-${door}`, origin: { kind: 'tool' }, message: { type: 'user', content }, ...extra }
@@ -40,21 +39,10 @@ function item(uuid: string, anchor: string[], text = PERSON_TEXT, kind: QueuedDe
   return { uuid, anchor, kind, origin: 'unclassified', text, cut: 0, media: 0, at: 1 }
 }
 
+// The deliveries' file behind a real Store: `renew` for RecordDelivery, `update` for PruneDeliveries.
 function fakeIO(start: Read<Deliveries>) {
-  const log: { file: Read<Deliveries>; writes: number; quarantined: number } = { file: start, writes: 0, quarantined: 0 }
-  const io: DeliveryIO = {
-    read: async () => log.file,
-    write: async d => {
-      log.file = okRead(d)
-      log.writes++
-    },
-    quarantine: async () => {
-      log.quarantined++
-      log.file = missingRead({ items: [] })
-      return '/s/deliveries.json.bad-1'
-    },
-  }
-  return { io, log }
+  const { store, log } = memStore<Deliveries>(start, () => ({ items: [] }), parseDeliveries)
+  return { renew: renewOf(store), update: updateOf(store), log }
 }
 
 // ---- [SP_CTX_01_22] DeliveryKind
@@ -113,10 +101,10 @@ test('RecordDelivery — субагент: events of a subagent change neither t
 })
 
 test('RecordDelivery — копія stream-json: the same text behind a copy of the same anchor is no new item', async () => {
-  const { io, log } = fakeIO(okRead({ items: [item('d1', ['a'])] }))
-  await recordDelivery(io, item('d1-copy', ['a']), MAX_QUEUE_BYTES)
+  const { renew, log } = fakeIO(okRead({ items: [item('d1', ['a'])] }))
+  await recordDelivery(renew, item('d1-copy', ['a']), MAX_QUEUE_BYTES)
   expect(log.writes).toBe(0)
-  await recordDelivery(io, item('d2', ['b']), MAX_QUEUE_BYTES)
+  await recordDelivery(renew, item('d2', ['b']), MAX_QUEUE_BYTES)
   expect(log.file.state === 'ok' && log.file.value.items.map(x => x.uuid)).toEqual(['d1', 'd2'])
 })
 
@@ -132,24 +120,24 @@ test('RecordDelivery — межі: a long text is cut, the oldest item goes past
 
   const full = Array.from({ length: MAX_DELIVERIES }, (_, k) => item(`d${k}`, [`a${k}`], `text ${k}`))
   const a = fakeIO(okRead({ items: full }))
-  await recordDelivery(a.io, item('new', ['z'], 'new text'), MAX_QUEUE_BYTES)
+  await recordDelivery(a.renew, item('new', ['z'], 'new text'), MAX_QUEUE_BYTES)
   const items = a.log.file.state === 'ok' ? a.log.file.value.items : []
   expect(items.length).toBe(MAX_DELIVERIES)
   expect(items[0]!.uuid).toBe('d1')
   expect(items.at(-1)!.uuid).toBe('new')
   // the byte cap drops the oldest too
   const b = fakeIO(okRead({ items: [item('old', ['o'], 'o'.repeat(500))] }))
-  await recordDelivery(b.io, item('new', ['n'], 'n'.repeat(500)), 800)
+  await recordDelivery(b.renew, item('new', ['n'], 'n'.repeat(500)), 800)
   expect(b.log.file.state === 'ok' && b.log.file.value.items.map(x => x.uuid)).toEqual(['new'])
 
   const c = fakeIO(unreadableRead('not JSON'))
-  await recordDelivery(c.io, item('d', ['a']), MAX_QUEUE_BYTES)
+  await recordDelivery(c.renew, item('d', ['a']), MAX_QUEUE_BYTES)
   expect(c.log.quarantined).toBe(1)
   expect(c.log.file.state === 'ok' && c.log.file.value.items.length).toBe(1)
   // [PL_AUD_CTX_P7] a file that cannot be moved aside is never overwritten
   const stuck = fakeIO(unreadableRead('not JSON'))
-  stuck.io.quarantine = async () => undefined
-  await recordDelivery(stuck.io, item('d', ['a']), MAX_QUEUE_BYTES)
+  stuck.log.stuck = true
+  await recordDelivery(stuck.renew, item('d', ['a']), MAX_QUEUE_BYTES)
   expect(stuck.log.writes).toBe(0)
   expect(stuck.log.file.state).toBe('unreadable')
   expect(parseDeliveries('{"items":[{"uuid":1}]}').state).toBe('unreadable')
@@ -157,11 +145,11 @@ test('RecordDelivery — межі: a long text is cut, the oldest item goes past
 })
 
 test('PruneDeliveries — only the done items go; items recorded meanwhile stay; an unreadable file is left alone', async () => {
-  const { io, log } = fakeIO(okRead({ items: [item('d1', ['a']), item('d2', ['b']), item('d3', ['c'])] }))
-  await pruneDeliveries(io, new Set(['d1']))
+  const { update, log } = fakeIO(okRead({ items: [item('d1', ['a']), item('d2', ['b']), item('d3', ['c'])] }))
+  await pruneDeliveries(update, new Set(['d1']))
   expect(log.file.state === 'ok' && log.file.value.items.map(x => x.uuid)).toEqual(['d2', 'd3'])
   const bad = fakeIO(unreadableRead('x'))
-  await pruneDeliveries(bad.io, new Set(['d1']))
+  await pruneDeliveries(bad.update, new Set(['d1']))
   expect(bad.log.writes).toBe(0)
 })
 
@@ -406,8 +394,8 @@ test('trimDeliveries — один елемент більший за maxBytes: t
   // even the empty list over the bound stays empty, no loop
   expect(trimDeliveries({ items: [huge] }, 1)).toEqual({ items: [] })
   // RecordDelivery of an item that alone exceeds the bound: the earlier items are lost with it
-  const { io, log } = fakeIO(okRead({ items: [item('d1', ['b'], 'small')] }))
-  await recordDelivery(io, huge, 1000)
+  const { renew, log } = fakeIO(okRead({ items: [item('d1', ['b'], 'small')] }))
+  await recordDelivery(renew, huge, 1000)
   expect(log.writes).toBe(1)
   expect(log.file).toEqual({ state: 'ok', value: { items: [] } })
 })

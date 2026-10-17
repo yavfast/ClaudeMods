@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-15
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §01_13–01_26 специфікації [SP_CTX](./context_editor.sp.md): AliasRegistry, Boundary, HandoffRequest, HandoffSeed, Stage, Journal, Telemetry, Note, QueuedDelivery, HostAttachState, ApplyLedger, Capabilities, CapabilityCache. Читати, коли змінюєте файли стану сесії.
@@ -242,13 +242,13 @@ Invariants:
 
 ### 01_23. HostAttachState  {#SP_CTX_01_23}
 
-Рішення про вкладення хоста ([SP_CTX_02_39](./context_editor.hostattach.sp.md#SP_CTX_02_39)–[02_41](./context_editor.hostattach.sp.md#SP_CTX_02_41); фаза 24). Файл `<storage>/hostattach.json`, ланцюжок `hostattach` (ранг 4); пише лише застосування мода (CommitAttachments) і спостерігач іншої компактизації (ClearAttachments); хук `prompt.attachment` лише читає — через кеш файлів сховища (як реєстри тегів і псевдонімів, [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07)), тож запис застосування одразу бачить перепитування після компактизації. Стани читання — як у черги: `missing` — порожній стан (усе лишається), `unreadable` — не JSON, не об'єкт або поле порушує таблицю; хук тоді лишає кожне вкладення, а наступне застосування переносить файл у `hostattach.json.bad-<ms>` і пише рішення заново; файл, який не вдалося перенести, не перезаписується.
+Рішення про вкладення хоста ([SP_CTX_02_39](./context_editor.hostattach.sp.md#SP_CTX_02_39)–[02_41](./context_editor.hostattach.sp.md#SP_CTX_02_41); фаза 24). Файл `<storage>/hostattach.json`, ланцюжок `hostattach` (ранг 4); пише лише застосування мода (CommitAttachments), перевірка прогнозу на першому кінці ходу після нього (VerifyPredictions → RollbackPredictions: `answers`, `predicted`, `uncomparable`, `left`) і спостерігач іншої компактизації (ClearAttachments); хук `prompt.attachment` лише читає — через кеш файлів сховища (як реєстри тегів і псевдонімів, [SP_CTX_01_07](./context_editor.structures.sp.md#SP_CTX_01_07)), тож запис застосування одразу бачить перепитування після компактизації. Стани читання — як у черги: `missing` — порожній стан (усе лишається), `unreadable` — не JSON, не об'єкт або поле порушує таблицю; хук тоді лишає кожне вкладення, а наступне застосування переносить файл у `hostattach.json.bad-<ms>` і пише рішення заново; файл, який не вдалося перенести, не перезаписується.
 
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
 | answers | map<TextHash, AttachDecision> | yes | `{}` | ≤ MAX_ATTACH_ANSWERS записів | Відповідь у силі для тексту вкладення за його TextHash |
 | matched | list<SectionKey> | no | `[]` | ≤ MAX_ATTACH_KEYS, останні | Розділи, чий вміст збігся з файлом, коли їх уперше побачили (порівнюваність, [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) |
-| predicted | map<path, SectionKey> | no | `{}` | ≤ MAX_ATTACH_PATHS | Прогноз останнього застосування: найновіша копія шляху відрізнялась від файлу, тож хост мав докласти нову; перевіряється наступним застосуванням |
+| predicted | map<path, SectionKey> | no | `{}` | ≤ MAX_ATTACH_PATHS | Прогноз останнього застосування: найновіша копія шляху відрізнялась від файлу, тож хост мав докласти нову; перевіряється на першому кінці ходу після застосування (VerifyPredictions, [SP_CTX_02_40](./context_editor.hostattach.sp.md#SP_CTX_02_40)) і наступним застосуванням |
 | uncomparable | list<path> | no | `[]` | ≤ MAX_ATTACH_PATHS | Шляхи, для яких прогноз не справдився: диск для них більше не порівнюється |
 | left | `{ copies: int, chars: int }` | no | `{0, 0}` | ≥ 0 | Що відповіді в силі лишають поза кожним запитом: прибрані копії і замінені розділи, символи; для звіту і телеметрії |
 
@@ -264,7 +264,7 @@ AttachDecision:
 TextHash(s) = довжина і два 32-бітні хеші (FNV-1a і djb2-xor) у base 36, через крапку; SectionKey(path, body) = TextHash(path + «\0» + trim(body)).
 
 Invariants:
-- Рішення змінюються лише в застосуванні мода, що змінило розмову, і в ClearAttachments; між ними хук відповідає за файлом, тож відновлений процес (`--resume`, пам'ять порожня) надсилає ті самі байти.
+- Рішення змінюються лише в застосуванні мода, що змінило розмову, у VerifyPredictions на першому кінці ходу після нього (лише знімає прогноз, якого хост не справдив) і в ClearAttachments; між ними хук відповідає за файлом, тож відновлений процес (`--resume`, пам'ять порожня) надсилає ті самі байти.
 - Копія з преамбулою (PREAMBLE_HEAD) ніколи не пропускається цілком; вкладення, яке розбір не розуміє, і тип поза ATTACH_TYPES не мають рішення.
 - Файл належить сесії; передача його не переносить (нова сесія має свої вкладення).
 
@@ -305,6 +305,8 @@ Invariants:
 | noticed | list<Capability> | yes | `[]` | — | Можливості, які PassedText уже назвав у цьому процесі |
 | ownSeen | int | yes | 0 | ≥ 0 | Скільки власних міток мода (MARKER, HANDOFF_MARKER, REPAIR_MARKER) побачив обробник `session.compact` цього процесу; NoteCommandUnseen порівнює до і після команди |
 | passSeen | int | yes | 0 | ≥ 0 | Скільки інших компактизацій основної розмови (не precompute) побачив обробник; маршрут `brief` пропускає ObservePassedCompact, коли лічильник зріс |
+| probeDone | Promise<void> | no | — | є лише з плануванням зонда | Справджується, коли зонд цього процесу закінчився (чи не запустився); на нього чекає дія, поки `compact` невідомий (`compactPassed`, ≤ PROBE_WAIT_MS, [SP_CTX_02_56](./context_editor.bypass.sp.md#SP_CTX_02_56)) |
+| settle | функція | no | — | разом із `probeDone` | Справджує `probeDone`; кличе кінець зонда або невдале планування |
 
 Capability: `compact` \| `attachments`.
 
@@ -327,3 +329,4 @@ CapEntry: `compact` і `attachments` — `reached` \| `passed` (кожне не�
 | Date | Change |
 |------|--------|
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.structures.sp.md](./context_editor.structures.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |
+| 2026-10-17 | Аудит коду (SPEC-7, SPEC-13): 01_23 — рішення пише й VerifyPredictions на першому кінці ходу після застосування (знімає прогноз, якого хост не справдив), `predicted` перевіряється й там; 01_25 — поля `probeDone` і `settle` (очікування зонда) |

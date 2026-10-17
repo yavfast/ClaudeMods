@@ -290,7 +290,7 @@ Errors: відмови не виходять назовні — кожна пр�
 | DOCUMENT_NOT_DELIVERED | після `/clear` Deliver документа кинув виняток (сховище чи черга нової сесії недоступні) або хост відхилив його промпт; або хід почався в новій сесії до кінця засіву, коли є документ агента (TURN_IN_NEW) | копія тексту в `<old storage>/<id>/document.txt` (KeepDocument); спливне повідомлення (для TURN_IN_NEW — повідомлення про збій) називає цей файл; результат — `document` (для TURN_IN_NEW — `failed`, стара черга — FailAfterClear) |
 | HANDED_OFF_FAILED | після `/clear` запис HandedOff у стару чергу не вдався (способом `document`) | документ усе одно доставлено; спливне повідомлення називає крок і радить `/handoff cancel` у старій сесії, де запит лишився `running`; результат — `document` |
 
-Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): запит, поставлений до вердикту, при `passed` на запуску не виконується — стан `done` зі звітом HANDOFF_PASSED_OVER, команди немає.
+Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): запит, поставлений до вердикту, при `passed` на запуску не виконується — запит знято з черги, у черзі — звіт HANDOFF_PASSED_OVER, команди немає.
 
 ### 02_22. BuildSeed  {#SP_CTX_02_22}
 
@@ -480,3 +480,4 @@ Errors:
 | 2026-10-12 | Фаза 31 реалізовано: HANDOFF_PROMPT — `modText(…)` з рамкою автора і кінцевим реченням (CF-43), заборона викликів лишається |
 | 2026-10-12 | Дизайн фази 32 (спайк context_editor_resume, CF-46, CF-51): 02_22 — BuildSeed після `--resume` бере DropPulled з журналом входу старої сесії (порт HandoffIO `readLedger`) і ToolRefText для результатів ToolSearch; `repeated call id` лишається лише для нерозпізнаних повторів |
 | 2026-10-12 | Код фази 32: 02_22 — у BuildSeed рядки без `handle`, тож DropPulled діє залишковим правилом; CarryNote і CheckPairs (правила пар CheckSeed) спільні з ремонтом |
+| 2026-10-17 | Аудит коду (SPEC-14): 02_21 — запит при `compact = passed` знято з черги зі звітом HANDOFF_PASSED_OVER, а не стан `done` |

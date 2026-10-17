@@ -27,9 +27,9 @@ import { applyEdits, checkShape, formatReport, ownerKey, prepare, type QueuedEdi
 import { handleCompaction } from '../hooks/compaction'
 import { EMPTY_QUEUE, queueEdits } from '../hooks/queue'
 import { MARKER, PEER_FRAME, SKILL_FRAME } from '../hooks/rows'
-import type { Read } from '../hooks/store'
+import { renewOf, type Read } from '../hooks/store'
 import { harness } from './compaction-fixtures'
-import { okRead } from './row-fixtures'
+import { memStore, okRead } from './row-fixtures'
 
 const SKILL = `${SKILL_FRAME}/home/u/.claude/skills/dev-flow\n\n# Concept-Driven Development`
 const PEER = `${PEER_FRAME} from="a1">done</agent-message>`
@@ -154,12 +154,16 @@ test('HostRows file: ids from next, the oldest go past MAX_HOST_ROWS or the byte
 
 test('RecordHostRows — запис: an unreadable file goes aside and a new one starts; one that cannot be moved aside is never overwritten', async () => {
   const draft = { kind: 'skill' as const, after: 'u', afterKind: 'prompt' as const, afterHead: 'the prompt "go"', text: SKILL, chars: SKILL.length }
-  const wrote: HostRows[] = []
   const bad: Read<HostRows> = { state: 'unreadable', reason: 'not JSON' }
-  await recordHostRow({ read: async () => bad, write: async h => void wrote.push(h), quarantine: async () => '/s/hostrows.json.bad-1' }, draft, 1 << 20)
-  expect(wrote).toEqual([{ rows: [{ id: 'h1', ...draft }], next: 2 }])
-  await recordHostRow({ read: async () => bad, write: async h => void wrote.push(h), quarantine: async () => undefined }, draft, 1 << 20)
-  expect(wrote.length).toBe(1)
+  const moved = memStore<HostRows>(bad, emptyHostRows, parseHostRows)
+  await recordHostRow(renewOf(moved.store), draft, 1 << 20)
+  expect(moved.log.quarantined).toBe(1)
+  expect(moved.log.file).toEqual({ state: 'ok', value: { rows: [{ id: 'h1', ...draft }], next: 2 } })
+  const stuck = memStore<HostRows>(bad, emptyHostRows, parseHostRows)
+  stuck.log.stuck = true
+  await recordHostRow(renewOf(stuck.store), draft, 1 << 20)
+  expect(stuck.log.writes).toBe(0)
+  expect(stuck.log.file.state).toBe('unreadable')
 })
 
 test('KeepHostRows: a record stays only while its row before came back with its handle, then by its position among the returned rows; the next apply rebases it', () => {

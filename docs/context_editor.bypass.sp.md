@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-14
-> **Updated:** 2026-10-16
+> **Updated:** 2026-10-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_53–02_57 специфікації [SP_CTX](./context_editor.sp.md): можливості хоста, від яких залежить мод, їх перевірка процесом-зондом раз на версію хоста і живими ознаками, і що мод вимикає, коли хост пропускає його хуки ([C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38); спайк [context_editor_probe](./context_editor_probe.spike.md)). Читати перед зміною `hooks/capabilities.ts`, хуків `prompt.attachment`, `session.start`, `turn.complete`, `command.run`, `session.compact` чи перевірок перед компактизацією мода.
@@ -75,7 +75,7 @@ Purpose: при `Verdict(compact) = passed` мод не запускає жод�
 | `context_edit` ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) | відмова до читання черги; нічого не пишеться | DENIED_PASSED_OVER: `this host passes over the mod's compaction hook, so queued edits would become the host's real summary; nothing was queued. Keep working; the person can run the mod as a managed plugin, or run /compact for the host's summary with the mod's brief.` |
 | `context_handoff` ([SP_CTX_02_19](./context_editor.handoff.sp.md#SP_CTX_02_19)) | відмова; запиту немає | DENIED_PASSED_OVER: `this host passes over the mod's compaction hook, so the handoff cannot seed a new session; nothing was queued.` |
 | `/handoff` ([SP_CTX_02_20](./context_editor.handoff.sp.md#SP_CTX_02_20)) | відмова; `cancel` працює як завжди | `handoff is off: this host passes over the mod's compaction hook (see the ClaudeMods README, section "Managed plugin")` |
-| RunHandoff ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)) | запит, поставлений до вердикту, не запускається: стан `done` зі звітом HANDOFF_PASSED_OVER | `context-editor: handoff not run: this host passes over the mod's compaction hook.` |
+| RunHandoff ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)) | запит, поставлений до вердикту, не запускається: його знято з черги, у черзі — звіт HANDOFF_PASSED_OVER | `context-editor: handoff not run: this host passes over the mod's compaction hook.` |
 | Flush ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)) | не планується; запланований раніше — команди немає (FLUSH_PASSED_OVER), правки лишаються; запит ходу стискання, записаний до вердикту, знімається (його хід зустрів би лише відмови) | рядка немає: людина вже бачила PassedText |
 | RunRepair ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)) | команди немає | — |
 | `/compact` людини ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) | маршрут `brief`: підсумок хоста з CompactBrief ([SP_CTX_02_55](#SP_CTX_02_55)) | — |
@@ -169,7 +169,7 @@ Purpose: раз на версію хоста перевірити можливо
         tmp = output of $.process.run(['mktemp','-d']) trimmed
         out = $.process.run(ProbeArgs(exe), { cwd: tmp, env: PROBE_ENV, stdin: ProbeInput(), timeoutMs: PROBE_TIMEOUT_MS })
         r = ParseProbe(out.stdout, read tmp/PROBE_FILE)
-        IF r.version ≠ version: r = none                                       # PROBE_OTHER_HOST: зонд запустив інший бінарник
+        IF r.version and version both present AND r.version ≠ version: r = none   # PROBE_OTHER_HOST: зонд запустив інший бінарник; без однієї з версій результат лишається
         c.probe = r ?? {}; c.probeState = done; Merge(c)
         finally: $.process.run(['rm','-rf', tmp, ProjectDir(tmp)])             # ProjectDir — тека проєкту хоста для tmp: <CLAUDE_CONFIG_DIR or ~/.claude>/projects/<tmp з кожним не [A-Za-z0-9] → '-'>
 
@@ -179,7 +179,7 @@ Purpose: раз на версію хоста перевірити можливо
 
     ParseProbe(stdout, file) =
         result = text of the last stream-json line with type = result
-        counts = file parsed (ProbeCounts, SP_CTX_02_57) or none
+        counts = file parsed (ProbeCounts, SP_CTX_02_57), else the JSON after PROBE_PREFIX in result parsed, else none   # skip обробника несе ті самі лічильники
         compact = result contains PROBE_PREFIX ? reached : (result present ? passed : none)   # "Not compacted · <PROBE_PREFIX>…" — обробник мода відповів skip
         attachments = counts ? (counts.attachments > 0 ? reached : passed) : none
         version = counts.version
@@ -213,7 +213,7 @@ Purpose: мод у процесі-зонді (`$.env.get('CONTEXT_EDITOR_PROBE')
         command.run compact, handoff: next(e) unchanged   # нічого не ставить у чергу: сховища немає; /handoff іншого плагіна з тим самим іменем іде далі
         tools context_*: not registered (the probe makes no model request, so no tool call comes)
 
-Errors: запис PROBE_FILE не вдався — ParseProbe бере лише `result` (компактизація є, вкладень немає); інші хуки — як без ProbeMode.
+Errors: запис PROBE_FILE не вдався — ParseProbe бере лічильники з відповіді `skip` у `result` (PROBE_PREFIX + JSON), а без них — лише вердикт `compact`; інші хуки — як без ProbeMode.
 
 ## Changelog
 
@@ -226,3 +226,4 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лише
 | 2026-10-16 | 02_57: у ProbeMode `/compact` і `/handoff` людини йдуть далі без змін: наживо керований мод у ProbeMode відповів на `/handoff` копії мода і записав чергу в сховище (живий сценарій обходу з копією поруч із керованим модом); так само `session.compact` з іншими інструкціями і `tool.call` — без сховища: наживо спостерігач чужої компактизації записав межу, а хук виклику створив теку сесії |
 | 2026-10-16 | 02_55: OBSERVE_LATER — наживо (хост 2.1.299, копія мода поруч із керованим) читання одразу після `next` у хуку `/compact` ще не мало підсумку (18 рядків до і після): межі не було, черга лишилась, `context_list` показував рядки до підсумку; спостерігач повторюється на початку наступного ходу |
 | 2026-10-16 | 02_55 за рев'ю: OBSERVE_LATER спершу на промпті людини (до звіту, щоб вступ після компактизації не запізнився), інакше на початку ходу; новий `/compact` з брифом забуває попереднє очікування; «хост зробив підсумок» — `next` розв'язався (тип результату `command.run` не має skip/error) |
+| 2026-10-17 | Аудит коду (SPEC-14): 02_54 — запит передачі при `passed` знято з черги зі звітом HANDOFF_PASSED_OVER (стану `done` немає); 02_56 — ParseProbe бере лічильники й з відповіді `skip`, PROBE_OTHER_HOST — лише коли обидві версії відомі; 02_57 — запис PROBE_FILE не вдався |

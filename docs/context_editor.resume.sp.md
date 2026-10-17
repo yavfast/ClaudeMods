@@ -67,7 +67,7 @@ Input: `rows: list<Row>`, `ledger: ApplyLedger` (стан `missing` — поро
         IF applied:                                                                         # (4) залишкове правило: журнал обрізано, втрачено чи сесія старша за фазу 32
             FOR each group G of rows ∉ drop, same role, with a shared id in ids:            # повтори одного виклику чи результату
                 IF exactly one row m of G has ReplacementText text (SP_CTX_02_04): drop += rows of G − m whose ids all are in ids(m)   # правка мода — копія; рядок з ідентифікатором, якого m не має, лишається (рев'ю фази 32: оригінал [a,b] поруч з копіями a і b)
-                ELSE IF every row of G has the same role, text and ids: drop += G − last row of G
+                ELSE IF every row of G has the same role, text, ids and texts of results: drop += G − last row of G
                 ELSE: nothing                                                               # неоднозначно — лишити, хост і далі лагодить пари
         PairsWhole: WHILE some id had a call before a result in rows but not among rows without drop: drop −= rows that hold that id   # прибирання ніколи не лишає виклик без результату чи результат без виклику (рев'ю фази 32)
         RETURN { kept = rows without drop, dropped = sorted drop, residual = count added by (4) }
@@ -167,7 +167,7 @@ Input: подія компактизації з MarkerKind(`instructions`) = `re
             IF r.role = user AND r has no toolResults: rows += r                 # промпти, рядки команд, вставлені доставки — з handle: копії безпечні, вкладення їдуть з ними
             ELSE IF r.role = assistant: rows += { role, text, toolUses } without handle   # thinking зникає
             ELSE: rows += r without handle, each result text = ToolRefText(t, toolRefs) (02_48), + CarryNote(found, paths) when it had media   # SP_CTX_02_22
-        rows = drop rows without text, calls and results; MergeCallRows(rows)      # SP_CTX_02_04
+        rows = drop rows without handle, text, calls and results; MergeCallRows(rows)      # SP_CTX_02_04; рядок з handle (user без результатів: може нести медіа чи вкладення) лишається й без тексту
         deliveries = read QueuedDeliveries (unreadable → none)
         (rows, _, done, _) = InsertDeliveries(kept, rows, deliveries, renamed = ∅, allRebuilt = rows rebuilt above)   # SP_CTX_02_36: доставка за рядком, перебудованим без handle, інакше губиться (пункт 44)
         problem = CheckPairs(rows)                                                # правила CheckSeed про пари й унікальні ідентифікатори (SP_CTX_02_23), без «немає handle» і «перший рядок — людини»
@@ -225,3 +225,4 @@ Errors: немає. Поза вікном API (`toolRefs` не знає викл
 | 2026-10-12 | Код фази 32 (`hooks/repair.ts`): перший крок живого сценарію — `handle` рядка входу застосування = uuid рядка JSONL до межі = `handle` вставленого оригіналу у відновленому процесі (сесія 26ed3e59, `.dev_flow/cache/live-test/phase32-precheck/`); преамбула — `$.session.messages()` не несе `handle`; 02_46 — NeedsRepair перевіряє Repeats(rows) замість DropPulled (відхилення: без `handle` DropPulled нічого не розпізнає); 02_44 — запис входу ≤ MAX_LEDGER_HANDLES (`e.messages` без межі ROW_WINDOW); 02_45 — «Де є `handle`»: у BuildSeed діє лише залишкове правило |
 | 2026-10-12 | Рев'ю і живий прогін фази 32 (`.dev_flow/cache/live-test/phase32-results.md`): 02_45 — правило (3) за кількістю (копія — двійник одного оригіналу), залишкове правило прибирає рядок лише коли заміна має всі його ідентифікатори, PairsWhole (прибирання не розриває пар); 02_46 — вердикт `ApplyLedger.clean` після «nothing to repair» глушить NeedsRepair до наступного застосування; HandleCompaction не читає журнал, коли `compactedHere` = сесія; 02_47 — записи після фіксації лише без покинутої диспетчеризації (CONC-02); CollectMedia — медіа і `tool_reference` результату один раз за ідентифікатором |
 | 2026-10-17 | Статус draft → active (аудит dev-flow): контракти 02_44–02_48 реалізовано у фазі 32 (`hooks/repair.ts`) |
+| 2026-10-17 | Аудит коду (SPEC-11): 02_45 — залишкове правило порівнює й тексти результатів; 02_47 — HandleRepair лишає рядок з `handle` і без тексту |

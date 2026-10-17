@@ -17,6 +17,7 @@ import {
   NOT_HELD,
   prepareStorage,
   publishedDir,
+  renewOf,
   serialChains,
   singleFlight,
   storagePlan,
@@ -25,6 +26,7 @@ import {
   updateOf,
   type ChainKey,
   type FileIO,
+  type Held,
   type Lock,
   type PrepareIO,
   type Read,
@@ -32,6 +34,7 @@ import {
 import { contextTag, type TagIO } from '../hooks/tags'
 import { contextNote } from '../hooks/notes'
 import { afterPrepare } from '../hooks/edits'
+import { memStore, okRead, unreadableRead } from './row-fixtures'
 
 // ---- [SP_CTX_01_07] [SP_CTX_02_15] the storage of the current session
 
@@ -300,13 +303,98 @@ test('serialChains — порядок вкладення: queue → tags → ali
   // the journal inside deliveries: one rank, never nested
   await serial('deliveries', d => serial('journal', async () => undefined, { within: d }), { report })
   expect(problems[1]).toContain('"journal" (rank 4) entered inside "deliveries" (rank 4)')
-  // a chain inside itself: reported; not awaited here, so it runs once its holder is done
-  let inner: Promise<string> | undefined
-  await serial('aliases', async a => {
-    inner = serial('aliases', async () => 'later', { within: a })
-  }, { report })
-  expect(await inner).toBe('later')
-  expect(problems[2]).toContain('"aliases" (rank 3) entered inside "aliases" (rank 3)')
+  // a chain inside itself with its holder's token: a re-entry, no order problem
+  expect(await serial('aliases', a => serial('aliases', async () => 'inside', { within: a }), { report })).toBe('inside')
+  expect(problems.length).toBe(2)
+})
+
+test('serialChains — повторний вхід: a work entering the chain it holds runs on its turn, nested re-entries too; a later work waits; a token whose work settled holds nothing', async () => {
+  const serial = serialChains()
+  const order: string[] = []
+  let token: Held | undefined
+  let release!: () => void
+  const gate = new Promise<void>(r => void (release = r))
+  const first = serial('hostrows', async held => {
+    token = held
+    await gate
+    // a re-entry is a holder of its own: its nested re-entry runs at once too
+    await serial('hostrows', h => serial('hostrows', async () => void order.push('re-entry'), { within: h }), { within: held })
+    order.push('first')
+  })
+  const later = serial('hostrows', async () => void order.push('later'))
+  release()
+  await Promise.all([first, later])
+  expect(order).toEqual(['re-entry', 'first', 'later'])
+  // the holder settled: its token queues behind the chain's tail and the order problem is reported
+  const problems: string[] = []
+  expect(await serial('hostrows', async () => 'queued', { within: token!, report: p => void problems.push(p) })).toBe('queued')
+  expect(problems[0]).toContain('"hostrows" (rank 4) entered inside "hostrows" (rank 4)')
+})
+
+test('serialChains — повторний вхід без обходу: re-entries of one token run one after another; one not awaited ends before the next work; a nested token outliving the holder of the outer chain queues', async () => {
+  const serial = serialChains()
+  const order: string[] = []
+  // a few turns of the microtask queue: long enough for any work that could start, to start
+  const tick = async () => {
+    for (let k = 0; k < 20; k++) await Promise.resolve()
+  }
+  // two re-entries at once with one token: the second starts after the first ended
+  await serial('queue', held =>
+    Promise.all([
+      serial('queue', async () => (order.push('a+'), await tick(), order.push('a-')), { within: held }),
+      serial('queue', async () => void order.push('b'), { within: held }),
+    ]),
+  )
+  expect(order).toEqual(['a+', 'a-', 'b'])
+  // a re-entry the holder does not await still ends before the next work of the chain
+  order.length = 0
+  const holder = serial('queue', async held => {
+    void serial('queue', async () => (await tick(), order.push('stray')), { within: held })
+  })
+  const next = serial('queue', async () => void order.push('next'))
+  await Promise.all([holder, next])
+  expect(order).toEqual(['stray', 'next'])
+  // the deliveries' token of a queue work that settled: entering the queue with it waits for the running queue work
+  order.length = 0
+  let nested: Held | undefined
+  let free!: () => void
+  const nestedDone = new Promise<void>(r => void (free = r))
+  await serial('queue', q => {
+    void serial('deliveries', async d => ((nested = d), await nestedDone), { within: q })
+    return Promise.resolve()
+  })
+  let open!: () => void
+  const running = serial('queue', async () => (order.push('queue+'), await new Promise<void>(r => void (open = r)), order.push('queue-')))
+  await tick()
+  const bypass = serial('queue', async () => void order.push('entered'), { within: nested!, report: () => undefined })
+  await tick()
+  open()
+  free()
+  await Promise.all([running, bypass])
+  expect(order).toEqual(['queue+', 'queue-', 'entered'])
+})
+
+test('Store.update — повторний вхід: an update with the token of the chain it runs on writes at once instead of waiting forever', async () => {
+  const serial = serialChains()
+  const lock: Lock = (work, within) => serial('hostrows', work, within ? { within } : {})
+  const { store, log } = memStore<{ n: number }>(okRead({ n: 1 }), () => ({ n: 0 }), text => okRead(JSON.parse(text)), lock)
+  const wrote = await lock(held => updateOf(store, held)(v => ({ n: v.n + 1 })))
+  expect(wrote).toBe(true)
+  expect(log.file).toEqual({ state: 'ok', value: { n: 2 } })
+})
+
+test('renewOf — Renew: an unreadable file goes aside and the change sees the default; one that cannot be moved aside is never written; the value as read writes nothing', async () => {
+  const moved = memStore<{ n: number }>(unreadableRead('not JSON'), () => ({ n: 0 }), text => okRead(JSON.parse(text)))
+  expect(await renewOf(moved.store)(v => ({ n: v.n + 5 }))).toBe(true)
+  expect(moved.log.quarantined).toBe(1)
+  expect(moved.log.file).toEqual({ state: 'ok', value: { n: 5 } })
+  const stuck = memStore<{ n: number }>(unreadableRead('not JSON'), () => ({ n: 0 }), text => okRead(JSON.parse(text)))
+  stuck.log.stuck = true
+  expect(await renewOf(stuck.store)(v => ({ n: v.n + 5 }))).toBe(false)
+  expect(stuck.log.writes).toBe(0)
+  const same = memStore<{ n: number }>(okRead({ n: 3 }), () => ({ n: 0 }), text => okRead(JSON.parse(text)))
+  expect(await renewOf(same.store)(v => v)).toBe(false)
+  expect(same.log.writes).toBe(0)
 })
 
 test('serialChains — збій звіту: a report that throws never breaks the work; without a report the problem is dropped', async () => {

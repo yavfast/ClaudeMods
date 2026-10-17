@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import type { Read } from '../hooks/store'
+import { jsonFile, type FileIO, type Lock, type Read, type Store } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 
 // [PL_AUD_CTX_P6] Shared builders of SessionMessage rows and port reads for
@@ -78,4 +78,27 @@ export function emptyRowBetweenCalls(): { rows: SessionMessage[]; api: unknown[]
     { role: 'assistant', content: [{ type: 'text', text: 'done' }] },
   ]
   return { rows, api, callA: 1, callB: 4 }
+}
+
+// One storage file in memory behind a real Store: `log.file` is the file as
+// read, `writes` and `quarantined` count; `stuck` makes the move aside fail.
+export function memStore<T>(start: Read<T>, empty: () => T, parse: (text: string) => Read<T>, lock?: Lock) {
+  const log = { file: start, writes: 0, quarantined: 0, stuck: false }
+  const fs: FileIO = {
+    exists: async () => log.file.state !== 'missing',
+    read: async () => (log.file.state === 'ok' ? JSON.stringify(log.file.value) : 'not JSON'),
+    write: async (_path, text) => {
+      log.file = parse(text)
+      log.writes++
+    },
+    move: async () => {
+      if (log.stuck) return false
+      log.quarantined++
+      log.file = missingRead(empty())
+      return true
+    },
+    now: () => 1,
+  }
+  const store: Store<T> = jsonFile(fs, '/s/file.json', empty, parse, lock ? { lock } : {})
+  return { store, log }
 }

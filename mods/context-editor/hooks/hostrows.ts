@@ -11,7 +11,7 @@
 // register.ts binds it to `$` on the `hostrows` chain.
 import type { SessionMessage } from 'claude-code'
 import { hostKind, markerKind, REPAIR_MARKER, type HostKind } from './rows'
-import { isCount, jsonObject, trimOldest, type Read } from './store'
+import { isCount, jsonObject, trimOldest, type Read, type Renew } from './store'
 
 // [SP_CTX_01_32]
 export const MAX_HOST_ROWS = 200
@@ -189,25 +189,14 @@ export function withHostRow(h: HostRows, draft: HostDraft, maxBytes: number): Ho
   return { rows, next: h.next + 1 }
 }
 
-// What RecordHostRows needs of the host rows' Store; register.ts runs it on
-// the `hostrows` chain, entered synchronously at the event (CONC-01).
-export type HostRowsIO = {
-  read: () => Promise<Read<HostRows>>
-  write: (h: HostRows) => Promise<void>
-  // moves an unreadable file aside; the new path, or undefined when it could not
-  quarantine: () => Promise<string | undefined>
-}
 
-// [SP_CTX_02_60] Writes one record; an unreadable file is moved aside and a
-// new one starts; one that cannot be moved aside is never overwritten. A
-// failure loses this record only: the host row stays out of the list.
-export async function recordHostRow(io: HostRowsIO, draft: HostDraft, maxBytes: number): Promise<void> {
-  let read = await io.read()
-  if (read.state === 'unreadable') {
-    if ((await io.quarantine()) === undefined) return
-    read = { state: 'missing', value: emptyHostRows() }
-  }
-  await io.write(withHostRow(read.value, draft, maxBytes))
+// [SP_CTX_02_60] Writes one record through the Renew port of the host rows'
+// Store ([SP_CTX_01_07]): an unreadable file is moved aside and a new one
+// starts; one that cannot be moved aside is never overwritten. register.ts
+// enters the `hostrows` chain synchronously at the event (CONC-01) and passes
+// its token, so the port runs on that turn. A failure loses this record only.
+export async function recordHostRow(renew: Renew<HostRows>, draft: HostDraft, maxBytes: number): Promise<void> {
+  await renew(h => withHostRow(h, draft, maxBytes))
 }
 
 // [SP_CTX_01_31] After an apply the host writes the rows a handler returned
@@ -279,8 +268,7 @@ export function hostSection(h: HostRows): string {
   return ['Host rows (added by the host, not the person\'s words):', ...lines].join('\n')
 }
 
-// [SP_CTX_02_61] The record a `drop` names: the newest with that id (two host
-// processes on one session may give the same id, [SP_CTX_DEC_10]).
+// [SP_CTX_02_61] The record a `drop` names; ids are unique in the file (`next`).
 export function hostRecord(rows: readonly HostRowRecord[], id: string): HostRowRecord | undefined {
   for (let k = rows.length - 1; k >= 0; k--) if (rows[k]!.id === id) return rows[k]
   return undefined
