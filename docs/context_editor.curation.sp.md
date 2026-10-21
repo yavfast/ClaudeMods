@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-17
+> **Updated:** 2026-10-21
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Children:** [edits](./context_editor.curation.edits.sp.md) — джерело й поля правок, слова людини, `describe`, відкривачі, перевірка залежностей, слід, застаріле читання, готові заміни, піни, правила й тексти навички (active); [slot](./context_editor.curation.slot.sp.md) — пункти слота стану й операція `state` (active); [hostrows](./context_editor.curation.hostrows.sp.md) — рядки хоста (active); [verification](./context_editor.curation.verification.sp.md) — критерії перевірки (active)
 > **Concept:** [C_CTX_06](./context_editor.curation.concept.md#C_CTX_06)
@@ -34,7 +34,7 @@
 | MAX_SOURCE | 120 | Найбільша довжина Source, символи |
 | MAX_STATE_ITEMS | 40 | Найбільше пунктів слота стану і змін в одній правці `state` |
 | MAX_STATE_ITEM | 500 | Найбільша довжина тексту пункту, символи |
-| ARCHIVE_ROOM | 600 | Запас SLOT_TOO_LONG при постановці на рядок архіву (≈ довжина cwd + 110) і номери нових пунктів, символи |
+| ARCHIVE_ROOM | 600 | Запас SLOT_TOO_LONG при постановці на рядок архіву (≈ довжина кореня проєкту + 110) і номери нових пунктів, символи |
 | MAX_DEP_FRAGMENTS | 100 | Найбільше фрагментів оригіналу, які шукає DependencyCheck |
 | DEP_MIN, DEP_MAX | 6, 120 | Межі довжини фрагмента, символи |
 | DEP_EXAMPLES | 3 | Скільки фрагментів називає застереження |
@@ -199,6 +199,7 @@
 
 | Date | Change |
 |------|--------|
+| 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): ARCHIVE_ROOM — запас від довжини кореня проєкту сесії, не робочого каталогу |
 | 2026-10-17 | structural-event (аудит dev-flow, Docs Scaling `hard_split`: 14 640 слів): поділ на дочірні файли за модулями, розділи перенесено дослівно, якорі незмінні — [edits](./context_editor.curation.edits.sp.md) (01_27, 01_28, 01_30, 02_58, 02_59, 02_62, 02_63, 02_64, 02_65, 02_66, 02_68, 02_69), [slot](./context_editor.curation.slot.sp.md) (01_29, 02_67, 04_08), [hostrows](./context_editor.curation.hostrows.sp.md) (01_31, 02_60, 02_61, 04_09), [verification](./context_editor.curation.verification.sp.md) (05_05, 05_06, 05_07, 05_08); тут лишились 01_32, 03_03, 03_04, 06_02, DEC_39, DEC_40, DEC_41, DEC_42, DEC_43, DEC_44 |
 | 2026-10-17 | Статус draft → active (аудит dev-flow): усі контракти 02_58–02_69 і структури 01_28–01_32 реалізовано фазами 39–46 PL_CTX (178c7c7 — фаза 45, fad0845 — фаза 46) |
 | 2026-10-16 | Фаза 46 реалізована: `curation.md`, `context_list` з `"rules": true` (BAD_RULES для інших параметрів і не `true`; рядки не читаються), рядки про правила в SKILL.md і INTRO_TEXT, урок у STAGE_ADVICE ([SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69), [SP_CTX_03_03](#SP_CTX_03_03)); правила виправлень — без прогону на новому акаунті, рішення розробника |

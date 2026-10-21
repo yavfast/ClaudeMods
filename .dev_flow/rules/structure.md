@@ -1,6 +1,6 @@
 # Rules: structure of the hook modules
 
-Where shared logic lives in `mods/*/hooks/`. Origin: code audit PL_AUD_CTX, phase 3 (CF-3, CF-4, CF-5); STRUCT-02 — code audit PL_AUD2_CTX (CF2-30).
+Where shared logic lives in `mods/*/hooks/`. Origin: code audit PL_AUD_CTX, phase 3 (CF-3, CF-4, CF-5); STRUCT-02 — code audit PL_AUD2_CTX (CF2-30); STRUCT-03 — PL_CTX phase 47 (reflection, 2026-10-21).
 
 ## STRUCT-01 — Give each row predicate and shared literal one home (should)  {#STRUCT-01}
 
@@ -51,3 +51,27 @@ if (caps.ownSeen === seen) { noteCommandUnseen(caps); void mergeCaps($, 'live') 
 ```
 
 **Provenance:** [PL_AUD2_CTX](../audit/context-editor_20261017_101904.plan.md) CF2-30 (audit 20261017_101904); PL_CTX_DEC_01; earlier CF-19 in [PL_AUD_CTX](../audit/context-editor_20261011_182951.plan.md).
+
+## STRUCT-03 — Take every folder the mod derives from the session from `projectRoot($)`, never from `$.session.cwd()` (should)  {#STRUCT-03}
+
+**Applies to:** `mods/*/hooks/**` — any path built from the session's directory: archives, the base of relative paths, a file another process reads back.
+
+A folder the mod derives from the session comes from `projectRoot($)` in `register.ts` (`$.session.root()`); no module calls `$.session.cwd()`, which follows the agent's shell `cd`, also in a subagent's events.
+
+### Why
+After `cd docs` an apply archived originals into `docs/.claude/context-editor/`; after `cd ext_repos/rea` a subagent's cut results were archived into an external clone, hidden from `git status` by the folder's own `.gitignore` (PL_CTX phase 47, SP_CTX_DEC_45).
+
+### Examples
+
+**Correct:**
+```ts
+// mods/context-editor/hooks/register.ts — archiveRoot
+const project = await projectRoot($)
+```
+
+**Incorrect:**
+```ts
+const cwd = await $.session.cwd().catch(() => undefined)   // moves with the agent's `cd`
+```
+
+**Provenance:** [context_editor.p47.plan.md](../../docs/context_editor.p47.plan.md) (PL_CTX_P47), [SP_CTX_DEC_45](../../docs/context_editor.decisions-21.sp.md#SP_CTX_DEC_45); live probe `.dev_flow/cache/live-test/root-probe/results.md`; [task_C_CTX](../tasks/task_C_CTX.md) block «фаза 47» (claude-session-a477d71d).

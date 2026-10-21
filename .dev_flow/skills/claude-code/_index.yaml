@@ -1,10 +1,10 @@
 domain: claude-code
 description: Як писати і перевіряти моди (плагіни function hooks) для Claude Code у цьому проєкті
-updated: 2026-10-17
+updated: 2026-10-21
 
 skills:
   - file: plugin-hooks.md
-    skill: ClaudeCodePluginHooks      # вхід: межі, поняття, покажчик пунктів 1–75 → тематичні файли нижче (поділ 2026-10-17, номери й якорі #p<N> збережено)
+    skill: ClaudeCodePluginHooks      # вхід: межі, поняття, покажчик пунктів 1–76 → тематичні файли нижче (поділ 2026-10-17, номери й якорі #p<N> збережено)
     topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript, headless, stream-json, vscode, prompt-cache, install, prompt.attachment, thinking, auto-mode]
     source: implementation
     updated: 2026-10-17
@@ -18,10 +18,10 @@ skills:
       observed_at: 2026-10-11
       ref: .dev_flow/tasks/task_C_CTX.md
   - file: plugin-hooks-api.md
-    skill: ClaudeCodePluginHooksApi      # пункти 9, 11, 12, 14, 28, 31, 32, 34, 39, 42, 45, 56, 58, 68
+    skill: ClaudeCodePluginHooksApi      # пункти 9, 11, 12, 14, 28, 31, 32, 34, 39, 42, 45, 56, 58, 68, 76
     topics: [hooks, validator, fs, process.run, tool.list, tool.register, env, reload, skills, install, marketplace, permissions, classic-hooks]
     source: implementation
-    updated: 2026-10-17
+    updated: 2026-10-21
     written_against: Claude Code 2.1.296
     state: stale        # як у plugin-hooks.md: на 2.1.299/2.1.301 не перезвірено
     promotion: candidate

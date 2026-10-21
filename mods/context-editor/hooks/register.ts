@@ -484,17 +484,30 @@ function shapeIO($: EngineInterface): ShapeIO {
   }
 }
 
+// [SP_CTX_DEC_45] The session's project root: `$.session.root()`, which a shell
+// `cd` does not move (in a subagent's events either), unlike the session's cwd;
+// none on failure, with an ERR-01 trace (a host without `root()` throws before
+// any promise). Every folder the mod takes from the session comes from here.
+async function projectRoot($: EngineInterface): Promise<string | undefined> {
+  try {
+    return await $.session.root()
+  } catch (err) {
+    quietFailure($, 'project root')(err)
+    return undefined
+  }
+}
+
 // [SP_CTX_01_07] [C_CTX_DEC_28] ArchiveRoot: the archives of storage `dir`
-// go to the session's working directory, where the host lets Read in without
-// asking, under a folder that git-ignores itself; none without a cwd or when
+// go to the session's project root, where the host lets Read in without
+// asking, under a folder that git-ignores itself; none without a root or when
 // the folder cannot be made. [SP_CTX_02_50] The storage remembers each such
-// folder (one per cwd) in `archives.txt`, so a sweep finds them from another session.
+// folder (one per project root) in `archives.txt`, so a sweep finds them from another session.
 async function archiveRoot($: EngineInterface, dir: string): Promise<string | undefined> {
-  const cwd = await $.session.cwd().catch(() => undefined)
-  if (!cwd) return undefined
-  const root = `${cwd}/.claude/context-editor`
+  const project = await projectRoot($)
+  if (!project) return undefined
+  const root = `${project}/.claude/context-editor`
   const folder = `${root}/${dir.slice(dir.lastIndexOf('/') + 1)}`
-  // a session whose cwd is $HOME: the archive folder would be the storage itself
+  // a session whose project root is $HOME: the archive folder would be the storage itself
   if (folder === dir) return undefined
   const ran = await $.process
     .run([
@@ -881,7 +894,7 @@ function blockHost($: EngineInterface, dir: string): BlockHost {
     passed: () => isPassed(caps),
     // [SP_CTX_02_66] views: the cache
     readAliases: s.aliases.cached,
-    cwd: () => $.session.cwd(),
+    cwd: () => projectRoot($),
   }
 }
 
@@ -931,7 +944,7 @@ function handoffIO($: EngineInterface): HandoffIO {
     listSeeds: async dir =>
       parseSeedNames((await $.process.run(['sh', '-c', 'for f in "$1"/*/seed.json; do [ -f "$f" ] && basename "$(dirname "$f")"; done; true', 'sh', dir])).stdout),
     archives: dir => archivesOf($, dir),
-    cwd: () => $.session.cwd(),
+    cwd: () => projectRoot($),
     writeMedia: (path, data) => writeMedia($, path, data),
     writeText: (path, text) => writeText($, path, text),
     remove: async path => {
@@ -1238,11 +1251,12 @@ async function observeLater($: EngineInterface): Promise<void> {
   if (before) await observeBrief($, before).catch(() => undefined)
 }
 
-// [SP_CTX_02_57] The probe process's counts, in its working folder.
+// [SP_CTX_02_57] The probe process's counts, in its project root: the folder
+// it started in, where the parent reads them.
 async function writeCounts($: EngineInterface): Promise<void> {
-  const cwd = await $.session.cwd().catch(() => undefined)
+  const project = await projectRoot($)
   probeCounts.version = await hostVersion($)
-  if (cwd) await $.fs.write(`${cwd}/${PROBE_FILE}`, JSON.stringify(probeCounts)).catch(() => undefined)
+  if (project) await $.fs.write(`${project}/${PROBE_FILE}`, JSON.stringify(probeCounts)).catch(() => undefined)
 }
 
 export const register: Register = on => {
@@ -1604,7 +1618,7 @@ export const register: Register = on => {
     let line: string | undefined
     const s = stores($, dir)
     const archives = await archivesOf($, dir)
-    const cwd = await $.session.cwd().catch(() => undefined)
+    const cwd = await projectRoot($)
     const outcome = await s.queue.onChain(async q => {
       const done = await handleCompaction(
         {

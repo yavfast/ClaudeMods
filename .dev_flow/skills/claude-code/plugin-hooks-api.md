@@ -3,7 +3,7 @@ skill: ClaudeCodePluginHooksApi
 domain: claude-code
 topics: [hooks, validator, fs, process.run, tool.list, tool.register, env, reload, skills, install, marketplace, permissions, classic-hooks]
 source: implementation
-updated: 2026-10-17
+updated: 2026-10-21
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.296
@@ -62,7 +62,10 @@ state: stale
 58. **`$.process.run`, схоже, обривається хостом за ~30 с** (2.1.296, термінал, живий прогін PL_AUD_CTX_P12, `.dev_flow/cache/live-test/audit-p12-results.md`; не підтверджено документацією, точну межу не виміряно). Обгортка `sh`, що спала 30 с, закінчила сон і зробила `exec`, але рядка `sh exited` у журналі `--debug` не з'явилося, а виклик мода завершився без виводу; з затримкою 12 с — звичайний вивід. Тож довгий процес не тримає мод вічно, але й результату не дає: розраховувати на його завершення, а не на вивід. Лічильники викликів у журналі фільтрувати за `(context-editor)` — інші плагіни (`cc-plugin-telemetry`) теж запускають `sh` з двома аргументами.
 
 <a id="p68"></a>
-68. **`Read` поза робочим каталогом і `tool.check`** (2.1.296, `claude -p`, haiku, живий прогін фази 34, `.dev_flow/cache/live-test/phase34/`). Без `bypassPermissions` `Read` файлу поза `cwd` (напр. `~/.claude/context-editor/<session>/…`) хост відхиляє: «Claude requested permissions to read from …, but you haven't granted it yet» (`permission_denials`); у терміналі — питає людину. У `cwd` — дозволено, і в субагенті теж. `$.session.cwd()` дає робочий каталог сесії. Плагін може сам дати вердикт хуком `tool.check` (`{ tool: 'Read' }` → `{ decision: 'allow' }`; `next(e)` — вердикт хоста), не перевірено живим. Каталог, що ігнорує сам себе: `.gitignore` із `*` усередині — `git status` його не бачить, `.gitignore` проєкту без змін.
+68. **`Read` поза робочим каталогом і `tool.check`** (2.1.296, `claude -p`, haiku, живий прогін фази 34, `.dev_flow/cache/live-test/phase34/`). Без `bypassPermissions` `Read` файлу поза `cwd` (напр. `~/.claude/context-editor/<session>/…`) хост відхиляє: «Claude requested permissions to read from …, but you haven't granted it yet» (`permission_denials`); у терміналі — питає людину. У `cwd` — дозволено, і в субагенті теж. `$.session.cwd()` дає поточну теку оболонки (іде за `cd`), а корінь проєкту, від якого рахувати теки мода, — `$.session.root()` (пункт 76). Плагін може сам дати вердикт хуком `tool.check` (`{ tool: 'Read' }` → `{ decision: 'allow' }`; `next(e)` — вердикт хоста), не перевірено живим. Каталог, що ігнорує сам себе: `.gitignore` із `*` усередині — `git status` його не бачить, `.gitignore` проєкту без змін.
+
+<a id="p76"></a>
+76. **`$.session.cwd()` іде за `cd` оболонки агента, `$.session.root()` — ні** (2.1.306, `claude -p`, haiku; зонд `.dev_flow/cache/live-test/root-probe/results.md`, живий сценарій фази 47 `.dev_flow/cache/live-test/p47-cd/results.md`). Після Bash `cd sub` `cwd()` дає `<proj>/sub` з першої ж події (рядок результату самого `cd`), і в подіях субагента, запущеного після `cd`: субагент успадковує теку оболонки (його `pwd` — `<proj>/sub`). `root()` лишається текою старту (`e.cwd` у `session.start`) у кожній події, основній і субагента. Теку, яку мод бере від сесії (архіви, база відносних шляхів, файл, який читає інший процес), брати лише з `root()` — у моді через `projectRoot($)` (`hooks/register.ts`, SP_CTX_DEC_45, правило STRUCT-03); `cwd()` — лише коли потрібна саме поточна тека оболонки. Межа дозволу `Read` (пункт 68) — корінь проєкту, а не поточна тека оболонки: після `cd sub` хост пускає `Read` файлу під `root()` без запиту, в основній розмові й у субагенті (без `bypassPermissions`). За типами `root()` рухають `/cd`, зміна теки хостом і перехід у worktree — наживо не перевірено.
 
 ## Structural events
 

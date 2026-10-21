@@ -73,7 +73,8 @@ export function unpackCommands(packer: Packer, zip: string, folder: string, keep
 
 // The archive folder of session `id` is touched only under its own name: an
 // absolute path without `.`/`..` segments ending in `/.claude/context-editor/<id>`,
-// and never the storage itself (a session whose cwd was $HOME).
+// and never the storage itself (a session whose project root, its cwd before
+// phase 47, was $HOME).
 export function ownArchives(path: string, id: string, root: string): boolean {
   return (
     path.startsWith('/') &&

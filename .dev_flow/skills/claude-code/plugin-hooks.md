@@ -20,7 +20,7 @@ state: stale
 - [Context](#context) — звідки взялися пункти
 - [Key Concepts](#key-concepts) — форма хука, валідатор, `.catch`, тести, типи
 - [Usage in This Project](#usage-in-this-project) — де в `context-editor` застосовано компактизацію, команди і живі прогони
-- [Pitfalls](#pitfalls) — покажчик пунктів 1–75 (поведінка хоста, знайдена наживо; 69–70 — з документації, 75 — з бінарника, наживо не перевірено) → тематичні файли:
+- [Pitfalls](#pitfalls) — покажчик пунктів 1–76 (поведінка хоста, знайдена наживо; 69–70 — з документації, 75 — з бінарника, наживо не перевірено) → тематичні файли:
   - [plugin-hooks-api.md](plugin-hooks-api.md) — Базові API плагіна: модуль, `$.fs`, `$.process`, `$.tool`, `.catch`, ідентичність процесу, перезавантаження, підключення
   - [plugin-hooks-commands.md](plugin-hooks-commands.md) — Команди, ходи й промпти плагіна: `$.command.run`, неінтерактивний хост, події ходу, `$.prompt.submit`, `$.ui.log`
   - [plugin-hooks-compaction.md](plugin-hooks-compaction.md) — Компактизація від обробника, `handle`, злиття за `message.id`, `--resume` і ремонт
@@ -134,6 +134,7 @@ state: stale
 | 73 | Вставлений текст — у самому тексті рядка, в обгортці `<pasted_content id="X">…</pasted_content id="X">` | [plugin-hooks-views.md#p73](plugin-hooks-views.md#p73) |
 | 74 | Thinking після правки посередині: недокументована поведінка хоста — лише спостереження, не основа дизайну | [plugin-hooks-context.md#p74](plugin-hooks-context.md#p74) |
 | 75 | Повторне `Read` незміненого файлу — заглушка, а не вміст | [plugin-hooks-views.md#p75](plugin-hooks-views.md#p75) |
+| 76 | `$.session.cwd()` іде за `cd` оболонки, `$.session.root()` — ні | [plugin-hooks-api.md#p76](plugin-hooks-api.md#p76) |
 
 ## References
 

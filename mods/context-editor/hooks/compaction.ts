@@ -113,7 +113,7 @@ export type CompactionIO = {
   // [SP_CTX_01_07] ArchiveRoot: where the originals and media go (`dir` when
   // the project has no archive folder)
   archives: string
-  // [SP_CTX_01_28] the session's working directory (SourceOf); none: absolute paths
+  // [SP_CTX_01_28] the session's project root (SourceOf); none: absolute paths
   cwd?: string
   now: () => number
   readQueue: () => Promise<Read<Queue>>

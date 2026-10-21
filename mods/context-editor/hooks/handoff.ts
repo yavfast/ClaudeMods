@@ -200,7 +200,7 @@ export type SeedInput = {
   tags: Read<TagRegistry>
   folder: string
   archive: string
-  // [SP_CTX_01_28] the session's working directory (SourceOf)
+  // [SP_CTX_01_28] the session's project root (SourceOf)
   cwd?: string
   writeMedia: (path: string, base64: string) => Promise<boolean>
   // [SP_CTX_01_22] the old session's recorded deliveries; absent: none
@@ -550,7 +550,7 @@ export type HandoffIO = {
   // [SP_CTX_01_07] ArchiveRoot of a storage folder: where the seed's archive
   // and media go (the folder itself when the project has none)
   archives: (dir: string) => Promise<string>
-  // [SP_CTX_01_28] the session's working directory (SourceOf); none: absolute paths
+  // [SP_CTX_01_28] the session's project root (SourceOf); none: absolute paths
   cwd?: () => Promise<string | undefined>
   writeMedia: (path: string, base64: string) => Promise<boolean>
   // owner-only, through a host command (no 4 MiB limit), parents made

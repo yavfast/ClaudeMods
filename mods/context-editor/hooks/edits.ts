@@ -1174,7 +1174,7 @@ export const STATE_SLOT = 'target holds the state slot; change it by rewrite of 
 
 // [SP_CTX_01_32] [SP_CTX_02_67] SLOT_TOO_LONG at queue time leaves this room
 // for the archive line the apply writes (its path is not known yet: about the
-// cwd's length + 110) and for the ids the batch's new items get (counted as
+// project root's length + 110) and for the ids the batch's new items get (counted as
 // `p?` here, up to ~4 chars each once numbered).
 export const ARCHIVE_ROOM = 600
 
@@ -1493,8 +1493,8 @@ export function keyArg(input: unknown): string {
 // [SP_CTX_01_28] SourceOf(call): where the replaced content came from, from
 // the call's input only (never its result), at most MAX_SOURCE chars (OneLine
 // cuts a quoted value, so its closing quote stays). A file path is relative to
-// `cwd` when inside it; a URL loses userinfo, query and fragment (a query may
-// carry a token).
+// `cwd`, the session's project root, when inside it; a URL loses userinfo,
+// query and fragment (a query may carry a token).
 export function sourceOf(tool: string, input: unknown, cwd?: string): string {
   const o = typeof input === 'object' && input !== null ? (input as Record<string, unknown>) : {}
   const s = (k: string) => (typeof o[k] === 'string' && (o[k] as string).trim() ? (o[k] as string).trim() : undefined)
@@ -1694,7 +1694,7 @@ function mediaRef(block: Record<string, unknown>): MediaRef {
 export type ApplyOptions = {
   // tool_use ids the API form shows; rows outside it keep their handle
   knownResults?: ReadonlySet<string>
-  // [SP_CTX_01_28] the session's working directory: SourceOf names a file
+  // [SP_CTX_01_28] the session's project root: SourceOf names a file
   // inside it by its relative path
   cwd?: string
   // prompt messages with media that no row could be matched to

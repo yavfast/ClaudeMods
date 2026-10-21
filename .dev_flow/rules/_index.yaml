@@ -1,4 +1,4 @@
-# Derived router — regenerated from the rule headings (audit 2026-10-17; headings in the canonical `## {id} — {directive} ({severity})  {#id}` form; STRUCT-02 and ERR-01 harvested by audit code 20261017_101904).
+# Derived router — regenerated from the rule headings (audit 2026-10-17; headings in the canonical `## {id} — {directive} ({severity})  {#id}` form; STRUCT-02 and ERR-01 harvested by audit code 20261017_101904; STRUCT-03 by PL_CTX phase 47, 2026-10-21).
 categories:
   - category: concurrency
     file: concurrency.md
@@ -26,6 +26,9 @@ categories:
       - name: STRUCT-02
         severity: should
         summary: "Keep decisions out of register.ts: a branch over state goes into a ports module with a test"
+      - name: STRUCT-03
+        severity: should
+        summary: "Take every folder the mod derives from the session from projectRoot($), never from $.session.cwd()"
   - category: error-handling
     file: errors.md
     summary: How background hook work records the failures it swallows.

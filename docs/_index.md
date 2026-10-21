@@ -8,7 +8,7 @@
 |------|----|--------|-------|
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): спільні філософія й обмеження хоста, склад набору, покажчик рішень C_CTX_DEC_*; дочірні концепти — ядро й інструменти, методи оптимізації контексту, курування історії |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, покажчик рішень SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
-| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | completed | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–46 виконано (38 — можливості хоста, 39–46 — курування історії); backlog відкритий |
+| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | completed | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–47 виконано (38 — можливості хоста, 39–46 — курування історії, 47 — тека архівів від кореня проєкту сесії); backlog відкритий |
 
 ## Maps
 
@@ -68,7 +68,7 @@
 | `SP_CTX_05_02`–`05_03` (інваріанти, сценарії) | [context_editor.scenarios.sp.md](context_editor.scenarios.sp.md) |
 | `SP_CTX_05_04` (граничні випадки) | [context_editor.edges.sp.md](context_editor.edges.sp.md) |
 | `SP_CTX_DEC_01`–`DEC_20` | [context_editor.decisions-01.sp.md](context_editor.decisions-01.sp.md) |
-| `SP_CTX_DEC_21`–`DEC_38` | [context_editor.decisions-21.sp.md](context_editor.decisions-21.sp.md) |
+| `SP_CTX_DEC_21`–`DEC_38`, `DEC_45` | [context_editor.decisions-21.sp.md](context_editor.decisions-21.sp.md) |
 | `SP_CTX_02`, `SP_CTX_03`, `SP_CTX_05`, `SP_CTX_06`, `SP_CTX_DEC` (покажчик рішень) | [context_editor.sp.md](context_editor.sp.md) |
 | `PL_CTX` | [context_editor.plan.md](context_editor.plan.md) |
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |

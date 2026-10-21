@@ -758,7 +758,7 @@ export type BlockIO = {
   // [SP_CTX_02_54] the host passes over the mod's compaction hook: PASSED_ADVICE
   // ends the report; absent: never
   passed?: () => boolean
-  // [SP_CTX_02_66] the call aliases and the cwd of the ready replacements; absent: ids, absolute paths
+  // [SP_CTX_02_66] the call aliases and the project root (`cwd`) of the ready replacements; absent: ids, absolute paths
   readAliases?: () => Promise<Read<AliasRegistry>>
   cwd?: () => Promise<string | undefined>
 }

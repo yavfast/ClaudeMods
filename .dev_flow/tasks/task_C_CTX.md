@@ -2,18 +2,18 @@
 
 > **Task ID:** `task_C_CTX`
 > **Created:** 2026-10-08 20:00
-> **Last updated:** 2026-10-17
+> **Last updated:** 2026-10-21 16:05
 > **Status:** `in-progress`
-> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`, `claude-session-4118db51`, `claude-session-4cdf50ec`, `claude-session-355660b2`, `claude-session-af2d71e6`
+> **Contributors:** `claude-session-bd80217a`, `claude-session-8e44a3be`, `claude-session-a3902d56`, `claude-session-decd4bc6`, `claude-session-d5614704`, `claude-session-4118db51`, `claude-session-4cdf50ec`, `claude-session-355660b2`, `claude-session-af2d71e6`, `claude-session-a477d71d`
 > **Autonomy:** `checkpoints`
 
 ## Current Work Item
 
 | Field | Value |
 |-------|-------|
-| **Document** | `plan` — усі фази PL_CTX (1–46) `completed` у таблиці фаз [плану](../../docs/context_editor.plan.md); останній коміт фази — a713b45 (завершення фази 38), далі cda33b6 (install.sh, README); відкрите — backlog плану |
-| **Pipeline phase** | `plan` — вибір наступної роботи з backlog PL_CTX; гілка `main` (= `feat/context-editor`, cda33b6) |
-| **Traceable ID** | [`PL_CTX_BACKLOG`](../../docs/context_editor.plan.md#PL_CTX_BACKLOG): 4 candidate (згода людини при першому використанні, дані без слідів на диску, навичка `Skill` зникає після застосування, STALE_INDEXES без `context_list`) і залишок поділу PL_CTX (queued); backlog CF-28…CF-53 закритої задачі [PL_AUD_CTX](task_PL_AUD_CTX.md) |
+| **Document** | `plan` — усі фази PL_CTX (1–47) `completed` у таблиці фаз [плану](../../docs/context_editor.plan.md); останній коміт фази — a713b45 (завершення фази 38), далі cda33b6 (install.sh, README); відкрите — backlog плану |
+| **Pipeline phase** | `plan` — вибір наступної роботи з backlog PL_CTX (фаза 47 закомічена, блок `claude-session-a477d71d`); гілка `main` |
+| **Traceable ID** | [`PL_CTX_BACKLOG`](../../docs/context_editor.plan.md#PL_CTX_BACKLOG): 5 candidate (згода людини при першому використанні, дані без слідів на диску, навичка `Skill` зникає після застосування, STALE_INDEXES без `context_list`, архіви в проєкті сесії, а не в дереві, над яким вона працює) і залишок поділу PL_CTX (queued); backlog CF-28…CF-53 закритої задачі [PL_AUD_CTX](task_PL_AUD_CTX.md) |
 
 ## Intent
 
@@ -26,6 +26,25 @@
 Прототип мода складається з двох розширень Claude Code — `context-editor` і `context-editor-trigger` — і перевірений модульними та живими тестами в сесії bd80217a. Документи описують його поведінку зворотно, за кодом і результатами тестів. — claude-session-bd80217a
 
 ## Subtasks
+
+### Subtask: фаза 47 — тека архівів від кореня проєкту сесії (`$.session.root()`)
+> Author: `claude-session-a477d71d` — Created: 14:01 — Last updated: 16:05 — Status: `done`
+
+**Goal:** закрити клас «`cd`» пункту backlog «Тека архівів іде за поточною текою оболонки»: мод бере теку проєкту з `$.session.root()`, а не з `$.session.cwd()`, — для архівів (основна розмова й субагенти), відносних шляхів SourceOf і файла лічильників зонда. Запит розробника: «Виправ мод context-editor через $.session.root()».
+
+**Progress:**
+- [x] Живий зонд хоста 2.1.306 (haiku): після `cd sub` `cwd()` іде за оболонкою, `root()` ні — і в подіях субагента — `.dev_flow/cache/live-test/root-probe/results.md`
+- [x] Дизайн: SP_CTX_DEC_45 (proposed), SP_CTX_01_07 / 02_49 / 02_51 / 01_28 / 02_66 / 02_57, ARCHIVE_ROOM, §05_01, сценарій §05_03, фаза 47, backlog (клас 2 виділено), PL_AUD2_CTX Ф4/Ф7; linkcheck 0 битих
+- [x] Design sign-off — розробник: «Так, впроваджуй» (SP_CTX_DEC_45 → resolved)
+- [x] Код: `projectRoot($)` у `hooks/register.ts`, через нього ArchiveRoot, порти `cwd` BlockIO (`blockHost`)/HandoffIO, CompactionIO `cwd`, `writeCounts`; коментарі edits/stages/compaction/handoff; CLAUDE.md. tsc 0, validate ✔, `claude plugin test` 984 pass / 0 fail, skill-limits у межах; `session.cwd` у hooks — 0
+- [x] Рев'ю раунд 26 (full): FAIL — B1 живі місця «робочий каталог» / `<cwd>`, B2 сценарій без читання архіву після `cd`, B3 `_index.md` статус плану; W1–W5, I1–I2 — усе виправлено (W4: `projectRoot` з try/catch і рядком у debug-лог)
+- [x] Confirm раунду 26 (раунд 27): PASS
+- [x] Verify: живий сценарій «Тека архівів після `cd`» — PASS (2.1.306, haiku, без `bypassPermissions`): архів застосування й обрізаний вивід субагента — під коренем проєкту, обидва прочитані `Read` без відмови, у `sub` нічого, `archives.txt` — один рядок (`.dev_flow/cache/live-test/p47-cd/results.md`)
+- [x] Рефлексія: правило STRUCT-03 (`should`, авто), пункт 76 навички plugin-hooks; todo dev-flow `TD_20261021_150535_linkcheck-html-anchors` (linkcheck не бачить `<a id>`)
+- [x] Commit sign-off — розробник: «Закоміть всі правки»; коміт фази 47 на `main`
+
+**Activity:**
+- 14:01 — задача взята з backlog PL_CTX за рішенням розробника з dev-flow-сесії a477d71d (варіант (б) пункту); напрям (а) — тека поза проєктом — не береться
 
 ### Завершені підзадачі (архів)
 
@@ -95,6 +114,8 @@
 | 23 | full (код, фаза 11, worktree a622a68) | full | c3a4a91 + diff 02a203d88fd7 | FAIL | B1 should: рішення про перемикання сесії (чекати чи підглядати hostId) — неперевірена логіка в register.ts → у порт `afterPrepare` з тестами; advisory: межа читання hostId 2 с — застосовано; збій перезапису межі — прогалина специфікації → файл межі видаляється (02_18); прийнято без змін: memo паралельної підготовки, злиття реєстрів, винесення boundary.ts; зворотний зв'язок імплементатора 3–5 — за специфікацією |
 | 24 | delta over 23 | confirm (main) | worktree після правок | PASS | B1 закрито (`afterPrepare` у порту, 4 тести; межа читання hostId 2 с; збій перезапису → видалення файлу межі); 234 тести, validate, tsc 0 |
 | 25 | full (фаза 12) | full | 5fd2215 + diff | WARNINGS | 4 should (документи): рядок 05_01 summarize, правило навички пункт 30, ціна KeepResponsesWhole (збережений thinking), згортання без носія посеред відповіді → виправлено (обмеження записано в 02_04 і backlog K); тест summarize доповнено (235); backlog — збережений thinking після правок минулих ходів |
+| 26 | full (фаза 47, блок a477d71d) | full | da217a5 + робоче дерево (sha256 c49bd87fe490943e, 14:57) | FAIL | B1 «робочий каталог»/`<cwd>` у живих документах (structures 01_07, cleanup §02, methods C_CTX_03_09, scenarios 125–126, expectations.host PackSession) → 1 · B2 сценарій «Тека архівів після `cd`» без читання архіву → 1 · B3 `_index.md` PL_CTX completed → 1; W1–W5, I1–I2 advisory — виправлено |
+| 27 | delta over 26 | confirm (main) | робоче дерево після правок раунду 26 | PASS | B1–B3, W1–W5, I1–I2 підтверджено звіркою: живі документи без «робочий каталог»/`<cwd>` (лишились примітки «до фази 47» і записи backlog у формулюванні фіксації), `session.cwd` у hooks — 0, tsc 0, validate ✔, 984 pass / 0 fail, linkcheck 1321 / 0 |
 
 **Always in scope:** —
 

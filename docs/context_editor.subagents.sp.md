@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-13
-> **Updated:** 2026-10-17
+> **Updated:** 2026-10-21
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_49 специфікації [SP_CTX](./context_editor.sp.md): обрізання великих результатів інструментів субагента в мить запису ([C_CTX_03_09](./context_editor.methods.concept.md#C_CTX_03_09), [C_CTX_DEC_27](./context_editor.methods.concept.md#C_CTX_DEC_27)). Читати перед зміною `hooks/subagents.ts` або хука `session.append`.
@@ -22,8 +22,8 @@ Processing logic (pseudocode):
     ON row appended (door = tool-result, agentId present):        # хук session.append, до AppendRow (02_12) і до next
         IF origin.kind ≠ tool OR origin.tool IN (Read, unknown) OR origin.tool starts with OWN_TOOLS: RETURN next(row)
         IF agentId NOT matching SUB_ID: RETURN next(row)
-        dir = <cwd>/.claude/context-editor/<session_id>                # cwd і session_id основної сесії; .claude/context-editor/.gitignore = "*" створюється, коли його немає
-        IF storage, cwd or that folder absent: RETURN next(row)
+        dir = <project>/.claude/context-editor/<session_id>            # корінь проєкту ($.session.root(), SP_CTX_DEC_45) і session_id основної сесії; .claude/context-editor/.gitignore = "*" створюється, коли його немає
+        IF storage, project root or that folder absent: RETURN next(row)
         content = row.message.content
         FOR each block b of content WITH b.type = tool_result:
             IF b.tool_use_id NOT matching SUB_ID: CONTINUE

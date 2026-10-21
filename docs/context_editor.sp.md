@@ -3,7 +3,7 @@
 > **Code:** SP_CTX
 > **Status:** active
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-17
+> **Updated:** 2026-10-21
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Depends on:** none
@@ -143,7 +143,7 @@
 
 ## 07. Design Decisions  {#SP_CTX_DEC}
 
-Рішення SP_CTX_DEC_01–DEC_38 лежать у двох дочірніх файлах дослівно, з тими самими якорями (поділ 2026-10-15, як покажчик рішень концепту, [C_CTX_DEC_32](./context_editor.concept.md#C_CTX_DEC_32)); рішення курування історії SP_CTX_DEC_39–DEC_44 — у [специфікації курування](./context_editor.curation.sp.md#SP_CTX_DEC_39).
+Рішення SP_CTX_DEC_01–DEC_38 лежать у двох дочірніх файлах дослівно, з тими самими якорями (поділ 2026-10-15, як покажчик рішень концепту, [C_CTX_DEC_32](./context_editor.concept.md#C_CTX_DEC_32)); рішення курування історії SP_CTX_DEC_39–DEC_44 — у [специфікації курування](./context_editor.curation.sp.md#SP_CTX_DEC_39); SP_CTX_DEC_45 (тека проєкту мода) — у [decisions-21](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45), після DEC_38.
 
 | Рішення | Питання | Status | Файл |
 |---------|---------|--------|------|
@@ -185,6 +185,7 @@
 | [DEC_36](./context_editor.decisions-21.sp.md#SP_CTX_DEC_36) | Посібник навички на початку сесії | resolved — розробник 2026-10-13 («Both») | `context_editor.decisions-21.sp.md` |
 | [DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37) | Блок, що чекає стискання: стан, кінець очікування, канали поради | resolved — розробник 2026-10-14 («Ок. Продовжуй.» на design sign-off: A в кожному рядку) | `context_editor.decisions-21.sp.md` |
 | [DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38) | Можливості хоста: зонд, компактизація без спостерігача, поради | resolved — розробник 2026-10-14 («Ок. Продовжуй.» на design sign-off: A в кожному пункті) | `context_editor.decisions-21.sp.md` |
+| [DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45) | Тека проєкту мода: корінь сесії, а не поточна тека оболонки | resolved — розробник 2026-10-21 («Так, впроваджуй» на design sign-off фази 47; напрям — «Виправ мод context-editor через $.session.root()») | `context_editor.decisions-21.sp.md` |
 
 ## Changelog
 
@@ -211,3 +212,4 @@
 | 2026-10-17 | Аудит dev-flow: преамбула §02 — ланцюжок `ledger` (фаза 32) у переліку й порядку захоплення, як у `serialChains` (`hooks/store.ts`, вісім ланцюжків); дочірні файли [resume](./context_editor.resume.sp.md) і [curation](./context_editor.curation.sp.md) — draft → active (код фаз 32 і 39–46); structural-event: curation (14 640 слів, `hard_split`) поділено на парасольку й чотири файли `context_editor.curation.<модуль>.sp.md` (edits, slot, hostrows, verification), розділи дослівно, якорі незмінні |
 | 2026-10-17 | Аудит коду (run 20261017_101904, ескалація вгору: код правий): дочірні файли structures, records, constants, hostattach, resume, bypass, handoff, curation.hostrows, edits і expectations — за кодом; [subagents](./context_editor.subagents.sp.md) 02_49 — архіви старих сесій прибирає SweepSessions; [SP_CTX_DEC_32](./context_editor.decisions-21.sp.md#SP_CTX_DEC_32) — рядок «Оновлено» |
 | 2026-10-17 | Аудит коду, рішення X1 (PL_AUD2_CTX): преамбула §02 — повторний вхід у ланцюжок з токеном живого тримача виконується одразу; ручні RMW — фаза 12 (CF2-56) замість CF-44 |
+| 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45), напрям — розробник «Виправ мод context-editor через $.session.root()»): тека проєкту мода — `$.session.root()`, не `$.session.cwd()`: каталог архівів (01_07, 02_49, 02_51), база відносних шляхів SourceOf і готових замін (01_28, 02_66), файл лічильників зонда (02_57), ARCHIVE_ROOM; рядки §05_01 (ArchiveRoot, ShapeSubagentResult, SweepSessions) і живий сценарій «Тека архівів після `cd`» §05_03 |

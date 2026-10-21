@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-14
-> **Updated:** 2026-10-17
+> **Updated:** 2026-10-21
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_53–02_57 специфікації [SP_CTX](./context_editor.sp.md): можливості хоста, від яких залежить мод, їх перевірка процесом-зондом раз на версію хоста і живими ознаками, і що мод вимикає, коли хост пропускає його хуки ([C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38); спайк [context_editor_probe](./context_editor_probe.spike.md)). Читати перед зміною `hooks/capabilities.ts`, хуків `prompt.attachment`, `session.start`, `turn.complete`, `command.run`, `session.compact` чи перевірок перед компактизацією мода.
@@ -206,7 +206,7 @@ Purpose: мод у процесі-зонді (`$.env.get('CONTEXT_EDITOR_PROBE')
         prompt.submit: no guide, no advice, no hint (next(e) unchanged)
         prompt.attachment (any type): counts.attachments + 1; next(e) unchanged
         session.append (any door): counts.doors[door] + 1; next(e) unchanged
-        turn.complete: write PROBE_FILE in cwd = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано
+        turn.complete: write PROBE_FILE in $.session.root() (= tmp) = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано
         session.compact with instructions = PROBE_MARKER: write PROBE_FILE; RETURN { skip: PROBE_PREFIX + " " + JSON(counts) }
         session.compact, other instructions: next(e) unchanged   # без спостерігача: межі не пише
         tool.call (any tool): the result unchanged   # без псевдонімів, тегів, сховища
@@ -227,3 +227,4 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лічи
 | 2026-10-16 | 02_55: OBSERVE_LATER — наживо (хост 2.1.299, копія мода поруч із керованим) читання одразу після `next` у хуку `/compact` ще не мало підсумку (18 рядків до і після): межі не було, черга лишилась, `context_list` показував рядки до підсумку; спостерігач повторюється на початку наступного ходу |
 | 2026-10-16 | 02_55 за рев'ю: OBSERVE_LATER спершу на промпті людини (до звіту, щоб вступ після компактизації не запізнився), інакше на початку ходу; новий `/compact` з брифом забуває попереднє очікування; «хост зробив підсумок» — `next` розв'язався (тип результату `command.run` не має skip/error) |
 | 2026-10-17 | Аудит коду (SPEC-14): 02_54 — запит передачі при `passed` знято з черги зі звітом HANDOFF_PASSED_OVER (стану `done` немає); 02_56 — ParseProbe бере лічильники й з відповіді `skip`, PROBE_OTHER_HOST — лише коли обидві версії відомі; 02_57 — запис PROBE_FILE не вдався |
+| 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): 02_57 — ProbeMode пише PROBE_FILE у корінь проєкту процесу-зонда (`$.session.root()`, тека `tmp`, де він стартував), не в поточну теку оболонки |
