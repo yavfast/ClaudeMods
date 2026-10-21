@@ -28,6 +28,8 @@ The parent file [`../active_context.md`](../active_context.md) is a thin dashboa
 
 ## Recently Completed
 
+- [task_20261019_155837_adopt-context-mode](task_20261019_155837_adopt-context-mode.md) — `9841457b` — `done` — Аналіз запозичень з context-mode (advisory, `docs/ext_adoption/`)
+
 - [task_PL_AUD_CTX](task_PL_AUD_CTX.md) — done 2026-10-11 — рефакторинг context-editor за аудитом коду: 12 фаз (+Ф6a), 528 → 677 тестів
 
 ---

@@ -18,6 +18,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 | Task | Phase | Completed | Contributors | Result |
 |------|-------|-----------|--------------|--------|
+| [task_20261019_155837_adopt-context-mode](tasks/task_20261019_155837_adopt-context-mode.md) — Аналіз запозичень з context-mode | done | 2026-10-19 | 9841457b | high 0, medium 4 (defer), похідних ідей 3; `docs/ext_adoption/context-mode*.md` |
 | [task_PL_AUD_CTX](tasks/task_PL_AUD_CTX.md) — Рефакторинг context-editor за аудитом коду | done | 2026-10-11 | d5614704 | 12 фаз (+Ф6a), 528 → 677 тестів, кожна фаза з рев'ю й живим прогоном |
 
 ## Deferred (todos)
