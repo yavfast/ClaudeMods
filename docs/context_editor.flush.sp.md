@@ -30,7 +30,7 @@ Processing logic (pseudocode):
 
     ON turn completed (main loop, not aborted), after DetectOptimize (SP_CTX_02_30):   # DetectOptimize уже зняв запобіжник ходу стискання; мітка черги не змінює
         IF NOT IsPlanned(now) AND storage ready AND Queue state = ok AND Queue.handoff absent
-           AND (len(Queue.edits) > 0 OR Queue.optimize):
+           AND (len(Queue.edits) > 0 OR Queue.optimize OR TitleDue(TagRegistry.title)):   # TitleDue — SP_CTX_02_72
             Schedule()                                                        # таймер, відхилений одразу (виняток), нічого не лишає запланованим
 
     FUNCTION RequestFlush(session):                                           # SP_CTX_02_42: з хука command.run /compact людини — походження, на яке хід не чекає (як /handoff)

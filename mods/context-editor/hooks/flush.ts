@@ -9,6 +9,7 @@ import { errorText, modText } from './rows'
 import type { Read, Update } from './store'
 import { adviceFor, compactTurnText } from './stages'
 import type { TagRegistry } from './tags'
+import type { Renamed } from './title'
 import { movedSince, type Turns } from './turns'
 
 // [SP_CTX_01_12] The pause between the end of a turn and the command.
@@ -70,6 +71,9 @@ export type FlushIO = {
   // while unknown, wait for a probe running in this process ([SP_CTX_02_56]);
   // absent: never passed
   compactPassed?: (wait: boolean) => Promise<boolean>
+  // [SP_CTX_02_72] the session title: `due` — TitleDue on a readable
+  // registry; `rename` — RunRename (never throws); absent: none
+  title?: { due: () => Promise<boolean>; rename: () => Promise<Renamed | undefined> }
 }
 
 // [SP_CTX_02_06] Module memory; a reload starts it over. `plannedAt`: when
@@ -106,7 +110,8 @@ export type ResumeOutcome = 'none' | 'submitted' | 'person-active' | 'resume-fai
 // OPTIMIZE_FAILED; `submitted`: the compression turn's prompt entered.
 export type OptimizeOutcome = 'person' | 'build-failed' | 'submitted' | 'failed'
 
-export type FlushResult = { outcome: FlushOutcome; resume: ResumeOutcome; optimize?: OptimizeOutcome }
+// `renamed`: the rename at the end of the turn ([SP_CTX_02_72]), when one ran
+export type FlushResult = { outcome: FlushOutcome; resume: ResumeOutcome; optimize?: OptimizeOutcome; renamed?: Renamed }
 
 // [SP_CTX_02_06] A refused prompt resolves with `drop` and does not throw;
 // the `submit` ports (Flush, the handoff) take it as a rejection.
@@ -204,15 +209,29 @@ async function step<T>(run: () => Promise<T>): Promise<T | undefined> {
   }
 }
 
+// [SP_CTX_02_72] TitleDue through the port; a failure: not due.
+async function titleDue(io: FlushIO): Promise<boolean> {
+  try {
+    return (await io.title?.due()) ?? false
+  } catch {
+    return false
+  }
+}
+
 // [SP_CTX_02_06] ON turn completed (main loop, not aborted), after
-// DetectOptimize: plan one Flush when the queue holds edits or the
-// request of the person's /compact, and no handoff. True when a Flush was planned.
+// DetectOptimize: plan one Flush when the queue holds edits, the
+// request of the person's /compact or a title due ([SP_CTX_02_72]), and no
+// handoff. True when a Flush was planned.
 export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: boolean): Promise<boolean> {
   if (aborted || isPlanned(state, io.now())) return false
-  // [SP_CTX_02_54] passed over: no Flush; the queue stays for the brief of /compact
-  if (await io.compactPassed?.(false).catch(() => false)) return false
+  // [SP_CTX_02_54] passed over: no Flush for the queue; it stays for the brief of /compact
+  const passed = await io.compactPassed?.(false).catch(() => false)
   const read = await io.readQueue()
-  if (!hasWork(read) || isPlanned(state, io.now())) return false
+  const work = !passed && hasWork(read)
+  // [SP_CTX_02_72] a title due plans a Flush too, passed over or not (no
+  // handoff: it carries the title)
+  const due = !work && read.state !== 'unreadable' && !read.value.handoff && (await titleDue(io))
+  if ((!work && !due) || isPlanned(state, io.now())) return false
   try {
     schedule(io, state)
   } catch {
@@ -287,19 +306,21 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       await io.updateQueue(dropLegacy).catch(() => undefined)
       read.value = { ...read.value, optimize: false }
     }
-    if (!read.value.edits.length && !read.value.optimize) return { outcome: 'nothing-queued', resume: 'none' }
+    const work = read.value.edits.length > 0 || read.value.optimize
+    // [SP_CTX_02_72] a handoff carries the title: no rename beside it
+    const due = !read.value.handoff && (await titleDue(io))
+    if (!work && !due) return { outcome: 'nothing-queued', resume: 'none' }
     if (read.value.handoff) return { outcome: 'handoff-pending', resume: 'none' }
     // [SP_CTX_02_54] FLUSH_PASSED_OVER: no command, the edits stay (the brief
     // of the person's /compact takes them); a compression turn's request
-    // made before the verdict goes, its turn would only meet refusals
-    if (await io.compactPassed?.(true).catch(() => false)) {
-      if (read.value.optimize) await io.updateQueue(dropOptimize).catch(() => undefined)
-      return { outcome: 'passed-over', resume: 'none' }
-    }
+    // made before the verdict goes, its turn would only meet refusals.
+    // It gates the compaction only, not the rename ([SP_CTX_02_72]).
+    const passed = work && (await io.compactPassed?.(true).catch(() => false))
+    if (passed && read.value.optimize) await io.updateQueue(dropOptimize).catch(() => undefined)
     // [SP_CTX_02_34] the report and the person's line take this
     // conversation's ratio; before the turn check, so this pause never puts
     // the command behind a new turn
-    if (read.value.edits.length) await calibrateWithin(io)
+    if (!passed && read.value.edits.length) await calibrateWithin(io)
     // PERSON_MOVED: a turn started since planning; no command queued behind it.
     // A turn that runs plans Flush when it ends; one that already ended
     // normally gives no new planning, so plan again now; after an interrupted
@@ -308,6 +329,17 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     if (movedSince(io.turns, turns0)) {
       again = !io.turns.inTurn && !io.turns.lastTurnAborted
       return { outcome: 'person-moved', resume: 'none' }
+    }
+    // [SP_CTX_02_72] RenameAtTurnEnd: before the apply, so the apply drops its rows
+    const renamed = due ? await io.title!.rename().catch(() => undefined) : undefined
+    const named = renamed ? { renamed } : {}
+    if (passed) return { outcome: 'passed-over', resume: 'none', ...named }
+    // a rename alone: no compaction, no resume prompt
+    if (!work) return { outcome: 'no-command', resume: 'none', ...named }
+    // the rename waited for idle: a turn started meanwhile gets no command behind it
+    if (renamed && movedSince(io.turns, turns0)) {
+      again = !io.turns.inTurn && !io.turns.lastTurnAborted
+      return { outcome: 'person-moved', resume: 'none', ...named }
     }
     let q: Queue | undefined = read.value
     let outcome: FlushOutcome = 'no-command'
@@ -322,7 +354,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
         const refused = modText(`compaction refused: ${errorText(err)}; queued edits wait for the next turn`)
         io.status(refused)
         if (read.value.compact) io.toast(refused)
-        return { outcome: 'host-refused', resume: 'none' }
+        return { outcome: 'host-refused', resume: 'none', ...named }
       }
       outcome = 'compacted'
       const after = await io.readQueue()
@@ -332,12 +364,12 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       // [SP_CTX_02_43] one line for the person per apply that changed something
       if (compacted) logApplied(io, q!.reportId!)
     }
-    if (!q) return { outcome, resume: 'none' }
+    if (!q) return { outcome, resume: 'none', ...named }
     if (compactAsked(q)) {
       const opt = await optimize(io, state, q, turns0, compacted)
-      return { outcome, resume: opt.resume, optimize: opt.optimize }
+      return { outcome, resume: opt.resume, optimize: opt.optimize, ...named }
     }
-    return { outcome, resume: await resume(io, state, q, turns0) }
+    return { outcome, resume: await resume(io, state, q, turns0), ...named }
   } finally {
     state.scheduled = false
     // [SP_CTX_02_42] no session check outlives this Flush

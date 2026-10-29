@@ -10,7 +10,7 @@
 // (InsertDeliveries, [SP_CTX_02_36]). Pure logic behind a small port;
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
-import { hostFrame, isPlainUserRow, isReplacementText, markerKind, PLUGIN_FRAME, PREFIX, resultsOf, rowChars } from './rows'
+import { commandOf, hostFrame, isPlainUserRow, isReplacementText, markerKind, PLUGIN_FRAME, PREFIX, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import { isCount, jsonObject, trimOldest, type Read, type Renew, type Update } from './store'
 
@@ -95,19 +95,20 @@ export const SUMMARY_OPENER = 'This session is being continued from a previous c
 // [SP_CTX_02_02] PersonText: what the person wrote in a user row; "" for a
 // row that is no message of the person. Leading `<ide_opened_file>` and
 // `<system-reminder>` spans are taken off; a slash command's arguments are
-// the person's words, except the mod's own /compact (review round 40).
+// the person's words, except the mod's own /compact (review round 40) and
+// any /rename: a session's name is no message, and the stream-json host shows
+// the mod's own /rename as a command row ([SP_CTX_02_73]).
 export function personText(raw: string): string {
   // [SP_CTX_01_22] an inserted delivery: the person's words, or none of a subagent's or a task's
   const delivered = deliveryWords(raw)
   if (delivered !== undefined) return delivered
   let t = raw.trim()
   for (let m = LEADING_SPAN.exec(t); m; m = LEADING_SPAN.exec(t)) t = t.slice(m[0].length).trim()
-  if (t.includes('<command-name>')) {
-    const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(t)?.[1]?.trim()
-    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(t)?.[1]?.trim() ?? ''
+  const cmd = commandOf(t)
+  if (cmd) {
     // only the mod's own /compact with its exact marker, of now or before (review round 41)
-    if (name === '/compact' && markerKind(args) !== undefined) return ''
-    return args
+    if (cmd.name === '/compact' && markerKind(cmd.args) !== undefined) return ''
+    return cmd.name === '/rename' ? '' : cmd.args
   }
   // a replacement (of now or marked with MARK before phase 28) and the mod's own words
   if (isReplacementText(t) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''

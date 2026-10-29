@@ -1,16 +1,16 @@
 # Implementation Plan: Редактор контексту агента  {#PL_CTX}
 
 > **Code:** PL_CTX
-> **Status:** completed
+> **Status:** in-progress
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-21
+> **Updated:** 2026-10-29
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Specification:** [SP_CTX](./context_editor.sp.md)
 > **Depends on:** none
 > **Used by:** —
 >
-> План реалізації мода-редактора контексту. Фази 1–47 виконано; фаза 47 — тека архівів від кореня проєкту сесії ([PL_CTX_P47](./context_editor.p47.plan.md#PL_CTX_P47)); фаза 38 — можливості хоста, фази 39–46 — курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)): спершу живі ворота, далі дрібні фази ([PL_CTX_DEC_06](#PL_CTX_DEC_06)). Кожна фаза лежить у своєму дочірньому файлі `context_editor.p<NN>.plan.md`; тут — мета, технологічні рішення, потрібні знання, прогрес, таблиця фаз, backlog, рішення і журнал змін. Читати перед вибором наступної роботи з backlog або перед новою фазою.
+> План реалізації мода-редактора контексту. Фази 1–47 виконано, фаза 48 — заголовок сесії за темою задачі ([PL_CTX_P48](./context_editor.p48.plan.md#PL_CTX_P48)) — в роботі; фаза 47 — тека архівів від кореня проєкту сесії ([PL_CTX_P47](./context_editor.p47.plan.md#PL_CTX_P47)); фаза 38 — можливості хоста, фази 39–46 — курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)): спершу живі ворота, далі дрібні фази ([PL_CTX_DEC_06](#PL_CTX_DEC_06)). Кожна фаза лежить у своєму дочірньому файлі `context_editor.p<NN>.plan.md`; тут — мета, технологічні рішення, потрібні знання, прогрес, таблиця фаз, backlog, рішення і журнал змін. Читати перед вибором наступної роботи з backlog або перед новою фазою.
 
 ## Goal
 
@@ -94,6 +94,7 @@
 - [x] [Phase 45 — Рядки хоста: запис і список з `id`](./context_editor.p45.plan.md#PL_CTX_P45)
 - [x] [Phase 46 — Правила курування і тексти навички](./context_editor.p46.plan.md#PL_CTX_P46)
 - [x] [Phase 47 — Тека архівів від кореня проєкту сесії](./context_editor.p47.plan.md#PL_CTX_P47)
+- [x] [Phase 48 — Заголовок сесії за темою задачі](./context_editor.p48.plan.md#PL_CTX_P48)
 
 Порядок фаз — за [PL_CTX_DEC_02](#PL_CTX_DEC_02), [PL_CTX_DEC_04](#PL_CTX_DEC_04), [PL_CTX_DEC_05](#PL_CTX_DEC_05) і [PL_CTX_DEC_06](#PL_CTX_DEC_06); номери фаз — незмінні ідентифікатори, а не черговість.
 - [backlog] Збереження правок після `--resume`; налаштовувані пороги; поширення через маркетплейс
@@ -151,8 +152,11 @@
 | [Phase 45 — Рядки хоста: запис і список з `id`](./context_editor.p45.plan.md#PL_CTX_P45) | `context_editor.p45.plan.md` | completed |
 | [Phase 46 — Правила курування і тексти навички](./context_editor.p46.plan.md#PL_CTX_P46) | `context_editor.p46.plan.md` | completed |
 | [Phase 47 — Тека архівів від кореня проєкту сесії](./context_editor.p47.plan.md#PL_CTX_P47) | `context_editor.p47.plan.md` | completed |
+| [Phase 48 — Заголовок сесії за темою задачі](./context_editor.p48.plan.md#PL_CTX_P48) | `context_editor.p48.plan.md` | completed |
 
 ## Backlog  {#PL_CTX_BACKLOG}
+
+- **Заголовок сесії за темою задачі** (done — [фаза 48](./context_editor.p48.plan.md#PL_CTX_P48), 2026-10-29; taken — [фаза 48](./context_editor.p48.plan.md#PL_CTX_P48), 2026-10-29; queued 2026-10-29; концепт [C_CTX_03_12](./context_editor.methods.concept.md#C_CTX_03_12), DEC_41–DEC_44, 2026-10-29). Розробник: «Чи можна автоматично змінювати заголовок сесії при зміні поточної теми завдання?» Спайк [context_editor_session_title.spike.md](./context_editor_session_title.spike.md) (concluded): мод може запускати `/rename <назва>` через `$.command.run` з відкладеної дії кінця ходу в терміналі й stream-json; заголовок доходить до людини й VS Code; ціна — три рядки в розмові на запуск, у терміналі ще нагадування «The user named this session …». Концепт вирішив: явна операція заголовка агента, перейменування після кінця ходу перед застосуванням, застосування прибирає рядки перейменувань мода, перейменування людини зупиняє мод до кінця сесії; `/rename` без аргументу поза межами. — return when: розробник запустить `/dev-flow spec` для цієї ідеї.
 
 - **Windows: команди хоста без `sh`** (deferred, 2026-10-13). Мод пише файли, створює каталоги й читає `PPID` через `sh -c` (лише POSIX, рішення в Technology Decisions), тож на Windows без POSIX-оболонки сховище недоступне; пакування фази 36 вже обирає інструмент без оболонки (`zip`/`unzip` або `bsdtar`). Повернутись, коли з'явиться потреба запускати мод на Windows: замінити `sh -c` на argv-виклики і `$.fs` там, де вистачає 4 MiB.
 
@@ -331,6 +335,7 @@
 | Date | Change |
 |------|--------|
 | — | Старіші 64 записи — у [context_editor.plan.log.md](./context_editor.plan.log.md) |
+| 2026-10-29 | Фаза 48 «Заголовок сесії за темою задачі» створена з пункту backlog (специфікація `context_editor.title.sp.md`) |
 | 2026-10-21 | Фаза 47 ([PL_CTX_P47](./context_editor.p47.plan.md#PL_CTX_P47), [SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)) — тека архівів від кореня проєкту сесії; статус `completed` → `in-progress` → `completed` (фаза виконана); пункт backlog «Тека архівів іде за поточною текою оболонки» — done, з нього виділено пункт «Архіви лягають у проєкт сесії, а не в дерево, над яким вона працює» |
 | 2026-10-17 | Статус `in-progress` → `completed` (structural-event, `/dev-flow audit docs`): усі 46 фаз `[DONE]`, усі дочірні файли `completed`; backlog лишається відкритим |
 | 2026-10-16 | Фазу 38 завершено: живі сценарії обходу в stream-json (копія мода поруч із керованими налаштуваннями), виправлення ProbeMode і OBSERVE_LATER; backlog — подвійний запис рядка хоста |

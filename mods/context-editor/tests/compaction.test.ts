@@ -1211,3 +1211,17 @@ test('PersonWords — перевірка при застосуванні, collap
   expect(pin >= 0 && person > pin).toBe(true)
   expect(report).toContain('no edit was applied')
 })
+
+// ---- [SP_CTX_02_73] DropRenameRows in the apply
+
+test('HandleCompaction — рядки перейменувань: the row before a rename comes back without its handle; the commit keeps only the runs whose row kept it', async () => {
+  const tags = okRead<TagRegistry>({ ...EMPTY_REGISTRY, title: { set: 'B', runs: [{ after: 'h5', title: 'A' }, { after: 'gone', title: 'B' }] } })
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, tags)
+  const rows: SessionMessage[] = [...conversation(), { role: 'assistant', text: 'done', toolUses: [], handle: 'h5' }]
+  const out = await handleCompaction(io, rows)
+  if (!('messages' in out)) throw new Error(out.skip)
+  const done = out.messages.find(r => r.text === 'done')!
+  expect(done.handle).toBe(undefined)
+  expect(written.tags!.title).toEqual({ set: 'B' })
+  expect(written.queue!.report).toContain('removed the rows of 1 rename(s) the mod ran')
+})

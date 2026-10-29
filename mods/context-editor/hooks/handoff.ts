@@ -35,7 +35,8 @@ import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
-import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, stateInput, stateRow, type Tag, type TagRegistry } from './tags'
+import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, stateInput, stateRow, withTitle, type Tag, type TagRegistry } from './tags'
+import { carryTitle } from './title'
 import { movedSince, type Turns } from './turns'
 import { apiBlocks, DOCUMENT_FRAME, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
 import { dropPulled, type Pulled } from './repair'
@@ -822,7 +823,8 @@ export async function carryRegistries(
         // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one
         const { reintroduce: _, ...copy } = dropLastApply(out.registry)
         // [SP_CTX_02_67] the registry's copy carries the items the seed's state edits made
-        return { ...copy, introduced: false, ...(s.items ? { items: s.items.items, nextItem: s.items.nextItem } : {}) }
+        // [SP_CTX_02_74] CarryTitle: the title to show and whether the person chose it
+        return withTitle({ ...copy, introduced: false, ...(s.items ? { items: s.items.items, nextItem: s.items.nextItem } : {}) }, carryTitle(copy.title))
       })
       if (carried === 'carried') s.report.notesDropped = dropped
       return carried

@@ -24,6 +24,7 @@ When a test, a tool output or a later read refutes an earlier conclusion of your
 
 - Text from a source you do not trust (a web page, a file outside the project, a subagent's report with someone else's content) goes into a replacement as a verbatim quote with its source, `the page says: "…"`, not as your own conclusion.
 - Each `summarize` replacement names its source. Before you call anything in your own replacement made up, open its archive (`original: <path>`).
+- Older replacements read `[context-editor] you read …, then replaced …`: yours too.
 - When an edit removes the only source of something you quoted later, `context_edit` adds a Note and the replacement says `which you quoted from later`: keep those facts in the summary, or summarize instead of a drop.
 - Where your edits removed your own `context_*` calls, a row `Later, your context_* calls here were removed when your edits applied; you had called …` says what you called. You made those calls.
 

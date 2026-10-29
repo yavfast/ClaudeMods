@@ -29,6 +29,7 @@ import {
 import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
+import { isTitleState, titleOp, type TitleError, type TitleState } from './title'
 import {
   blockName,
   carrierRow,
@@ -106,6 +107,8 @@ export type TagRegistry = {
   lastApply?: { at: number; tokensBefore: number }
   // [SP_CTX_01_10] [SP_CTX_02_37] the soft hint's state
   hint?: HintState
+  // [SP_CTX_01_33] the session title (phase 48)
+  title?: TitleState
 }
 
 // [SP_CTX_01_10] TagRegistry.hint: `marks` — AliasRegistry.next at the last
@@ -118,6 +121,14 @@ export function isHintState(v: unknown): v is HintState {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
   const h = v as Record<string, unknown>
   return isCount(h.marks, 1) && (h.tokens === undefined || isCount(h.tokens, 0)) && (h.proposed === undefined || isCount(h.proposed, 0))
+}
+
+// [SP_CTX_01_33] The registry with `title` set, or without the field when
+// undefined; the same object when nothing changes.
+export function withTitle(reg: TagRegistry, title: TitleState | undefined): TagRegistry {
+  if (title === reg.title) return reg
+  const { title: _, ...rest } = reg
+  return title ? { ...rest, title } : rest
 }
 
 export const EMPTY_REGISTRY: TagRegistry = { tags: [], turn: 0, firstPromptPinned: false, introduced: false, notes: [], nextNote: 1 }
@@ -203,6 +214,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     badNoteFields(reg.notes, reg.nextNote),
     reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
     reg.hint !== undefined && !isHintState(reg.hint) && 'hint',
+    reg.title !== undefined && !isTitleState(reg.title) && 'title',
     reg.charsPerToken !== undefined && !(typeof reg.charsPerToken === 'number' && reg.charsPerToken >= CALIB_MIN && reg.charsPerToken <= CALIB_MAX) && 'charsPerToken',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
@@ -365,6 +377,7 @@ export type TagError =
   | 'STAGE_FIELDS'
   | 'NO_STAGE'
   | 'PERSON_TAG'
+  | TitleError
 
 // [SP_CTX_02_11] A stage event of the batch, in request order: an open with
 // its text, or a close with its block.
@@ -418,7 +431,19 @@ export function applyTagRequests(
   raws.forEach((raw, n) => {
     const reject = (code: TagError, why: string) => void out.rejected.push({ code, reason: `tag ${n + 1}: ${why} (${code})` })
     const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
-    if (r.op !== 'add' && r.op !== 'remove' && r.op !== 'open' && r.op !== 'close') return reject('BAD_OP', `op must be "add", "remove", "open" or "close"`)
+    if (r.op !== 'add' && r.op !== 'remove' && r.op !== 'open' && r.op !== 'close' && r.op !== 'title')
+      return reject('BAD_OP', `op must be "add", "remove", "open", "close" or "title"`)
+    // [SP_CTX_02_70] TitleOp: the title the mod gives the session when this turn ends
+    if (r.op === 'title') {
+      const t = titleOp(stages.title, r)
+      if (t.changed) {
+        stages = withTitle(stages, t.title)
+        out.changed = true
+      }
+      out.lines.push(...t.lines)
+      if (t.error) reject(t.error.code, t.error.why)
+      return
+    }
     if (r.op === 'close') {
       if (Object.keys(r).some(k => k !== 'op')) return reject('STAGE_FIELDS', 'close takes no field but "op"')
       if (!stages.stage)

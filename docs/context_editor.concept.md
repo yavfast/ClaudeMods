@@ -3,7 +3,7 @@
 > **Code:** C_CTX
 > **Status:** active
 > **Created:** 2026-10-08
-> **Updated:** 2026-10-17
+> **Updated:** 2026-10-29
 > **Author:** Claude (Opus 5.5) разом з alexandr.yavorsky
 > **Owner:** супровідник модів проєкту ClaudeMods
 > **Complexity:** medium
@@ -14,6 +14,7 @@
 > **Spike:** [context_editor_session](./context_editor_session.spike.md) — нова сесія з очищеним контекстом (DEC_11); [context_editor_handoff_long](./context_editor_handoff_long.spike.md) — неінтерактивний хост, довгі сесії, засів очищеної сесії (DEC_02, DEC_11–DEC_14); [context_editor_media](./context_editor_media.spike.md) — медіа в промптах людини і межі вікон (фази 4–5); [context_editor_attachments](./context_editor_attachments.spike.md) — доставки хоста посеред ходу (фаза 20); [context_editor_efficiency](./context_editor_efficiency.spike.md) — модель ефективності стиснення (фази 22–23); [context_editor_cache](./context_editor_cache.spike.md) — кеш промпту при застосуванні (фаза 23)
 > **Spike (фаза 24):** [context_editor_host_attachments](./context_editor_host_attachments.spike.md) — застарілі вкладення хоста після застосувань (DEC_22)
 > **Spike (курування):** [context_editor_uses](./context_editor_uses.spike.md) — інші застосування вільного редагування попередніх повідомлень ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), DEC_33–DEC_40)
+> **Spike (заголовок):** [context_editor_session_title](./context_editor_session_title.spike.md) — заголовок сесії за темою задачі ([C_CTX_03_12](./context_editor.methods.concept.md#C_CTX_03_12), DEC_41–DEC_44)
 > **Specification:** [SP_CTX](./context_editor.sp.md)
 > **Plan:** [PL_CTX](./context_editor.plan.md)
 > **Children:** [context_editor.core.concept.md](./context_editor.core.concept.md) — ядро й інструменти (active); [context_editor.methods.concept.md](./context_editor.methods.concept.md) — методи оптимізації контексту (active); [context_editor.curation.concept.md](./context_editor.curation.concept.md) — курування історії (active)
@@ -24,7 +25,7 @@
 
 - [1. Philosophy](#C_CTX_01) — навіщо агенту редагувати свій контекст і які обмеження хоста це окреслюють
 - [2. Domain Model](./context_editor.core.concept.md#C_CTX_02) — у ядрі: розмова, рядки, пари викликів, правки, черга, архів, етапи, телеметрія, слот стану, нотатки; потоки даних
-- [3. Mechanisms](./context_editor.core.concept.md#C_CTX_03) — у ядрі: черга й застосування, теги, псевдоніми, нотатки, вкладення хоста, старі сесії, обхід хуків; у методах оптимізації — [§3.2](./context_editor.methods.concept.md#C_CTX_03_02) етапи й оптимізація, [§3.6](./context_editor.methods.concept.md#C_CTX_03_06) нова сесія, [§3.9](./context_editor.methods.concept.md#C_CTX_03_09) результати субагентів
+- [3. Mechanisms](./context_editor.core.concept.md#C_CTX_03) — у ядрі: черга й застосування, теги, псевдоніми, нотатки, вкладення хоста, старі сесії, обхід хуків; у методах оптимізації — [§3.2](./context_editor.methods.concept.md#C_CTX_03_02) етапи й оптимізація, [§3.6](./context_editor.methods.concept.md#C_CTX_03_06) нова сесія, [§3.9](./context_editor.methods.concept.md#C_CTX_03_09) результати субагентів, [§3.12](./context_editor.methods.concept.md#C_CTX_03_12) заголовок сесії
 - [4. Integration Points](./context_editor.core.concept.md#C_CTX_04) — у ядрі: події й сервіси хоста, від яких залежить мод, і що він надає агенту та людині
 - [Набір концептів](#C_CTX_SET) — дочірні концепти: що тримає кожен і їхній стан
 - [5. Design Decisions](#C_CTX_DEC) — покажчик рішень усього набору і рішення про поділ концепту
@@ -91,7 +92,7 @@
 | Концепт | Що тримає | Status |
 |---------|-----------|--------|
 | [Ядро й інструменти](./context_editor.core.concept.md) | доменна модель (§2), черга й застосування правок, граничні випадки, теги, псевдоніми викликів, службові нотатки, вкладення хоста, старі сесії, обхід хуків (§3), точки інтеграції (§4) і рішення про них | active |
-| [Методи оптимізації контексту](./context_editor.methods.concept.md) | етапи, мітка оптимізації, телеметрія й м'яке нагадування (§3.2), передача в нову сесію (§3.6), обрізання результатів субагентів (§3.9) і рішення про них | active |
+| [Методи оптимізації контексту](./context_editor.methods.concept.md) | етапи, мітка оптимізації, телеметрія й м'яке нагадування (§3.2), передача в нову сесію (§3.6), обрізання результатів субагентів (§3.9), заголовок сесії за темою задачі (§3.12) і рішення про них | active |
 | [Курування історії](./context_editor.curation.concept.md) | правки заради курсу роботи: принципи легітимного забування, позначений урок, правки за зовнішнім сигналом, походження змісту, інваріанти людини (§6) і рішення про них | active |
 
 ## 5. Design Decisions  {#C_CTX_DEC}
@@ -140,6 +141,10 @@
 | [DEC_38](./context_editor.curation.concept.md#C_CTX_DEC_38) | Чи змінює агент повідомлення людини і хто знімає піни | курування |
 | [DEC_39](./context_editor.curation.concept.md#C_CTX_DEC_39) | Чи описує агент вставлене людиною | курування |
 | [DEC_40](./context_editor.curation.concept.md#C_CTX_DEC_40) | Чи лишається статус змісту в заміні після воріт | курування |
+| [DEC_41](./context_editor.methods.concept.md#C_CTX_DEC_41) | Звідки мод бере сигнал і текст заголовка сесії | методи |
+| [DEC_42](./context_editor.methods.concept.md#C_CTX_DEC_42) | Що робити з рядками перейменування мода | методи |
+| [DEC_43](./context_editor.methods.concept.md#C_CTX_DEC_43) | Що робить мод після перейменування людиною | методи |
+| [DEC_44](./context_editor.methods.concept.md#C_CTX_DEC_44) | Коли мод перейменовує і що переносить передача | методи |
 
 ### DEC_32 — Як поділити концепт, що переріс поріг  {#C_CTX_DEC_32}
 
@@ -163,6 +168,7 @@
 ## Changelog
 
 | Date | Change |
+| 2026-10-29 | Заголовок сесії за темою задачі ([C_CTX_03_12](./context_editor.methods.concept.md#C_CTX_03_12), спайк [context_editor_session_title](./context_editor_session_title.spike.md)): рішення DEC_41–DEC_44 у покажчику, рядок спайку в заголовку, §3.12 у змісті й складі набору |
 |------|--------|
 | 2026-10-17 | structural-event (аудит dev-flow): дочірній концепт [курування](./context_editor.curation.concept.md) — draft → active, механізми §6 реалізовано фазами 39–46 PL_CTX; старіші рядки Changelog — у журналі |
 | 2026-10-15 | [C_CTX_DEC_40](./context_editor.curation.concept.md#C_CTX_DEC_40) в покажчику рішень: після воріт фази 39 заміна несе лише походження змісту, без статусу (рішення розробника «Лише джерело, без статусу»); §1, огляд меж і таблиця набору узгоджено |

@@ -147,7 +147,9 @@ import {
   type TagArgs,
   type TagIO,
   type TagRegistry,
+  withTitle,
 } from './tags'
+import { isPersonRename, personRename, runRename, titleDue, type RenameIO } from './title'
 
 // [SP_CTX_01_07] [SP_CTX_02_15] The storage of the session: published once
 // its preparation ends, one preparation per session id at a time. Every
@@ -754,6 +756,24 @@ function flushIO($: EngineInterface): FlushIO {
     // one attempt; a refusal rejects with the host's text
     compact: args => ownCompact($, args),
     compactPassed: wait => passedNow($, wait),
+    // [SP_CTX_02_72] RenameAtTurnEnd in the storage taken once per step
+    title: {
+      due: async () => {
+        try {
+          const dir = await storageDir($)
+          if (!dir) return false
+          const read = await stores($, dir).tags.read()
+          return read.state === 'ok' && titleDue(read.value.title)
+        } catch (err) {
+          quietFailure($, 'title due')(err)
+          return false
+        }
+      },
+      rename: async () => {
+        const dir = await storageDir($)
+        return dir ? runRename(renameIO($, dir)) : undefined
+      },
+    },
     // [SP_CTX_02_34] CalibrateBeforeApply in the storage taken once, the
     // registry's view from the cache, its change on the registry's chain
     calibrate: async () => {
@@ -777,6 +797,34 @@ function flushIO($: EngineInterface): FlushIO {
     sessionId: () => $.session.id(),
     turns,
   }
+}
+
+// [SP_CTX_02_72] RunRename's ports in `dir`: the registry on its chain, the
+// built-in /rename through $.command.run (one attempt).
+function renameIO($: EngineInterface, dir: string): RenameIO {
+  const tags = stores($, dir).tags
+  return {
+    readTitle: async () => {
+      const read = await tags.read()
+      return read.state === 'ok' ? { state: 'ok', value: read.value.title } : { state: read.state }
+    },
+    // $.session.messages() carries no handles: the last visible row RecordHostRows saw
+    lastHandle: async () => hostMem.last?.handle,
+    rename: async args => void (await $.command.run({ command: 'rename', args })),
+    updateTitle: change => updateOf(tags)(reg => {
+      const next = withTitle(reg, change(reg.title))
+      return next === reg ? undefined : next
+    }),
+    debug: text => $.ui.log(modText(text), { to: 'debug' }),
+  }
+}
+
+// [SP_CTX_02_71] PersonRename in the current session's storage: on the
+// registry's chain; an unreadable registry is left as it is.
+async function personRenamed($: EngineInterface, args: string): Promise<void> {
+  const dir = await storageDir($)
+  if (!dir) return
+  await updateOf(stores($, dir).tags)(reg => withTitle(reg, personRename(reg.title, args)))
 }
 
 // [SP_CTX_02_42] The person's /compact bound to the host. Flush's timer
@@ -1398,6 +1446,15 @@ export const register: Register = on => {
     // [SP_CTX_02_20] no mod prefix: the host shows the reply under the plugin's name
     next.called ? next(e) : { text: `handoff failed: ${next.error.kind}` },
   )
+
+  // [SP_CTX_02_71] The person's /rename wins over the agent's titles for the
+  // rest of the session; the command always goes on. The mod's own
+  // $.command.run('rename') never reaches this hook (spike); another
+  // plugin's run (origin plugin) is no person's.
+  on('command.run', { command: 'rename' }, async ($, e, next) => {
+    if (isPersonRename(e) && !(await isProbe($))) await personRenamed($, e.args ?? '').catch(quietFailure($, 'person rename'))
+    return next(e)
+  }).catch(($, e, next) => next(e))
 
   // [SP_CTX_02_42] The person's plain /compact: the agent compresses in a
   // compression turn; `/compact host` runs the host's summary; other args

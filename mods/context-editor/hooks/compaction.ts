@@ -33,7 +33,8 @@ import { apiChars, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
 import { rebindAfter } from './notes'
 import { ITEMS_UNSAVED } from './state'
-import { dropLastApply, pinnedTargets, pruneDeadTags, stateInput, type TagRegistry } from './tags'
+import { dropLastApply, pinnedTargets, pruneDeadTags, stateInput, withTitle, type TagRegistry } from './tags'
+import { keepRuns } from './title'
 
 // [SP_CTX_01_06] The file extension of a media file (its home: edits.ts).
 export { mediaExt } from './edits'
@@ -236,6 +237,8 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     apiTruncated,
     toolRefs,
     hostRows,
+    // [SP_CTX_02_73] the mod's renames whose rows the apply drops
+    ...(tagsRead.state !== 'unreadable' && tagsRead.value.title?.runs?.length ? { renames: tagsRead.value.title.runs } : {}),
     ...(io.cwd ? { cwd: io.cwd } : {}),
     ...(q.keepCache ? { freeze: { api } } : {}),
     ...(state ? { state } : {}),
@@ -316,8 +319,10 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   const rebind = (reg: TagRegistry) => {
     const out = rebindAfter(reg, messages, after, done, q.edits, produced)
     const withItems = items ? { ...out.registry, items: items.items, nextItem: items.nextItem } : out.registry
+    // [SP_CTX_02_73] a rename's record stays while its row came back with its handle
+    const titled = withTitle(withItems, keepRuns(withItems.title, after))
     // [SP_CTX_02_28] the telemetry measures what this apply freed
-    return { registry: done.length && tokensBefore !== undefined ? { ...withItems, lastApply: { at: id, tokensBefore } } : withItems, dropped: out.dropped }
+    return { registry: done.length && tokensBefore !== undefined ? { ...titled, lastApply: { at: id, tokensBefore } } : titled, dropped: out.dropped }
   }
   // [SP_CTX_02_07] Commit: the waits for the registries' chains are over, so
   // every change is made from the registries as they are now, and nothing is

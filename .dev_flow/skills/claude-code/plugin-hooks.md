@@ -135,6 +135,7 @@ state: stale
 | 74 | Thinking після правки посередині: недокументована поведінка хоста — лише спостереження, не основа дизайну | [plugin-hooks-context.md#p74](plugin-hooks-context.md#p74) |
 | 75 | Повторне `Read` незміненого файлу — заглушка, а не вміст | [plugin-hooks-views.md#p75](plugin-hooks-views.md#p75) |
 | 76 | `$.session.cwd()` іде за `cd` оболонки, `$.session.root()` — ні | [plugin-hooks-api.md#p76](plugin-hooks-api.md#p76) |
+| 77 | `/rename` з плагіна змінює заголовок сесії в обох хостах; три рядки в розмові на запуск | [plugin-hooks-commands.md#p77](plugin-hooks-commands.md#p77) |
 
 ## References
 

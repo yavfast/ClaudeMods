@@ -10,7 +10,7 @@
 // without its handle (HostList, [SP_CTX_02_61]). Pure logic behind a Store;
 // register.ts binds it to `$` on the `hostrows` chain.
 import type { SessionMessage } from 'claude-code'
-import { hostKind, markerKind, REPAIR_MARKER, type HostKind } from './rows'
+import { commandOf, hostKind, markerKind, REPAIR_MARKER, type HostKind } from './rows'
 import { isCount, jsonObject, trimOldest, type Read, type Renew } from './store'
 
 // [SP_CTX_01_32]
@@ -136,11 +136,8 @@ function personPrompt(e: HostEvent, text: string): boolean {
 export function headOf(kind: AfterKind, text: string, tools: readonly string[]): string {
   if (kind === 'result') return 'the result of a tool call'
   if (kind === 'response') return text.trim() ? quoted('your text', text) : line(`your call ${tools[0] ?? '?'}`, MAX_HEAD - 1)
-  const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(text)?.[1]?.trim()
-  if (name) {
-    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim() ?? ''
-    return quoted('the command', `${name.startsWith('/') ? name : `/${name}`}${args ? ` ${args}` : ''}`)
-  }
+  const cmd = commandOf(text)
+  if (cmd) return quoted('the command', `${cmd.name}${cmd.args ? ` ${cmd.args}` : ''}`)
   return quoted('the prompt', text)
 }
 

@@ -10,6 +10,7 @@ import { MARK } from './rows'
 import { MAX_STAGE_NAME, SKILL } from './stages'
 import { MAX_STATE_ITEM, MAX_STATE_ITEMS, STATE_KINDS } from './state'
 import { MAX_TAGS } from './tags'
+import { MAX_TITLE } from './title'
 
 export const PLUGIN = 'context-editor'
 export const LIST = 'context_list'
@@ -127,13 +128,15 @@ export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation and
 
 Targets of add and remove: exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias "cN" or "last") or "index" (a row in ${LIST}); a disposable range: "index" and "to", its last row.
 
-Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, cleanup candidates, context telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
+Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, candidates, telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
+
+Title: {"op":"title","text":"<topic>"} when the task's topic changes; the session is renamed after the turn unless the person named it.
 
 Kinds (op "add"):
-- "pin": nothing may edit the target, neither you nor the replacements of disposable tags. Pins are yours to set and remove.
-- "disposable" + "note": once you close a stage or move on from a block you marked, the target is replaced by your note (a tool result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
-- "review" (optional "ttl_turns"): a marker for yourself, shown once ttl_turns completed turns have passed. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
-- "state": your one state slot (task state, plan), an assistant text row by "index"; change it by a rewrite of that row, or by the state op of ${EDIT} once it has items, never append a new one. A new state tag moves the slot.
+- "pin": nothing may edit the target, not even a disposable tag's replacement. Pins are yours to set and remove.
+- "disposable" + "note": once you close a stage or move on from a block you marked, your note replaces the target (a result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
+- "review" (optional "ttl_turns"): a marker for yourself, shown after ttl_turns completed turns. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
+- "state": your one state slot, an assistant text row by "index"; change it by a rewrite of that row, or by the state op of ${EDIT} once it has items, never append a new one. A new state tag moves the slot.
 
 A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PLUGIN}:${SKILL}.`
 
@@ -181,6 +184,11 @@ const TAG_SCHEMA = {
             required: ['op', 'stage'],
           },
           { type: 'object', properties: { op: { const: 'close' } }, required: ['op'] },
+          {
+            type: 'object',
+            properties: { op: { const: 'title' }, text: { type: 'string', maxLength: MAX_TITLE, description: 'The session title: the topic of the task, one line.' } },
+            required: ['op', 'text'],
+          },
         ],
       },
     },

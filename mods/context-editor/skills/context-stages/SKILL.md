@@ -35,7 +35,7 @@ Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: s
 
 Usually keep verbatim the rules and skills still in force and the conclusions you need next. A `[pin]` target cannot be edited; pins are yours to set and remove (the mod pins only a handoff's document or seed summary).
 
-Edits apply when your turn ends: end it with a one-line status, and the session resumes by itself (`context_edit` gives the options). An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line). Your `context_*` calls leave the conversation; tags and notes stay.
+Edits apply when your turn ends: end it with a one-line status, and the session resumes by itself. An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit if that is within the last ~20 positions when the turn ends (`Cache:` line). Your `context_*` calls leave the conversation; tags and notes stay.
 
 ## Dead ends
 
@@ -47,32 +47,32 @@ When you finish your turn for the person and the block is done, end your answer 
 
 [context-editor: optimize]
 
-- Only alone on the last non-empty line; mid-text, sharing its line, or in the `/compact` turn it does nothing.
+- Only alone on the last non-empty line; elsewhere, or in the `/compact` turn, it does nothing.
 - It closes the open stage (if none: the block since the last closed one; a stage closed by the tool in that turn stays the block). The block then waits; nothing is compressed.
 - The next prompt names the block: compress it in that turn if the work moves to the next stage, else leave it. Opening a stage reports it with indexes; that or an accepted `context_edit` ends the wait and queues your `disposable` replacements.
 - Following a plan on your own: open a stage per phase; at the next one compress the previous block and end the turn with a status line; the session resumes. Mid-work, close stages by the tool.
 
 ## Telemetry
 
-`context_list` with `"count":0` gives the header alone (its description lists the lines). `Effect: … M reread(s) of compressed content`: many mean you compress too much. Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line (as the context grows, or with the person's next prompt after much reading) proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
+`context_list` with `"count":0` gives the header alone. `Effect: … M reread(s) of compressed content`: many mean you compress too much. Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line (as the context grows, or with the person's next prompt after much reading) proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
 
 ## Candidates
 
 - `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: superseded]` a read of a file whose later read showed changed content: outdated too; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
 - `[disposable: note]`: your own replacement (see Dead ends).
 
-The close report lists the block's candidates by reason, counts its `~` pairs and gives ready replacement texts for outdated and duplicate reads.
+The close report lists them by reason, with ready replacement texts for outdated and duplicate reads.
 
 ## State slot
 
-Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state at the end. Or keep it as items: `context_edit` with `{"op":"state","changes":[{"do":"add","kind":"plan","text":"…"}]}` (`set`, `mark` harmful/outdated, `unmark`, `remove` by id such as `p3`); the apply rebuilds the slot from them, and while it has items only the `state` op changes it. The tag follows the rebuilt row. A new `state` tag moves the slot. Each update is an apply: do it together with a block's edits, not on its own.
+Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state at the end. Or keep it as items: `context_edit` with `{"op":"state","changes":[{"do":"add","kind":"plan","text":"…"}]}` (`set`, `mark` harmful/outdated, `unmark`, `remove` by id such as `p3`); the apply rebuilds the slot from them, and while it has items only the `state` op changes it. The tag follows the rebuilt row. Each update is an apply: do it together with a block's edits, not on its own.
 
 ## Notes
 
 `context_note` keeps notes at no token cost (its description gives the ops and where they show).
 
 - Mark at once what to drop or compress later, and how: `{"notes":[{"op":"add","ref":"last","text":"drop after the fix is verified"}]}`.
-- `"remind_in_turns":2` brings a note back once, two turns later. Link rows by what they hold.
+- `"remind_in_turns":2` brings a note back once, two turns later.
 
 Write about the content, not row numbers: indexes change after an apply. A stage close lists the notes in its block.
 
@@ -80,7 +80,8 @@ Write about the content, not row numbers: indexes change after an apply. A stage
 
 Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. You made the replacement; the source it names (`the full output of Read docs/x.md`) says where its content came from. Before you call anything in it made up, open the archive.
 
-- `… summarize call replaced the full output of <source> you had read here …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours. Older ones read `[context-editor] you read …, then replaced …`.
+- `… summarize call replaced the full output of <source> you had read here …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
 - `(original: <path>, open with Read)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
 - Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command; `… repair the resumed conversation …`: the mod dropped answers a resume had loaded twice; earlier thinking is gone.
+- `{"op":"title","text":"…"}` in `context_tag` names the session when the task's topic changes. `/rename`, `Session renamed to: …`, `The user named this session …` right after a turn where you set one: the mod's, removed by the next apply; elsewhere: the person's.
 - `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the `/compact` turn, a handoff's document: service texts of the mod.

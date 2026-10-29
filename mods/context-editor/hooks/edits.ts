@@ -3,6 +3,7 @@ import { personText } from './deliveries'
 import { isMediaBlock, matchPrompts } from './media'
 import { applyChanges, checkChanges, draftChanges, MAX_STATE_ITEMS, NO_ITEM_NOW, TOO_MANY_ITEMS, NO_STATE_SLOT, SLOT_TOO_LONG, STATE_CONFLICT, STATE_GONE, STATE_ITEMS, stateText, type DraftItem, type StateChange, type StateItem } from './state'
 import { detachNote, HOST_EXCLUSIVE, HOST_ID, HOST_MEDIA, HOST_TWICE, HOST_UNKNOWN, hostRecord, type HostRowRecord } from './hostrows'
+import { isRenameRow, type TitleRun } from './title'
 import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
@@ -1717,6 +1718,8 @@ export type ApplyOptions = {
   state?: StateInput
   // [SP_CTX_02_61] the host rows' records read for this apply; absent: none
   hostRows?: readonly HostRowRecord[]
+  // [SP_CTX_02_73] the mod's renames whose rows are still in the conversation
+  renames?: readonly TitleRun[]
 }
 
 // [SP_CTX_02_67] What run state starts from, and (ApplyEdits' `state`) what
@@ -1995,6 +1998,28 @@ export function applyEdits(
   const hostNamed = new Set<string>()
   const detached = new Set<string>()
   const records = options.hostRows ?? []
+  // the checks of a collapse: without its handle the row's media would be
+  // lost, or is unknown outside the API window
+  const detachBlocked = (inAt: number, at: number): 'media' | 'window' | undefined => {
+    const before = input[inAt]!
+    const results = resultsOf(before)
+    const known = options.knownResults
+    const prompt = isPlainUserRow(before)
+    if (
+      results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id }))) ||
+      mediaOwners.has(ownerKey({ row: inAt })) ||
+      (prompt && (options.unmatchedPromptMedia ?? 0) > 0)
+    )
+      return 'media'
+    const firstKnown = known ? rows.findIndex(r => resultsOf(r).some(t => known.has(t.tool_use_id))) : -1
+    if ((known && results.some(t => !known.has(t.tool_use_id))) || (prompt && !!options.apiTruncated && (firstKnown < 0 || at < firstKnown))) return 'window'
+    return undefined
+  }
+  const detachRow = (at: number) => {
+    const row = rows[at]!
+    const results = resultsOf(row)
+    rows[at] = results.length ? plain(row, { toolResults: results.map(t => ({ ...stripResult(t), text: toolRefText(t, options.toolRefs) })) }) : plain(row, {})
+  }
   for (const edit of hostDrops) {
     const name = describeEdit(edit)
     const rec = hostRecord(records, edit.host)
@@ -2020,26 +2045,12 @@ export function applyEdits(
       hostLines.push(`${rec.id} went with the rows your edits replaced.`)
       continue
     }
-    const before = input[inAt]!
-    const results = resultsOf(before)
-    const known = options.knownResults
-    const prompt = isPlainUserRow(before)
-    // the checks of a collapse: without its handle the row's media would be lost
-    if (
-      results.some(t => mediaOwners.has(ownerKey({ tool_use_id: t.tool_use_id }))) ||
-      mediaOwners.has(ownerKey({ row: inAt })) ||
-      (prompt && (options.unmatchedPromptMedia ?? 0) > 0)
-    ) {
-      report.failed.push(`${name}: ${HOST_MEDIA(rec.id)}`)
+    const blocked = detachBlocked(inAt, at)
+    if (blocked) {
+      report.failed.push(`${name}: ${blocked === 'media' ? HOST_MEDIA(rec.id) : 'outside the API window; media unknown'}`)
       continue
     }
-    const firstKnown = known ? rows.findIndex(r => resultsOf(r).some(t => known.has(t.tool_use_id))) : -1
-    if ((known && results.some(t => !known.has(t.tool_use_id))) || (prompt && !!options.apiTruncated && (firstKnown < 0 || at < firstKnown))) {
-      report.failed.push(`${name}: outside the API window; media unknown`)
-      continue
-    }
-    const row = rows[at]!
-    rows[at] = results.length ? plain(row, { toolResults: results.map(t => ({ ...stripResult(t), text: toolRefText(t, options.toolRefs) })) }) : plain(row, {})
+    detachRow(at)
     detached.add(rec.after)
     const after = records.filter(r => r.after === rec.after)
     report.originals.push({ edit: name, rows: after.map(r => ({ role: 'user' as const, text: r.text, toolUses: [] })) })
@@ -2053,6 +2064,31 @@ export function applyEdits(
     if (detach) hostLines.push(`${rec.id}: ${detach}`)
     firsts.push(inAt)
   }
+  // [SP_CTX_02_73] DropRenameRows: the row before each rename of the mod
+  // comes back without its handle too, unless a host row the agent may not
+  // have read hangs on it; the stream-json host's visible command row goes.
+  let renamesDropped = 0
+  for (const run of options.renames ?? []) {
+    const inAt = input.findIndex(r => r.handle === run.after)
+    if (inAt < 0) continue
+    if (!detached.has(run.after) && records.some(r => r.after === run.after)) continue
+    const at = rows.findIndex(r => r.handle === run.after)
+    if (at < 0 && !detached.has(run.after)) continue
+    if (!detached.has(run.after)) {
+      if (detachBlocked(inAt, at)) continue
+      detachRow(at)
+      detached.add(run.after)
+    }
+    // a detached row has no handle: find it by the input's row after it; it
+    // stays while a host row hangs on it (the stream-json command row)
+    const next = input[inAt + 1]
+    const nextAt = next ? rows.indexOf(next) : -1
+    const hung = next?.handle !== undefined && records.some(r => r.after === next.handle)
+    if (nextAt >= 0 && !hung && isRenameRow(rows[nextAt], run.title)) rows.splice(nextAt, 1)
+    renamesDropped++
+    firsts.push(inAt)
+  }
+  if (renamesDropped) hostLines.push(`removed the rows of ${renamesDropped} rename(s) the mod ran`)
   if (hostLines.length) report.hostLines = hostLines
 
   // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix: every applied step touches

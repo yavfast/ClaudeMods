@@ -198,6 +198,15 @@ export function markerKind(text: string | undefined): MarkerKind | undefined {
   return undefined
 }
 
+// A slash command's row text (`<command-name>` and `<command-args>`, as the
+// host writes it): the name with its leading "/" and the trimmed args.
+export function commandOf(text: string): { name: string; args: string } | undefined {
+  const name = /<command-name>([\s\S]*?)<\/command-name>/.exec(text)?.[1]?.trim()
+  if (!name) return undefined
+  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim() ?? ''
+  return { name: name.startsWith('/') ? name : `/${name}`, args }
+}
+
 // ---- row predicates
 
 // The tool results of a row; none for a row without them.

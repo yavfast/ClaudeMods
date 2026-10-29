@@ -8,7 +8,7 @@
 |------|----|--------|-------|
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): спільні філософія й обмеження хоста, склад набору, покажчик рішень C_CTX_DEC_*; дочірні концепти — ядро й інструменти, методи оптимізації контексту, курування історії |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, покажчик рішень SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
-| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | completed | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–47 виконано (38 — можливості хоста, 39–46 — курування історії, 47 — тека архівів від кореня проєкту сесії); backlog відкритий |
+| [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–47 виконано, фаза 48 (заголовок сесії) в роботі (38 — можливості хоста, 39–46 — курування історії, 47 — тека архівів від кореня проєкту сесії); backlog відкритий |
 
 ## Maps
 
@@ -32,6 +32,7 @@
 | [context_editor_subagents.spike.md](context_editor_subagents.spike.md) | concluded | Мод у субагентах: читання й переписування розмови субагента (компактизація хоста з `agentId`, `session.append` з `tool-result`), доставка посібника й інструментів, економіка редагування реальних субагентів |
 | [context_editor_probe.spike.md](context_editor_probe.spike.md) | concluded | Процес-зонд можливостей хоста: чи доходять хуки мода (`session.compact`, вкладення) на 2.1.296 і 2.1.299 |
 | [context_editor_hostrows.spike.md](context_editor_hostrows.spike.md) | concluded | Рядки, які додає хост (`isMeta`: розгорнуті навички, звіти субагентів, примітки до команд): ні перегляд `$.session.messages()`, ні `e.messages` обробника їх не мають; після застосування хост повертає кожен за рядком перед ним, якщо той зберіг `handle`; мод записує їх при `session.append` |
+| [context_editor_session_title.spike.md](context_editor_session_title.spike.md) | concluded | Заголовок сесії за темою задачі: `/rename` через `$.command.run` працює в терміналі й stream-json, заголовок доходить до людини й VS Code; ціна — три рядки в розмові на запуск, у терміналі ще нагадування «The user named this session» |
 | [context_editor_uses.spike.md](context_editor_uses.spike.md) | concluded | Інші застосування вільного редагування попередніх повідомлень, крім стиснення: правка історії як важіль поведінки, урок замість сирої невдачі, «вигляд ≠ запис», «присвоювати дію, а не зміст»; thinking-підписи й авто-режим як обмеження |
 
 ## ID prefixes
@@ -39,8 +40,8 @@
 | Prefix | File |
 |--------|------|
 | `C_CTX_01`, `C_CTX_SET` (набір концептів), `C_CTX_DEC` (покажчик рішень), `C_CTX_DEC_32` | [context_editor.concept.md](context_editor.concept.md) |
-| `C_CTX_02`, `C_CTX_03` (крім 03_02, 03_06, 03_09), `C_CTX_04`; `C_CTX_DEC_01`–`03`, `05`–`10`, `18`, `20`–`22`, `24`–`26`, `28`, `29`, `31` | [context_editor.core.concept.md](context_editor.core.concept.md) |
-| `C_CTX_03_02`, `C_CTX_03_06`, `C_CTX_03_09`; `C_CTX_DEC_04`, `11`–`17`, `19`, `23`, `27`, `30` | [context_editor.methods.concept.md](context_editor.methods.concept.md) |
+| `C_CTX_02`, `C_CTX_03` (крім 03_02, 03_06, 03_09, 03_12), `C_CTX_04`; `C_CTX_DEC_01`–`03`, `05`–`10`, `18`, `20`–`22`, `24`–`26`, `28`, `29`, `31` | [context_editor.core.concept.md](context_editor.core.concept.md) |
+| `C_CTX_03_02`, `C_CTX_03_06`, `C_CTX_03_09`, `C_CTX_03_12`; `C_CTX_DEC_04`, `11`–`17`, `19`, `23`, `27`, `30`, `41`–`44` | [context_editor.methods.concept.md](context_editor.methods.concept.md) |
 | `C_CTX_06`; `C_CTX_DEC_33`–`40` | [context_editor.curation.concept.md](context_editor.curation.concept.md) |
 | `SP_CTX_01`, `01_01`–`01_11` (структури) | [context_editor.structures.sp.md](context_editor.structures.sp.md) |
 | `SP_CTX_01_12` (константи) | [context_editor.constants.sp.md](context_editor.constants.sp.md) |
@@ -62,6 +63,7 @@
 | `SP_CTX_01_27`, `01_28`, `01_30`, `02_58`, `02_59`, `02_62`–`02_66`, `02_68`, `02_69` (курування: правки, тексти замін, піни, правила навички) | [context_editor.curation.edits.sp.md](context_editor.curation.edits.sp.md) |
 | `SP_CTX_01_29`, `02_67`, `04_08` (курування: пункти слота стану) | [context_editor.curation.slot.sp.md](context_editor.curation.slot.sp.md) |
 | `SP_CTX_01_31`, `02_60`, `02_61`, `04_09` (курування: рядки хоста) | [context_editor.curation.hostrows.sp.md](context_editor.curation.hostrows.sp.md) |
+| `SP_CTX_01_33`, `02_70`–`02_74`, `SP_CTX_DEC_46` (заголовок сесії) | [context_editor.title.sp.md](context_editor.title.sp.md) |
 | `SP_CTX_05_05`–`05_08` (курування: критерії перевірки) | [context_editor.curation.verification.sp.md](context_editor.curation.verification.sp.md) |
 | `SP_CTX_04` (переходи станів) | [context_editor.states.sp.md](context_editor.states.sp.md) |
 | `SP_CTX_05_01` (модульні очікування; рядки — у `context_editor.expectations.<модуль>.sp.md`) | [context_editor.expectations.sp.md](context_editor.expectations.sp.md) |

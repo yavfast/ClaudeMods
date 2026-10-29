@@ -40,7 +40,7 @@ Input:
 TagRequest:
 | Field | Type | Required | Default | Constraints | Description |
 |-------|------|----------|---------|-------------|-------------|
-| op | `add` \| `remove` \| `open` \| `close` | yes | — | — | Дія |
+| op | `add` \| `remove` \| `open` \| `close` \| `title` | yes | — | — | Дія; `title` — операція заголовка сесії з полем `text` ([SP_CTX_02_70](./context_editor.title.sp.md#SP_CTX_02_70)) |
 | kind | `pin` \| `disposable` \| `review` \| `state` | для `add` | — | — | Значення тегу; агентський `review` отримує `reason = agent` |
 | tool_use_id | string? | для `add`/`remove` рівно одне з трьох | — | — | Ціль — пара виклику |
 | index | int? | для `add`/`remove` рівно одне з трьох; для `open` — необов'язковий | — | 0..len-1 | Ціль — рядок за індексом [SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01); для `open` — перший рядок блоку; для діапазону — його перший рядок |
@@ -60,7 +60,7 @@ Errors (рівень виклику позначено *, решта — рів�
 | DENIED_STORAGE* | сховище `unavailable` | `storage unavailable: <reason>` |
 | DENIED_REGISTRY_READ* | TagRegistry `unreadable` | `the tag registry cannot be read (<reason>); it is left as it is.`; реєстр не перезаписується |
 | DENIED_REGISTRY_WRITE* | реєстр не записався | `could not save the tag registry: <error>`; етапи цього виклику не відкрито і не закрито, заміни з тегів не поставлено |
-| BAD_OP | `op` не з чотирьох | — |
+| BAD_OP | `op` не з п'яти (`add`, `remove`, `open`, `close`, `title`) | — |
 | KIND_REQUIRED | `add` без коректного `kind` | — |
 | TARGET_REQUIRED | `add`/`remove`: вказано не рівно одне з `tool_use_id` / `index` / `ref` | — |
 | UNKNOWN_REF | `ref` не розв'язується | позначені виклики мають рядок `[context-editor] id …`; для `last` текст — причина ResolveLast (LAST_NONE / LAST_PENDING / LAST_ORPHAN, [SP_CTX_02_17](#SP_CTX_02_17)) |

@@ -709,3 +709,101 @@ test('AfterTurn — можливості першим кроком: NoteTurn run
   expect(order.indexOf('caps')).toBeLessThan(order.indexOf('detect'))
   expect(order.slice(-3)).toEqual(['detect', 'count', 'flush'])
 })
+
+// ---- [SP_CTX_02_72] RenameAtTurnEnd
+
+// The title port: `due` while the fake title is due, `rename` records the
+// order beside the compactions.
+function titled(due = true, order: string[] = []) {
+  const t = { due, order }
+  return {
+    t,
+    title: {
+      due: async () => t.due,
+      rename: async () => {
+        order.push('rename')
+        t.due = false
+        return 'ran' as const
+      },
+    },
+  }
+}
+
+test('RenameAtTurnEnd — лише заголовок: an empty queue with a title due plans Flush; it renames, runs no compaction and no resume prompt', async () => {
+  const { title } = titled()
+  const { io, log, turns, state } = harness(ok({}), { title })
+  turnStarted(turns)
+  turnCompleted(turns, false)
+  expect(await flushAfterTurn(io, state, false)).toBe(true)
+  expect(await flush(io, state, turns.turns)).toEqual({ outcome: 'no-command', resume: 'none', renamed: 'ran' })
+  expect(log.compacts).toEqual([])
+  expect(log.submits).toEqual([])
+})
+
+test('RenameAtTurnEnd — з правками: /rename comes before /compact; not due: nothing-queued and no rename', async () => {
+  const order: string[] = []
+  const { title } = titled(true, order)
+  const { io, state } = harness(ok({ edits: EDITS }), { title, compact: async () => void order.push('compact') })
+  const out = await flush(io, state, 0)
+  expect(order).toEqual(['rename', 'compact'])
+  expect(out.renamed).toBe('ran')
+  const idle = titled(false)
+  const h = harness(ok({}), { title: idle.title })
+  expect(await flushAfterTurn(h.io, h.state, false)).toBe(false)
+  expect(await flush(h.io, h.state, 0)).toEqual({ outcome: 'nothing-queued', resume: 'none' })
+})
+
+test('RenameAtTurnEnd — передача і хід людини: a handoff carries the title, no rename and no planning; a turn started: no rename', async () => {
+  const order: string[] = []
+  const { title } = titled(true, order)
+  const h = harness(ok({ handoff: HANDOFF }), { title })
+  expect(await flushAfterTurn(h.io, h.state, false)).toBe(false)
+  // with nothing else queued, as before: nothing to do
+  expect((await flush(h.io, h.state, 0)).outcome).toBe('nothing-queued')
+  const withEdits = harness(ok({ edits: EDITS, handoff: HANDOFF }), { title })
+  expect((await flush(withEdits.io, withEdits.state, 0)).outcome).toBe('handoff-pending')
+  const moved = harness(ok({}), { title })
+  turnStarted(moved.turns)
+  expect((await flush(moved.io, moved.state, 0)).outcome).toBe('person-moved')
+  expect(order).toEqual([])
+})
+
+test('RenameAtTurnEnd — FLUSH_PASSED_OVER: the compaction is passed over, the rename still runs; a rename alone never asks for the verdict', async () => {
+  const { title } = titled()
+  let asked = 0
+  const { io, log, state } = harness(ok({ edits: EDITS }), { title, compactPassed: async () => (asked++, true) })
+  expect(await flush(io, state, 0)).toEqual({ outcome: 'passed-over', resume: 'none', renamed: 'ran' })
+  expect(log.compacts).toEqual([])
+  const alone = titled()
+  const h = harness(ok({}), { title: alone.title, compactPassed: async () => (asked++, true) })
+  asked = 0
+  expect((await flush(h.io, h.state, 0)).renamed).toBe('ran')
+  expect(asked).toBe(0)
+})
+
+test('RenameAtTurnEnd — FLUSH_PASSED_OVER при плануванні: a known pass-over still plans Flush for a title due; edits alone plan nothing', async () => {
+  const { title } = titled()
+  const h = harness(ok({ edits: EDITS }), { title, compactPassed: async () => true })
+  expect(await flushAfterTurn(h.io, h.state, false)).toBe(true)
+  const idle = titled(false)
+  const n = harness(ok({ edits: EDITS }), { title: idle.title, compactPassed: async () => true })
+  expect(await flushAfterTurn(n.io, n.state, false)).toBe(false)
+})
+
+test('RenameAtTurnEnd — відмова хоста: a refused rename still lets the queued edits apply', async () => {
+  const order: string[] = []
+  const title = { due: async () => true, rename: async () => (order.push('rename'), 'refused' as const) }
+  const { io, state } = harness(ok({ edits: EDITS }), { title, compact: async () => void order.push('compact') })
+  const out = await flush(io, state, 0)
+  expect(order).toEqual(['rename', 'compact'])
+  expect(out.renamed).toBe('refused')
+})
+
+test('RenameAtTurnEnd — хід почався під час /rename: no compaction is queued behind the new turn', async () => {
+  const order: string[] = []
+  const h = harness(ok({ edits: EDITS }), { compact: async () => void order.push('compact') })
+  h.io.title = { due: async () => true, rename: async () => (turnStarted(h.turns), order.push('rename'), 'ran' as const) }
+  const out = await flush(h.io, h.state, h.turns.turns)
+  expect(out).toEqual({ outcome: 'person-moved', resume: 'none', renamed: 'ran' })
+  expect(order).toEqual(['rename'])
+})

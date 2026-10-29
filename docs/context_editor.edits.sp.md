@@ -126,6 +126,7 @@ Processing logic (pseudocode):
         t = trimmed text with every leading closed span <ide_opened_file>…</ide_opened_file> or <system-reminder…>…</system-reminder> removed   # VS Code додає відкритий файл перед словами людини (рев'ю 40: 62 рядки в транскриптах репозиторію); тег з атрибутами (`<system-reminder id="…">`) — теж (фаза 20)
         IF t is a command row (holds <command-name>):
             the mod's own /compact with MarkerKind(args) present (MARKER, HANDOFF_MARKER or their texts before phase 25, SP_CTX_01_12) → empty
+            /rename → empty                                              # назва сесії — не повідомлення; stream-json показує власний /rename мода рядком команди (SP_CTX_02_73)
             ELSE → the trimmed content of <command-args>, empty when absent   # аргументи slash-команди — слова людини (`/dev-flow research …`)
         IF ReplacementText(t) OR t starts with PREFIX or SUMMARY_OPENER → empty   # ReplacementText = повний відкривач фази 28 (REPLACEMENT_OPENERS) чи MARK на початку (SP_CTX_01_12; тексти замін фази 28 без MARK, старі — з ним); PREFIX = `context-editor:`; кожен текст мода від власного імені будується з PREFIX (ModText) чи MARK — тест виробників (PL_AUD_CTX фаза 9, CF-18)
         IF t matches /^The .+ plugin sent a message:/ → empty           # промпт розширення: хост зберігає його в такій рамці (типи хоста; рядки транскрипту, рев'ю 39)
@@ -197,6 +198,7 @@ Output: рядки і `removed` — кількість прибраних слу
 
 | Date | Change |
 |------|--------|
+| 2026-10-29 | Фаза 48: 02_02 PersonText — рядок `/rename` порожній ([SP_CTX_02_73](./context_editor.title.sp.md#SP_CTX_02_73)) |
 | 2026-10-17 | Аудит коду (SPEC-20): 02_03 — відмова `describe` `no media or pasted text found in that row` і покажчик на DescribePasted ([SP_CTX_02_59](./context_editor.curation.edits.sp.md#SP_CTX_02_59)) |
 | 2026-10-16 | Фаза 44: тексти слота стану називають операцію `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67), [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)) |
 | — | Старіші 13 записів — у [context_editor.edits.sp.log.md](./context_editor.edits.sp.log.md) |

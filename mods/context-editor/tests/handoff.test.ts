@@ -52,6 +52,7 @@ import {
   type SeedInput,
   parseSeedNames,
   type SeedIO,
+  carryRegistries,
 } from '../hooks/handoff'
 import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
@@ -2284,4 +2285,17 @@ test('BuildSeed — ScreenPerson: a collapse over the person\'s prompt is refuse
   expect(seed.report.failed).toEqual(["collapse #0..#1: covers the person's words now; they stay verbatim"])
   expect(seed.report.applied).toEqual(['drop c'])
   expect(seed.rows[0]!.text).toBe(rows[0]!.text)
+})
+
+// ---- [SP_CTX_02_74] CarryTitle
+
+test('CarryRegistries — заголовок: the new session gets want ?? set and person, never set, refused or runs', async () => {
+  let carried: TagRegistry | undefined
+  const old: TagRegistry = { ...EMPTY_REGISTRY, tags: [], notes: [], title: { set: 'B', person: true, refused: 'x', runs: [{ after: 'h', title: 'B' }] } }
+  const io = {
+    carryTags: async (_f: string, _t: string, change: (reg: TagRegistry) => TagRegistry) => ((carried = change(old)), 'carried' as const),
+    carryAliases: async () => 'missing' as const,
+  }
+  await carryRegistries(io, { visible: [], rows: [], edits: [], report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }, carried: new Set() } as never, '/old', '/new')
+  expect(carried!.title).toEqual({ want: 'B', person: true })
 })
