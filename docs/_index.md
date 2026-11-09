@@ -76,3 +76,11 @@
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
 Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` і `context_editor.{edits,structures}.sp.log.md` (поза перевірками цілісності).
+
+## Adoption notes
+
+Аналізи зовнішніх репозиторіїв (`/dev-flow adopt`): які їхні ідеї варто адаптувати тут. Advisory — без воріт, без traceable ID, не backlog.
+
+| Source repo | Що приносить | Результат прогону |
+|-------------|--------------|-------------------|
+| [token-economizer](./ext_adoption/token-economizer.md) · [concept](./ext_adoption/token-economizer.concept.md) | TokenEconomizer @ `e428fc9` — запобіжник петель, облік вартості з власними накладними, життєвий цикл вивчених правил, рукави експерименту, журнал поведінки хостів | high — 0; medium — 4 (усі defer); похідні D1–D2 (D2 має запис: навичка plugin-hooks `stale`) |
