@@ -8,6 +8,7 @@ import type { Read } from '../hooks/store'
 import type { AliasRegistry } from '../hooks/aliases'
 import {
   blockReport,
+  TAGS_STOP,
   READY_HEAD,
   readyReplacements,
   calibrate,
@@ -459,6 +460,16 @@ test('BlockReport — межа індексів: 25 active reviews with reason b
   expect(line).toContain('disposable #51')
   expect(text).toContain('1 media (~2KB)')
   expect(text).toContain('Replacements from your disposable tags queued: 1 (~3 tokens freed when this turn ends).')
+})
+
+// [SP_CTX_02_13] [SP_CTX_DEC_16] tag replacements alone do not resume the session: the report says so
+test('BlockReport — заміни з тегів без продовження: resumes false adds TAGS_STOP after the line; resumes true or unknown adds nothing', async () => {
+  const list = [prompt('p'), use('c'), result('c')]
+  const tags = reg({ tags: [{ kind: 'disposable', target: { tool_use_id: 'c' }, note: 'n', created_turn: 0 }] })
+  const block: ClosedBlock = { name: 'A', after: mark(list, 0), end: mark(list, list.length - 1), turn: 0 }
+  const stops = await blockReport(blockIO(list, tags), block, { queued: 1, freed: '~3 tokens', resumes: false })
+  expect(stops).toContain(`Replacements from your disposable tags queued: 1 (~3 tokens freed when this turn ends). ${TAGS_STOP}`)
+  for (const resumes of [true, undefined]) expect(await blockReport(blockIO(list, tags), block, { queued: 1, freed: '~3 tokens', resumes })).not.toContain(TAGS_STOP)
 })
 
 test('BlockReport — без рядків: a lost end says its end row is gone, not "no rows in it."; listedKey stays', async () => {

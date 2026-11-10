@@ -87,6 +87,22 @@ export const EMPTY_QUEUE: Queue = {
   compact: false,
 }
 
+// [SP_CTX_02_02] [SP_CTX_DEC_16] ResumesAfter: whether the batch resumes the
+// session once it applies. A batch of tag replacements alone does not, unless
+// the agent chose to go on in it; the apply's report and the context_edit
+// result read this one rule.
+export function resumesAfter(q: Pick<Queue, 'resume' | 'resumeSet' | 'tagsOnly'>): boolean {
+  return q.resume && (q.resumeSet || !q.tagsOnly)
+}
+
+// [SP_CTX_01_04] [SP_CTX_DEC_16] The batch's choices differ from their
+// defaults: a turn that ended with no edits queued leaves them (a call whose
+// edits were all refused), and Flush clears them (KeepOtherSteps) so none
+// rides on a later batch.
+export function hasBatchChoices(q: Queue): boolean {
+  return q.resume !== EMPTY_QUEUE.resume || q.resumePrompt !== EMPTY_QUEUE.resumePrompt || q.resumeSet || q.tagsOnly || q.keepCache
+}
+
 // [SP_CTX_01_04] The queue once its batch is gone (applied, failed, handed
 // off): the edits and the batch's choices (`resume`, `resumePrompt`,
 // `resumeSet`, `tagsOnly`, `keepCache`) back to their defaults; the fields of
@@ -371,13 +387,15 @@ export function queueEdits(
   const next: Queue = { ...q, edits: [...q.edits, ...queued] }
   if (queued.length) next.tagsOnly = false
   const prompt = typeof args.resume_prompt === 'string' && args.resume_prompt.trim() !== ''
-  // [SP_CTX_02_02] [SP_CTX_DEC_16] the compression turn of the person's /compact
-  // follows an answer
-  // the agent already finished for the person: its batch resumes only when
-  // asked to, by "resume" or by a resume_prompt of its own. A choice made
-  // once in the batch (even by a call that queued nothing) stays.
+  // [SP_CTX_02_02] [SP_CTX_DEC_16] the last explicit choice of the batch wins:
+  // "resume" when the call gives it, else a resume_prompt of its own means to
+  // go on. A call with neither keeps the batch's choice (even one made by a
+  // call that queued nothing); without one, the compression turn of the
+  // person's /compact, which follows an answer the agent already finished for
+  // the person, stops.
   if (typeof args.resume === 'boolean') next.resume = args.resume
-  else if (q.optimizePrompted && !q.resumeSet) next.resume = prompt
+  else if (prompt) next.resume = true
+  else if (q.optimizePrompted && !q.resumeSet) next.resume = false
   if (typeof args.resume === 'boolean' || prompt) next.resumeSet = true
   if (prompt) next.resumePrompt = args.resume_prompt as string
   // [SP_CTX_02_02] [SP_CTX_DEC_22] the last explicit "keep_cache" of the batch
@@ -398,12 +416,8 @@ export function queuedText(q: Queue, queued: number, errors: readonly string[], 
     ...warnings,
     q.edits.length
       ? `They apply when this turn ends. End your turn now with a one-line status.${
-          q.resume
-            ? ` The session then resumes by itself with: "${q.resumePrompt}"`
-            : // [SP_CTX_DEC_16] the /compact compression turn's batch stops the session
-              q.optimizePrompted
-              ? ' The session then stops; pass "resume": true to go on.'
-              : ''
+          // [SP_CTX_DEC_16] the result names what the apply will do, in every turn
+          resumesAfter(q) ? ` The session then resumes by itself with: "${q.resumePrompt}"` : ' The session then stops; pass "resume": true to go on.'
         }`
       : '',
   ]

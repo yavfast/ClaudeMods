@@ -4,7 +4,7 @@
 // `$.command.run('compact')` reaches its own handlers. Free of the host:
 // register.ts binds FlushIO to `$`.
 import { MARKER } from './compaction'
-import { DEFAULT_RESUME, noteOnce, resumeText, type Queue } from './queue'
+import { DEFAULT_RESUME, hasBatchChoices, keepOtherSteps, noteOnce, resumeText, type Queue } from './queue'
 import { errorText, modText } from './rows'
 import type { Read, Update } from './store'
 import { adviceFor, compactTurnText } from './stages'
@@ -227,6 +227,11 @@ export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: bo
   // [SP_CTX_02_54] passed over: no Flush for the queue; it stays for the brief of /compact
   const passed = await io.compactPassed?.(false).catch(() => false)
   const read = await io.readQueue()
+  // [SP_CTX_01_04] [SP_CTX_DEC_16] the turn ended with no edits queued: the
+  // choices its calls made (all their edits refused) end with it, so a later
+  // batch does not take an old resume_prompt or stop by an old resume false
+  if (read.state === 'ok' && !read.value.edits.length && !read.value.handoff && hasBatchChoices(read.value))
+    await io.updateQueue(clearChoices).catch(() => undefined)
   const work = !passed && hasWork(read)
   // [SP_CTX_02_72] a title due plans a Flush too, passed over or not (no
   // handoff: it carries the title)
@@ -239,6 +244,12 @@ export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: bo
     return false
   }
   return true
+}
+
+// The batch's choices back to their defaults while it has no edits (a
+// handoff's edits are its own); else no change.
+function clearChoices(q: Queue): Queue | undefined {
+  return !q.edits.length && !q.handoff && hasBatchChoices(q) ? keepOtherSteps(q) : undefined
 }
 
 // [SP_CTX_02_42] Flush for the person's /compact, from the command.run hook

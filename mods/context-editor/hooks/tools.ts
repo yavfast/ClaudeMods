@@ -113,7 +113,7 @@ const EDIT_SCHEMA = {
       },
     },
     resume: { type: 'boolean', description: 'Resume the session after this batch applies (default true).' },
-    resume_prompt: { type: 'string', description: `What the resumed turn is told (default: "${DEFAULT_RESUME}").` },
+    resume_prompt: { type: 'string', description: `What the resumed turn is told (default: "${DEFAULT_RESUME}"); a non-empty one also resumes the batch, unless this call passes "resume": false.` },
     keep_cache: {
       type: 'boolean',
       description:

@@ -443,8 +443,10 @@ test('ReplacementOpeners — зайве поле status тегу: a disposable w
 
 test('two disposable tags on an empty queue become two edits of a tags-only batch; context_edit clears tagsOnly', async () => {
   const { io, log } = harness(okRead(disposables))
-  const { queued, freed } = await queueTagReplacements(io)
+  const { queued, freed, resumes } = await queueTagReplacements(io)
   expect(queued).toBe(2)
+  // [SP_CTX_DEC_16] a tags-only batch does not resume
+  expect(resumes).toBe(false)
   const q = log.queue!
   expect(q.edits.map(e => e.op)).toEqual(['summarize', 'rewrite'])
   expect(q.tagsOnly).toBe(true)
@@ -474,9 +476,15 @@ test('QueueTagReplacements — заміна з тегу називає авто�
 test('replacements join a non-empty queue without making it tags-only', async () => {
   const pending: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'b' }] }
   const { io, log } = harness(okRead(disposables), okRead(pending))
-  expect((await queueTagReplacements(io)).queued > 0).toBe(true)
+  const out = await queueTagReplacements(io)
+  expect(out.queued > 0).toBe(true)
+  expect(out.resumes).toBe(true)
   expect(log.queue!.edits.length).toBe(3)
   expect(log.queue!.tagsOnly).toBe(false)
+  // the agent's resume_prompt on a call whose edits were all refused resumes a tags-only batch
+  const chose = harness(okRead(disposables), okRead({ ...EMPTY_QUEUE, resumeSet: true, resumePrompt: 'P' }))
+  expect((await queueTagReplacements(chose.io)).resumes).toBe(true)
+  expect(chose.log.queue!.tagsOnly).toBe(true)
 })
 
 test('replacements are not queued past MAX_QUEUE_EDITS or MAX_QUEUE_BYTES, nor from an unreadable file', async () => {

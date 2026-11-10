@@ -26,7 +26,7 @@ import {
   type RowIndex,
   type StateInput,
 } from './edits'
-import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, type Queue } from './queue'
+import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, resumesAfter, type Queue } from './queue'
 import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
 import { isTitleState, titleOp, type TitleError, type TitleState } from './title'
@@ -1103,7 +1103,8 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   let chars = 0
   for (const edit of queued) chars += replacedSize(rows, edit) - noteSize(edit)
   // [SP_CTX_02_34] by the registry's calibrated ratio
-  return { queued: queued.length, freed: estimate(Math.max(0, chars), tags.value.charsPerToken), ...(dropped.length ? { dropped } : {}) }
+  // [SP_CTX_02_13] [SP_CTX_DEC_16] whether the batch, as written, resumes the session
+  return { queued: queued.length, freed: estimate(Math.max(0, chars), tags.value.charsPerToken), resumes: resumesAfter(next), ...(dropped.length ? { dropped } : {}) }
 }
 
 // [SP_CTX_02_58] Removes the disposable tags of these replacements from the

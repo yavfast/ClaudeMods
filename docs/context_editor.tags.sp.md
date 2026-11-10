@@ -156,7 +156,7 @@ R5 ([C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04), «Дублік�
 
 Purpose: поставити в чергу заміни з тегів `disposable` і оцінити звільнення. Запускають лише закриття етапу інструментом ([SP_CTX_02_11](#SP_CTX_02_11), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) і кінець очікування блоку, позначеного міткою оптимізації ([SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)): перший `open` чи `close` у context_tag або перший `context_edit` з прийнятою правкою агента ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) — усі читають поточну розмову посеред ходу, коли компактизація щойно не відбувалась; заміни йдуть тим самим пакетом, що й правки агента цього ходу. До 2026-10-14 заміни ставила мітка на кінці свого ходу (DetectOptimize). Ні Flush, ні DeliverReport замін не ставлять. Порогу розміру немає ([C_CTX_DEC_15](./context_editor.methods.concept.md#C_CTX_DEC_15)).
 
-Output: `{ queued: int, freed: int }` — кількість поставлених правок і `freed` — Estimate (`Σ size замінюваного − Σ довжина нотаток`) з `TagRegistry.charsPerToken` ([SP_CTX_02_34](./context_editor.telemetry.sp.md#SP_CTX_02_34)); для `collapse` замінюване — сума `size` рядків діапазону.
+Output: `{ queued: int, freed: int, resumes?: bool }` — кількість поставлених правок, `resumes` — ResumesAfter записаної черги ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02); є, коли щось поставлено), і `freed` — Estimate (`Σ size замінюваного − Σ довжина нотаток`) з `TagRegistry.charsPerToken` ([SP_CTX_02_34](./context_editor.telemetry.sp.md#SP_CTX_02_34)); для `collapse` замінюване — сума `size` рядків діапазону.
 
 Processing logic (pseudocode):
     FUNCTION QueueTagReplacements():                    # на ланцюжку черги
@@ -172,11 +172,11 @@ Processing logic (pseudocode):
         IF queued empty OR len(q.edits) + len(queued) > MAX_QUEUE_EDITS OR the file would exceed MAX_QUEUE_BYTES: RETURN { 0, 0 }
         IF len(q.edits) == 0: q.tagsOnly = true
         q.edits += queued; write Queue (a write failure → RETURN { 0, 0 })
-        RETURN { len(queued), freed }
+        RETURN { len(queued), freed, resumes: ResumesAfter(q) }
 
 Перевірки `listedKey` рядка 02_03 «межа поточної розмови не змінилась від останнього `context_list`» QueueTagReplacements не робить: індекси замін він бере щойно з Locate на поточній розмові, а не з переліку агента, тож застарілими вони бути не можуть. Ключ заміни — те, за чим RebindTags упізнає заміну тегу в пакеті: `summarize` з `tool_use_id` цілі і `summary = note`; `rewrite` з якорем цілі і `text = note`; `collapse` з якорями обох кінців і `summary = note`. Тег, чия заміна вже стоїть у черзі (закриття етапу інструментом, а потім правка агента при очікуванні в тому самому ході), удруге не ставиться. Відхилені PrepareEdits заміни не повідомляються окремо: тег лишається, а агент бачить його в переліку.
 
-Пакет лише з тегів не продовжує сесію: звіт піде з наступним промптом людини ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)). Правка агента в тому самому пакеті знімає `tagsOnly` ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)).
+Пакет лише з тегів не продовжує сесію: звіт піде з наступним промптом людини ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)). Правка агента в тому самому пакеті знімає `tagsOnly`, а явний вибір продовження агентом у пакеті (`resumeSet`, навіть у виклику `context_edit` без прийнятих правок) діє над `tagsOnly`: ResumesAfter ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)).
 
 ### 02_14. RebindTags  {#SP_CTX_02_14}
 

@@ -18,6 +18,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 | Task | Phase | Completed | Contributors | Result |
 |------|-------|-----------|--------------|--------|
+| [task_20261110_093704_fix-autocontinue](tasks/task_20261110_093704_fix-autocontinue.md) — Автоматичне продовження після застосування на початку етапу | done | 2026-11-10 | 23a7a081 | останній явний вибір пакета перемагає; ResumesAfter для звіту й результатів; вибори ходу без правок скидаються; TAGS_STOP; 1018 тестів, живий прогін A–D |
 | [task_20261031_211349_adopt-token-economizer](tasks/task_20261031_211349_adopt-token-economizer.md) — Аналіз запозичень з TokenEconomizer | done | 2026-10-31 | d4fbce3a | high 0, medium 4 (defer), похідних ідей 2; `docs/ext_adoption/token-economizer*.md` |
 | [task_20261029_073500_session-title](tasks/task_20261029_073500_session-title.md) — Заголовок сесії за темою задачі | done | 2026-10-29 | 72a009d8 | фаза 48: операція `title`, `/rename` після ходу, рядки прибирає застосування; живий прогін у stream-json і терміналі |
 | [task_20261019_155837_adopt-context-mode](tasks/task_20261019_155837_adopt-context-mode.md) — Аналіз запозичень з context-mode | done | 2026-10-19 | 9841457b | high 0, medium 4 (defer), похідних ідей 3; `docs/ext_adoption/context-mode*.md` |

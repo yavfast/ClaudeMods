@@ -105,7 +105,7 @@ Processing logic (pseudocode):
             notes = notes of reg whose target (first row of a range) lies in a..e: "<id> #<i>: <text>" (≤ MAX_BLOCK_INDEXES, then "+<n> more")
             IF notes: text += "\nYour notes in the block: " + notes joined "; "
         ELSE text = head
-        IF replaced AND replaced.queued > 0: text += "\nReplacements from your disposable tags queued: <queued> (<freed> freed when this turn ends)."
+        IF replaced AND replaced.queued > 0: text += "\nReplacements from your disposable tags queued: <queued> (<freed> freed when this turn ends)." + (replaced.resumes = false ? " " + TAGS_STOP : "")   # SP_CTX_DEC_16, нотатка 2026-11-10: пакет лише із замін з тегів сесію не продовжує — агент, що переходить до наступного етапу, бачить це до кінця ходу
         text += "\n" + TelemetryText(t)                                # SP_CTX_02_28
         IF the block has rows: text += "\n" + (waiting ? WAIT_MOVED + " " : "") + STAGE_ADVICE   # WAIT_MOVED: "You are moving on from it: compress it now unless the next stage still needs its details; it no longer waits."
         IF the block has rows: listedKey = key                          # звіт перелічує індекси рядків блоку, як перелік; «no rows in it.» і загублений кінець — ні

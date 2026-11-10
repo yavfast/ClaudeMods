@@ -72,6 +72,28 @@ test('Flush — запуск: a completed turn with 2 queued edits plans one com
   expect(state.lastSubmittedReportId).toBe(7)
 })
 
+// [SP_CTX_01_04] [SP_CTX_DEC_16] choices of a turn that queued no edits end with it
+test('FlushAfterTurn — вибори без правок: a turn end with no edits puts the batch choices back to their defaults and keeps the other steps; with edits or a handoff they stay', async () => {
+  const stale: Partial<Queue> = { resume: false, resumeSet: true, resumePrompt: 'old', keepCache: true, tagsOnly: true, report: 'r', reportId: 3, reportResume: true, reportPrompt: 'go on', optimizePrompted: true }
+  const h = harness(ok(stale))
+  turnStarted(h.turns)
+  turnCompleted(h.turns, false)
+  expect(await flushAfterTurn(h.io, h.state, false)).toBe(false)
+  expect(h.log.queue.state === 'ok' && h.log.queue.value).toEqual({ ...EMPTY_QUEUE, report: 'r', reportId: 3, reportResume: true, reportPrompt: 'go on', optimizePrompted: true })
+  // nothing to clear: no write
+  const clean = harness(ok({}))
+  await flushAfterTurn(clean.io, clean.state, false)
+  expect(clean.log.writes).toBe(0)
+  // with edits the choices belong to the batch the apply takes
+  const withEdits = harness(ok({ ...stale, edits: EDITS }))
+  await flushAfterTurn(withEdits.io, withEdits.state, false)
+  expect(withEdits.log.queue.state === 'ok' && [withEdits.log.queue.value.resumeSet, withEdits.log.queue.value.resumePrompt]).toEqual([true, 'old'])
+  const handoff: HandoffRequest = { mode: 'transcript', resume: true, resumePrompt: 'h', by: 'agent', state: 'queued', at: 1 }
+  const handed = harness(ok({ ...stale, handoff }))
+  await flushAfterTurn(handed.io, handed.state, false)
+  expect(handed.log.queue.state === 'ok' && handed.log.queue.value.resumeSet).toBe(true)
+})
+
 test('Flush — звіт доходить до ходу продовження: one prompt T + "\\n\\n" + reportPrompt; once it entered, RemoveDelivered(T) leaves no report', async () => {
   const { io, log, state } = harness(ok({ edits: EDITS }), {}, l => void (l.queue = ok({ report: 'T', reportId: 5, reportResume: true, reportPrompt: 'go on' })))
   expect(await flush(io, state, 0)).toEqual({ outcome: 'compacted', resume: 'submitted' })

@@ -788,7 +788,13 @@ export function tagCallIO(snap: Snapshot, registry: Omit<TagIO, 'rows' | 'replac
 // [SP_CTX_02_13] What QueueTagReplacements queued.
 // `freed`: Estimate of the replaced text less the notes ([SP_CTX_02_34])
 // `dropped`: the lines of disposable tags removed because they cover the person's words ([SP_CTX_02_58])
-export type Replaced = { queued: number; freed: string; dropped?: string[] }
+// `resumes`: ResumesAfter of the batch once they were queued ([SP_CTX_02_02])
+export type Replaced = { queued: number; freed: string; resumes?: boolean; dropped?: string[] }
+
+// [SP_CTX_02_13] [SP_CTX_DEC_16] A batch of tag replacements alone does not
+// resume the session (ResumesAfter): the close report says so, so an agent
+// moving on to its next stage does not end its turn and stop.
+export const TAGS_STOP = 'On their own they do not resume the session: keep working in this turn, or pass a "resume_prompt" to context_edit before you end it.'
 
 // The rows of a tag's target that lie in a..e, the first of them, or -1.
 function firstIn(rows: readonly SessionMessage[], tag: Tag, a: number, e: number, ix: RowIndex): number {
@@ -932,7 +938,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   if (replaced && replaced.queued > 0)
     text += io.passed?.()
       ? `\nReplacements from your disposable tags queued: ${replaced.queued} (not applied on this host; the brief of the person's /compact carries them).`
-      : `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).`
+      : `\nReplacements from your disposable tags queued: ${replaced.queued} (${replaced.freed} freed when this turn ends).${replaced.resumes === false ? ` ${TAGS_STOP}` : ''}`
   // [SP_CTX_02_58] tags over the person's words, removed instead of queued
   for (const line of replaced?.dropped ?? []) text += `\n${line}.`
   text += '\n' + telemetryText(t)

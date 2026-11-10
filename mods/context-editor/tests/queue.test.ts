@@ -15,6 +15,7 @@ import {
   COMPACT_ADVICE,
   queueEdits,
   queuedText,
+  resumesAfter,
   settledQueue,
   withoutReport,
   type DeliverIO,
@@ -148,12 +149,13 @@ function batch(q: Queue, args: Record<string, unknown>): Queue {
   return out.queue
 }
 
-test('context_edit — хід оптимізації без resume: an empty queue or only tag replacements; the batch does not resume and the result says nothing of resuming', async () => {
+test('context_edit — хід оптимізації без resume: an empty queue or only tag replacements; the batch does not resume and the result says it stops', async () => {
   for (const start of [inOptimization, { ...inOptimization, edits: [{ op: 'drop' as const, tool_use_id: 'a' }], tagsOnly: true }]) {
     const q = batch(start, {})
     expect(q.resume).toBe(false)
     expect(q.resumePrompt).toBe(DEFAULT_RESUME)
     expect(queuedText(q, 1, [])).not.toContain('resumes by itself')
+    expect(queuedText(q, 1, [])).toContain('The session then stops; pass "resume": true to go on.')
   }
 })
 
@@ -185,14 +187,51 @@ test('context_edit — хід оптимізації, повтор після в
   const retry = batch(refused.queue, {})
   expect(retry.edits.length).toBe(1)
   expect(retry.resume).toBe(true)
-  // the same with a resume_prompt alone, and a later prompt does not undo resume false
+  // the same with a resume_prompt alone; a later prompt is a later choice and turns resume false back on
   expect(batch(batch(inOptimization, { resume_prompt: 'P' }), {}).resume).toBe(true)
-  expect(batch(batch(inOptimization, { resume: false }), { resume_prompt: 'Q' }).resume).toBe(false)
+  expect(batch(batch(inOptimization, { resume: false }), { resume_prompt: 'Q' }).resume).toBe(true)
 })
 
-test('queuedText — хід оптимізації: a batch that stops the session says so; outside the optimization turn nothing is added', async () => {
+// [SP_CTX_02_02] [SP_CTX_DEC_16] the last explicit choice of the batch wins
+// (session d0d12355, 2026-11-10: resume false on a call that queued nothing,
+// then a call with only a resume_prompt; the session stopped)
+test('context_edit — останній явний вибір пакета: resume false on a refused call, then a call with only a resume_prompt resumes; resume true, then resume false stops', async () => {
+  const refused = queueEdits(EMPTY_QUEUE, rows, { edits: [{ op: 'drop', tool_use_id: 'zz' }], resume: false })
+  if ('deny' in refused) throw new Error(refused.deny)
+  expect(refused.queued).toBe(0)
+  const later = batch(refused.queue, { resume_prompt: 'Open the next stage' })
+  expect(later.resume).toBe(true)
+  expect(later.resumePrompt).toBe('Open the next stage')
+  expect(queuedText(later, 1, [])).toContain('The session then resumes by itself with: "Open the next stage"')
+  expect(batch(batch(EMPTY_QUEUE, { resume: true }), { resume: false }).resume).toBe(false)
+  // a call without either keeps the choice; a blank prompt is no choice
+  expect(batch(batch(EMPTY_QUEUE, { resume: false }), { resume_prompt: '  ' }).resume).toBe(false)
+})
+
+// [SP_CTX_02_02] [SP_CTX_DEC_16] ResumesAfter: tag replacements alone do not
+// resume, unless the agent chose to go on in the batch
+test('ResumesAfter — пакет лише з тегів: no choice stops; resume true or a resume_prompt on a refused call resumes; the result says the same', async () => {
+  const tagsOnly: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a', via: 'tag' }], tagsOnly: true }
+  expect(resumesAfter(tagsOnly)).toBe(false)
+  const none = queueEdits(tagsOnly, rows, { edits: [{ op: 'drop', tool_use_id: 'zz' }] })
+  if ('deny' in none) throw new Error(none.deny)
+  expect(resumesAfter(none.queue)).toBe(false)
+  expect(queuedText(none.queue, 0, [])).toContain('The session then stops; pass "resume": true to go on.')
+  for (const choice of [{ resume: true }, { resume_prompt: 'P' }]) {
+    const out = queueEdits(tagsOnly, rows, { edits: [{ op: 'drop', tool_use_id: 'zz' }], ...choice })
+    if ('deny' in out) throw new Error(out.deny)
+    expect(out.queue.tagsOnly).toBe(true)
+    expect(resumesAfter(out.queue)).toBe(true)
+    expect(queuedText(out.queue, 0, [])).toContain('The session then resumes by itself')
+  }
+  expect(resumesAfter({ ...tagsOnly, resume: false, resumeSet: true })).toBe(false)
+  expect(resumesAfter({ ...EMPTY_QUEUE })).toBe(true)
+})
+
+test('queuedText — зупинка в будь-якому ході: a batch that stops the session says so, in the optimization turn and outside it', async () => {
   expect(queuedText(batch(inOptimization, {}), 1, [])).toContain('The session then stops; pass "resume": true to go on.')
-  expect(queuedText(batch(EMPTY_QUEUE, { resume: false }), 1, [])).not.toContain('stops')
+  expect(queuedText(batch(EMPTY_QUEUE, { resume: false }), 1, [])).toContain('The session then stops; pass "resume": true to go on.')
+  expect(queuedText(batch(EMPTY_QUEUE, {}), 1, [])).not.toContain('stops')
 })
 
 test('context_edit — поза ходом оптимізації: without resume the batch keeps its setting (true by default)', async () => {

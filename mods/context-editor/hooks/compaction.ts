@@ -27,7 +27,7 @@ import { insertDeliveries, type Deliveries } from './deliveries'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { goneText, handlesOf, rebaseHostRows, type HostRows } from './hostrows'
 import { applyEntry, type JournalEntry } from './journal'
-import { appendReport, keepOtherSteps, markerKind, screenPerson, withCommandNote, type Queue } from './queue'
+import { appendReport, keepOtherSteps, markerKind, resumesAfter, screenPerson, withCommandNote, type Queue } from './queue'
 import { dropPulled, type Pulled } from './repair'
 import { apiChars, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
@@ -596,7 +596,7 @@ export async function archiveMedia(
 // steps (the optimization request, a handoff) stay as read (KeepOtherSteps).
 // [SP_CTX_01_05] The report enters with CommandNote; the toast goes without it.
 function reported(q: Queue, text: string, id: number): Queue {
-  return appendReport(keepOtherSteps(q), withCommandNote(text), id, q.resume && !q.tagsOnly, q.resumePrompt)
+  return appendReport(keepOtherSteps(q), withCommandNote(text), id, resumesAfter(q), q.resumePrompt)
 }
 
 // [SP_CTX_02_07] The failure branch's write of the queue it read on the

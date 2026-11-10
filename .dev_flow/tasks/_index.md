@@ -28,6 +28,7 @@ The parent file [`../active_context.md`](../active_context.md) is a thin dashboa
 
 ## Recently Completed
 
+- [task_20261110_093704_fix-autocontinue](task_20261110_093704_fix-autocontinue.md) — `23a7a081` — `done` 2026-11-10 — Автоматичне продовження після застосування на початку етапу
 - [task_20261031_211349_adopt-token-economizer](task_20261031_211349_adopt-token-economizer.md) — `d4fbce3a` — `done` — Аналіз запозичень з TokenEconomizer (advisory, `docs/ext_adoption/`)
 - [task_20261029_073500_session-title](task_20261029_073500_session-title.md) — `72a009d8` — `done` — Заголовок сесії за темою задачі: фаза 48 (C_CTX_03_12, SP_CTX_02_70–02_74)
 - [task_20261019_155837_adopt-context-mode](task_20261019_155837_adopt-context-mode.md) — `9841457b` — `done` — Аналіз запозичень з context-mode (advisory, `docs/ext_adoption/`)

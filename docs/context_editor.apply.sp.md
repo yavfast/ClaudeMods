@@ -245,7 +245,7 @@ Processing logic (pseudocode):
             text = FormatReport(report, archive, compaction) + attached.text   # SP_CTX_01_05: без правок — «not changed», без рядка розміру; AttachText останнім
             write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
                           report: (q.report ? q.report + "\n" : "") + text + " " + COMMAND_NOTE, reportId: id,   # CommandNote, SP_CTX_01_05, фаза 25; спливне повідомлення — text без нього
-                          reportResume: q.resume AND NOT q.tagsOnly, reportPrompt: q.resumePrompt,
+                          reportResume: ResumesAfter(q), reportPrompt: q.resumePrompt,   # SP_CTX_02_02: q.resume AND (q.resumeSet OR NOT q.tagsOnly)
                           optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04); точка фіксації
             IF that write fails: put back the registries written; the failure goes to the failure branch
             IF the dispatch was abandoned during that write: write q back as read; put back the registries written; RETURN skip "compaction abandoned; the batch stays queued"

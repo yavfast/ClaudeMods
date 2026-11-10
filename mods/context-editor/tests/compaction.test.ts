@@ -59,6 +59,17 @@ function queued(edits: unknown[], extra: Partial<Queue> = {}): Read<Queue> {
   return okRead({ ...EMPTY_QUEUE, ...extra, edits: prepare(conversation(), edits).queued })
 }
 
+// [SP_CTX_02_07] [SP_CTX_DEC_16] reportResume = ResumesAfter(q)
+test('HandleCompaction — reportResume за ResumesAfter: a tags-only batch resumes only with the agent\'s choice (resumeSet)', async () => {
+  const edit = [{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]
+  for (const [extra, want] of [[{ tagsOnly: true }, false], [{ tagsOnly: true, resumeSet: true, resumePrompt: 'P' }, true], [{ tagsOnly: true, resumeSet: true, resume: false }, false], [{}, true]] as const) {
+    const { io, written } = harness(queued(edit, extra))
+    const out = await handleCompaction(io, conversation())
+    if (!('messages' in out)) throw new Error(out.skip)
+    expect(written.queue!.reportResume).toBe(want)
+  }
+})
+
 test('applies the batch: media archived, own calls dropped, charsAfter after the drop, report queued', async () => {
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }], { resume: false, resumePrompt: 'p' }))
   const out = await handleCompaction(io, conversation())

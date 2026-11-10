@@ -29,6 +29,8 @@ Processing logic (pseudocode):
     IsPlanned(now) = scheduled AND NOT (plannedAt present AND now − plannedAt > FLUSH_STALE)   # таймер, що не спрацював FLUSH_STALE, загублений (хост міг мовчки його відхилити)
 
     ON turn completed (main loop, not aborted), after DetectOptimize (SP_CTX_02_30):   # DetectOptimize уже зняв запобіжник ходу стискання; мітка черги не змінює
+        IF NOT IsPlanned(now) AND Queue state = ok AND len(Queue.edits) == 0 AND Queue.handoff absent AND the batch's choices differ from their defaults:
+            on the queue chain: re-check the same; Queue = KeepOtherSteps(Queue)   # SP_CTX_01_04, SP_CTX_DEC_16 (нотатка 2026-11-10): вибори ходу, що не поставив правок (усі відхилено), закінчуються з ним — пізніший пакет не бере старого resume_prompt і не зупиняється старим resume: false; збій запису — без змін
         IF NOT IsPlanned(now) AND storage ready AND Queue state = ok AND Queue.handoff absent
            AND (len(Queue.edits) > 0 OR Queue.optimize OR TitleDue(TagRegistry.title)):   # TitleDue — SP_CTX_02_72
             Schedule()                                                        # таймер, відхилений одразу (виняток), нічого не лишає запланованим
