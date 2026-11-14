@@ -6,8 +6,9 @@
 import { LIST_COUNT, MAX_FULL_ROW, MAX_LIST_COUNT, MAX_QUEUE_EDITS, MAX_TEXT, ROW_WINDOW } from './edits'
 import { MAX_NOTE, MAX_NOTES, MAX_REMIND } from './notes'
 import { DEFAULT_RESUME, MAX_DOCUMENT } from './queue'
-import { MARK } from './rows'
+import { MARK, RECALL_TOOL } from './rows'
 import { MAX_STAGE_NAME, SKILL } from './stages'
+import { MAX_RECALL_CHARS } from './folds'
 import { MAX_STATE_ITEM, MAX_STATE_ITEMS, STATE_KINDS } from './state'
 import { MAX_TAGS } from './tags'
 import { MAX_TITLE } from './title'
@@ -18,6 +19,8 @@ export const EDIT = 'context_edit'
 export const TAG = 'context_tag'
 export const HANDOFF = 'context_handoff'
 export const NOTE = 'context_note'
+// [SP_FOLD_01_06] RECALL_TOOL
+export const RECALL = RECALL_TOOL
 
 // [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
 export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
@@ -60,7 +63,7 @@ Ops (items of "edits"; every field shown is required):
 
 A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite, or by the state op once it has items.
 
-Originals are archived (original: <path> in the replacement); Read it to get one back. Summaries keep every fact, number, URL and source you still need.
+Originals are archived: ${RECALL} unfolds a (fold fN; …) record, Read an older one. Summaries keep every fact, number, URL and source you still need.
 
 Compress a finished stage's block into a stage record. The person's messages (AskUserQuestion answers too) stay verbatim: edits that cover them are refused. Usually keep the rules and skills in force verbatim. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
@@ -256,12 +259,30 @@ const HANDOFF_SCHEMA = {
 export type ToolSpec = { name: string; description: string; inputSchema: Record<string, unknown>; isDeferred: false }
 
 // The tools in the order the session start registers them.
+// [SP_FOLD_02_02] At most MAX_DESCRIPTION chars.
+export const RECALL_DESCRIPTION = `Recall one level of a fold into the end of the conversation. A fold is the record your earlier edit left in the place of what it replaced, "(fold fN; original: <path>; …)": a summarized output, a collapsed range, a described medium. The result holds the rows that fold replaced, as its archive keeps them: your own earlier messages and tool outputs. An inner fold shows as its record; recall it by its own id. A level over ${MAX_RECALL_CHARS} chars comes back as its contents (row numbers, sizes, first words): call again with "from" and "count".
+
+A recalled level is temporary: once the stage you recalled it in is closed, your next batch of edits replaces it with a one-line trace; the fold record stays and can be recalled again. To keep what you took from it, write it into your stage record, or summarize the recall's own call by its tool_use_id (from ${LIST}): your summary stays in the trace.
+
+Use it when a fold record names something you need verbatim. ${LIST} with {"folds":true} lists the folds.`
+
+const RECALL_SCHEMA = {
+  type: 'object',
+  properties: {
+    fold: { type: 'string', description: 'The id from a fold record, e.g. "f3".' },
+    from: { type: 'integer', description: 'The row of the level to start from (default 0).' },
+    count: { type: 'integer', description: 'How many rows of the level to give (default: to its end).' },
+  },
+  required: ['fold'],
+}
+
 export const TOOLS: readonly ToolSpec[] = [
   { name: LIST, description: LIST_DESCRIPTION, inputSchema: LIST_SCHEMA, isDeferred: false },
   { name: EDIT, description: EDIT_DESCRIPTION, inputSchema: EDIT_SCHEMA, isDeferred: false },
   { name: TAG, description: TAG_DESCRIPTION, inputSchema: TAG_SCHEMA, isDeferred: false },
   { name: HANDOFF, description: HANDOFF_DESCRIPTION, inputSchema: HANDOFF_SCHEMA, isDeferred: false },
   { name: NOTE, description: NOTE_DESCRIPTION, inputSchema: NOTE_SCHEMA, isDeferred: false },
+  { name: RECALL, description: RECALL_DESCRIPTION, inputSchema: RECALL_SCHEMA, isDeferred: false },
 ]
 
 // [SP_CTX_02_20] The person's command.

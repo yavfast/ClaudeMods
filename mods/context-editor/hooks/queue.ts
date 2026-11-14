@@ -5,6 +5,7 @@ import { isDescribedText, isPlainUserRow, modText, PREFIX, resultsOf } from './r
 import { bytes, jsonObject, type Read } from './store'
 import type { Replaced } from './stages'
 import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
+import { addReturns, isOwnReturn, type Recall } from './folds'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -189,7 +190,14 @@ function isHandoff(raw: unknown): boolean {
 }
 
 function isQueuedEdit(raw: unknown): boolean {
-  if (typeof checkShape(raw) === 'string') return false
+  // [SP_FOLD_02_03] a return edit: a summarize of a recall pair; its summary
+  // may be empty only with `via: 'return'` (the mod's own return)
+  const back = typeof raw === 'object' && raw !== null && (raw as { via?: unknown }).via === 'return'
+  if (back) {
+    const r = raw as { op?: unknown; summary?: unknown }
+    if (r.op !== 'summarize' || typeof r.summary !== 'string') return false
+    if (typeof checkShape(r.summary.trim() === '' ? { ...r, summary: '-' } : r) === 'string') return false
+  } else if (typeof checkShape(raw) === 'string') return false
   const { op, index, anchors, via, quoted, region } = raw as { op?: unknown; index?: unknown; anchors?: unknown; via?: unknown; quoted?: unknown; region?: unknown }
   // [SP_CTX_01_03] `via` names who asked for the replacement: only 'tag' is written
   // [SP_CTX_01_30] `quoted`: only true is written; a queue before phase 42 has none
@@ -197,7 +205,7 @@ function isQueuedEdit(raw: unknown): boolean {
   return (
     (op !== 'state' || index === undefined || (typeof index === 'number' && Number.isInteger(index))) &&
     (anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))) &&
-    (via === undefined || via === 'tag') &&
+    (via === undefined || via === 'tag' || via === 'return') &&
     (quoted === undefined || quoted === true) &&
     // [SP_FOLD_01_01] `region`: only on a collapse, a name and its kind
     (region === undefined || (op === 'collapse' && isFoldRegion(region)))
@@ -352,6 +360,9 @@ export function queueEdits(
   // [SP_FOLD_01_01] the block of the last closed region with a name: a
   // collapse of exactly its rows carries `region`
   closed?: ClosedSpan,
+  // [SP_FOLD_02_03] the recalls not yet returned: a summarize of a recall
+  // pair returns it with the agent's words, and the due ones join the batch
+  recalls: readonly Recall[] = [],
 ): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
@@ -368,7 +379,9 @@ export function queueEdits(
   let ix: RowIndex | undefined
   for (const edit of prepared.queued) {
     const region = regionOf(edit, closed)
-    const e: QueuedEdit = region ? { ...edit, region } : edit
+    // [SP_FOLD_02_03] the agent's summarize of a recall pair is a return edit
+    const back = edit.op === 'summarize' && recalls.some(r => r.tool_use_id === edit.tool_use_id)
+    const e: QueuedEdit = region ? { ...edit, region } : back ? { ...edit, via: 'return' } : edit
     // [SP_CTX_02_61] DetachNote: what the row before the host row loses
     if (isHostDrop(e)) {
       const rec = hostRecord(hostRows, e.host)
@@ -389,9 +402,11 @@ export function queueEdits(
       queued.push({ ...e, quoted: true })
     } else queued.push(e)
   }
-  if (q.edits.length + queued.length > MAX_QUEUE_EDITS)
+  // [SP_FOLD_02_03] the mod's own return edits give way: AddReturns re-adds what fits
+  if (q.edits.filter(e => !isOwnReturn(e)).length + queued.length > MAX_QUEUE_EDITS)
     return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
-  const next: Queue = { ...q, edits: [...q.edits, ...queued] }
+  // [SP_FOLD_02_03] AddReturns, only beside an accepted edit of this call
+  const next: Queue = { ...q, edits: queued.length ? addReturns([...q.edits, ...queued], rows, recalls, pinned) : q.edits }
   if (queued.length) next.tagsOnly = false
   const prompt = typeof args.resume_prompt === 'string' && args.resume_prompt.trim() !== ''
   // [SP_CTX_02_02] [SP_CTX_DEC_16] the last explicit choice of the batch wins:
@@ -416,8 +431,11 @@ export function queueEdits(
 
 // [SP_CTX_02_02] `refLines`: the line naming the call "last" resolved to.
 export function queuedText(q: Queue, queued: number, errors: readonly string[], warnings: readonly string[] = [], refLines: readonly string[] = []): string {
+  // [SP_FOLD_02_03] the mod's return edits are no edits of the agent's count
+  const returns = q.edits.filter(isOwnReturn).length
   return [
-    `Queued ${queued} edit(s); ${q.edits.length} pending in total.`,
+    `Queued ${queued} edit(s); ${q.edits.length - returns} pending in total.`,
+    returns ? `${returns} recalled level(s) of closed stages return with this batch: each becomes a one-line trace, and its fold record stays.` : '',
     ...refLines,
     errors.length ? `Rejected: ${errors.join('; ')}.` : '',
     ...warnings,
@@ -461,6 +479,9 @@ export type QueueIO = {
   // [SP_CTX_02_61] the host rows' records, read only for a call with a host
   // drop; an unreadable or missing file gives none
   hostRows?: () => Promise<readonly HostRowRecord[]>
+  // [SP_FOLD_02_03] the recalls not yet returned, of the fold ledger as it is
+  // now; an unreadable or missing ledger gives none
+  recalls?: () => Promise<readonly Recall[]>
 }
 
 // [SP_CTX_02_02]
@@ -485,7 +506,8 @@ export async function contextEdit(
   }
   const wantsHost = Array.isArray(args.edits) && args.edits.some(x => (x as { host?: unknown } | null)?.host !== undefined)
   const hostRows = wantsHost && io.hostRows ? await io.hostRows().catch(() => []) : []
-  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows, closed)
+  const recalls = io.recalls ? await io.recalls().catch(() => []) : []
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows, closed, recalls)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

@@ -1,9 +1,9 @@
 ---
 skill: ClaudeCodePluginHooksCommands
 domain: claude-code
-topics: [command.run, clear, resume, headless, stream-json, vscode, turn.complete, prompt.submit, ui.log, ui.notify]
+topics: [command.run, clear, resume, headless, stream-json, vscode, turn.complete, turn.step, session.append, prompt.submit, ui.log, ui.notify, rename]
 source: implementation
-updated: 2026-10-17
+updated: 2026-11-14
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.296
@@ -12,7 +12,7 @@ state: stale
 
 # Моди Claude Code: команди, ходи й промпти плагіна: `$.command.run`, неінтерактивний хост, події ходу, `$.prompt.submit`, `$.ui.log`
 
-Тематичний файл навички [ClaudeCodePluginHooks](plugin-hooks.md): пункти 3, 8, 16, 18, 22, 23, 25, 27, 38, 51, 57, 60, 62, 71 її списку пасток, дослівно і з тими самими номерами (якір `#p<N>`), тож посилання «plugin-hooks N» / «навичка, пункт N» ведуть сюди через [покажчик](plugin-hooks.md#pitfalls). Посилання «пункт N» у тексті — на номер у тому самому списку, хоч би в якому тематичному файлі він лежав.
+Тематичний файл навички [ClaudeCodePluginHooks](plugin-hooks.md): пункти 3, 8, 16, 18, 22, 23, 25, 27, 38, 51, 57, 60, 62, 71, 77, 78, 79 її списку пасток, дослівно і з тими самими номерами (якір `#p<N>`), тож посилання «plugin-hooks N» / «навичка, пункт N» ведуть сюди через [покажчик](plugin-hooks.md#pitfalls). Посилання «пункт N» у тексті — на номер у тому самому списку, хоч би в якому тематичному файлі він лежав.
 
 ## Applicability Boundary
 
@@ -66,6 +66,12 @@ state: stale
 
 <a id="p77"></a>
 77. **`/rename` з плагіна: заголовок сесії** (2.1.312, термінал і stream-json без мережі, зонд `.dev_flow/cache/live-test/title-probe/`, спайк `docs/context_editor_session_title.spike.md`). У `$` немає API заголовка; `$.command.run({ command: 'rename', args: '<назва>' })` з відкладеної дії кінця ходу працює в обох хостах (20–60 мс). Хост пише в транскрипт `custom-title` і `agent-name` (порядок показу: `agentName || customTitle || aiTitle || …`), stream-json виводить `system/session_title_changed`, який розширення VS Code застосовує (`applySessionTitle`). Ціна: три рядки в розмові, які бачить модель (`<local-command-caveat>`, рядок команди, `<local-command-stdout>Session renamed to: …`), у терміналі ще нагадування «The user named this session "…"» — дію мода хост приписує людині. Термінальний варіант повертає `{ context: [...] }`, stream-json — `{ text }`. `/rename` людини приходить у хук `command.run` з `origin.kind` `composer` (термінал) або `sdk` (stream-json). `/rename` без аргументу генерує назву окремим викликом моделі-помічника і без відповіді моделі в розмові відмовляє («no conversation context yet»). Назва унікальна серед живих сесій машини (збіг — суфікс). Рядок перед перейменуванням мод бере як `uuid` останнього видимого рядка з `session.append`: `$.session.messages()` `handle` не несе, а `uuid` рядка і є його `handle` у компактизації. Рядок перед командою, повернутий без `handle`, забирає з собою невидимі рядки команди і в терміналі (зокрема нагадування «The user named this session»; фаза 48, `title-p48/results.md`).
+<a id="p78"></a>
+78. **Хук `session.append` може переписати рядок відповіді моделі; `turn.complete` бачить уже збережений текст** (2.1.325, stream-json, sonnet і opus; термінал не перевірено; зонд `.dev_flow/proto/trailer/`, спайк `docs/context_service_info.spike.md`, Entry 11). Рядки асистента приходять у `session.append` по одному блоку на рядок (виклик інструмента, thinking, текст). Текст, змінений хуком, зберігається в транскрипті, і модель далі отримує саме його (на прохання процитувати останній рядок попередньої відповіді sonnet і opus прибраного рядка не бачили; у контролі без прибирання sonnet цитував його дослівно). Після такої зміни `e.answer` у `turn.complete` — збережений рядок, тож прибраного з рядка відповіді на кінці ходу вже не прочитати: читати його треба в `session.append` або в `turn.step` (пункт 79). Дельти потоку з `--include-partial-messages` несуть ще початковий текст, а зібрана подія `assistant` і `result` — змінений. Наступні запити не падали, thinking-рядки лишилися з підписами, `cache_read` кожного ходу дорівнював сумі `cache_read` і `cache_creation` попереднього, як у контролі (на цьому акаунті; тіло запиту не переглядали, проксі не було; чи діє тут перевірка з пункту 69 — не встановлено).
+
+<a id="p79"></a>
+79. **`turn.step`: хук-генератор може прибрати кінець відповіді ще з потоку** (2.1.325, stream-json, лише sonnet; зонд `.dev_flow/proto/trailer/`, спайк `docs/context_service_info.spike.md`, Entry 11). Хук-генератор `turn.step`, що притримує останній рядок потоку й відкидає його, прибирає цей рядок усюди, зокрема з дельт потоку, які після прибирання в `session.append` (пункт 78) його ще несуть. На opus і в терміналі не перевірено.
+
 
 ## Structural events
 

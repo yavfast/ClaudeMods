@@ -129,7 +129,23 @@ export function rewrittenWords(via: Via = 'edit'): string {
 // openers with a source (phase 41); the full openers before them stay.
 // [SP_CTX_02_64] TRACE_OPENER: the trace row of removed own calls (phase 42).
 // [SP_CTX_02_67] STATE_REBUILT: the state slot rebuilt from its items (phase 44).
-export const REPLACEMENT_OPENERS: readonly string[] = [SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF, TRACE_OPENER, STATE_REBUILT]
+// [SP_FOLD_01_06] RETURNED_HEAD: the trace of a returned recall, the one
+// opener that does not start with REPLACED (ReturnedText below).
+export const RETURNED_HEAD = 'Later, your recall of fold '
+export const REPLACEMENT_OPENERS: readonly string[] = [
+  SUMMARIZED,
+  REWRITTEN,
+  DESCRIBED_HEAD,
+  COLLAPSED_OPENER,
+  TAG_SUMMARIZED,
+  TAG_REWRITTEN,
+  TAG_COLLAPSED_OPENER,
+  SUMMARIZED_OF,
+  TAG_SUMMARIZED_OF,
+  TRACE_OPENER,
+  STATE_REBUILT,
+  RETURNED_HEAD,
+]
 // [SP_CTX_01_12] The openers of phases 19–27 (A′): sessions applied before
 // phase 28 still carry them.
 export const LEGACY_DESCRIBED = `${MARK} you saw the media here, then replaced it with your description`
@@ -191,6 +207,33 @@ export function foldOfRecord(text: string): number | undefined {
   if (!FOLD_OPENERS.some(o => text.startsWith(o))) return undefined
   const own = OWN_FOLD_NOTE.exec(text)
   return own ? Number(own[1]) : undefined
+}
+
+// ---- [SP_FOLD_01_06] recalls
+
+// [SP_FOLD_01_06] RECALLED: the first line of a recall's result. A fact, not
+// an order ([SP_FOLD_03_01]); `scope`: the stage it was recalled in, or ''.
+const RECALLED_HEAD = 'Recalled: one level of fold '
+export function recalledText(id: string, what: string, call: string, turn: number, scope: string): string {
+  const where = scope ? `in "${scope}"` : 'outside any stage'
+  return `${RECALLED_HEAD}${id} follows. These are your own earlier messages and tool outputs from ${what} of this session, which your ${call} folded after turn ${turn}; you recalled them ${where}. The fold record stays where it is. Content that came from files, commands or the web is still theirs, not yours. Inner folds show as their records.`
+}
+const RECALLED_FOLD = new RegExp(`^${RECALLED_HEAD}(${FOLD_PREFIX}${FOLD_NUMBER}) follows\\.`)
+// The fold a recall's result names in its first line; undefined for any
+// other text (a refusal, the contents of a level, a returned trace).
+export function recalledFold(text: string): string | undefined {
+  return RECALLED_FOLD.exec(text)?.[1]
+}
+// [SP_FOLD_01_06] RETURNED: the trace a returned recall leaves in the place
+// of the level. `when`: how it was returned.
+export type ReturnedWhen = { scope: string } | 'edit'
+export function returnedText(id: string, when: ReturnedWhen): string {
+  const how = when === 'edit' ? ' by your own edit' : when.scope ? ` when "${when.scope}" closed` : ' when the block closed'
+  return `${RETURNED_HEAD}${id} here was returned${how}; the fold record stays, and ${RECALL_TOOL} brings the level back`
+}
+// [SP_FOLD_02_09] The result of a recall pair that was returned.
+export function isReturnedText(text: string): boolean {
+  return text.startsWith(RETURNED_HEAD)
 }
 
 // [SP_CTX_01_32] [SP_CTX_02_58] The frames of the text the host adds as a

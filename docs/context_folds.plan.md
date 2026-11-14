@@ -47,7 +47,7 @@
 ## Progress
 
 - [x] [Phase 1 — Облік згорток](#PL_FOLD_P1)
-- [ ] [Phase 2 — Розгортання й повернення згаданого](#PL_FOLD_P2)
+- [x] [Phase 2 — Розгортання й повернення згаданого](#PL_FOLD_P2)
 - [ ] [Phase 3 — Згортка зі словами людини й обхід закріплених рядків](#PL_FOLD_P3)
 - [ ] [Phase 4 — Порівняльний прогін](#PL_FOLD_P4)
 - [ ] [Phase 5 — Вкладені області й завдання](#PL_FOLD_P5)
@@ -78,7 +78,7 @@ Notes:
 
 Docs: [SP_CTX_01_12](./context_editor.constants.sp.md#SP_CTX_01_12), [SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04), [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07), [SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01), `docs/_framework.md`, `CLAUDE.md` (новий модуль і файл сесії).
 
-### Phase 2 — Розгортання й повернення згаданого (`hooks/folds.ts`, `hooks/tools.ts`) [TODO]  {#PL_FOLD_P2}
+### Phase 2 — Розгортання й повернення згаданого (`hooks/folds.ts`, `hooks/tools.ts`) [DONE]  {#PL_FOLD_P2}
 
 **Depends on:** Phase 1
 **Implements:** [SP_FOLD_01_03](./context_folds.sp.md#SP_FOLD_01_03), решта констант розгортання з [SP_FOLD_01_06](./context_folds.sp.md#SP_FOLD_01_06), [SP_FOLD_02_02](./context_folds.sp.md#SP_FOLD_02_02), [SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03), [SP_FOLD_02_07](./context_folds.sp.md#SP_FOLD_02_07) (позначка `recalled`, число згадувань у заголовку), [SP_FOLD_02_08](./context_folds.sp.md#SP_FOLD_02_08), [SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09), [SP_FOLD_04_01](./context_folds.sp.md#SP_FOLD_04_01)
@@ -159,6 +159,10 @@ Docs: [SP_CTX_02_30](./context_editor.stages.sp.md#SP_CTX_02_30); у C_CTX — [
 - Термінальний хост і розширення VS Code після керованих налаштувань — return when: живий прогін фази 1.
 - Дев'ять розбіжностей між SP_CTX і кодом, знайдені розвідкою контрактів (попередження проти відмови за слова людини, формат тексту переписаного слота, шляхи архівів та інші; перелік — у файлі задачі `task_C_FOLD`) — owner: розробник; return when: `/dev-flow audit docs` або фаза, що править той самий розділ.
 - Прототипи зондів у `.dev_flow/proto/` — owner: розробник.
+- Архіви перенесених згорток після пакування старої сесії: розгортання дає ARCHIVE_UNREADABLE (рев'ю фази 2, P6) — return when: живий випадок у сесії після передачі, або береться пункт про прибирання старих сесій.
+- Правка повернення пари поза вікном API не застосовується й стає в чергу з кожним пакетом знову (рев'ю фази 2, P7) — return when: повториться в живій сесії.
+- Рядок стану й речення передачі для людини рахують у «queued edit(s)» і правки повернення мода (рев'ю фази 2, P2) — return when: фаза 3 або наступна правка цих текстів.
+- Предикат «виклик розгортання» в `hooks/edits.ts` повторено п'ять разів (рев'ю фази 2, P5) — return when: наступна зміна цих місць.
 
 ## Design Decisions  {#PL_FOLD_DEC}
 

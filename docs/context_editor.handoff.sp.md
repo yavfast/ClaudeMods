@@ -292,6 +292,8 @@ Errors: відмови не виходять назовні — кожна пр�
 
 Обхід хуків мода ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)): запит, поставлений до вердикту, при `passed` на запуску не виконується — запит знято з черги, у черзі — звіт HANDOFF_PASSED_OVER, команди немає.
 
+Облік згорток (PL_FOLD, фаза 2; [SP_FOLD_02_08](./context_folds.sp.md#SP_FOLD_02_08)). BuildSeed правок повернення не виконує, прибирає всі пари розгортання й нумерує правки-згортки засіву через AssignFoldIds від `nextFold` обліку старої сесії. Крок `folds` після `registries` (CarryFolds) пише в нове сховище `folds` і `nextFold` старої сесії, порожній `recalls` і FoldEntry згорток засіву з шляхом архіву засіву; коли переносити нічого, файл не пишеться. Нечитний облік старої сесії або невдалий запис дають речення FOLDS_NOT_CARRIED у звіті засіву; передача триває.
+
 ### 02_22. BuildSeed  {#SP_CTX_02_22}
 
 > **Курування:** ScreenPerson — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); слід власних викликів — [SP_CTX_02_64](./context_editor.curation.edits.sp.md#SP_CTX_02_64); правки `state` — [SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67).

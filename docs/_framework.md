@@ -28,12 +28,12 @@
 | L1 | `media`, `store`, `state` (пункти слоту стану, ф44) | rows |
 | L2 | `deliveries`, `hostrows` (рядки хоста, ф45), `cleanup` (старі сесії, ф36) | deliveries: media, rows, store; hostrows: rows, store; cleanup: store |
 | L3 | `edits` | deliveries, hostrows, media, rows, state |
-| L4 | `cache`, `hostattach`, `queue`, `aliases`, `subagents` (обрізання результатів субагента, ф34) | cache: edits, rows; hostattach: edits, rows, store; queue: deliveries, edits, hostrows, rows, store, t: stages; aliases: edits, rows, store; subagents: edits |
-| L5 | `journal`, `folds` (облік згорток, PL_FOLD ф1: FoldEntry, FoldLedger, AssignFoldIds, RecordFolds, перелік; ClosedSpan рахує `stages`) | journal: edits, queue, store; folds: edits, rows, store |
-| L6 | `tags` ⇄ `stages` ⇄ `notes` ⇄ `capabilities` (цикл значень) | edits, rows, store; tags також queue, state, t: deliveries; stages також aliases, cache, folds, hostrows, t: journal, queue; capabilities також deliveries, t: notes, queue |
-| L7 | `tools` (метадані інструментів), `repair` (ремонт після відновлення, ф32) | tools: edits, notes, queue, rows, stages, state, tags; repair: aliases, deliveries, edits, notes, queue, rows, store, t: compaction, journal, tags |
+| L4 | `cache`, `hostattach`, `folds` (облік згорток і розгортання, PL_FOLD ф1–2: FoldEntry, FoldLedger, AssignFoldIds, RecordFolds, Recall, MarkDue, AddReturns, перелік; ClosedSpan рахує `stages`), `queue`, `aliases`, `subagents` (обрізання результатів субагента, ф34) | cache: edits, rows; hostattach: edits, rows, store; folds: edits, rows, store; queue: deliveries, edits, folds (той самий шар, без циклу), hostrows, rows, store, t: stages; aliases: edits, rows, store; subagents: edits |
+| L5 | `journal` | journal: edits, queue, store |
+| L6 | `tags` ⇄ `stages` ⇄ `notes` ⇄ `capabilities` (цикл значень) | edits, rows, store; tags також folds, queue, state, t: deliveries; stages також aliases, cache, folds, hostrows, t: journal, queue; capabilities також deliveries, t: notes, queue |
+| L7 | `tools` (метадані інструментів), `repair` (ремонт після відновлення, ф32) | tools: edits, folds, notes, queue, rows, stages, state, tags; repair: aliases, deliveries, edits, notes, queue, rows, store, t: compaction, journal, tags |
 | L8 | `hints`, `compaction` | hints: aliases, cache, edits, rows, stages, tags; compaction: aliases, deliveries, edits, hostattach, hostrows, journal, notes, queue, repair, rows, state, tags, t: store |
-| L9 | `flush`, `handoff` (оркестратори) | flush: compaction, queue, rows, stages, turns; handoff: aliases, capabilities, compaction, deliveries, edits, media, notes, queue, repair, rows, stages, store, tags, turns |
+| L9 | `flush`, `handoff` (оркестратори) | flush: compaction, queue, rows, stages, turns; handoff: aliases, capabilities, compaction, deliveries, edits, folds, media, notes, queue, repair, rows, stages, store, tags, turns |
 | L10 | `personcompact` (власна `/compact` людини) | capabilities, flush, rows, t: queue, store |
 | L11 | `register` | 23 з 26: усі, крім cache, media, state |
 

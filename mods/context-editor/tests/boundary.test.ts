@@ -26,7 +26,8 @@ import {
 } from '../hooks/edits'
 import { applyTagRequests, EMPTY_REGISTRY } from '../hooks/tags'
 import { applyNoteRequests } from '../hooks/notes'
-import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION, TAG_DESCRIPTION, TOOLS } from '../hooks/tools'
+import { EDIT_DESCRIPTION, HANDOFF_DESCRIPTION, LIST_DESCRIPTION, NOTE_DESCRIPTION,
+  RECALL_DESCRIPTION, TAG_DESCRIPTION, TOOLS } from '../hooks/tools'
 import { DEFAULT_RESUME } from '../hooks/queue'
 
 function row(role: 'user' | 'assistant', text: string): SessionMessage {
@@ -93,8 +94,8 @@ test('parseBoundary takes only a well-formed boundary', async () => {
   expect(parseBoundary(JSON.stringify({ head: ['a'], count: 1.5 }))).toBe(undefined)
 })
 
-test('every tool description reaches the model whole (the five tools)', async () => {
-  for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION, NOTE_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
+test('every tool description reaches the model whole (the six tools)', async () => {
+  for (const d of [LIST_DESCRIPTION, EDIT_DESCRIPTION, TAG_DESCRIPTION, HANDOFF_DESCRIPTION, NOTE_DESCRIPTION, RECALL_DESCRIPTION]) expect(d.length <= MAX_DESCRIPTION).toBe(true)
 })
 
 // [SP_CTX_02_02] [SP_CTX_DEC_20] phase 21: "last" is the latest call, marked or not;
@@ -502,7 +503,7 @@ test('RecordBoundary — host: with hostId the boundary carries it, without it n
 
 test('EDIT_DESCRIPTION — keep_cache (phase 23): a few words point to the field; the text stays within MAX_DESCRIPTION', async () => {
   expect(EDIT_DESCRIPTION).toContain('Batch edits in one call (see "keep_cache").')
-  expect(EDIT_DESCRIPTION.length).toBe(2043)
+  expect(EDIT_DESCRIPTION.length).toBe(2045)
 })
 
 // [PL_AUD_CTX_P6] TST-17: before the storage is ready

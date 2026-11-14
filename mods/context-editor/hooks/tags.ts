@@ -27,6 +27,7 @@ import {
   type StateInput,
 } from './edits'
 import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, resumesAfter, type Queue } from './queue'
+import { addReturns, isOwnReturn, type Recall } from './folds'
 import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
 import { isTitleState, titleOp, type TitleError, type TitleState } from './title'
@@ -356,6 +357,12 @@ export type TagIO = {
   // context_tag: the host's deliveries not yet rows, for the PERSON_TAG refusal
   // ([SP_CTX_01_22]); none when absent or unreadable
   deliveries?: () => Promise<readonly QueuedDelivery[]>
+  // [SP_FOLD_02_03] MarkDue once a close of this call is written: on the fold
+  // ledger's chain; its failure only leaves the recalls not due
+  markDue?: (after: number) => Promise<void>
+  // [SP_FOLD_02_03] the recalls not yet returned, of the fold ledger as it is
+  // now; none when absent or unreadable
+  recalls?: () => Promise<readonly Recall[]>
 }
 
 // [SP_CTX_02_11]
@@ -623,6 +630,10 @@ export async function contextTag(
   })
   if ('deny' in step) return step
   const closes = step.events.flatMap(e => ('close' in e ? [e.close] : []))
+  // [SP_FOLD_02_03] MarkDue of each close, before the replacements are queued
+  // (the port logs its own failure). Regions do not nest in this phase: none
+  // is open after a close
+  if (closes.length) await io.markDue?.(0).catch(() => undefined)
   let replaced: Replaced | undefined
   // [SP_CTX_02_13] a close by the tool, or the end of the waiting block
   if (closes.length || step.waited) replaced = await (io.replace ?? (() => queueTagReplacements(io)))().catch(() => undefined)
@@ -1090,10 +1101,16 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const over = prepared.filter(e => personRefusal(rows, e, delivered) !== undefined)
   const dropped = over.length ? await dropTagsOf(io, over) : []
   // [SP_CTX_02_13] the replacement's text names the agent's tag, not a context_edit call
-  const queued: QueuedEdit[] = prepared.filter(e => !over.includes(e)).map(e => ({ ...e, via: 'tag' as const }))
+  // [SP_FOLD_02_03] a disposable tag on a recall pair returns it with the tag's note
+  const recalls = (await io.recalls?.().catch(() => undefined)) ?? []
+  const queued: QueuedEdit[] = prepared
+    .filter(e => !over.includes(e))
+    .map(e => ({ ...e, via: e.op === 'summarize' && recalls.some(r => r.tool_use_id === e.tool_use_id) ? ('return' as const) : ('tag' as const) }))
   const none: Replaced = dropped.length ? { ...NOTHING, dropped } : NOTHING
-  if (!queued.length || q.edits.length + queued.length > MAX_QUEUE_EDITS) return none
-  const next: Queue = { ...q, edits: [...q.edits, ...queued], tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
+  // (the mod's own return edits give way: AddReturns re-adds what fits)
+  if (!queued.length || q.edits.filter(e => !isOwnReturn(e)).length + queued.length > MAX_QUEUE_EDITS) return none
+  // [SP_FOLD_02_03] AddReturns: the due recalls join the batch of replacements
+  const next: Queue = { ...q, edits: addReturns([...q.edits, ...queued], rows, recalls, pinnedTargets(rows, tags.value, ix)), tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
   if (bytes(next) > MAX_QUEUE_BYTES) return none
   try {
     await io.writeQueue(next)

@@ -14,6 +14,7 @@ import {
   formatReport,
   HEAD_ROWS,
   isHostDrop,
+  isReturnEdit,
   mergeCallRows,
   MAX_TEXT,
   ownerKey,
@@ -27,10 +28,12 @@ import {
   withCarryNote,
   type ApplyReport,
   type Boundary,
+  type Folded,
   type QueuedEdit,
   type StateOutput,
 } from './edits'
-import { appendReport, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, screenPerson, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
+import { assignFoldIds, emptyFolds, recordFolds, type FoldLedger } from './folds'
+import { appendReport, MAX_QUEUE_BYTES, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, screenPerson, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
@@ -97,6 +100,8 @@ export type HandoffSeed = {
   ratio?: number
   // [SP_CTX_02_67] the items the seed's state edits made: the carried registry gets them
   items?: StateOutput
+  // [SP_FOLD_02_08] the folds the seed's edits made, for the new session's ledger
+  folds?: SeedFolds
   new?: string
   taken: boolean
 }
@@ -175,6 +180,10 @@ export function cancelHandoff(q: Queue, why: string, now: number, inFlight = fal
 
 export type SeedRefusal = 'WINDOW_FULL' | 'NO_SUMMARY' | 'SUMMARY_NOT_FOUND' | 'HIDDEN_AFTER_SUMMARY' | 'MEDIA_NOT_ARCHIVED' | 'EMPTY' | 'SEED_TOO_LONG'
 
+// [SP_FOLD_02_08] What the seed's fold edits left for RecordFolds: ApplyEdits'
+// `folded`, the next number after them and the old registry's turn.
+export type SeedFolds = { folded: Folded[]; next: number; turn: number }
+
 export type BuiltSeed = {
   rows: SessionMessage[]
   report: ApplyReport
@@ -190,6 +199,8 @@ export type BuiltSeed = {
   items?: StateOutput
   // [SP_CTX_02_67] SeedInput.edits with every state edit stamped with the slot
   batch: QueuedEdit[]
+  // [SP_FOLD_02_08] the folds the applied edits made
+  folds?: SeedFolds
 }
 
 export type SeedInput = {
@@ -208,6 +219,9 @@ export type SeedInput = {
   deliveries?: Read<Deliveries>
   // [SP_CTX_02_45] the old session's ledger and whether it had an apply; absent: none
   pulled?: Pulled
+  // [SP_FOLD_02_08] the old session's fold ledger: the seed's folds are
+  // numbered after it (AssignFoldIds); absent: they get no id
+  folds?: Read<FoldLedger>
 }
 
 const WINDOW_FULL = `the conversation fills the host's ${ROW_WINDOW}-row window; its start may be cut`
@@ -358,14 +372,19 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   const state = input.tags.state === 'unreadable' ? undefined : stateInput(input.tags.value)
   // [SP_CTX_02_61] the seed takes no host rows: a host drop counts as applied
   const hostDrops = screened.edits.filter(isHostDrop)
-  const applied = applyEdits(
-    visible,
-    screened.edits.filter(e => !isHostDrop(e)),
-    input.archive,
-    media,
-    new Set(),
-    { knownResults, unmatchedPromptMedia: unmatched, apiTruncated, ...(input.cwd ? { cwd: input.cwd } : {}), ...(state ? { state } : {}) },
-  )
+  // [SP_FOLD_02_08] the recall pairs go with the mod's other calls and no
+  // recalled level is seeded: a return edit has nothing to return
+  const toApply = screened.edits.filter(e => !isHostDrop(e) && !isReturnEdit(e))
+  // [SP_FOLD_02_08] AssignFoldIds from the carried `nextFold`
+  const numbered = input.folds ? assignFoldIds(toApply, visible, input.folds.state === 'unreadable' ? undefined : input.folds.value) : undefined
+  const applied = applyEdits(visible, toApply, input.archive, media, new Set(), {
+    knownResults,
+    unmatchedPromptMedia: unmatched,
+    apiTruncated,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
+    ...(state ? { state } : {}),
+    ...(numbered ? { foldIds: numbered.ids } : {}),
+  })
   const report = applied.report
   report.applied.push(...hostDrops.map(describeEdit))
   report.failed = [...early, ...screened.refused, ...report.failed]
@@ -417,7 +436,20 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   // start with the summary row (a resumed session after /compact)
   const fromSummary = head !== undefined || seed[0]!.text.trim().startsWith(SUMMARY_OPENER)
   const seededIds = new Set(seed.flatMap(r => resultsOf(r).map(t => t.tool_use_id)))
-  return { rows: seed, report, visible, fromSummary, unmatchedPromptMedia, media, carried: carried.filter(id => seededIds.has(id)), batch, ...(applied.state ? { items: applied.state } : {}) }
+  const folds: SeedFolds | undefined =
+    numbered && applied.folded.length ? { folded: applied.folded, next: numbered.next, turn: input.tags.state === 'unreadable' ? 0 : input.tags.value.turn } : undefined
+  return {
+    rows: seed,
+    report,
+    visible,
+    fromSummary,
+    unmatchedPromptMedia,
+    media,
+    carried: carried.filter(id => seededIds.has(id)),
+    batch,
+    ...(applied.state ? { items: applied.state } : {}),
+    ...(folds ? { folds } : {}),
+  }
 }
 
 // ---- [SP_CTX_02_23] CheckSeed
@@ -563,6 +595,11 @@ export type HandoffIO = {
   // throw of `change` or a failed write rejects, and nothing is written.
   carryTags: (fromDir: string, toDir: string, change: (reg: TagRegistry) => TagRegistry) => Promise<'missing' | 'carried'>
   carryAliases: (fromDir: string, toDir: string, change: (reg: AliasRegistry) => AliasRegistry) => Promise<'missing' | 'carried'>
+  // [SP_FOLD_02_08] the fold ledger of a session's storage: read on its
+  // chain (a failed read counts as unreadable), written on its chain
+  // (a failed write rejects); absent: no ledger is carried
+  readFolds?: (dir: string) => Promise<Read<FoldLedger>>
+  writeFolds?: (dir: string, ledger: FoldLedger) => Promise<void>
   // a built-in command, one attempt; a refusal rejects with the host's text
   runCommand: (command: 'clear' | 'compact', args?: string) => Promise<void>
   // a model request over the session without tools; undefined when unanswered
@@ -741,7 +778,21 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
     const deliveries = io.readDeliveries ? await io.readDeliveries(run.oldDir).catch((err): Read<Deliveries> => ({ state: 'unreadable', reason: String(err) })) : undefined
     const pulled = io.readLedger ? await io.readLedger(run.oldDir).catch(() => undefined) : undefined
     const cwd = io.cwd ? await io.cwd().catch(() => undefined) : undefined
-    const built = await buildSeed({ transcript, rows, api, edits: run.q.edits, tags, folder: media, archive, writeMedia: io.writeMedia, deliveries, ...(pulled ? { pulled } : {}), ...(cwd ? { cwd } : {}) })
+    const folds = io.readFolds ? await io.readFolds(run.oldDir).catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: String(err) })) : undefined
+    const built = await buildSeed({
+      transcript,
+      rows,
+      api,
+      edits: run.q.edits,
+      tags,
+      folder: media,
+      archive,
+      writeMedia: io.writeMedia,
+      deliveries,
+      ...(pulled ? { pulled } : {}),
+      ...(cwd ? { cwd } : {}),
+      ...(folds ? { folds } : {}),
+    })
     if ('refuse' in built) {
       await clean(false)
       return { reason: built.reason }
@@ -782,6 +833,7 @@ async function prepareSeed(run: Run): Promise<{ seed: HandoffSeed } | { reason: 
         // [SP_CTX_02_34] the old session's calibration, for the seed's report
         ratio: tags.state === 'unreadable' ? undefined : tags.value.charsPerToken,
         ...(built.items ? { items: built.items } : {}),
+        ...(built.folds ? { folds: built.folds } : {}),
         taken: false,
       },
     }
@@ -839,6 +891,35 @@ export async function carryRegistries(
     }
   }
   return error ? { note: REGISTRIES_NOT_CARRIED, error } : { note: '' }
+}
+
+// [SP_FOLD_02_08] The sentence of the seed's report when the ledger was not carried.
+export const FOLDS_NOT_CARRIED = ' The fold ledger was not carried over: context_recall will not know the earlier folds; their originals are at the paths in the fold records.'
+
+// [SP_FOLD_02_08] The fold ledger into the new session: the old session's
+// folds and `nextFold`, no recall (no recalled level is seeded), and the
+// entries of the folds the seed's edits made, with the seed's archive. An old
+// ledger that cannot be read gives the sentence, and the seed's own folds
+// still get their entries; a failed write gives the sentence too. Nothing is
+// written when there is nothing to carry.
+export async function carryFolds(
+  io: Pick<HandoffIO, 'readFolds' | 'writeFolds'>,
+  s: Pick<HandoffSeed, 'folds' | 'report' | 'archive'>,
+  oldDir: string,
+  newDir: string,
+): Promise<{ note: string; error?: Error }> {
+  if (!io.readFolds || !io.writeFolds) return { note: '' }
+  let error: Error | undefined
+  try {
+    const read = await io.readFolds(oldDir).catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) }))
+    if (read.state === 'unreadable') error = new Error(`the fold ledger of the old session cannot be read (${read.reason})`)
+    const base: FoldLedger = read.state === 'unreadable' ? emptyFolds() : { folds: read.value.folds, nextFold: read.value.nextFold, recalls: [] }
+    const next = s.folds ? recordFolds(base, s.folds.folded, s.report.originals, s.folds.next, s.archive, s.folds.turn, MAX_QUEUE_BYTES) : base
+    if (next.folds.length || next.nextFold > 1) await io.writeFolds(newDir, next)
+  } catch (err) {
+    error ??= err instanceof Error ? err : new Error(String(err))
+  }
+  return error ? { note: FOLDS_NOT_CARRIED, error } : { note: '' }
 }
 
 // [SP_CTX_01_05] [SP_CTX_02_21] The seed's FormatReport after the first line
@@ -931,6 +1012,12 @@ async function seedWay(run: Run, s: HandoffSeed): Promise<HandoffOutcome> {
   await step('HandedOff', () => handedOff(run, created, 'transcript'))
   await step('registries', async () => {
     const out = await carryRegistries(io, s, run.oldDir, newDir)
+    notes += out.note
+    if (out.error) throw out.error
+  })
+  // [SP_FOLD_02_08] the fold ledger, so the new session recalls the old one's folds
+  await step('folds', async () => {
+    const out = await carryFolds(io, s, run.oldDir, newDir)
     notes += out.note
     if (out.error) throw out.error
   })

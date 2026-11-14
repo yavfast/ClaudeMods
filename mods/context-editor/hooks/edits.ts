@@ -4,7 +4,7 @@ import { isMediaBlock, matchPrompts } from './media'
 import { applyChanges, checkChanges, draftChanges, MAX_STATE_ITEMS, NO_ITEM_NOW, TOO_MANY_ITEMS, NO_STATE_SLOT, SLOT_TOO_LONG, STATE_CONFLICT, STATE_GONE, STATE_ITEMS, stateText, type DraftItem, type StateChange, type StateItem } from './state'
 import { detachNote, HOST_EXCLUSIVE, HOST_ID, HOST_MEDIA, HOST_TWICE, HOST_UNKNOWN, hostRecord, type HostRowRecord } from './hostrows'
 import { isRenameRow, type TitleRun } from './title'
-import { apiBlocks, BIG_ROW, collapsedWords, describedWhat, describedWords, errorText, foldNote, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
+import { apiBlocks, BIG_ROW, collapsedWords, describedWhat, describedWords, errorText, foldNote, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, isReturnedText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, RECALL_TOOL, recalledFold, resultsOf, returnedText, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -26,7 +26,15 @@ export type Edit =
 // in later texts of the agent (summarize, drop, collapse; the mod writes it).
 // [SP_FOLD_01_01] `region`: a collapse whose span was, when it was queued,
 // the whole block of the last closed region that has a name (the mod writes it).
-export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag'; quoted?: true; region?: FoldRegion }
+// [SP_FOLD_02_03] `via: 'return'`: a summarize of a recall pair, which
+// returns the recalled level (ReturnRecalled): the mod's own with an empty
+// `summary`, or the agent's summarize or disposable tag of that pair with its text.
+export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' | 'return'; quoted?: true; region?: FoldRegion }
+
+// [SP_FOLD_02_03] A return edit: a summarize of a recall pair.
+export function isReturnEdit(e: QueuedEdit): e is Extract<QueuedEdit, { op: 'summarize' }> {
+  return e.op === 'summarize' && e.via === 'return'
+}
 
 // [SP_FOLD_01_01] The region a fold of a range stands for.
 export type FoldRegion = { name: string; kind: 'task' | 'stage' }
@@ -94,6 +102,10 @@ export type ApplyReport = {
   // [SP_CTX_02_61] the lines on host rows: dropped ones, those that went
   // with them, DetachNote, and those that went with rebuilt rows
   hostLines?: string[]
+  // [SP_FOLD_02_03] the applied return edits: their names in `applied` (how
+  // callers match the batch) and the folds whose recalls they returned; the
+  // report names them in a sentence of their own, the person's line not at all
+  returned?: { edit: string; fold: string }[]
 }
 
 // [SP_CTX_01_05] One entry of ApplyReport.produced.
@@ -124,6 +136,8 @@ export const DEP_MAX = 120
 export const DEP_EXAMPLES = 3
 export const MAX_TRACE = 400
 export const OWN_TOOLS = 'mcp__context-editor__'
+// [SP_FOLD_01_06] The recall tool as a call names it.
+export const RECALL_CALL = `${OWN_TOOLS}${RECALL_TOOL}`
 export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
 export const MAX_TEXT = 8000
@@ -732,8 +746,28 @@ export function dropOwnCalls(
   mediaOwners: ReadonlySet<string> = new Set(),
   knownResults?: ReadonlySet<string>,
   frozen: ReadonlySet<SessionMessage> = NONE_FROZEN,
+  keepRecalls?: ReadonlySet<string>,
 ): SessionMessage[] {
-  return dropOwnCallsCounted(input, mediaOwners, knownResults, frozen).rows
+  return dropOwnCallsCounted(input, mediaOwners, knownResults, frozen, keepRecalls).rows
+}
+
+// [SP_CTX_02_05] [SP_FOLD_02_09] The mod's own call pairs DropOwnCalls takes
+// out of `rows`. `keepRecalls`: the recall pairs with a recall record; with
+// it, such a pair and a recall pair whose result is a returned trace stay.
+// Absent (a seed): every own pair goes, the recall pairs too.
+export function ownPairs(rows: readonly SessionMessage[], keepRecalls?: ReadonlySet<string>): Set<string> {
+  const own = new Set<string>()
+  const recalls = new Set<string>()
+  for (const r of rows)
+    for (const u of r.toolUses) {
+      if (!u.tool.startsWith(OWN_TOOLS)) continue
+      own.add(u.tool_use_id)
+      if (u.tool === RECALL_CALL) recalls.add(u.tool_use_id)
+    }
+  if (!keepRecalls || !recalls.size) return own
+  for (const id of recalls) if (keepRecalls.has(id)) own.delete(id)
+  for (const r of rows) for (const t of resultsOf(r)) if (recalls.has(t.tool_use_id) && isReturnedText(t.text)) own.delete(t.tool_use_id)
+  return own
 }
 
 // No row is frozen: the seed and the callers outside a compaction.
@@ -749,8 +783,10 @@ export function dropOwnCallsCounted(
   knownResults?: ReadonlySet<string>,
   // [SP_CTX_02_04] the rows before the first change, returned as they came
   frozen: ReadonlySet<SessionMessage> = NONE_FROZEN,
+  // [SP_FOLD_02_09] the recall pairs with a recall record (OwnPairs)
+  keepRecalls?: ReadonlySet<string>,
 ): { rows: SessionMessage[]; removed: number } {
-  const own = new Set(input.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
+  const own = ownPairs(input, keepRecalls)
   const kept = new Set<string>()
   // [SP_CTX_02_05] an own pair in the frozen prefix stays: its bytes keep the prompt cache
   for (const r of input) {
@@ -856,7 +892,11 @@ export function dependencyHits(rows: readonly SessionMessage[], edit: QueuedEdit
   const resKey = (i: number, k: number) => `r${i}:${k}`
   // [SP_CTX_02_61] a host row is no row of the view: nothing quoted from it is checked
   if (isHostDrop(edit)) return none
+  // [SP_FOLD_02_09] a recall pair holds a level that lies in its fold's
+  // archive: it is neither an original nor one more source of a fragment
+  const recalls = new Set(rows.flatMap(r => r.toolUses.filter(u => u.tool === RECALL_CALL).map(u => u.tool_use_id)))
   if (isPairEdit(edit)) {
+    if (recalls.has(edit.tool_use_id)) return none
     const useAt = ix ? ix.useAt(edit.tool_use_id) : findToolUse(rows, edit.tool_use_id)
     const resAt = ix ? ix.resultAt(edit.tool_use_id) : findToolResult(rows, edit.tool_use_id)
     if (useAt < 0 || resAt < 0) return none
@@ -875,8 +915,8 @@ export function dependencyHits(rows: readonly SessionMessage[], edit: QueuedEdit
     for (let i = from; i <= to; i++) {
       const r = rows[i]!
       if (r.text) target.push(r.text)
-      r.toolUses.forEach((u, k) => (target.push(inputText(u.input)), inTarget.add(useKey(i, k))))
-      resultsOf(r).forEach((t, k) => (target.push(t.text), inTarget.add(resKey(i, k))))
+      r.toolUses.forEach((u, k) => (recalls.has(u.tool_use_id) || target.push(inputText(u.input)), inTarget.add(useKey(i, k))))
+      resultsOf(r).forEach((t, k) => (recalls.has(t.tool_use_id) || target.push(t.text), inTarget.add(resKey(i, k))))
       inTarget.add(`t${i}`)
     }
     end = to
@@ -899,8 +939,8 @@ export function dependencyHits(rows: readonly SessionMessage[], edit: QueuedEdit
   const others: string[] = []
   rows.forEach((r, i) => {
     if (r.text && !inTarget.has(`t${i}`) && !later.has(i)) others.push(r.text)
-    r.toolUses.forEach((u, k) => inTarget.has(useKey(i, k)) || others.push(inputText(u.input)))
-    resultsOf(r).forEach((t, k) => inTarget.has(resKey(i, k)) || others.push(t.text))
+    r.toolUses.forEach((u, k) => inTarget.has(useKey(i, k)) || recalls.has(u.tool_use_id) || others.push(inputText(u.input)))
+    resultsOf(r).forEach((t, k) => inTarget.has(resKey(i, k)) || recalls.has(t.tool_use_id) || others.push(t.text))
   })
   const hits = quoted.filter(f => !others.some(t => t.includes(f)))
   if (!hits.length) return none
@@ -1751,12 +1791,54 @@ export type ApplyOptions = {
   // [SP_FOLD_02_01] AssignFoldIds: the id of each fold edit of the batch, by
   // the edit object; its record carries FOLD_NOTE with it. Absent: no ids
   foldIds?: ReadonlyMap<QueuedEdit, string>
+  // [SP_FOLD_02_03] the recall records by their pair: the fold and the scope
+  // of the trace a return edit leaves; a pair without one is read by the
+  // first line of its result
+  recalls?: ReadonlyMap<string, { fold: string; scope: string }>
 }
 
 // [SP_CTX_02_67] What run state starts from, and (ApplyEdits' `state`) what
 // the commit writes.
 export type StateInput = { items: readonly StateItem[]; nextItem: number; turn: number }
 export type StateOutput = { items: StateItem[]; nextItem: number }
+
+// [SP_FOLD_02_03] The recall a pair holds, read from the pair itself: a call
+// of the recall tool whose result opens with RECALLED. No scope is known.
+function recallOf(use: SessionMessage, res: SessionMessage, id: string): { fold: string; scope: string } | undefined {
+  if (!use.toolUses.some(u => u.tool_use_id === id && u.tool === RECALL_CALL)) return undefined
+  const fold = recalledFold(resultsOf(res).find(t => t.tool_use_id === id)?.text ?? '')
+  return fold ? { fold, scope: '' } : undefined
+}
+
+// [SP_FOLD_02_03] The name of an edit in a report's failures: a return edit
+// is `return of fold <id>` (the agent never queued a summarize of that
+// pair); any other edit, and a return whose pair holds no recall, DescribeEdit.
+export function editLabel(rows: readonly SessionMessage[], edit: QueuedEdit): string {
+  if (!isReturnEdit(edit)) return describeEdit(edit)
+  const useAt = findToolUse(rows, edit.tool_use_id)
+  const resAt = findToolResult(rows, edit.tool_use_id)
+  const back = useAt < 0 || resAt < 0 ? undefined : recallOf(rows[useAt]!, rows[resAt]!, edit.tool_use_id)
+  return back ? `return of fold ${back.fold}` : describeEdit(edit)
+}
+
+// [SP_FOLD_02_03] The rows of a collapsed span as the archive keeps them: the
+// result of each recall pair in it is the trace of a return by the agent's
+// own edit (the level lies in its fold's archive already).
+function withReturnedRecalls(span: readonly SessionMessage[]): SessionMessage[] {
+  const recalls = new Set(span.flatMap(r => r.toolUses.filter(u => u.tool === RECALL_CALL).map(u => u.tool_use_id)))
+  if (!recalls.size) return [...span]
+  return span.map(r => {
+    const results = resultsOf(r)
+    if (!results.some(t => recalls.has(t.tool_use_id) && recalledFold(t.text))) return r
+    return {
+      ...r,
+      toolResults: results.map(t => {
+        const fold = recalls.has(t.tool_use_id) ? recalledFold(t.text) : undefined
+        return fold ? { tool_use_id: t.tool_use_id, isError: false, text: returnedText(fold, 'edit') } : t
+      }),
+    }
+  })
+}
 
 // [SP_CTX_02_04] Builds the new row list from the compaction's rows. Pure.
 // `media`: archived file paths by owner key; `mediaOwners`: keys of every
@@ -1770,6 +1852,8 @@ export function applyEdits(
   options: ApplyOptions = {},
 ): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; hostNamed: Set<string>; state?: StateOutput; folded: Folded[] } {
   const rows = [...input]
+  // [SP_FOLD_02_03] DescribeEdit name → `return of fold <id>` of the batch's return edits
+  const labels = new Map<string, string>()
   const report: ApplyReport = {
     applied: [],
     failed: [],
@@ -1838,6 +1922,16 @@ export function applyEdits(
         }
         const useAt = findToolUse(rows, edit.tool_use_id)
         const resAt = findToolResult(rows, edit.tool_use_id)
+        // [SP_FOLD_02_03] a return edit whose pair is gone, or is no recall
+        // (a refusal, the contents of a level), silently does not apply
+        const back = isReturnEdit(edit)
+          ? useAt < 0 || resAt < 0
+            ? undefined
+            : (options.recalls?.get(edit.tool_use_id) ?? recallOf(rows[useAt]!, rows[resAt]!, edit.tool_use_id))
+          : undefined
+        if (isReturnEdit(edit) && !back) continue
+        const label = back ? `return of fold ${back.fold}` : name
+        if (back) labels.set(name, label)
         if (useAt < 0 || resAt < 0) {
           report.failed.push(`${name}: call or result not found`)
           continue
@@ -1847,7 +1941,7 @@ export function applyEdits(
         // [SP_CTX_02_04] Outside the API window the media of a row is unknown.
         const known = options.knownResults
         if (known && resultsOf(rows[resAt]!).some(r => !known.has(r.tool_use_id))) {
-          report.failed.push(`${name}: outside the API window; media unknown`)
+          report.failed.push(`${label}: outside the API window; media unknown`)
           continue
         }
         // [SP_CTX_02_04] Rebuilding the result row drops every medium in it.
@@ -1855,11 +1949,27 @@ export function applyEdits(
           .map(r => ownerKey({ tool_use_id: r.tool_use_id }))
           .filter(k => k !== pair && mediaOwners.has(k) && !(batchPairs.has(k) && archived(k)))
         if (others.length) {
-          report.failed.push(`${name}: row also holds media of ${others.map(k => k.slice(2)).join(', ')}; summarize it in the same batch`)
+          report.failed.push(`${label}: row also holds media of ${others.map(k => k.slice(2)).join(', ')}; summarize it in the same batch`)
           continue
         }
-        run =
-          edit.op === 'summarize'
+        run = back
+          ? // [SP_FOLD_02_03] the level stays in its fold's archive: nothing is
+            // archived, the call stays, the result becomes the trace
+            () => {
+              const id = newId(edit.tool_use_id)
+              const use = rows[useAt]!
+              const res = rows[resAt]!
+              const words = edit.op === 'summarize' ? edit.summary : ''
+              const text = `${returnedText(back.fold, words ? 'edit' : { scope: back.scope })}${words ? `: ${words}` : ''}`
+              rows[useAt] = plain(use, { toolUses: use.toolUses.map(u => (u.tool_use_id === edit.tool_use_id ? editedUse(u, id) : stripUse(u))) })
+              rows[resAt] = plain(res, {
+                toolResults: resultsOf(res).map(r => (r.tool_use_id === edit.tool_use_id ? { tool_use_id: id, isError: false, text } : stripResult(r))),
+              })
+              made.push({ edit: name, resultId: id })
+              renamed.set(edit.tool_use_id, id)
+              ;(report.returned ??= []).push({ edit: name, fold: back.fold })
+            }
+          : edit.op === 'summarize'
             ? () => {
                 const id = newId(edit.tool_use_id)
                 const use = rows[useAt]!
@@ -1882,7 +1992,9 @@ export function applyEdits(
                 renamed.set(edit.tool_use_id, id)
               }
             : () => {
-                report.originals.push({ edit: name, rows: [rows[useAt]!, rows[resAt]!] })
+                // [SP_FOLD_02_03] a dropped recall pair leaves no archive: its level lies in its fold's
+                const recall = rows[useAt]!.toolUses.some(u => u.tool_use_id === edit.tool_use_id && u.tool === RECALL_CALL)
+                if (!recall) report.originals.push({ edit: name, rows: [rows[useAt]!, rows[resAt]!] })
                 const res = rows[resAt]!
                 rows[resAt] = plain(res, { toolResults: resultsOf(res).filter(r => r.tool_use_id !== edit.tool_use_id).map(stripResult) })
                 const use = rows[useAt]!
@@ -1927,7 +2039,8 @@ export function applyEdits(
           const span = rows.slice(from, to + 1)
           const list = collapsedList(span)
           const note = foldOf(edit, list)
-          report.originals.push({ edit: name, rows: span })
+          // [SP_FOLD_02_03] a recall the span holds goes into the archive as its trace
+          report.originals.push({ edit: name, rows: withReturnedRecalls(span) })
           const text = `${collapsedWords(span.length, list, viaOf(edit), edit.quoted === true)}${note}${mediaNote(keys)}: ${edit.summary}`
           // The carrier keeps roles and pairing valid around the span; it is
           // never one of this plugin's own calls, which are dropped later. Its
@@ -2159,6 +2272,13 @@ export function applyEdits(
   )
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
+  // [SP_FOLD_02_03] every failure of a return edit carries its label
+  if (labels.size)
+    report.failed = report.failed.map(f => {
+      const at = f.indexOf(': ')
+      const label = at < 0 ? undefined : labels.get(f.slice(0, at))
+      return label ? `${label}${f.slice(at)}` : f
+    })
   return { rows: out, report, made, renamed, prefix, hostNamed, folded, ...(stateOut ? { state: stateOut } : {}) }
 }
 
@@ -2467,15 +2587,18 @@ export function ownCallsText(n: number, replaced: boolean): string {
 // host's attachments included as in the calibration's numerator; the size
 // before is then those, the size after them less the chars freed; absent:
 // by the rows, as before phase 29. "" without an applied edit.
-export function applyLine(r: Pick<ApplyReport, 'applied' | 'failed' | 'charsBefore' | 'charsAfter'>, ratio?: number, apiChars?: number): string {
+export function applyLine(r: Pick<ApplyReport, 'applied' | 'failed' | 'charsBefore' | 'charsAfter' | 'returned'>, ratio?: number, apiChars?: number): string {
   if (!r.applied.length) return ''
+  // [SP_FOLD_02_03] a return edit is no edit of the person's line
+  const returned = r.returned?.length ?? 0
+  const edits = r.applied.length - returned
   const per = ratio || PLAIN_RATIO
   const tokens = (chars: number) => Math.max(0, Math.round(chars / per))
   const freed = tokens(r.charsBefore - r.charsAfter)
   const before = apiChars ?? r.charsBefore
   const after = before - (r.charsBefore - r.charsAfter)
   const approx = ratio ? '' : 'approx.'
-  const head = `applied ${r.applied.length} edit(s)${r.failed.length ? `, ${r.failed.length} not applied` : ''}`
+  const head = `${edits > 0 ? `applied ${edits} edit(s)` : `returned ${returned} recall(s)`}${r.failed.length ? `, ${r.failed.length} not applied` : ''}`
   const notes = [approx, freed > 0 ? `freed ~${kilo(freed)}` : ''].filter(Boolean).join('; ')
   return `${head}: conversation ~${kilo(tokens(before))} → ~${kilo(tokens(after))} tokens${notes ? ` (${notes})` : ''}`
 }
@@ -2512,8 +2635,12 @@ function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: n
     return notApplied ? modText(`no queued edit was applied. ${notApplied}`) : ''
   }
   const saved = r.charsBefore - r.charsAfter
+  // [SP_FOLD_02_03] the return edits: a sentence of their own, not among the applied edits
+  const back = new Set((r.returned ?? []).map(x => x.edit))
+  const shown = nowIndexes(r).filter((_, i) => !back.has(r.applied[i]!))
   return [
-    modText(`applied ${r.applied.length} edit(s): ${nowIndexes(r).join('; ')}.`),
+    modText(shown.length ? `applied ${shown.length} edit(s): ${shown.join('; ')}.` : 'applied 0 edit(s).'),
+    r.returned?.length ? `Returned ${r.returned.length} recall(s): ${r.returned.map(x => x.fold).join(', ')}.` : '',
     notApplied,
     // [SP_CTX_02_34] "freed" by the registry's calibrated ratio; no telemetry here
     // the measured change comes with the telemetry after the next response ([SP_CTX_02_28])

@@ -7,7 +7,7 @@ description: Open this for a long or multi-stage task with the context-editor mo
 
 The context-editor mod lets you edit your own conversation. You decide when to clean, by the logical state of the work. Attention degrades as the context grows: compress what is processed once a piece of work is done. The host's auto-compaction is only a safety net.
 
-Tools: `context_tag`, `context_list`, `context_edit`, `context_note`. Curation rules (lessons from failures, corrections, quoting, state items, host rows): `context_list` with `"rules": true`.
+Tools: `context_tag`, `context_list`, `context_edit`, `context_note`, `context_recall`. Curation rules (lessons from failures, corrections, quoting, state items, host rows): `context_list` with `"rules": true`.
 
 ## Stages
 
@@ -54,14 +54,14 @@ When you finish your turn for the person and the block is done, end your answer 
 
 ## Telemetry
 
-`context_list` with `"count":0` gives the header alone. `Effect: … M reread(s) of compressed content`: many mean you compress too much. Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line (as the context grows, or with the person's next prompt after much reading) proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
+`context_list` with `"count":0` gives the header alone. `Effect: … M reread(s) of compressed content`: many mean you compress too much. Sizes are calibrated estimates (`approx.` until known). A `[context-editor: suggestion]` line proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work, not the numbers.
 
 ## Candidates
 
-- `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you have since edited: its content is outdated, shrink it to a pointer; `[review: superseded]` a read of a file whose later read showed changed content: outdated too; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
+- `[review: big]` large output; `[review: search]` search result (after a few turns); `[review: stale]` a read of a file you edited since, `[review: superseded]` one whose later read showed changed content: outdated, shrink to a pointer; `[review: duplicate]` an earlier copy of the same output or read range: drop or shrink it; `[review: agent]` your own marker (optional `ttl_turns`). A review suggests a look, not an edit.
 - `[disposable: note]`: your own replacement (see Dead ends).
 
-The close report lists them by reason, with ready replacement texts for outdated and duplicate reads.
+The close report lists them by reason, with ready texts for outdated and duplicate reads.
 
 ## State slot
 
@@ -78,10 +78,10 @@ Write about the content, not row numbers: indexes change after an apply. A stage
 
 ## Compressed rows and mod texts
 
-Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. You made the replacement; the source it names (`the full output of Read docs/x.md`) says where its content came from. Before you call anything in it made up, open the archive.
+Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. You made the replacement; the source it names (`the full output of Read docs/x.md`) says where its content came from. Before you call anything in it made up, unfold it.
 
 - `… summarize call replaced the full output of <source> you had read here …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
-- `(fold fN; original: <path>; …)`, `(media: <path>)`, `media carried as files`: the archive. `Read` only what you need; it comes back at the end of the conversation.
+- `(fold fN; original: <path>; …)`: `context_recall` with `{"fold":"fN"}` unfolds one level here (inner folds stay records); once its stage closes, your next edits turn it back into a one-line trace. `(original: <path>, …)`, `(media: <path>)`, `media carried as files`: `Read` only what you need.
 - Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command; `… repair the resumed conversation …`: the mod dropped answers a resume had loaded twice; earlier thinking is gone.
 - `{"op":"title","text":"…"}` in `context_tag` names the session when the task's topic changes. `/rename`, `Session renamed to: …`, `The user named this session …` right after a turn where you set one: the mod's, removed by the next apply; elsewhere: the person's.
 - `id cN`, `reminder from your note nN`, `[context-editor: suggestion]`, `[context-editor: N chars cut]`, a resume prompt you set, the `/compact` turn, a handoff's document: service texts of the mod.

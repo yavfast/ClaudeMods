@@ -98,6 +98,8 @@ Processing logic (pseudocode):
 
 Errors: відмов немає.
 
+Пари розгортання (PL_FOLD, фаза 2; [SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09)). Рядок результату пари розгортання, що лишається, не є рядком, що йде: множину власних пар обробник рахує з тими самими записами згадувань, що й DropOwnCalls.
+
 ## Changelog
 
 | Date | Change |

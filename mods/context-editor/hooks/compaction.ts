@@ -6,11 +6,13 @@ import {
   boundaryOf,
   collectMedia,
   describeEdit,
+  editLabel,
+  isReturnEdit,
   dropOwnCallsCounted,
   formatReport,
   mediaExt,
   ownerKey,
-  OWN_TOOLS,
+  ownPairs,
   PINNED,
   producedRows,
   replacedOwners,
@@ -24,7 +26,7 @@ import {
   type QueuedEdit,
 } from './edits'
 import { insertDeliveries, type Deliveries } from './deliveries'
-import { assignFoldIds, FOLDS_UNSAVED, recordFolds, type FoldLedger, type FoldPort } from './folds'
+import { assignFoldIds, FOLDS_UNSAVED, pruneRecalls, recordFolds, type FoldLedger, type FoldPort } from './folds'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { goneText, handlesOf, rebaseHostRows, type HostRows } from './hostrows'
 import { applyEntry, type JournalEntry } from './journal'
@@ -255,7 +257,15 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // conversation's own records (the lower bound).
   const foldsRead = io.folds ? await io.folds.read() : undefined
   const numbered = foldsRead ? assignFoldIds(edits, messages, foldsRead.state === 'unreadable' ? undefined : foldsRead.value) : undefined
-  const applied = applyEdits(messages, edits, archive, media, mediaOwners, numbered ? { ...options, foldIds: numbered.ids } : options)
+  // [SP_FOLD_02_03] [SP_FOLD_02_09] the recalls not yet returned: the trace
+  // of a return edit names their fold and scope, and their pairs stay
+  const recalls = foldsRead && foldsRead.state !== 'unreadable' ? foldsRead.value.recalls : []
+  const keepRecalls = new Set(recalls.map(r => r.tool_use_id))
+  const applied = applyEdits(messages, edits, archive, media, mediaOwners, {
+    ...options,
+    ...(numbered ? { foldIds: numbered.ids } : {}),
+    ...(recalls.length ? { recalls: new Map(recalls.map(r => [r.tool_use_id, { fold: r.fold, scope: r.scope }])) } : {}),
+  })
   const frozen = new Set(messages.slice(0, applied.prefix))
   applied.report.failed.unshift(...refused)
   // [SP_CTX_01_05] PULLED_TEXT in the report
@@ -267,7 +277,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
       {
         ...applied.report,
         applied: [],
-        failed: [...refused, ...edits.map(e => `${describeEdit(e)}: originals could not be archived`)],
+        failed: [...refused, ...edits.map(e => `${editLabel(messages, e)}: originals could not be archived`)],
         charsAfter: applied.report.charsBefore,
         produced: [],
         mediaFiles: [],
@@ -286,12 +296,13 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // before DropOwnCalls: one behind an own call's result keeps its place
   // a row of own results kept by its handle (outside the API window) is
   // removed by DropOwnCalls below: the host would not carry its attachments
-  const own = new Set(messages.flatMap(r => r.toolUses.filter(u => u.tool.startsWith(OWN_TOOLS)).map(u => u.tool_use_id)))
+  // [SP_FOLD_02_09] the result row of a recall pair that stays does not go
+  const own = ownPairs(messages, keepRecalls)
   // (a frozen row stays, own calls and all: it carries its attachments itself)
   const goes = (r: SessionMessage) => !frozen.has(r) && resultsOf(r).length > 0 && resultsOf(r).every(t => own.has(t.tool_use_id))
   const put = insertDeliveries(messages, applied.rows, delivered.items, applied.renamed, false, goes)
   applied.report.deliveries = { ...put.counts, ...(delivered.unreadable !== undefined ? { unreadable: delivered.unreadable } : {}) }
-  const { rows, removed } = dropOwnCallsCounted(put.rows, mediaOwners, knownResults, frozen)
+  const { rows, removed } = dropOwnCallsCounted(put.rows, mediaOwners, knownResults, frozen, keepRecalls)
   applied.report.ownCallsRemoved = removed
   // [SP_CTX_01_05] a delivery was no row before: it frees nothing and takes nothing
   applied.report.charsAfter = totalChars(rows) - put.added
@@ -364,15 +375,24 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     const attached = attach && disk && !io.isAborted() ? await attach.commit(disk, frozenAttach, ratio, held).catch(() => undefined) : undefined
     // [SP_FOLD_02_01] RecordFolds on the ledger as it is now; FOLDS_UNSAVED
     // never stops the apply: the records carry FOLD_NOTE and their paths
+    // [SP_FOLD_02_03] in the same write the recalls whose pairs this apply
+    // returned, covered or removed go: those not in the rows returned
     let foldsBefore: FoldLedger | undefined
     let foldsUnsaved = ''
-    if (io.folds && numbered && applied.folded.length && !io.isAborted()) {
+    const folding = !!numbered && applied.folded.length > 0
+    if (io.folds && (folding || (recalls.length > 0 && done.length > 0)) && !io.isAborted()) {
       const turn = tagsNow.state === 'unreadable' ? 0 : tagsNow.value.turn
+      let unchanged = false
       try {
-        foldsBefore = await io.folds.record(ledger => recordFolds(ledger, applied.folded, applied.report.originals, numbered.next, archived, turn, MAX_QUEUE_BYTES), held)
-        if (!foldsBefore) throw new Error('the unreadable ledger could not be moved aside')
+        foldsBefore = await io.folds.record(ledger => {
+          const recorded = folding ? recordFolds(ledger, applied.folded, applied.report.originals, numbered.next, archived, turn, MAX_QUEUE_BYTES) : ledger
+          const next = done.length ? pruneRecalls(recorded, after) : recorded
+          unchanged = next === ledger
+          return next
+        }, held)
+        if (!foldsBefore && !unchanged) throw new Error('the unreadable ledger could not be moved aside')
       } catch (err) {
-        foldsUnsaved = FOLDS_UNSAVED
+        if (folding) foldsUnsaved = FOLDS_UNSAVED
         io.debug?.(modText(`RecordFolds failed: ${errorText(err)}`))
       }
     }
@@ -575,14 +595,18 @@ export function screenPinned(
   queued: readonly QueuedEdit[],
   tags: Read<TagRegistry>,
 ): { edits: QueuedEdit[]; refused: string[] } {
-  if (tags.state === 'unreadable') return { edits: [], refused: queued.map(e => `${describeEdit(e)}: tag registry unreadable`) }
+  if (tags.state === 'unreadable') return { edits: [], refused: queued.map(e => `${editLabel(messages, e)}: tag registry unreadable`) }
   const pinned = pinnedTargets(messages, tags.value)
   const edits: QueuedEdit[] = []
   const refused: string[] = []
   for (const raw of queued) {
     // [SP_CTX_02_67] a state edit's target is the slot row now
     const e = raw.op === 'state' ? stampState(messages, raw, pinned.state) : raw
-    if (touchesPin(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${PINNED}`)
+    // [SP_FOLD_02_03] the mod's return of a pinned recall pair is skipped, not
+    // refused: the recall stays due
+    if (touchesPin(messages, e, pinned)) {
+      if (!(isReturnEdit(e) && e.summary === '')) refused.push(`${editLabel(messages, e)}: ${PINNED}`)
+    }
     else if (touchesState(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${STATE_SLOT}`)
     else edits.push(e)
   }

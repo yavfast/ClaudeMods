@@ -30,7 +30,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, recallScope, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { errorText, modText, REPAIR_MARKER } from './rows'
 import {
@@ -128,7 +128,7 @@ import {
   STORAGE_BASE,
 } from './store'
 import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
-import { emptyFolds, foldPort, parseFolds, type FoldLedger } from './folds'
+import { contextRecall, emptyFolds, foldPort, ledgerWork, markDue, parseFolds, type FoldLedger, type Recall, type RecallArgs, type RecallIO } from './folds'
 import { closeWindow, emptyHostRows, keepHostRows, newHostMemory, observeHostRow, openWindow, parseHostRows, recordHostRow, type HostRowRecord, type HostRows } from './hostrows'
 import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
@@ -179,6 +179,9 @@ const handoff = newHandoffMemory(`${Date.now().toString(36)}-${Math.random().toS
 // stream-json each one passes session.append again, with its tool's origin;
 // AutoTag skips them. A turn start ends the copies (they come between turns).
 const copied = new Set<string>()
+// [SP_FOLD_02_02] the recall calls of the running turn that got a level: their
+// rows may not be written yet, so PruneRecalls keeps their records
+const recallLive = new Set<string>()
 // [SP_CTX_02_35] The result ids of the last tool-result row of the main
 // conversation: the anchor of a delivery that follows it.
 const anchorMem = newAnchorMemory()
@@ -300,6 +303,60 @@ async function hostRowsNow($: EngineInterface, dir: string, within?: Held): Prom
   const h = stores($, dir).hostrows
   const read = await h.onChain(() => h.read(), within).catch((): Read<HostRows> => ({ state: 'unreadable', reason: 'read failed' }))
   return read.state === 'ok' ? read.value.rows : []
+}
+
+// [SP_FOLD_02_03] The recalls not yet returned, of the fold ledger in `dir`
+// as it is now: none when the file is missing or unreadable. `within`: the
+// chains the caller holds.
+async function recallsNow($: EngineInterface, dir: string, within?: Held): Promise<readonly Recall[]> {
+  const f = stores($, dir).folds
+  const read = await f
+    .onChain(() => f.read(), within)
+    .catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) }))
+  // [ERR-01] without the records a summarize of a recall pair is an ordinary edit
+  if (read.state === 'unreadable') $.ui.log(modText(`recalls not read: ${read.reason}`), { to: 'debug' })
+  return read.state === 'unreadable' ? [] : read.value.recalls
+}
+
+// [SP_FOLD_02_03] MarkDue on the ledger's chain once a region closed; `after`:
+// how many regions are still open.
+async function markDueNow($: EngineInterface, dir: string, after: number): Promise<void> {
+  // [ERR-01] a failure only leaves the recalls not due: they return by the agent's own edit
+  await renewOf(stores($, dir).folds)(ledger => {
+    const next = markDue(ledger, after)
+    return next === ledger ? undefined : next
+  }).catch(quietFailure($, 'MarkDue'))
+}
+
+// [SP_FOLD_02_02] Recall bound to the host: the ledger's read-modify-write on
+// its chain, the archive read through a process ($.fs.read is capped).
+function recallIO($: EngineInterface, snap: Snapshot, cwd: string | undefined): RecallIO {
+  let dir: string | undefined
+  return {
+    passedOver: () => isPassed(caps),
+    storageDown: async () => {
+      const st = await ensureStorage($)
+      if ('reason' in st) return st.reason
+      dir = st.dir
+      return undefined
+    },
+    storageRefusal,
+    rows: snap.rows,
+    region: async () => {
+      const tags = await stores($, need(dir)).tags.read().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: errorText(err) }))
+      // [ERR-01] the recall then counts as made outside any stage
+      if (tags.state === 'unreadable') $.ui.log(modText(`recall: tag registry not read: ${tags.reason}`), { to: 'debug' })
+      return recallScope(tags)
+    },
+    readArchive: async path => {
+      const ran = await $.process.run(['cat', '--', path]).catch(() => undefined)
+      return ran && ran.exitCode === 0 ? ran.stdout : undefined
+    },
+    onLedger: work => ledgerWork(stores($, need(dir)).folds)(work),
+    live: () => recallLive,
+    note: id => void recallLive.add(id),
+    ...(cwd ? { cwd } : {}),
+  }
 }
 
 // [SP_CTX_02_45] The ledger and the journal of effect in `dir`, read without
@@ -964,6 +1021,7 @@ function detectIO($: EngineInterface, dir: string | undefined, snap: Snapshot = 
     status: text => $.ui.status(text),
     toast: text => $.ui.toast(text),
     now: () => Date.now(),
+    markDue: after => markDueNow($, need(dir), after),
   }
 }
 
@@ -1005,6 +1063,15 @@ function handoffIO($: EngineInterface): HandoffIO {
     // [SP_CTX_02_21] the storage folders are owner-only (700)
     carryTags: (from, to, change) => carry(stores($, from).tags, stores($, to).tags, change, 'the tag registry'),
     carryAliases: (from, to, change) => carry(stores($, from).aliases, stores($, to).aliases, change, 'the alias registry'),
+    // [SP_FOLD_02_08] the fold ledger of each session on its own chain
+    readFolds: dir => {
+      const f = stores($, dir).folds
+      return f.onChain(() => f.read())
+    },
+    writeFolds: (dir, ledger) => {
+      const f = stores($, dir).folds
+      return f.onChain(() => f.write(ledger))
+    },
     // [C_CTX_DEC_13] one attempt; the host's refusal is never swallowed: it rejects with its text
     runCommand: async (command, args) => {
       if (command === 'compact') await ownCompact($, args ?? '')
@@ -1373,8 +1440,14 @@ export const register: Register = on => {
         },
         // [SP_CTX_02_58] the tags over the person's words leave the registry on its chain
         replace: () =>
-          queueTagReplacements({ ...tagIO($, dir, snap), onRegistry: work => chainOf($, 'tags')(() => work(), held), deliveries: () => deliveredNow($, dir, held) }),
+          queueTagReplacements({
+            ...tagIO($, dir, snap),
+            onRegistry: work => chainOf($, 'tags')(() => work(), held),
+            deliveries: () => deliveredNow($, dir, held),
+            recalls: () => recallsNow($, dir, held),
+          }),
         hostRows: () => hostRowsNow($, dir, held),
+        recalls: () => recallsNow($, dir, held),
       }
       return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held), closed)
     })
@@ -1394,6 +1467,8 @@ export const register: Register = on => {
     // drop a tag over the person's words (queue → tags); the deliveries read
     // inside the registry's chain (tags → deliveries)
     let held: Held | undefined
+    // the queue's chain while the replacements are queued on it
+    let queueHeld: Held | undefined
     const { rows: _rows, ...registry } = tagIO($, dir, snap)
     const io = tagCallIO(
       snap,
@@ -1405,8 +1480,15 @@ export const register: Register = on => {
             return work().finally(() => (held = undefined))
           }),
         deliveries: () => deliveredNow($, need(dir), held),
+        // [SP_FOLD_02_03] the closed stage's recalls are due, and join the replacements
+        markDue: after => markDueNow($, need(dir), after),
+        recalls: () => recallsNow($, need(dir), queueHeld ?? held),
       },
-      work => chainOf($, 'queue')(work),
+      work =>
+        chainOf($, 'queue')(h => {
+          queueHeld = h
+          return work().finally(() => (queueHeld = undefined))
+        }),
       () => blockHost($, need(dir)),
     )
     const out = await contextTag(io, { agentId: e.agentId, tags: args.tags }, down, refs, stale, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
@@ -1424,10 +1506,21 @@ export const register: Register = on => {
     return 'deny' in out ? deny(out.deny) : remindAfter($, NOTE, e.agentId, { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`noting failed: ${next.error.kind}`)))
 
+  // [SP_FOLD_02_02] One level of a fold as the tool's result. A regex, as for
+  // context_handoff: the host's generated types list a new tool only once a
+  // session has loaded it. No reminder goes with it: the result is a recalled level.
+  on('tool.call', { tool: /^mcp__context-editor__context_recall$/ }, async ($, e) => {
+    const cwd = e.agentId ? undefined : await projectRoot($).catch(() => undefined)
+    const out = await contextRecall(recallIO($, snapshot($), cwd), { ...(e as unknown as RecallArgs), agentId: e.agentId }, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
+    return 'deny' in out ? deny(out.deny) : { result: out.result }
+  }).catch(($, e, next) => (next.called ? next(e) : deny(`recall failed: ${next.error.kind}`)))
+
   // [SP_CTX_02] The turn counter: every turn of the main conversation counts;
   // the mod's own commands raise no turn events.
   on('turn.start', async ($, e, next) => {
     turnStarted(turns)
+    // [SP_FOLD_02_02] the recall pairs of earlier turns are rows by now
+    recallLive.clear()
     // [SP_CTX_02_12] the copies of the last compaction came before this turn
     copied.clear()
     // [SP_CTX_02_60] so did the rows of the mod's own commands

@@ -1,9 +1,9 @@
 ---
 skill: ClaudeCodePluginHooksApi
 domain: claude-code
-topics: [hooks, validator, fs, process.run, tool.list, tool.register, env, reload, skills, install, marketplace, permissions, classic-hooks]
+topics: [hooks, validator, fs, process.run, tool.list, tool.register, tool.call, env, reload, skills, install, marketplace, permissions, classic-hooks, sec-default, managed-settings]
 source: implementation
-updated: 2026-10-21
+updated: 2026-11-14
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.296
@@ -12,7 +12,7 @@ state: stale
 
 # Моди Claude Code: базові API плагіна: модуль, `$.fs`, `$.process`, `$.tool`, `.catch`, ідентичність процесу, перезавантаження, підключення
 
-Тематичний файл навички [ClaudeCodePluginHooks](plugin-hooks.md): пункти 9, 11, 12, 14, 28, 31, 32, 34, 39, 42, 45, 56, 58, 68 її списку пасток, дослівно і з тими самими номерами (якір `#p<N>`), тож посилання «plugin-hooks N» / «навичка, пункт N» ведуть сюди через [покажчик](plugin-hooks.md#pitfalls). Посилання «пункт N» у тексті — на номер у тому самому списку, хоч би в якому тематичному файлі він лежав.
+Тематичний файл навички [ClaudeCodePluginHooks](plugin-hooks.md): пункти 9, 11, 12, 14, 28, 31, 32, 34, 39, 42, 45, 56, 58, 68, 76, 80, 83 її списку пасток, дослівно і з тими самими номерами (якір `#p<N>`), тож посилання «plugin-hooks N» / «навичка, пункт N» ведуть сюди через [покажчик](plugin-hooks.md#pitfalls). Посилання «пункт N» у тексті — на номер у тому самому списку, хоч би в якому тематичному файлі він лежав.
 
 ## Applicability Boundary
 
@@ -66,6 +66,12 @@ state: stale
 
 <a id="p76"></a>
 76. **`$.session.cwd()` іде за `cd` оболонки агента, `$.session.root()` — ні** (2.1.306, `claude -p`, haiku; зонд `.dev_flow/cache/live-test/root-probe/results.md`, живий сценарій фази 47 `.dev_flow/cache/live-test/p47-cd/results.md`). Після Bash `cd sub` `cwd()` дає `<proj>/sub` з першої ж події (рядок результату самого `cd`), і в подіях субагента, запущеного після `cd`: субагент успадковує теку оболонки (його `pwd` — `<proj>/sub`). `root()` лишається текою старту (`e.cwd` у `session.start`) у кожній події, основній і субагента. Теку, яку мод бере від сесії (архіви, база відносних шляхів, файл, який читає інший процес), брати лише з `root()` — у моді через `projectRoot($)` (`hooks/register.ts`, SP_CTX_DEC_45, правило STRUCT-03); `cwd()` — лише коли потрібна саме поточна тека оболонки. Межа дозволу `Read` (пункт 68) — корінь проєкту, а не поточна тека оболонки: після `cd sub` хост пускає `Read` файлу під `root()` без запиту, в основній розмові й у субагенті (без `bypassPermissions`). За типами `root()` рухають `/cd`, зміна теки хостом і перехід у worktree — наживо не перевірено.
+<a id="p80"></a>
+80. **Про кожен оминутий хук плагіна хост повідомляє моделі** (2.1.325, stream-json, sonnet і opus; зонди `.dev_flow/proto/trailer/` і `.dev_flow/proto/recall/`, спайк `docs/context_service_info.spike.md`, Entry 11–13). На командному акаунті без керованих налаштувань хост ставить вбудований `cc-plugin-sec-default` зовнішнім (журнал: «seated outermost: the organization is team»), і той пропускає подію повз хук плагіна, завантаженого з `--plugin-dir`. Про кожен такий пропуск модель отримує рядок у блоці системного сповіщення: «<плагін>: its session.append hook was skipped. "cc-plugin-sec-default" runs first and sent the event on past it.». У зонді `trailer` оминуто було `session.append` для рядків-вкладень; рядки `prompt`, `response` і `tool-result` хук бачив. Мод `context-editor` на тій самій машині мав у `capabilities.json` `compact` і `attachments` — `passed`, і `context_edit` відмовляв. Після `/etc/claude-code/managed-settings.json` (маркетплейс, увімкнений плагін, `prependPlugins` одразу за `sec-default@builtin`) мод завантажується сам із робочого дерева на рівні `prepend` без `--plugin-dir`, рядків про оминуті хуки в журналах нуль, повторний зонд дає `compact: reached`, `attachments: reached`, і застосування правок проходить наживо (перша сесія після встановлення ще відмовила за старим записом кешу можливостей). Журнальний рядок пункту 45 («bypassed by cc-plugin-sec-default (tier user)», 2.1.295) — про хуки `classic.*`; на 2.1.325 його не перезвірено.
+
+<a id="p83"></a>
+83. **`tool.call` з відповіддю `{ result }` віддає текст як результат власного інструмента** (2.1.325, stream-json, sonnet і opus; інструмент-прототип `context_recall` у зонді `.dev_flow/proto/recall/`, спайк `docs/context_service_info.spike.md`, Entry 12). Модель отримує цей текст звичайним результатом виклику; у чотирьох прогонах форми R2 агент сам викликав інструмент і працював з його текстом.
+
 
 ## Structural events
 

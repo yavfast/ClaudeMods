@@ -37,7 +37,7 @@ import {
   type Snapshot,
 } from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
-import { BAD_FOLDS, foldsList, type FoldLedger } from './folds'
+import { BAD_FOLDS, foldsList, recallsHeader, type FoldLedger } from './folds'
 import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './hostrows'
 import { apiChars, charsOf, errorText, findToolUse, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
@@ -69,7 +69,7 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT = modText(
-  'you can manage your own context. At the start of a logical stage call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when it is done, {"tags":[{"op":"close"}]} returns its rows, size, candidates and advice, and you compress what is processed there with ONE context_edit (originals stay readable with Read; the person\'s messages stay verbatim; rules and skills in use usually too). If you end your turn with the block done, make [context-editor: optimize] the last line of your answer: the block waits; compress it when the next stage begins. context_list with "count":0 shows telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages; curation rules: context_list with "rules":true.',
+  'you can manage your own context. At the start of a logical stage call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when it is done, {"tags":[{"op":"close"}]} returns its rows, size, candidates and advice, and you compress what is processed there with ONE context_edit (context_recall unfolds a fold record; the person\'s messages stay verbatim; rules and skills in use usually too). If you end your turn with the block done, make [context-editor: optimize] the last line of your answer: the block waits; compress it when the next stage begins. context_list with "count":0 shows telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages; curation rules: context_list with "rules":true.',
 )
 
 // [SP_CTX_02_27] [SP_CTX_DEC_36] The opener of the skill's guide in the
@@ -234,6 +234,16 @@ export function closedSpan(rows: readonly SessionMessage[], read: Read<Pick<Stag
   const to = markIndex(rows, b.end)
   const from = startOf(rows, b.after)
   return to === 'lost' || to < from ? undefined : { name: b.name, from, to }
+}
+
+// [SP_FOLD_01_03] Where a recall is made: the depth of the chain of open
+// regions and the name of the deepest (in this phase the open stage: 1 and
+// its name; none: 0 and ''), with the registry's turn counter. An unreadable
+// registry gives no region and turn 0.
+export function recallScope(read: Read<Pick<StageFields, 'stage'> & { turn: number }>): { depth: number; scope: string; turn: number } {
+  if (read.state === 'unreadable') return { depth: 0, scope: '', turn: 0 }
+  const { stage, turn } = read.value
+  return stage ? { depth: 1, scope: stage.name, turn } : { depth: 0, scope: '', turn }
 }
 
 export function markLabels(rows: readonly SessionMessage[], reg: StageFields): Map<number, string[]> {
@@ -757,6 +767,9 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
   const host: HostRows = { rows: dir && io.hostRows ? [...(await io.hostRows(dir).catch(() => []))] : [], next: 1 }
   const header = hostHeader(host)
   if (header) tele = `${tele}\n${header}`
+  // [SP_FOLD_02_07] the recalls not yet returned, when there are any
+  const recalled = recallsHeader(dir && io.folds ? await io.folds(dir).catch(() => undefined) : undefined, rows)
+  if (recalled) tele = `${tele}\n${recalled}`
   const newest = count >= 1 && Math.min(Math.max(0, Math.trunc(from)), Math.max(0, rows.length - 1)) + Math.min(count, MAX_LIST_COUNT) >= rows.length
   const section = newest ? hostSection(host) : ''
   const text = listRows(rows, from, count, found, tagged.labels, named.aliases, tele, tagged.notes, size) + (section ? `\n${section}` : '')
@@ -1130,6 +1143,9 @@ export type DetectIO = {
   // [SP_CTX_02_42] what the person must see in every host
   toast: (text: string) => void
   now: () => number
+  // [SP_FOLD_02_03] MarkDue once the mark closed the block: on the fold
+  // ledger's chain; its failure only leaves the recalls not due
+  markDue?: (after: number) => Promise<void>
 }
 
 export type DetectOutcome =
@@ -1187,6 +1203,9 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
     regWhy = errorText(err)
   }
   if (regWhy) return ignored(regWhy), 'registry-unreadable'
+  // [SP_FOLD_02_03] the recalls of the closed block are due
+  // (the port logs its own failure); no region is open once the mark closed the block
+  await io.markDue?.(0).catch(() => undefined)
   // [SP_CTX_DEC_37] nothing queued: the block waits for the agent's move to the next stage
   return 'waiting'
 }

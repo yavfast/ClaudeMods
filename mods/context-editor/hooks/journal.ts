@@ -4,7 +4,7 @@
 // telemetry measures that (`Last apply`, [SP_CTX_02_28]). Pure logic behind
 // a small port; register.ts binds it to `$` on the journal's own chain.
 import type { SessionMessage } from 'claude-code'
-import { describeEdit, MAX_QUEUE_EDITS, touchedBy, type ApplyReport, type QueuedEdit } from './edits'
+import { describeEdit, isReturnEdit, MAX_QUEUE_EDITS, touchedBy, type ApplyReport, type QueuedEdit } from './edits'
 import { MAX_QUEUE_BYTES } from './queue'
 import { isCount, jsonObject, trimOldest, type Read } from './store'
 
@@ -83,7 +83,8 @@ function readPaths(rows: readonly SessionMessage[], ids: ReadonlySet<string>): s
 // None when nothing applied. Pure.
 export function applyEntry(at: number, report: Pick<ApplyReport, 'applied'>, archive: string, before: readonly SessionMessage[], edits: readonly QueuedEdit[]): JournalEntry | undefined {
   const labels = new Set(report.applied)
-  const applied = edits.filter(e => labels.has(describeEdit(e)))
+  // [SP_FOLD_DEC_08] a return of a recall compresses nothing: no record of it
+  const applied = edits.filter(e => labels.has(describeEdit(e)) && !isReturnEdit(e))
   if (!applied.length) return undefined
   const ids = new Set<string>()
   for (const e of applied) if (e.op === 'summarize' || e.op === 'drop' || e.op === 'collapse') for (const id of touchedBy(before, e)?.ids ?? []) ids.add(id)
