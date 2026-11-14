@@ -1,6 +1,6 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
-import { applyEdits, MAX_QUEUE_EDITS, MAX_TEXT, SUMMARIZED_OF } from '../hooks/edits'
+import { applyEdits, BAD_KEEP, HEAD_ROW, MAX_QUEUE_EDITS, MAX_TEXT, SUMMARIZED_OF } from '../hooks/edits'
 import {
   appendReport,
   contextEdit,
@@ -10,6 +10,7 @@ import {
   keepOtherSteps,
   MAX_QUEUE_BYTES,
   parseQueue,
+  personRefusal,
   personRow,
   personText,
   COMPACT_ADVICE,
@@ -563,24 +564,38 @@ const personRows = (): SessionMessage[] => [
   { role: 'assistant', text: 'end', toolUses: [] },
 ]
 
-test('PersonWords — повідомлення людини: collapse 2..9 over a prompt and an AskUserQuestion answer and summarize of the answer are refused; a collapse without them is queued', async () => {
+// [SP_FOLD_02_04] a collapse takes the person's rows of its span, a summarize the AskUserQuestion pair
+test('PersonWords — повідомлення людини: collapse 2..9 over a prompt and an AskUserQuestion answer and summarize of the answer are queued; the collapse archives the prompt and the answer; a drop of the answer is refused', async () => {
   const r = personRows()
   const out = queueEdits(EMPTY_QUEUE, r, {
     edits: [
       { op: 'collapse', from_index: 2, to_index: 9, summary: 's' },
       { op: 'summarize', tool_use_id: 'q', summary: 'B chosen' },
       { op: 'collapse', from_index: 7, to_index: 9, summary: 's' },
+      { op: 'drop', tool_use_id: 'q' },
     ],
   })
   if ('deny' in out) throw new Error(out.deny)
-  // [SP_CTX_02_58] PERSON_WORDS: refused, no permission
-  expect(out.queued).toBe(1)
+  expect(out.queued).toBe(3)
   expect(out.warnings).toEqual([])
-  expect(out.errors).toEqual([
-    "collapse #2..#9: covers the person's words: #3 (prompt), #6 (AskUserQuestion answer); they stay verbatim in this session: narrow the range or split it around them",
-    "summarize q: the AskUserQuestion answer is the person's words; it stays verbatim",
-  ])
-  expect(queuedText(out.queue, out.queued, out.errors, out.warnings)).toContain("Rejected: collapse #2..#9: covers the person's words")
+  // [SP_CTX_02_58] PERSON_WORDS stays for a drop: refused, no permission
+  expect(out.errors).toEqual(["drop q: the AskUserQuestion answer is the person's words and a drop leaves no trace of it; summarize the call instead: your summary carries the answer"])
+  expect(queuedText(out.queue, out.queued, out.errors, out.warnings)).toContain('Rejected: drop q: the AskUserQuestion answer is the person\'s words')
+  expect(out.queue.edits.map(e => e.op)).toEqual(['collapse', 'summarize', 'collapse'])
+  // the first collapse alone: the record is a carrier pair (the span holds the
+  // Read call), never the person's row; the prompt and the answer are archived
+  const res = applyEdits(r, out.queue.edits.slice(0, 1), '/a.json')
+  expect(res.report.applied).toEqual(['collapse #2..#9'])
+  expect(res.rows.length).toBe(r.length - 6)
+  expect(res.rows[2]!.role).toBe('assistant')
+  expect(res.rows[2]!.toolUses.map(u => u.tool)).toEqual(['Read'])
+  expect(res.rows[3]!.toolResults![0]!.text).toContain("1 of the person's messages")
+  expect(res.rows.some(x => x.text === 'also check B')).toBe(false)
+  expect(res.report.originals[0]!.rows).toEqual(r.slice(2, 10))
+  // the summarize of the answer alone: the agent's summary stands in the pair
+  const sum = applyEdits(r, out.queue.edits.slice(1, 2), '/a.json')
+  expect(sum.report.applied).toEqual(['summarize q'])
+  expect(sum.rows[6]!.toolResults![0]!.text).toContain('B chosen')
 })
 
 test('context_edit — не промпти людини: a mod report row, the /compact MARKER row, a changed row: no warning', async () => {
@@ -614,7 +629,7 @@ test('PersonRow — not the person: a plugin prompt in the host frame, host tag 
 })
 
 // [SP_CTX_02_02] review round 40: real person rows with host framing
-test('PersonText — the person\'s words behind an open-file span, and the arguments of a slash command', async () => {
+test('PersonText — the person\'s words behind an open-file span, and the arguments of a slash command; "keep" of a collapse takes exactly those rows', async () => {
   const user = (text: string): SessionMessage => ({ role: 'user', text, toolUses: [] })
   const vscode = user('<ide_opened_file>The user opened the file /repo/docs/plan.md in the IDE. This may or may not be related to the current task.</ide_opened_file>\nПродовжуй з фазою 17')
   const reminder = user('<system-reminder>\nnote\n</system-reminder>\n<ide_opened_file>The user opened x.ts</ide_opened_file>\nfix it')
@@ -631,8 +646,31 @@ test('PersonText — the person\'s words behind an open-file span, and the argum
   expect(personText('<command-name>/compact</command-name>\n<command-args>context-editor: apply queued edits</command-args>')).toBe('')
   const r = [vscode, reminder, slash, bare, opened, mod]
   expect(r.map((_, i) => personRow(r, i))).toEqual([true, true, true, false, false, false])
-  const out = queueEdits(EMPTY_QUEUE, [...r, { role: 'assistant', text: 'end', toolUses: [] }], { edits: [{ op: 'collapse', from_index: 0, to_index: 5, summary: 's' }] })
-  expect('errors' in out && out.errors[0]).toContain('#0 (prompt), #1 (prompt), #2 (prompt);')
+  // [SP_FOLD_02_04] "keep" takes exactly the rows of the person; a collapse
+  // that would replace row 0 is refused HEAD_ROW until row 0 is kept
+  const all = [...r, { role: 'assistant' as const, text: 'end', toolUses: [] }]
+  const out = queueEdits(EMPTY_QUEUE, all, {
+    edits: [
+      { op: 'collapse', from_index: 0, to_index: 5, summary: 's' },
+      { op: 'collapse', from_index: 0, to_index: 5, keep: [0, 3], summary: 's' },
+      { op: 'collapse', from_index: 0, to_index: 5, keep: [0, 4], summary: 's' },
+      { op: 'collapse', from_index: 0, to_index: 5, keep: [0, 5], summary: 's' },
+      { op: 'collapse', from_index: 0, to_index: 5, keep: [0, 1, 2], summary: 's' },
+    ],
+  })
+  if ('deny' in out) throw new Error(out.deny)
+  expect(out.errors).toEqual([`collapse #0..#5: ${HEAD_ROW}`, `collapse #0..#5: ${BAD_KEEP}`, `collapse #0..#5: ${BAD_KEEP}`, `collapse #0..#5: ${BAD_KEEP}`])
+  expect(out.queued).toBe(1)
+  expect(out.warnings).toEqual([])
+  const res = applyEdits(all, out.queue.edits, '/a.json')
+  expect(res.report.applied).toEqual(['collapse #0..#5'])
+  // the three rows of the person stand verbatim before the record
+  expect(res.rows.slice(0, 3)).toEqual([vscode, reminder, slash])
+  expect(res.rows[3]!.role).toBe('assistant')
+  expect(res.rows[3]!.text).toContain('replaced these 3 rows')
+  expect(res.rows[3]!.text).not.toContain("the person's messages")
+  expect(res.rows.length).toBe(5)
+  expect(res.report.originals[0]!.rows).toEqual([bare, opened, mod])
 })
 
 // ---- [SP_CTX_02_02] phase 20: the host's deliveries
@@ -668,10 +706,14 @@ test('PersonWords — доставка від людини: a collapse over its 
   )
   if ('deny' in out) throw new Error(out.deny)
   expect(out.errors).toEqual([
-    "collapse #7..#9: covers the person's words: #9 (message sent during this tool call); they stay verbatim in this session: narrow the range or split it around them",
+    "collapse #7..#9: covers the person's #9 (message sent during this tool call); such a message has no row of its own, so it can be neither kept nor archived: narrow the range or split it around that result",
     "drop s: the person's message sent during this tool call goes with it; summarize the call instead: the message stays after it",
   ])
   expect(out.queued).toBe(2)
+  // [SP_FOLD_02_04] behind a pinned pair the collapse goes around, nothing is lost
+  const collapse = { op: 'collapse' as const, from_index: 7, to_index: 9, summary: 's' }
+  expect(personRefusal(r, collapse, [d])).toContain("covers the person's #9 (message sent during this tool call)")
+  expect(personRefusal(r, collapse, [d], undefined, { ids: new Set(['s']), rows: new Set() })).toBeUndefined()
 })
 
 // ---- [SP_CTX_02_08] [SP_CTX_02_37] the turn channel's suggestion with the person's prompt (phase 23)

@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-17
+> **Updated:** 2026-11-14
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_11](#SP_CTX_02_11), [SP_CTX_02_12](#SP_CTX_02_12), [SP_CTX_02_16](#SP_CTX_02_16), [SP_CTX_02_18](#SP_CTX_02_18)
 >
@@ -26,7 +26,7 @@
 
 ### 02_11. context_tag  {#SP_CTX_02_11}
 
-> **Курування:** `disposable` над словами людини відхиляється — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); опис без автопіну — [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69).
+> **Курування:** `disposable`, чия заміна загубила б слова людини, відхиляється — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58); діапазон `disposable` з піном чи слотом стану всередині дозволено — [SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04); опис без автопіну — [SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69).
 
 Purpose: інструмент агента; ставить і знімає теги, відкриває і закриває етапи ([C_CTX_DEC_16](./context_editor.methods.concept.md#C_CTX_DEC_16), [C_CTX_DEC_17](./context_editor.methods.concept.md#C_CTX_DEC_17)).
 
@@ -50,7 +50,7 @@ TagRequest:
 | ttl_turns | int? | no | — | ≥ 1; лише з `kind = review` | Термін |
 | stage | string? | для `open` | — | 1..MAX_STAGE_NAME після обрізання пробілів | Назва етапу |
 
-Output: скільки тегів поставлено і знято, відхилені запити з причинами; рядок `"last" = <CallLabel>`, коли запит з `ref: "last"` розв'язався (LAST_TEXTS, фаза 21; так само в `context_note`); для кожного закриття етапу (зокрема того, що закрило `open`) — звіт закриття (BlockReport, [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)); для першого прийнятого `open` чи `close`, поки блок чекає стискання (`TagRegistry.waiting`), — спершу звіт цього блоку з індексами і порадою WAIT_MOVED (BlockReport з `waiting`, [SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)), а очікування знято; для `open` — `Stage "<name>" opened; its block starts at #<first>.`; для `add state` поверх наявного — `The state slot moved from #<old> to #<new>.`; для поставленого `add disposable` з діапазоном, що містить повідомлення людини, і для `add disposable` на пару з PERSON_TOOLS — попередження PersonTagWarnings ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)): тег ставиться, а результат називає рядки людини, бо заміна з тегу піде в чергу пізніше без попередження ([C_CTX_DEC_21](./context_editor.core.concept.md#C_CTX_DEC_21))
+Output: скільки тегів поставлено і знято, відхилені запити з причинами; рядок `"last" = <CallLabel>`, коли запит з `ref: "last"` розв'язався (LAST_TEXTS, фаза 21; так само в `context_note`); для кожного закриття етапу (зокрема того, що закрило `open`) — звіт закриття (BlockReport, [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)); для першого прийнятого `open` чи `close`, поки блок чекає стискання (`TagRegistry.waiting`), — спершу звіт цього блоку з індексами і порадою WAIT_MOVED (BlockReport з `waiting`, [SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)), а очікування знято; для `open` — `Stage "<name>" opened; its block starts at #<first>.`; для `add state` поверх наявного — `The state slot moved from #<old> to #<new>.`; `add disposable` з діапазоном, що містить повідомлення людини чи відповідь AskUserQuestion, і `add disposable` на пару з PERSON_TOOLS ставляться без попередження: заміна бере ці рядки в архів (PL_FOLD, фаза 3; [SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)); відхиляється (PERSON_TAG, [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)) лише діапазон, серед згорнутих рядків якого є результат із повідомленням людини, доставленим посеред ходу. Попередження PersonTagWarnings, яке до фази 40 називало рядки людини в результаті, немає ([C_CTX_DEC_21](./context_editor.core.concept.md#C_CTX_DEC_21))
 
 Errors (рівень виклику позначено *, решта — рівень запиту, і решта пакета обробляється):
 | Code | Condition | Guidance |
@@ -68,7 +68,8 @@ Errors (рівень виклику позначено *, решта — рів�
 | INDEXES_STALE | ціль за `index` (зокрема `index` у `open` і `to`), а межа поточної розмови змінилась від останнього `context_list` з рядками чи звіту закриття етапу у цьому процесі ([SP_CTX_02_18](#SP_CTX_02_18)) | оновити перегляд |
 | NOTE_REQUIRED | `disposable` без коректного `note` | додати нотатку-заміну |
 | BAD_TARGET | `disposable` за індексом без `to` на рядок, що не є текстом агента без викликів, або на рядок з тегом `state`; `state` не за `index` або на рядок, що не є текстом агента без викликів з непорожнім текстом | для результатів — тегувати за `tool_use_id`; слот стану — власний текстовий рядок |
-| BAD_RANGE | `to` не з `add disposable` за `index`; `to ≤ index` або поза межами; діапазон розриває пару виклику; діапазон захоплює рядок чи пару з тегом `pin` або `state`; рядок `to` — рядок асистента лише з thinking (`row #<to> holds only thinking and cannot end a range`; ту саму причину дає PrepareEdits для згортання цього діапазону): кінець — якір діапазону. Перший рядок діапазону може бути лише з thinking: його знаходить LocateSpan ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)) | кінець — рядок з текстом чи викликом |
+| BAD_RANGE | `to` не з `add disposable` за `index`; `to ≤ index` або поза межами; діапазон розриває пару виклику; обхід діапазону неможливий — у ньому лишилися тільки рядки, які заміна обходить (NOTHING_TO_FOLD), обхід розірвав би пару виклику (KEEP_SPLITS_PAIR) або перший згорнутий рядок — рядок 0 розмови (HEAD_ROW), з текстами PrepareEdits ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) без поради про `keep`, якого тег не має (`rangeRefusal`); сам рядок чи пара з тегом `pin` або `state` всередині діапазону — не відмова: заміна їх обходить (PL_FOLD, фаза 3; [SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04); до неї — `the range holds a row or a call tagged pin or state`); рядок `to` — рядок асистента лише з thinking (`row #<to> holds only thinking and cannot end a range`; ту саму причину дає PrepareEdits для згортання цього діапазону): кінець — якір діапазону. Перший рядок діапазону може бути лише з thinking: його знаходить LocateSpan ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)) | кінець — рядок з текстом чи викликом |
+| PERSON_TAG | `add disposable` з діапазоном, серед згорнутих рядків якого є результат із повідомленням людини, доставленим посеред ходу ([SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)) | `disposable #<a>..#<b>: covers the person's #<k> (message sent during this tool call); such a message has no row of its own, so it can be neither kept nor archived: narrow the range or split it around that result` |
 | BAD_TTL | `ttl_turns` < 1 або не для `review` | — |
 | TAGS_FULL | новий тег (не заміна) при MAX_TAGS тегах у реєстрі, або файл реєстру став би більшим за MAX_QUEUE_BYTES | зняти непотрібні теги; з фази 30 у реєстрі лише теги цілей поточної розмови (і `state`): теги зниклих рядків прибирають застосування мода і спостерігач чужої компактизації ([SP_CTX_02_18](#SP_CTX_02_18)), тож кожен тег, який можна зняти, видно в переліку й телеметрії; повний реєстр телеметрія називає рядком TAGS_FULL_LINE ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) |
 | NO_TAG | `remove` для цілі без тегу | — |
@@ -152,7 +153,7 @@ R5 ([C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04), «Дублік�
 
 ### 02_13. QueueTagReplacements  {#SP_CTX_02_13}
 
-> **Курування:** тег над словами людини не стає в чергу — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58).
+> **Курування:** тег, чия заміна загубила б слова людини, не стає в чергу — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58).
 
 Purpose: поставити в чергу заміни з тегів `disposable` і оцінити звільнення. Запускають лише закриття етапу інструментом ([SP_CTX_02_11](#SP_CTX_02_11), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) і кінець очікування блоку, позначеного міткою оптимізації ([SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)): перший `open` чи `close` у context_tag або перший `context_edit` з прийнятою правкою агента ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) — усі читають поточну розмову посеред ходу, коли компактизація щойно не відбувалась; заміни йдуть тим самим пакетом, що й правки агента цього ходу. До 2026-10-14 заміни ставила мітка на кінці свого ходу (DetectOptimize). Ні Flush, ні DeliverReport замін не ставлять. Порогу розміру немає ([C_CTX_DEC_15](./context_editor.methods.concept.md#C_CTX_DEC_15)).
 
@@ -167,7 +168,9 @@ Processing logic (pseudocode):
             { tool_use_id } AND pair exists → summarize(tool_use_id, tag.note)
             { anchor } without range AND Locate finds the row → rewrite(index, tag.note)
             range AND Locate finds both ends, from < to → collapse(from, to, tag.note)
-        (queued, errors) = PrepareEdits(rows, edits, reg, checkListedKey = false)   # pin, state, пари діапазону — як для правок агента; без перевірки listedKey
+        (queued, errors) = PrepareEdits(rows, edits, reg, checkListedKey = false)   # pin, state, пари й обхід діапазону (FoldSpan) — як для правок агента; без перевірки listedKey
+        over = the queued edits PersonWords refuses now (rows, deliveries, pins of reg)   # SP_CTX_02_58: діапазон, серед згорнутих рядків якого тепер є доставлене посеред ходу
+        remove the tags of over from the registry; queued −= over; the call's result gets "disposable <target> dropped: its replacement would lose the person's message sent during a tool call" per tag
         queued = [e with via = tag FOR e IN queued]          # фаза 28: текст заміни називає тег агента (`Later, your context_tag disposable tag replaced …`), а не виклик context_edit (SP_CTX_02_04)
         IF queued empty OR len(q.edits) + len(queued) > MAX_QUEUE_EDITS OR the file would exceed MAX_QUEUE_BYTES: RETURN { 0, 0 }
         IF len(q.edits) == 0: q.tagsOnly = true
@@ -233,6 +236,8 @@ Logic: у [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07) після A
 Прибрана без заміни ціль (`drop`, рядок, що DropOwnCalls чи KeepResponsesWhole спорожнив, ціль поза новим списком) видаляє нотатку, і звіт застосування називає її ідентифікатор ([SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)): текст нотатки агент писав про рядок, якого вже немає, тож переносити його на сусідній рядок — дезорієнтувати. Заміна правкою (стиснення пари, згортання, переписування, опис медіа) переносить нотатку на останній створений рядок: стиснутий рядок — та сама річ у новому вигляді. Зміна засівом (CarryNote дописує текст результату, а відбиток рядка той самий) нотатку не рухає. `remindAt` переноситься без змін. Збій запису реєстру не скасовує застосування, а `notesDropped` тоді порожній.
 
 Вбудована компактизація хоста (`/compact host` людини, автоматична) RebindTags не викликає. Межа етапу, чий рядок уже не в поточній розмові, при використанні — `lost` ([SP_CTX_01_18](./context_editor.records.sp.md#SP_CTX_01_18)): відкритий етап діє від голови, кінець закритого блоку невідомий («its end row is gone», не порожній блок), перегляд і телеметрія про це кажуть, а context_tag і DetectOptimize записують `null` лише на місце загубленого `after`. З фази 30 ([SP_CTX_DEC_31](./context_editor.decisions-21.sp.md#SP_CTX_DEC_31)) теги зниклих рядків, крім `state`, прибирає сам спостерігач такої компактизації (PruneDeadTags, [SP_CTX_02_18](#SP_CTX_02_18)), а не наступне застосування мода: до фази 30 вони лишались у реєстрі до застосування, а в сесії без застосувань накопичувались до MAX_TAGS, після чого AutoTag і R4 мовчки ставали (аудит PL_AUD_CTX, CF-34). Тег `state` і нотатки зниклих рядків, як і раніше, видаляє наступне застосування мода ([C_CTX_03_03](./context_editor.core.concept.md#C_CTX_03_03), «Вбудована компактизація хоста»): слот стану телеметрія до того показує як `its row is no longer in the conversation`, а прибрану нотатку звіт застосування називає (`notesDropped`).
+
+Рядки, які згортання обійшло (PL_FOLD, фаза 3; [SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)). Застосоване `collapse` приходить у RebindTags, RelocateNote, PruneAliases, журнал ефекту й перенесення меж етапів із тимчасовим полем `kept` ([SP_CTX_01_03](./context_editor.structures.sp.md#SP_CTX_01_03)) — індексами рядків свого проміжку, які воно лишило на місці (закріплені, слот стану, `keep`). Змінені рядки правки (`touchedBy`) таких рядків не містять: тег, нотатка, псевдонім пари чи межа етапу на обійденому рядку лишаються за правилами незачепленого рядка — зокрема сам `pin` і тег `state`, через які рядок обійдено. Теги на згорнутих рядках проміжку зникають, як і раніше.
 
 ### 02_15. PrepareStorage  {#SP_CTX_02_15}
 
@@ -389,6 +394,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 02_11 — діапазон `disposable` з піном чи слотом стану всередині дозволено, BAD_RANGE несе NOTHING_TO_FOLD, KEEP_SPLITS_PAIR, HEAD_ROW; PERSON_TAG лише для діапазону з доставленим посеред ходу, без попередження PersonTagWarnings; 02_13 — тег, чия заміна загубила б слова людини, знімається з рядком `… dropped: its replacement would lose the person's message sent during a tool call`; 02_14 — рядки, які згортання обійшло (`kept`), читаються як незачеплені |
 | 2026-10-16 | Фаза 44: слот стану змінює `rewrite` або, коли він має пункти, операція `state` ([SP_CTX_02_67](./context_editor.curation.slot.sp.md#SP_CTX_02_67)) |
 | 2026-10-13 | Фаза 36: PrepareStorage спершу розпаковує запаковану сесію (RestoreSession, [SP_CTX_02_52](./context_editor.cleanup.sp.md#SP_CTX_02_52)) |
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_11–02_18 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.tags.sp.md](./context_editor.tags.sp.md), якорі без змін |

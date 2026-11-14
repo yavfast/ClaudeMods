@@ -21,7 +21,7 @@ export const HOST_ARG = 'host'
 // [SP_CTX_01_12] The command's answers: the host shows them under the
 // plugin's name, so no mod prefix (as /handoff's); the model reads them too,
 // so they speak of the person and the agent in the third person.
-export const COMPACT_REPLY = "the agent will compress the conversation itself; the person's messages stay verbatim. For the host's summary, run /compact host."
+export const COMPACT_REPLY = "the agent will compress the conversation itself and keep what you asked for in its records. For the host's summary, run /compact host."
 export const COMPACT_HANDOFF = "a handoff is pending; nothing was compressed. /compact host runs the host's summary."
 export const COMPACT_BUSY = 'a compression turn is already planned or running'
 export const COMPACT_REFUSED = "the compression turn could not be planned; nothing was compressed. /compact host runs the host's summary."

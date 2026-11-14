@@ -30,7 +30,7 @@ When a test, a tool output or a later read refutes an earlier conclusion of your
 
 ## The person's words and requirements
 
-- The person's messages and answers stay verbatim in this session; the mod refuses an edit that covers them. `describe` may describe an image or a pasted text in their prompt: their typed words stay.
+- A `collapse` takes the person's messages and answers of its range into the fold's archive: quote in the record every instruction, constraint and decision of theirs still in force, and list in `keep` a message that must stay verbatim. A `drop` of an answer is refused. `describe` may describe an image or a pasted text in their prompt: their typed words stay.
 - When their requirements are spread over many turns, add a recap (a state item or a text row of yours) that quotes their words; never collapse their messages into it. A service note is not a recap: it is not in the conversation.
 - Never delete the archives of originals or the host's transcripts. The mod does not prevent it; you work as the same OS user.
 

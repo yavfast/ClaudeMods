@@ -335,12 +335,12 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
   }
   // [SP_CTX_02_58] ScreenPerson beside ScreenPinned on the visible rows
   const pinScreen = screenPinned(visible, edits, input.tags)
-  const personScreen = screenPerson(visible, pinScreen.edits, input.deliveries?.state === 'ok' ? input.deliveries.value.items : [])
+  const personScreen = screenPerson(visible, pinScreen.edits, input.deliveries?.state === 'ok' ? input.deliveries.value.items : [], pinScreen.pinned)
   const screened = { edits: personScreen.edits, refused: [...pinScreen.refused, ...personScreen.refused] }
   // [SP_CTX_02_10] prompt rows by their index in `visible`, which ends where the API form ends
   const { found, unmatchedPromptMedia: unmatched, toolRefs } = collectMedia(api, visible)
   // a prompt's media goes to a file only for an edit that replaces it; the rest is not carried
-  const willReplace = replacedOwners(visible, screened.edits)
+  const willReplace = replacedOwners(visible, screened.edits, pinScreen.pinned)
 
   // every medium on its own: a medium without inline data is named, not carried
   let n = 0
@@ -384,12 +384,14 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
     ...(input.cwd ? { cwd: input.cwd } : {}),
     ...(state ? { state } : {}),
     ...(numbered ? { foldIds: numbered.ids } : {}),
+    // [SP_FOLD_02_04] a collapse of the seed goes around pins and the slot too
+    pinned: pinScreen.pinned,
   })
   const report = applied.report
   report.applied.push(...hostDrops.map(describeEdit))
   report.failed = [...early, ...screened.refused, ...report.failed]
   const names = new Set(report.applied)
-  const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))))
+  const replaced = replacedOwners(visible, screened.edits.filter(e => names.has(describeEdit(e))), pinScreen.pinned)
   // [SP_CTX_02_22] prompts whose media the seed does not carry: not tied to a row, or tied and not replaced
   const unmatchedPromptMedia = unmatched + [...found.keys()].filter(k => k.startsWith('r:') && !replaced.has(k)).length
   // [SP_CTX_02_36] the host's deliveries: the API form has none (plugin-hooks
@@ -446,7 +448,9 @@ export async function buildSeed(input: SeedInput): Promise<BuiltSeed | { refuse:
     unmatchedPromptMedia,
     media,
     carried: carried.filter(id => seededIds.has(id)),
-    batch,
+    // [SP_FOLD_02_04] an applied collapse names the rows of `visible` it left in
+    // place, so the registry step reads them as untouched (as HandleCompaction's)
+    batch: batch.map(e => (applied.kept.has(e) ? { ...e, kept: applied.kept.get(e)! } : e)),
     ...(applied.state ? { items: applied.state } : {}),
     ...(folds ? { folds } : {}),
   }

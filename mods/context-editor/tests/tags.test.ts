@@ -49,9 +49,10 @@ import {
   type Tag,
   type TagIO,
   type TagRegistry,
+  rangeRefusal,
 } from '../hooks/tags'
 import type { QueuedDelivery } from '../hooks/deliveries'
-import { NO_PINS } from '../hooks/edits'
+import { HEAD_ROW, KEEP_SPLITS_PAIR, NO_PINS, NOTHING_TO_FOLD, PINNED } from '../hooks/edits'
 import { prompt, reply, result, use, missingRead, okRead, unreadableRead } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
@@ -246,7 +247,8 @@ test('the listing shows pin, a short disposable note and only active reviews', a
 
 // ---- [SP_CTX_02_03] pin
 
-test('prepare refuses every edit that touches a pinned pair or row', async () => {
+// [SP_FOLD_02_04] PINNED stays for an edit whose target is the pinned pair or row
+test('prepare refuses every edit whose target is a pinned pair or row; a collapse goes around the pinned rows of its span, or is refused when nothing is left to fold or a pair would part', async () => {
   const input = rows()
   const pinned = pinnedTargets(input, reg([
     { kind: 'pin', target: anchorOf(0), created_turn: 0 },
@@ -261,15 +263,32 @@ test('prepare refuses every edit that touches a pinned pair or row', async () =>
       { op: 'collapse', from_index: 4, to_index: 6, summary: 'b' },
       { op: 'rewrite', index: 3, text: 't' },
       { op: 'summarize', tool_use_id: 'a', summary: 'ok' },
+      { op: 'collapse', from_index: 3, to_index: 5, summary: 'none' },
     ],
     undefined,
     pinned,
   )
-  expect(errors.length).toBe(4)
-  for (const e of errors) expect(e).toContain('target is pinned; remove the pin with context_tag first')
-  expect(queued.length).toBe(1)
+  expect(errors).toEqual([`summarize b: ${PINNED}`, `rewrite #3: ${PINNED}`, `collapse #3..#5: ${NOTHING_TO_FOLD}`])
+  expect(queued.map(describeEdit)).toEqual(['collapse #0..#2', 'collapse #4..#6', 'summarize a'])
   const q = queueEdits(EMPTY_QUEUE, input, { edits: [{ op: 'collapse', from_index: 0, to_index: 1 + 1, summary: 's' }] }, pinned)
-  expect('queue' in q && q.errors[0]).toContain('target is pinned')
+  expect('queue' in q && q.errors).toEqual([])
+  expect('queue' in q && q.queued).toBe(1)
+  // the pinned first row stays before the record, the pinned pair before the record of #4..#6
+  const out = applyEdits(input, queued.slice(0, 2), '/a.json', undefined, undefined, { pinned })
+  expect(out.report.failed).toEqual([])
+  expect(out.report.applied.length).toBe(2)
+  expect(out.rows.length).toBe(7)
+  expect(out.rows[0]!.text).toBe('the task: find KEY_0042')
+  expect(out.rows[1]!.toolUses.map(u => u.tool)).toEqual(['Read'])
+  expect(out.rows[2]!.toolResults![0]!.text).toContain('start')
+  expect(out.rows[3]!.text).toBe('A long dead-end reasoning that turned out wrong.')
+  expect(out.rows[4]!.toolUses.map(u => u.tool_use_id)).toEqual(['b'])
+  expect(out.rows[5]!.toolResults![0]!.text).toBe('match list')
+  expect(out.rows[6]!.role).toBe('assistant')
+  expect(out.rows[6]!.text).toContain('replaced these 1 rows you had read (1 of your texts)')
+  // a row pinned by its anchor that holds a call: its result would fold without it
+  const call = pinnedTargets(input, reg([{ kind: 'pin', target: anchorOf(1), created_turn: 0 }]))
+  expect(prepare(input, [{ op: 'collapse', from_index: 1, to_index: 3, summary: 's' }], undefined, call).errors).toEqual([`collapse #1..#3: ${KEEP_SPLITS_PAIR}`])
 })
 
 // ---- [SP_CTX_02_12] AutoTag
@@ -634,24 +653,30 @@ test('context_tag — слот стану не там: a row with a call, a pair
   }
 })
 
-test('context_tag — діапазон: index 2 to 3 is a range; a split pair, a pin inside, the state slot inside, "to" without disposable or index: BAD_RANGE', async () => {
+test('context_tag — діапазон: index 2 to 3 is a range; a pin or the state slot inside is taken; a split pair, nothing left to fold, the first row of the conversation, "to" without disposable or index: BAD_RANGE', async () => {
   const ok = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 2, to: 4, note: 'dead end: f has no key' }])
   expect(ok.tags).toEqual([{ kind: 'disposable', target: { ...at15(2), toAnchor: fingerprint(rows15()[4]!), toHint: 4 }, note: 'dead end: f has no key', created_turn: 0 }])
   const pinned = reg([{ kind: 'pin', target: at15(4), created_turn: 0 }])
   const pinnedPair = reg([{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }])
   const state = reg([{ kind: 'state', target: at15(4), created_turn: 0 }])
-  // TSTX-12: six reasons share the code; each row names its own
+  // [SP_FOLD_02_04] the replacement goes around a pin and the state slot
+  for (const start of [pinned, pinnedPair, state]) {
+    const out = await tag15(start, [{ op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }])
+    expect(out.text).not.toContain('Rejected')
+    expect(out.tags).toEqual([...start.tags, { kind: 'disposable', target: { ...at15(1), toAnchor: fingerprint(rows15()[4]!), toHint: 4 }, note: 'n', created_turn: 0 }])
+  }
+  const pinnedCall = reg([{ kind: 'pin', target: at15(2), created_turn: 0 }])
+  // TSTX-12: the reasons share the code; each row names its own
   const ONLY = '"to" goes only with {"op":"add","kind":"disposable","index":<first row>}'
   const LAST = '"to" is the last row of the range: an integer in 3..11'
-  const GUARDED = 'the range holds a row or a call tagged pin or state'
   const cases: [TagRegistry, unknown, string][] = [
     [reg([]), { op: 'add', kind: 'disposable', index: 1, to: 2, note: 'n' }, 'range #1..#2 splits a tool call from its result (a); widen or narrow it'],
     [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 2, note: 'n' }, LAST],
     [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 99, note: 'n' }, LAST],
     [reg([]), { op: 'add', kind: 'disposable', index: 2, to: 3.5, note: 'n' }, LAST],
-    [pinned, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, GUARDED],
-    [pinnedPair, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, GUARDED],
-    [state, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, GUARDED],
+    [pinnedPair, { op: 'add', kind: 'disposable', index: 2, to: 3, note: 'n' }, rangeRefusal(NOTHING_TO_FOLD)],
+    [pinnedCall, { op: 'add', kind: 'disposable', index: 1, to: 4, note: 'n' }, rangeRefusal(KEEP_SPLITS_PAIR)],
+    [reg([]), { op: 'add', kind: 'disposable', index: 0, to: 1, note: 'n' }, rangeRefusal(HEAD_ROW)],
     [reg([]), { op: 'add', kind: 'pin', index: 1, to: 4 }, ONLY],
     [reg([]), { op: 'add', kind: 'disposable', tool_use_id: 'a', to: 4, note: 'n' }, ONLY],
     [reg([]), { op: 'remove', index: 1, to: 4 }, ONLY],
@@ -675,34 +700,60 @@ test('context_tag — агентський review: the agent\'s review gets reas
   expect(out.tags).toEqual([{ kind: 'review', reason: 'agent', target: { tool_use_id: 'b' }, ttl_turns: 2, created_turn: 0 }])
 })
 
-// [SP_CTX_02_58] PERSON_TAG
-test('PersonWords — тег над промптом: a range over a prompt and an AskUserQuestion answer and a disposable on the AskUserQuestion pair are refused; a range without them stands', async () => {
+const SENT: QueuedDelivery = { uuid: 'd1', anchor: ['b'], kind: 'person', origin: 'composer', text: 'mid-turn', cut: 0, media: 0, at: 1 }
+
+async function tagSent(start: TagRegistry, tags: unknown[]) {
+  const h = harness(okRead(start), undefined, { rows: async () => rows15(), deliveries: async () => [SENT] })
+  const out = await contextTag(h.io, { tags })
+  return { text: 'result' in out ? out.result : out.deny, tags: h.log.tags?.tags ?? start.tags }
+}
+
+// [SP_CTX_02_58] [SP_FOLD_02_04] PERSON_TAG
+test('PersonWords — тег над промптом: a range over a prompt and an AskUserQuestion answer and a disposable on the AskUserQuestion pair stand; a range whose rows hold a result with the person\'s message sent during the call is refused, unless that pair is pinned', async () => {
   const range = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 4, to: 9, note: 'n' }])
-  expect(range.tags.length).toBe(0)
-  expect(range.text).toContain(
-    "Rejected: tag 1: disposable #4..#9: covers the person's words: #6 (AskUserQuestion answer), #7 (prompt); they stay verbatim in this session: narrow the range or split it around them (PERSON_TAG).",
-  )
+  expect(range.tags).toEqual([{ kind: 'disposable', target: { ...at15(4), toAnchor: fingerprint(rows15()[9]!), toHint: 9 }, note: 'n', created_turn: 0 }])
+  expect(range.text).not.toContain('Rejected')
   const pair = await tag15(reg([]), [{ op: 'add', kind: 'disposable', tool_use_id: 'q', note: 'n' }])
-  expect(pair.tags.length).toBe(0)
-  expect(pair.text).toContain("disposable q: the AskUserQuestion answer is the person's words; it stays verbatim (PERSON_TAG)")
-  const plain = await tag15(reg([]), [{ op: 'add', kind: 'disposable', index: 2, to: 4, note: 'n' }])
-  expect(plain.tags.length).toBe(1)
-  expect(plain.text).not.toContain('Rejected')
+  expect(pair.tags).toEqual([{ kind: 'disposable', target: { tool_use_id: 'q' }, note: 'n', created_turn: 0 }])
+  expect(pair.text).not.toContain('Rejected')
+  // PersonDelivered: the message behind b's result has no row to keep or to archive
+  const sent = await tagSent(reg([]), [{ op: 'add', kind: 'disposable', index: 8, to: 10, note: 'n' }])
+  expect(sent.tags.length).toBe(0)
+  expect(sent.text).toContain(
+    "Rejected: tag 1: disposable #8..#10: covers the person's #9 (message sent during this tool call); such a message has no row of its own, so it can be neither kept nor archived: narrow the range or split it around that result (PERSON_TAG).",
+  )
+  // a summarize keeps the message after the result
+  const summarized = await tagSent(reg([]), [{ op: 'add', kind: 'disposable', tool_use_id: 'b', note: 'n' }])
+  expect(summarized.tags.length).toBe(1)
+  // the replacement goes around a pinned pair: nothing behind it is lost
+  const pinnedB = reg([{ kind: 'pin', target: { tool_use_id: 'b' }, created_turn: 0 }])
+  const around = await tagSent(pinnedB, [{ op: 'add', kind: 'disposable', index: 8, to: 10, note: 'n' }])
+  expect(around.tags.length).toBe(2)
+  expect(around.text).not.toContain('Rejected')
 })
 
-// [SP_CTX_02_58] a tag queued before this version whose target covers the person's words now
-test('PersonWords — тег у QueueTagReplacements: the tag over a prompt is removed, not queued; its line names it; the other tag is queued', async () => {
+// [SP_CTX_02_58] [SP_FOLD_02_04] a tag whose replacement would lose a message sent during a tool call now
+test('PersonWords — тег у QueueTagReplacements: a tag over a prompt is queued as its collapse; with the person\'s message delivered behind a result of the range the tag is removed, not queued; its line names it; the other tag is queued', async () => {
   const over = { kind: 'disposable' as const, target: { ...at15(4), toAnchor: fingerprint(rows15()[9]!), toHint: 9 }, note: 'n', created_turn: 0 }
   const fine = { kind: 'disposable' as const, target: { tool_use_id: 'a' }, note: 'file a', created_turn: 0 }
-  const h = harness(okRead(reg([over, fine])), undefined, { rows: async () => rows15() })
+  const plain = harness(okRead(reg([over, fine])), undefined, { rows: async () => rows15() })
+  const both = await queueTagReplacements(plain.io)
+  expect(both.queued).toBe(2)
+  expect(both.dropped).toBeUndefined()
+  expect(plain.log.tags).toBeUndefined()
+  expect(plain.log.queue!.edits.map(describeEdit)).toEqual(['collapse #4..#9', 'summarize a'])
+  expect(plain.log.queue!.edits.every(e => e.via === 'tag')).toBe(true)
+  const h = harness(okRead(reg([over, fine])), undefined, { rows: async () => rows15(), deliveries: async () => [SENT] })
   const out = await queueTagReplacements(h.io)
   expect(out.queued).toBe(1)
-  expect(out.dropped).toEqual(["disposable #4..#9 dropped: it covers the person's words"])
+  expect(out.dropped).toEqual(["disposable #4..#9 dropped: its replacement would lose the person's message sent during a tool call"])
   expect(h.log.tags!.tags).toEqual([fine])
   expect(h.log.queue!.edits.map(describeEdit)).toEqual(['summarize a'])
 })
 
-test('context_tag — доставки не прочитано: io.deliveries rejects: the refusal still comes from the rows', async () => {
+// [SP_FOLD_02_04] the person's rows of a range give no refusal; a delivery is
+// screened again by QueueTagReplacements and at the apply (ScreenPerson)
+test('context_tag — доставки не прочитано: io.deliveries rejects: the range over the person\'s rows is tagged, no refusal comes from the rows', async () => {
   const h = harness(okRead(reg([])), undefined, {
     rows: async () => rows15(),
     deliveries: async () => {
@@ -710,8 +761,9 @@ test('context_tag — доставки не прочитано: io.deliveries re
     },
   })
   const out = await contextTag(h.io, { tags: [{ op: 'add', kind: 'disposable', index: 4, to: 9, note: 'n' }] })
-  expect('result' in out && out.result).toContain("disposable #4..#9: covers the person's words: #6 (AskUserQuestion answer), #7 (prompt);")
-  expect(h.log.tags).toBeUndefined()
+  expect('result' in out && out.result).toContain('Tagged 1, removed 0')
+  expect('result' in out && out.result).not.toContain('Rejected')
+  expect(h.log.tags!.tags).toEqual([{ kind: 'disposable', target: { ...at15(4), toAnchor: fingerprint(rows15()[9]!), toHint: 9 }, note: 'n', created_turn: 0 }])
 })
 
 test('context_list — позначки: [state], [review: stale] on both rows of a pair, a range on its first row only; `review` без причини — [review], an agent\'s — [review: agent]', async () => {
@@ -749,7 +801,8 @@ test('parseRegistry — phase 15 fields: state by anchor, a disposable range, re
     expect(parseRegistry(JSON.stringify(reg([bad as Tag]))).state).toBe('unreadable')
 })
 
-test('PrepareEdits — слот стану: rewrite of the state row passes; a collapse over it is refused; after the tag is removed it passes', async () => {
+// [SP_FOLD_02_04] the bypass of the state slot
+test('PrepareEdits — слот стану: rewrite of the state row passes; a collapse over it is queued and goes around the slot, which stands rewritten after the record; a range of the slot alone: NOTHING_TO_FOLD', async () => {
   const r = rows15()
   const withState = pinnedTargets(r, reg([{ kind: 'state', target: at15(4), created_turn: 0 }]))
   expect(withState.state).toBe(4)
@@ -758,12 +811,27 @@ test('PrepareEdits — слот стану: rewrite of the state row passes; a c
     [
       { op: 'rewrite', index: 4, text: 'state: done' },
       { op: 'collapse', from_index: 2, to_index: 6, summary: 's' },
+      { op: 'collapse', from_index: 4, to_index: 4, summary: 's' },
     ],
     undefined,
     withState,
   )
-  expect(out.queued.map(describeEdit)).toEqual(['rewrite #4'])
-  expect(out.errors).toEqual([`collapse #2..#6: ${STATE_SLOT}`])
+  expect(out.queued.map(describeEdit)).toEqual(['rewrite #4', 'collapse #2..#6'])
+  expect(out.errors).toEqual([`collapse #4..#4: ${NOTHING_TO_FOLD}`])
+  expect(STATE_SLOT).toContain('target holds the state slot')
+  const done = applyEdits(r, out.queued, '/a.json', undefined, undefined, { pinned: withState })
+  expect(done.report.failed).toEqual([])
+  expect(done.report.applied).toEqual(['rewrite #4', 'collapse #2..#6'])
+  // #2..#6 held two pairs and the slot: the carrier pair, then the slot's row
+  // (the empty last row of the fixture goes, as in any apply)
+  expect(done.rows.length).toBe(r.length - 3)
+  expect(done.rows[1]!.text).toBe('plan: step 1')
+  expect(done.rows[2]!.toolUses.map(u => u.tool)).toEqual(['Read'])
+  expect(done.rows[3]!.toolResults![0]!.text).toContain('replaced these 4 rows you had read')
+  expect(done.rows[4]!.text.startsWith(REWRITTEN)).toBe(true)
+  expect(done.rows[4]!.text).toContain('state: done')
+  expect(done.rows[5]!.text).toBe('the person adds a constraint')
+  expect(done.report.originals.find(o => o.edit === 'collapse #2..#6')!.rows).toEqual([r[2], r[3], r[5], r[6]])
   expect(prepare(r, [{ op: 'collapse', from_index: 2, to_index: 6, summary: 's' }], undefined, pinnedTargets(r, reg([]))).queued.length).toBe(1)
   expect(stateRow(r, reg([]))).toBeUndefined()
   expect(stateRow(r.slice(0, 3), reg([{ kind: 'state', target: at15(4), created_turn: 0 }]))).toBe(-1)
@@ -952,12 +1020,22 @@ test('QueueTagReplacements — діапазон: a disposable range #8..#10 beco
   expect((await queueTagReplacements(io)).queued).toBe(0)
 })
 
-test('QueueTagReplacements — слот стану в діапазоні: a state row inside the range refuses the collapse; the queue stays, the tag stays', async () => {
+// [SP_FOLD_02_04] a pin or the state slot inside a range does not refuse its replacement
+test('QueueTagReplacements — слот стану в діапазоні: a state row inside the range does not refuse the collapse: it is queued with the range\'s anchors; the apply goes around the slot', async () => {
   const r = rows15()
   const range: Tag = { kind: 'disposable', target: { ...at15(8), toAnchor: fingerprint(r[10]!), toHint: 10 }, note: 'N', created_turn: 0 }
-  const { io, log } = harness(okRead(reg([range, { kind: 'state', target: at15(10), created_turn: 0 }])), undefined, { rows: async () => r })
-  expect((await queueTagReplacements(io)).queued).toBe(0)
-  expect(log.queue).toBeUndefined()
+  const registry = reg([range, { kind: 'state', target: at15(10), created_turn: 0 }])
+  const { io, log } = harness(okRead(registry), undefined, { rows: async () => r })
+  expect((await queueTagReplacements(io)).queued).toBe(1)
+  expect(log.queue!.edits).toEqual([{ op: 'collapse', from_index: 8, to_index: 10, summary: 'N', anchors: [fingerprint(r[8]!), fingerprint(r[10]!)], via: 'tag' }])
+  const out = applyEdits(r, log.queue!.edits, '/a.json', undefined, undefined, { pinned: pinnedTargets(r, registry) })
+  expect(out.report.applied).toEqual(['collapse #8..#10'])
+  // the pair becomes the carrier pair; the empty last row of the fixture goes, as in any apply
+  expect(out.rows.length).toBe(r.length - 1)
+  expect(out.rows[8]!.toolUses.map(u => u.tool)).toEqual(['Grep'])
+  expect(out.rows[9]!.toolResults![0]!.text).toContain('N')
+  expect(out.rows[10]!.text).toBe('conclusion')
+  expect(out.report.originals[0]!.rows).toEqual([r[8], r[9]])
 })
 
 test('AutoTag — R5 стиснута раніша пара: an earlier Read of the same range already summarized (isReplacementText: the text of phase 28 or one marked with MARK) is no duplicate', async () => {
@@ -1141,10 +1219,11 @@ test('touchedBy і RebindTags — згортання з thinking-початко�
 // [SP_CTX_02_11] (review of phase 3, item 2)
 test('context_tag — промпт людини з самих медіа: a pin by index on it and a range that ends on it are taken as before; only an assistant thinking-only row is refused', async () => {
   const media: SessionMessage = { role: 'user', text: '', toolUses: [] }
-  const list = [reply('hi'), media, reply('seen')]
-  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'pin', index: 1 }]).added).toBe(1)
-  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 0, to: 1, note: 'n' }]).added).toBe(1)
-  expect(prepare(list, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).errors).toEqual([])
+  // [SP_FOLD_02_04] the range starts after the conversation's first row (HEAD_ROW)
+  const list = [prompt('task'), reply('hi'), media, reply('seen')]
+  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'pin', index: 2 }]).added).toBe(1)
+  expect(applyTagRequests(reg([]), list, [{ op: 'add', kind: 'disposable', index: 1, to: 2, note: 'n' }]).added).toBe(1)
+  expect(prepare(list, [{ op: 'collapse', from_index: 1, to_index: 2, summary: 's' }]).errors).toEqual([])
 })
 
 // ---- [SP_CTX_02_12] [SP_CTX_02_35] AppendRow: the session.append hook's body ([PL_AUD_CTX_P10], CF-19)

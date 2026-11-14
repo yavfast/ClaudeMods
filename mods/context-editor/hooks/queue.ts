@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, isFoldRegion, isHostDrop, isPairEdit, regionOf, type ClosedSpan, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, isFoldRegion, isHostDrop, isPairEdit, regionOf, foldSpanOf, personRowKind, type ClosedSpan, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { personDelivered, personText, type QueuedDelivery } from './deliveries'
-import { isDescribedText, isPlainUserRow, modText, PREFIX, resultsOf } from './rows'
+import { modText, PREFIX } from './rows'
 import { bytes, jsonObject, type Read } from './store'
 import type { Replaced } from './stages'
 import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
@@ -240,16 +240,10 @@ export function noteOnce(reports: string): string {
   if (last < 0) return reports
   return reports.slice(0, last).split(note).join('') + reports.slice(last)
 }
-// [SP_CTX_02_02] [SP_CTX_02_58] PersonRow: a user row without results whose
-// PersonText is not empty, or a prompt after a describe (DescribedText: the
-// person's words follow the description).
+// [SP_CTX_02_02] [SP_CTX_02_58] PersonRow (the predicate lives in edits.ts,
+// where FoldSpan reads it too).
 export function personRow(rows: readonly SessionMessage[], i: number): boolean {
   return personRowKind(rows[i]) !== undefined
-}
-function personRowKind(r: SessionMessage | undefined): 'prompt' | 'described prompt' | undefined {
-  if (!r || !isPlainUserRow(r)) return undefined
-  if (isDescribedText(r.text.trim())) return 'described prompt'
-  return personText(r.text) !== '' ? 'prompt' : undefined
 }
 
 // [SP_CTX_02_02] PersonPair: the call with this id is a tool in PERSON_TOOLS.
@@ -257,28 +251,27 @@ export function personPair(rows: readonly SessionMessage[], id: string): boolean
   return rows.some(r => r.toolUses.some(u => u.tool_use_id === id && PERSON_TOOLS.includes(u.tool)))
 }
 
-// [SP_CTX_02_02] The rows of the person's messages an edit covers: prompt
-// rows and AskUserQuestion answers in a collapse's span, the answer row of a
-// summarize or drop of an AskUserQuestion pair.
-// [SP_CTX_02_02] PersonDelivered: a person's message the host delivered
-// behind a result, not yet a row, goes with a collapse or a drop of that
-// result ([SP_CTX_02_36]); a summarize keeps it.
+// [SP_FOLD_02_04] The person's words an edit would lose. A collapse takes
+// the person's rows of its span into its archive, and a summarize of an
+// AskUserQuestion pair carries the answer in the agent's summary: neither is
+// refused. What stays refused:
+// - PersonDelivered: a person's message the host delivered behind a result,
+//   not yet a row ([SP_CTX_02_36]), goes with a collapse or a drop of that
+//   result; it has no row to keep or to archive (a summarize keeps it);
+// - a drop of an AskUserQuestion pair: the answer would leave no trace.
+// `pinned`: a collapse loses nothing behind the rows it goes around.
 const DELIVERED = 'message sent during this tool call'
 
-function personHits(rows: readonly SessionMessage[], e: QueuedEdit, delivered: readonly QueuedDelivery[] = []): string[] {
+function personHits(rows: readonly SessionMessage[], e: QueuedEdit, delivered: readonly QueuedDelivery[] = [], pinned: Pinned = NO_PINS): string[] {
   const hits: string[] = []
   if (e.op === 'collapse') {
-    for (const i of touchedBy(rows, e)?.rows ?? []) {
-      const kind = personRowKind(rows[i])
-      if (kind) hits.push(`#${i} (${kind})`)
-      for (const t of resultsOf(rows[i]!)) if (personPair(rows, t.tool_use_id)) hits.push(`#${i} (AskUserQuestion answer)`)
-      if (personDelivered(rows, i, delivered)) hits.push(`#${i} (${DELIVERED})`)
-    }
-  } else if (isPairEdit(e)) {
+    const fold = foldSpanOf(rows, e, pinned)
+    for (const i of typeof fold === 'object' ? fold.folded : (touchedBy(rows, e)?.rows ?? [])) if (personDelivered(rows, i, delivered)) hits.push(`#${i} (${DELIVERED})`)
+  } else if (isPairEdit(e) && e.op === 'drop') {
     const res = touchedBy(rows, e)?.rows[1]
     if (res !== undefined && personPair(rows, e.tool_use_id)) hits.push(`#${res} (AskUserQuestion answer)`)
     // a drop of one of parallel results leaves the row, and the delivery, to the others
-    if (res !== undefined && e.op === 'drop' && personDelivered(rows, res, delivered, new Set([e.tool_use_id]))) hits.push(`#${res} (${DELIVERED})`)
+    if (res !== undefined && personDelivered(rows, res, delivered, new Set([e.tool_use_id]))) hits.push(`#${res} (${DELIVERED})`)
   }
   return hits
 }
@@ -287,28 +280,37 @@ function named(hits: readonly string[]): string {
   return hits.slice(0, MAX_WARNED_ROWS).join(', ') + (hits.length > MAX_WARNED_ROWS ? `, +${hits.length - MAX_WARNED_ROWS} more` : '')
 }
 
-// [SP_CTX_02_58] PersonWords: why an edit that covers the person's words is
-// refused, or undefined; `label` names the edit or the tag. Pure.
-export function personRefusal(rows: readonly SessionMessage[], e: QueuedEdit, delivered: readonly QueuedDelivery[] = [], label = describeEdit(e)): string | undefined {
-  const hits = personHits(rows, e, delivered)
+// [SP_CTX_02_58] [SP_FOLD_02_04] PersonWords: why an edit that would lose
+// the person's words is refused, or undefined; `label` names the edit or the
+// tag. Pure.
+export function personRefusal(
+  rows: readonly SessionMessage[],
+  e: QueuedEdit,
+  delivered: readonly QueuedDelivery[] = [],
+  label = describeEdit(e),
+  pinned: Pinned = NO_PINS,
+): string | undefined {
+  const hits = personHits(rows, e, delivered, pinned)
   if (!hits.length) return undefined
   if (isPairEdit(e))
     return personPair(rows, e.tool_use_id)
-      ? `${label}: the AskUserQuestion answer is the person's words; it stays verbatim`
+      ? `${label}: the AskUserQuestion answer is the person's words and a drop leaves no trace of it; summarize the call instead: your summary carries the answer`
       : `${label}: the person's message sent during this tool call goes with it; summarize the call instead: the message stays after it`
-  return `${label}: covers the person's words: ${named(hits)}; they stay verbatim in this session: narrow the range or split it around them`
+  return `${label}: covers the person's ${named(hits)}; such a message has no row of its own, so it can be neither kept nor archived: narrow the range or split it around that result`
 }
 
-// [SP_CTX_02_58] PERSON_TAG: a disposable tag over the person's words, a
-// range `from..to` or a pair, is refused with the same text. Pure.
+// [SP_CTX_02_58] [SP_FOLD_02_04] PERSON_TAG: a disposable tag whose
+// replacement would lose the person's words (a range with a message sent
+// during a tool call) is refused with the same text. Pure.
 export function personTagRefusal(
   rows: readonly SessionMessage[],
   target: { from: number; to: number } | { tool_use_id: string },
   delivered: readonly QueuedDelivery[] = [],
+  pinned: Pinned = NO_PINS,
 ): string | undefined {
   const e: QueuedEdit =
     'tool_use_id' in target ? { op: 'summarize', tool_use_id: target.tool_use_id, summary: '-' } : { op: 'collapse', from_index: target.from, to_index: target.to, summary: '-' }
-  return personRefusal(rows, e, delivered, 'tool_use_id' in target ? `disposable ${target.tool_use_id}` : `disposable #${target.from}..#${target.to}`)
+  return personRefusal(rows, e, delivered, 'tool_use_id' in target ? `disposable ${target.tool_use_id}` : `disposable #${target.from}..#${target.to}`, pinned)
 }
 
 // [SP_CTX_02_58] [SP_CTX_02_07] ScreenPerson at apply, beside ScreenPinned:
@@ -318,15 +320,17 @@ export function screenPerson(
   rows: readonly SessionMessage[],
   queued: readonly QueuedEdit[],
   delivered: readonly QueuedDelivery[] = [],
+  pinned: Pinned = NO_PINS,
 ): { edits: QueuedEdit[]; refused: string[] } {
   const edits: QueuedEdit[] = []
   const refused: string[] = []
   for (const e of queued) {
-    if (personHits(rows, e, delivered).length) refused.push(`${describeEdit(e)}: covers the person's words now; they stay verbatim`)
+    if (personHits(rows, e, delivered, pinned).length) refused.push(`${describeEdit(e)}: ${PERSON_WORDS_NOW}`)
     else edits.push(e)
   }
   return { edits, refused }
 }
+export const PERSON_WORDS_NOW = "would lose the person's words now (a message sent during a tool call, or an answer a drop removes)"
 
 // [SP_CTX_02_02] Whether a context_edit call needs the API form: only a
 // describe asks whether a prompt row has media ([SP_CTX_02_10]).
@@ -390,7 +394,7 @@ export function queueEdits(
       queued.push(e)
       continue
     }
-    const no = personRefusal(rows, e, delivered)
+    const no = personRefusal(rows, e, delivered, undefined, pinned)
     if (no) {
       errors.push(no)
       continue
@@ -547,7 +551,7 @@ export function settledQueue(q: Queue, s: Settle): Queue {
 // [SP_CTX_02_42] The advice with the person's prompt when the compression
 // turn of their /compact did not run (the prompt came first).
 export const COMPACT_ADVICE = modText(
-  "the person ran /compact before this prompt, and the compression turn did not run. When it suits the person's request, compress the conversation: close finished stages, collapse finished blocks into stage records, summarize big outputs you have used; keep the person's messages, rules and skills in force verbatim. Edits apply when your turn ends.",
+  "the person ran /compact before this prompt, and the compression turn did not run. When it suits the person's request, compress the conversation: close finished stages, collapse finished blocks into stage records, summarize big outputs you have used; quote in your records the person's words still in force, and keep the rules and skills in force verbatim. Edits apply when your turn ends.",
 )
 
 // What DeliverReport needs from the host; register.ts binds it to `$`.

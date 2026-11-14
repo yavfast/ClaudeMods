@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-21
+> **Updated:** 2026-11-14
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §01 Data Structures 01_01–01_11 специфікації [SP_CTX](./context_editor.sp.md): рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила. Константи (01_12) — у [constants](./context_editor.constants.sp.md), реєстри і стан сесії (01_13–01_26) — у [records](./context_editor.records.sp.md). Читати перед зміною цих структур.
@@ -62,21 +62,25 @@ Invariants:
 |----|------|----------|
 | `summarize` | `tool_use_id: string` або `ref: string`, `summary: string` | Замінити результат виклику на `summary`; медіа цього результату замінюється разом з текстом |
 | `drop` | `tool_use_id: string` або `ref: string` | Прибрати виклик і його результат разом з медіа |
-| `collapse` | `from_index: int`, `to_index: int`, `summary: string` | Замінити рядки `from_index..to_index` (включно) одним підсумком |
+| `collapse` | `from_index: int`, `to_index: int`, `summary: string`; необов'язкове `keep: int[]` | Замінити рядки `from_index..to_index` (включно) одним підсумком; рядки людини, названі в `keep`, закріплені рядки й рядок слота стану лишаються на місці ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)) |
 | `rewrite` | `index: int`, `text: string` | Замінити текст рядка агента без викликів інструментів |
 | `describe` | `index: int`, `description: string` | Замінити медіа в рядку промпту людини описом; текст промпту зберігається дослівно |
 
-Обмеження: `summary`, `text`, `description` — непорожні після обрізання пробілів, не довші за MAX_TEXT. Для `summarize` і `drop` задається рівно одне з `tool_use_id` і `ref`; `ref` — псевдонім виклику або `last` ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)), у черзі правка зберігається вже з `tool_use_id`. Індекси — позиції в переліку [SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01).
+Обмеження: `summary`, `text`, `description` — непорожні після обрізання пробілів, не довші за MAX_TEXT. `keep` (PL_FOLD, фаза 3) — єдине необов'язкове поле варіанта: масив цілих, не більше MAX_KEEP, кожен індекс один раз, кожен — рядок людини (PersonRow) усередині `from_index..to_index`; інакше BAD_KEEP ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)). Для `summarize` і `drop` задається рівно одне з `tool_use_id` і `ref`; `ref` — псевдонім виклику або `last` ([SP_CTX_02_17](./context_editor.tags.sp.md#SP_CTX_02_17)), у черзі правка зберігається вже з `tool_use_id`. Індекси — позиції в переліку [SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01).
 
 ### 01_03. QueuedEdit  {#SP_CTX_01_03}
 
 > **Курування:** `quoted`, `changes` — [SP_CTX_01_30](./context_editor.curation.edits.sp.md#SP_CTX_01_30).
 
-Edit плюс `anchors: list<string>?` — відбитки рядків для правок за індексом: для `collapse` — `[fingerprint(row[from_index]), fingerprint(row[to_index])]`, для `rewrite` і `describe` — `[fingerprint(row[index])]`, для правок за ідентифікатором — відсутні.
+Edit плюс `anchors: list<string>?` — відбитки рядків для правок за індексом: для `collapse` — `[fingerprint(row[from_index]), fingerprint(row[to_index]), …]`: перший і останній рядок проміжку, далі по одному відбитку на кожен індекс `keep` у порядку `keep` (PL_FOLD, фаза 3; [SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04); без `keep` — два якорі, як досі), для `rewrite` і `describe` — `[fingerprint(row[index])]`, для правок за ідентифікатором — відсутні.
 
 `via: "tag"?` (фаза 28) — заміна тегу `disposable`, яку поставив у чергу QueueTagReplacements ([SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13)): її текст називає `context_tag`, а не `context_edit` ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)); інших значень немає (parseQueue відхиляє правку з іншим `via`), правки агента поля не мають.
 
 `region: { name, kind: "task" | "stage" }?` (PL_FOLD, фаза 1; [SP_FOLD_01_01](./context_folds.sp.md#SP_FOLD_01_01)) — лише на `collapse`: проміжок правки на мить постановки в чергу збігся з блоком останньої закритої області, що має назву (ClosedSpan, `closedSpan` у `hooks/stages.ts`, над `lastClosed`: обидва кінці знайдено). Пише мод у `context_edit`; заміни з тегів поля не мають. parseQueue відхиляє `region` на іншій операції чи з іншим видом. У фазі 1 вид завжди `stage`.
+
+`keep: list<int>?` (PL_FOLD, фаза 3) — на `collapse`, як його дав агент; у черзі зберігається разом зі своїми якорями, і при застосуванні кожен рядок `keep` шукається за якорем усередині знайденого проміжку ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)). Заміни з тегів `keep` не мають.
+
+`kept: list<int>?` (PL_FOLD, фаза 3) — тимчасове поле застосованого `collapse`: індекси рядків його проміжку, які він лишив на місці (закріплені, слот стану, `keep`), на вхідних рядках застосування. Його дописує HandleCompaction після ApplyEdits ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)) для кроку фіксації: `touchedBy` таких рядків не називає, тож теги, нотатки, псевдоніми, журнал ефекту й межі етапів читають їх як незачеплені. У `pending.json` поле не пишеться ніколи.
 
 `fingerprint(row)` = `role` + `|` + ідентифікатори викликів (`u:<id>`) і результатів (`r:<id>`) через кому + `|` + перші 160 символів `text`.
 
@@ -202,7 +206,7 @@ MediaRef живе лише під час перегляду і застосув�
 
 Invariants:
 - На одній цілі не більше одного тегу; новий тег на ту саму ціль заміняє попередній. Ціль-рядок і ціль-діапазон ототожнюються за `anchor` першого рядка: на рядку починається не більше одного тегу рядка чи діапазону; тег рядка всередині чужого діапазону допустимий.
-- `disposable` з `{ anchor }` без діапазону допустимий лише для рядка `assistant` без викликів, який не несе тегу `state` (слот змінює лише `rewrite` його рядка чи, коли він має пункти, операція `state`, [C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)); діапазон містить кожен виклик разом з його результатом (правило `collapse`, [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)) і не захоплює рядка чи пари з тегом `pin` або `state` на момент тегування.
+- `disposable` з `{ anchor }` без діапазону допустимий лише для рядка `assistant` без викликів, який не несе тегу `state` (слот змінює лише `rewrite` його рядка чи, коли він має пункти, операція `state`, [C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)); діапазон містить кожен виклик разом з його результатом (правило `collapse`, [SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03)); рядок чи пара з тегом `pin` або `state` всередині діапазону дозволені — заміна їх обходить (PL_FOLD, фаза 3; [SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04); до неї такий діапазон відхилявся).
 - `state` — лише на `{ anchor }` рядка `assistant` без викликів з непорожнім текстом; у реєстрі не більше одного тегу `state`: новий заміняє попередній, де б той не стояв ([C_CTX_DEC_19](./context_editor.methods.concept.md#C_CTX_DEC_19)).
 - `review` активний, коли `ttl_turns` відсутній або `turn - created_turn >= ttl_turns`; `reason` є в кожному тезі `review`, який пише ця версія.
 
@@ -249,6 +253,7 @@ Invariants:
 
 | Date | Change |
 |------|--------|
+| 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 01_02 — необов'язкове поле `keep` правки `collapse`; 01_03 — якорі `keep`, тимчасове поле `kept`; 01_09 — діапазон `disposable` може містити `pin` і слот стану |
 | 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): 01_07 — каталог архівів від кореня проєкту сесії `<project>` (`$.session.root()`), не від робочого каталогу `$.session.cwd()`, який іде за `cd` оболонки |
 | 2026-10-17 | Аудит коду, рішення X1: 01_07 «Порт сховища» — третій контракт порту Renew (карантин нечитабельного файлу; RecordDelivery, RecordHostRows) і повторний вхід порту з токеном тримача |
 | 2026-10-17 | Аудит коду (SPEC-1, SPEC-2, SPEC-11): 01_07 — `hostrows.json` у переліку файлів каталогу, `ledger.json` і `hostrows.json` — у файлах стану й порті сховища; 01_06 — архіви старих сесій прибирає SweepSessions (фаза 36); 01_05 — PULLED_TEXT лише із застосованою правкою |

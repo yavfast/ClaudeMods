@@ -112,8 +112,11 @@ test('EDIT_DESCRIPTION — last (phase 21), поля (phase 40)', async () => {
 })
 
 // [SP_CTX_02_58] [SP_CTX_02_68] [SP_CTX_02_69] phase 40: the person's words and the pins
-test('описи інструментів (phase 40): the person\'s messages stay verbatim and edits over them are refused; pasted text in describe; no first-prompt pin', async () => {
-  expect(EDIT_DESCRIPTION).toContain("The person's messages (AskUserQuestion answers too) stay verbatim: edits that cover them are refused.")
+test('описи інструментів (phase 40, PL_FOLD phase 3): a collapse archives the person\'s messages of its range, "keep" lists the rows that stay; pasted text in describe; no first-prompt pin', async () => {
+  // [SP_FOLD_02_04] the new rule in place of "stay verbatim … refused"
+  expect(EDIT_DESCRIPTION).toContain('A collapse archives the person\'s messages in its range: put what is in force into your summary or list those rows in "keep".')
+  expect(EDIT_DESCRIPTION).toContain('A collapse goes round both.')
+  expect(EDIT_DESCRIPTION).not.toContain('are refused')
   expect(EDIT_DESCRIPTION).toContain('the image, document or pasted text in a prompt row of the person')
   expect(EDIT_DESCRIPTION).not.toContain('unless you drop')
   expect(TAG_DESCRIPTION).not.toContain('first prompt is pinned')
@@ -503,7 +506,7 @@ test('RecordBoundary — host: with hostId the boundary carries it, without it n
 
 test('EDIT_DESCRIPTION — keep_cache (phase 23): a few words point to the field; the text stays within MAX_DESCRIPTION', async () => {
   expect(EDIT_DESCRIPTION).toContain('Batch edits in one call (see "keep_cache").')
-  expect(EDIT_DESCRIPTION.length).toBe(2045)
+  expect(EDIT_DESCRIPTION.length).toBe(2043)
 })
 
 // [PL_AUD_CTX_P6] TST-17: before the storage is ready

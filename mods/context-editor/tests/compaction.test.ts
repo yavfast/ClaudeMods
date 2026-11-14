@@ -22,6 +22,8 @@ import {
   boundaryOf,
   fingerprint,
   kilo,
+  NO_PINS,
+  PINNED,
   newHostIdMemo,
   peekHostId,
   prepare,
@@ -34,7 +36,7 @@ import {
 } from '../hooks/edits'
 import { isReplacementText, markerKind, pulledWords, REPAIR_MARKER, REWRITTEN, SUMMARIZED_OF, totalChars } from '../hooks/rows'
 import type { Pulled } from '../hooks/repair'
-import { COMMAND_NOTE, EMPTY_QUEUE, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, withCommandNote, type Queue } from '../hooks/queue'
+import { COMMAND_NOTE, EMPTY_QUEUE, LEGACY_HANDOFF_MARKER, LEGACY_MARKER, PERSON_WORDS_NOW, withCommandNote, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
 import { harness } from './compaction-fixtures'
@@ -356,19 +358,41 @@ test('failedQueue drops the batch and keeps a failure report that does not resum
   expect(q.reportResume).toBe(false)
 })
 
-test('a pin set after the edit was queued fails that edit at application; the rest applies', async () => {
-  const conv = conversation()
-  const pinned: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { anchor: fingerprint(conv[0]!), hint: 0 }, created_turn: 0 }] }
-  const batch = queued([
-    { op: 'collapse', from_index: 0, to_index: 2, summary: 'start' },
+// [SP_FOLD_02_04] the bypass at application: a pin fails the edit whose
+// target it is; a collapse goes around the pinned rows of its span
+test('a pin set after the edits were queued fails the drop of the pinned pair at application; the collapse over that pair goes around it and applies', async () => {
+  const conv: SessionMessage[] = [
+    ...conversation().slice(0, 3),
+    { role: 'assistant', text: 'Reading the file.', toolUses: [], handle: 'h2a' },
+    ...conversation().slice(3),
+    { role: 'assistant', text: 'The file is read.', toolUses: [], handle: 'h5' },
+  ]
+  const pinned: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }] }
+  const edits = prepare(conv, [
+    { op: 'collapse', from_index: 3, to_index: 6, summary: 'start' },
     { op: 'drop', tool_use_id: 'a' },
-  ])
+  ]).queued
+  expect(edits.length).toBe(2)
+  const batch = okRead({ ...EMPTY_QUEUE, edits })
   const { io, written } = harness(batch, {}, okRead(pinned))
   const out = await handleCompaction(io, conv)
   if (!('messages' in out)) throw new Error(out.skip)
-  expect(written.queue!.report).toContain('collapse #0..#2: target is pinned; remove the pin with context_tag first')
-  expect(written.queue!.report).toContain('applied 1 edit(s): drop a')
+  expect(written.queue!.report).toContain(`drop a: ${PINNED}`)
+  expect(written.queue!.report).toContain('applied 1 edit(s): collapse #3..#6')
+  expect(written.queue!.report).not.toContain('collapse #3..#6: ')
   expect(out.messages[0]!.text).toBe('task')
+  // the record stands at the first folded row, the pinned pair right after it
+  const at = out.messages.findIndex(r => r.text.includes('start'))
+  expect(at > 0).toBe(true)
+  expect(out.messages[at]!.role).toBe('assistant')
+  expect(out.messages[at]!.toolUses).toEqual([])
+  expect(out.messages[at]!.text).toContain('replaced these 2 rows you had read (2 of your texts)')
+  expect(out.messages[at + 1]!.toolUses.map(u => u.tool_use_id)).toEqual(['a'])
+  expect(out.messages[at + 2]!.toolResults!.map(t => [t.tool_use_id, t.text])).toEqual([['a', BIG]])
+  expect(out.messages.length).toBe(at + 3)
+  // the archive element holds the folded rows only
+  const archive = JSON.parse(written.archiveText!) as { rows: SessionMessage[] }[]
+  expect(archive.flatMap(o => o.rows.map(r => r.text))).toEqual(['Reading the file.', 'The file is read.'])
 })
 
 test('an unreadable tag registry fails every edit and changes nothing', async () => {
@@ -685,32 +709,38 @@ test('HandleCompaction — розмір перед застосуванням: t
 
 // ---- phase 15
 
-test('ScreenPinned — `pin` і `state`: a summarize of a pinned pair and a collapse over the state row are refused, the rewrite of the state row stays; an unreadable registry refuses all', async () => {
+test('ScreenPinned — `pin` і `state`: a summarize of a pinned pair is refused; a collapse over the state row and the rewrite of that row stay, with the pins and the slot returned for the bypass; an unreadable registry refuses all', async () => {
   const rows: SessionMessage[] = [
     { role: 'user', text: 'task', toolUses: [] },
+    { role: 'assistant', text: 'A plan.', toolUses: [] },
     { role: 'assistant', text: 'state: step 1', toolUses: [] },
     { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a', tool: 'Read', input: {} }] },
     { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a', text: 'A', isError: false }] },
   ]
   const edits = prepare(rows, [
     { op: 'summarize', tool_use_id: 'a', summary: 's' },
-    { op: 'collapse', from_index: 0, to_index: 1, summary: 's' },
-    { op: 'rewrite', index: 1, text: 'state: step 2' },
+    { op: 'collapse', from_index: 1, to_index: 2, summary: 's' },
+    { op: 'rewrite', index: 2, text: 'state: step 2' },
   ]).queued
+  expect(edits.map(e => e.op)).toEqual(['summarize', 'collapse', 'rewrite'])
   const reg: TagRegistry = {
     ...EMPTY_REGISTRY,
     tags: [
       { kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 },
-      { kind: 'state', target: { anchor: fingerprint(rows[1]!), hint: 1 }, created_turn: 0 },
+      { kind: 'state', target: { anchor: fingerprint(rows[2]!), hint: 2 }, created_turn: 0 },
     ],
   }
   const out = screenPinned(rows, edits, okRead(reg))
-  expect(out.edits.map(e => e.op)).toEqual(['rewrite'])
-  expect(out.refused[0]).toContain('target is pinned')
-  expect(out.refused[1]).toContain('target holds the state slot')
+  // [SP_FOLD_02_04] the collapse is not refused STATE_SLOT: ApplyEdits goes around the slot
+  expect(out.edits.map(e => e.op)).toEqual(['collapse', 'rewrite'])
+  expect(out.refused).toEqual([`summarize a: ${PINNED}`])
+  expect(out.pinned.state).toBe(2)
+  expect([...out.pinned.ids]).toEqual(['a'])
   const none = screenPinned(rows, edits, unreadableRead('x'))
   expect(none.edits).toEqual([])
+  expect(none.refused.length).toBe(3)
   expect(none.refused.every(r => r.endsWith('tag registry unreadable'))).toBe(true)
+  expect(none.pinned).toBe(NO_PINS)
 })
 
 test('HandleCompaction — P13 and the journal: the own call removed is counted in the report; the journal gets one apply entry with the Read paths', async () => {
@@ -824,7 +854,7 @@ test('PersonWords — перевірка при застосуванні: a drop
   const out = await handleCompaction(io, rows)
   if (!('messages' in out)) throw new Error(out.skip)
   expect(out.messages.some(r => r.text === DELIVERED)).toBe(true)
-  expect(written.queue!.report).toContain("Not applied: drop c: covers the person's words now; they stay verbatim.")
+  expect(written.queue!.report).toContain(`Not applied: drop c: ${PERSON_WORDS_NOW}.`)
   expect(written.queue!.report).toContain('applied 1 edit(s)')
 })
 
@@ -1206,21 +1236,40 @@ test('HandleCompaction — уже компактизовано тут: the ledge
   expect(out.messages.filter(r => r.toolUses.some(u => u.tool_use_id === 'q')).length).toBe(2)
 })
 
-// [SP_CTX_02_58] [SP_CTX_02_07] the queue changed outside the tools: a collapse over a prompt and a pinned target
-test('PersonWords — перевірка при застосуванні, collapse і пін: ScreenPinned first, then PERSON_WORDS_NOW; the prompt row stays verbatim; nothing applies', async () => {
-  const conv = conversation()
+// [SP_CTX_02_58] [SP_CTX_02_07] [SP_FOLD_02_04] the queue changed outside the
+// tools: a collapse whose folded rows hold a result with a person's message
+// sent during that call, and a pinned target
+test('PersonWords — перевірка при застосуванні, collapse і пін: ScreenPinned first, then PERSON_WORDS_NOW for a collapse that folds the result behind which the person\'s message was delivered; nothing applies; behind a pinned pair the collapse goes around, it applies', async () => {
+  const conv = withPairs('b')
   const pinned: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'pin', target: { tool_use_id: 'a' }, created_turn: 0 }] }
-  const batch = queued([
-    { op: 'collapse', from_index: 0, to_index: 2, summary: 'start' },
+  const edits = prepare(conv, [
+    { op: 'collapse', from_index: 3, to_index: 6, summary: 'start' },
     { op: 'drop', tool_use_id: 'a' },
-  ])
-  const { io, written } = harness(batch, {}, okRead(pinned))
-  await handleCompaction(io, conv)
-  const report = written.queue!.report!
-  const pin = report.indexOf('drop a: target is pinned')
-  const person = report.indexOf("collapse #0..#2: covers the person's words now; they stay verbatim")
+  ]).queued
+  expect(edits.length).toBe(2)
+  const batch = okRead({ ...EMPTY_QUEUE, edits })
+  const run = async (anchor: string) => {
+    const h = harness(batch, { readApi: async () => api(['z', 'a', 'b']), readDeliveries: async () => okRead({ items: [delivery('d1', anchor)] }) }, okRead(pinned))
+    return { ...h, out: await handleCompaction(h.io, conv) }
+  }
+  // the delivery stands behind b's result, which the collapse folds
+  const folded = await run('b')
+  const report = folded.written.queue!.report!
+  const pin = report.indexOf(`drop a: ${PINNED}`)
+  const person = report.indexOf(`collapse #3..#6: ${PERSON_WORDS_NOW}`)
   expect(pin >= 0 && person > pin).toBe(true)
   expect(report).toContain('no edit was applied')
+  // behind the pinned pair, which the collapse goes around: nothing is lost
+  const around = await run('a')
+  if (!('messages' in around.out)) throw new Error(around.out.skip)
+  expect(around.written.queue!.report).toContain('applied 1 edit(s): collapse #3..#6')
+  expect(around.written.queue!.report).toContain(`drop a: ${PINNED}`)
+  expect(around.written.queue!.report).not.toContain(PERSON_WORDS_NOW)
+  const rows = around.out.messages
+  const a = rows.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'a'))
+  expect(rows[a]!.toolResults![0]!.text).toBe(BIG)
+  expect(rows[a + 1]!.text).toBe(DELIVERED)
+  expect(rows.some(r => r.toolUses.some(u => u.tool_use_id === 'b'))).toBe(false)
 })
 
 // ---- [SP_CTX_02_73] DropRenameRows in the apply

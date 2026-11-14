@@ -9,6 +9,7 @@ import {
   MAX_TEXT,
   mergedCallRow,
   NO_PINS,
+  foldSpanOf,
   NO_REFS,
   oneLine,
   OWN_TOOLS,
@@ -254,6 +255,16 @@ export function stateRow(rows: readonly SessionMessage[], reg: TagRegistry, ix?:
   const tag = reg.tags.find(t => t.kind === 'state')
   if (!tag || !('anchor' in tag.target)) return undefined
   return locate(rows, tag.target.anchor, tag.target.hint, ix)
+}
+
+// [SP_CTX_02_11] [SP_FOLD_02_04] A refusal of PrepareEdits for a collapse as
+// the range tag gives it: without the edit's name and without the advice on
+// "keep", which a tag does not have.
+export function rangeRefusal(error: string): string {
+  return error
+    .replace(/^collapse #\d+\.\.#\d+: /, '')
+    .replace(/, the state slot or (one )?in "keep"/, ' or the state slot')
+    .replace('name it in "keep" or start', 'start')
 }
 
 // [SP_CTX_02_03] The pinned targets on `rows`, as prepare takes them, and the
@@ -536,11 +547,12 @@ export function applyTagRequests(
       if (!Number.isInteger(to) || (to as number) <= from || (to as number) > rows.length - 1)
         return reject('BAD_RANGE', `"to" is the last row of the range: an integer in ${from + 1}..${rows.length - 1}`)
       const span = { op: 'collapse' as const, from_index: from, to_index: to as number, summary: '-' }
-      const split = prepare(rows, [span]).errors[0]
-      if (split) return reject('BAD_RANGE', split.replace(/^collapse #\d+\.\.#\d+: /, ''))
-      const guarded = pinnedTargets(rows, { ...reg, tags }, ix)
-      if (touchesPin(rows, span, guarded) || (guarded.state !== undefined && guarded.state >= from && guarded.state <= (to as number)))
-        return reject('BAD_RANGE', 'the range holds a row or a call tagged pin or state')
+      // [SP_FOLD_02_04] the replacement goes around a pin and the state
+      // slot (FoldSpan): the range is refused only when nothing would fold,
+      // a pair would part, or it would replace the conversation's first row
+      const split = prepare(rows, [span], undefined, pinnedTargets(rows, { ...reg, tags }, ix)).errors[0]
+      // (a tag has no "keep": the refusals of FoldSpan go without that advice)
+      if (split) return reject('BAD_RANGE', rangeRefusal(split))
       target = { ...(target as { anchor: string; hint: number }), toAnchor: fingerprint(rows[to as number]!), toHint: to as number }
     } else if (kind === 'disposable' && row && (row.role !== 'assistant' || row.toolUses.length > 0))
       return reject('BAD_TARGET', 'by index without "to" only an assistant text row can be disposable; tag a tool result by its tool_use_id, a span by "index" and "to"')
@@ -554,10 +566,11 @@ export function applyTagRequests(
     // [SP_CTX_02_11] a thinking-only row has an anchor Locate cannot tell
     // apart: no tag on it alone (a range may start there, LocateSpan)
     if (row && r.to === undefined && thinkingOnly(row)) return reject('TARGET_NOT_FOUND', UNTRACKED_ROW(r.index as number))
-    // [SP_CTX_02_58] PERSON_TAG: no disposable tag over the person's words
+    // [SP_CTX_02_58] [SP_FOLD_02_04] PERSON_TAG: no disposable tag whose
+    // replacement would lose the person's words
     if (kind === 'disposable') {
       const no = isRange(target)
-        ? personTagRefusal(rows, { from: target.hint, to: target.toHint }, delivered)
+        ? personTagRefusal(rows, { from: target.hint, to: target.toHint }, delivered, pinnedTargets(rows, { ...reg, tags }, ix))
         : 'tool_use_id' in target
           ? personTagRefusal(rows, { tool_use_id: target.tool_use_id }, delivered)
           : undefined
@@ -1061,7 +1074,10 @@ export function tagEdits(rows: readonly SessionMessage[], reg: TagRegistry, ix: 
 }
 
 // The text a queued tag edit replaces, in chars: a collapse the size of its rows.
-function replacedSize(rows: readonly SessionMessage[], edit: QueuedEdit): number {
+// [SP_FOLD_02_04] `pinned`: a collapse replaces only the rows it folds.
+function replacedSize(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned = NO_PINS): number {
+  const fold = edit.op === 'collapse' ? foldSpanOf(rows, edit, pinned) : undefined
+  if (typeof fold === 'object') return fold.folded.reduce((n, i) => n + rowChars(rows[i]!), 0)
   const t = touchedBy(rows, edit)
   if (!t) return 0
   if (edit.op === 'summarize') {
@@ -1094,11 +1110,12 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   const fresh = { ...tags.value, tags: tags.value.tags.filter(t => !inQueue.has(tagKey(t) ?? '')) }
   const rows = await io.rows()
   const ix = indexRows(rows)
-  const prepared = prepare(rows, tagEdits(rows, fresh, ix), undefined, pinnedTargets(rows, tags.value, ix)).queued
-  // [SP_CTX_02_58] a tag whose target covers the person's words now is not
-  // queued but removed; the call's result names it
+  const pinned = pinnedTargets(rows, tags.value, ix)
+  const prepared = prepare(rows, tagEdits(rows, fresh, ix), undefined, pinned).queued
+  // [SP_CTX_02_58] a tag whose replacement would lose the person's words now
+  // is not queued but removed; the call's result names it
   const delivered = (await io.deliveries?.().catch(() => undefined)) ?? []
-  const over = prepared.filter(e => personRefusal(rows, e, delivered) !== undefined)
+  const over = prepared.filter(e => personRefusal(rows, e, delivered, undefined, pinned) !== undefined)
   const dropped = over.length ? await dropTagsOf(io, over) : []
   // [SP_CTX_02_13] the replacement's text names the agent's tag, not a context_edit call
   // [SP_FOLD_02_03] a disposable tag on a recall pair returns it with the tag's note
@@ -1110,7 +1127,7 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   // (the mod's own return edits give way: AddReturns re-adds what fits)
   if (!queued.length || q.edits.filter(e => !isOwnReturn(e)).length + queued.length > MAX_QUEUE_EDITS) return none
   // [SP_FOLD_02_03] AddReturns: the due recalls join the batch of replacements
-  const next: Queue = { ...q, edits: addReturns([...q.edits, ...queued], rows, recalls, pinnedTargets(rows, tags.value, ix)), tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
+  const next: Queue = { ...q, edits: addReturns([...q.edits, ...queued], rows, recalls, pinned), tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
   if (bytes(next) > MAX_QUEUE_BYTES) return none
   try {
     await io.writeQueue(next)
@@ -1118,7 +1135,7 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
     return none
   }
   let chars = 0
-  for (const edit of queued) chars += replacedSize(rows, edit) - noteSize(edit)
+  for (const edit of queued) chars += replacedSize(rows, edit, pinned) - noteSize(edit)
   // [SP_CTX_02_34] by the registry's calibrated ratio
   // [SP_CTX_02_13] [SP_CTX_DEC_16] whether the batch, as written, resumes the session
   return { queued: queued.length, freed: estimate(Math.max(0, chars), tags.value.charsPerToken), resumes: resumesAfter(next), ...(dropped.length ? { dropped } : {}) }
@@ -1137,7 +1154,7 @@ async function dropTagsOf(io: TagIO, edits: readonly QueuedEdit[]): Promise<stri
     return true
   }).catch(() => false)
   if (!done) return []
-  return edits.map(e => `disposable ${e.op === 'collapse' ? `#${e.from_index}..#${e.to_index}` : 'tool_use_id' in e ? e.tool_use_id : e.op === 'rewrite' || e.op === 'describe' ? `#${e.index}` : '?'} dropped: it covers the person's words`)
+  return edits.map(e => `disposable ${e.op === 'collapse' ? `#${e.from_index}..#${e.to_index}` : 'tool_use_id' in e ? e.tool_use_id : e.op === 'rewrite' || e.op === 'describe' ? `#${e.index}` : '?'} dropped: its replacement would lose the person's message sent during a tool call`)
 }
 
 // [SP_CTX_02_13] Whether a batch edit is the replacement a disposable tag

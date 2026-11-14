@@ -265,7 +265,9 @@ test('Повернення — мітка й пін: a failed return edit is nam
   const pin: Tag = { kind: 'pin', target: { tool_use_id: 'r1' }, created_turn: 0 }
   const tags = okRead({ ...EMPTY_REGISTRY, tags: [pin] })
   const drop: QueuedEdit = { op: 'drop', tool_use_id: 'b' }
-  expect(screenPinned(rows, [drop, returnEdit('r1')], tags)).toEqual({ edits: [drop], refused: [] })
+  const skipped = screenPinned(rows, [drop, returnEdit('r1')], tags)
+  expect(skipped.edits).toEqual([drop])
+  expect(skipped.refused).toEqual([])
   const mine: QueuedEdit = { op: 'summarize', tool_use_id: 'r1', summary: 'took KEY', via: 'return' }
   const out = screenPinned(rows, [mine], tags)
   expect(out.edits).toEqual([])

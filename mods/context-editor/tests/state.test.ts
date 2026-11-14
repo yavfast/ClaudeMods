@@ -2,7 +2,7 @@ import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction } from '../hooks/compaction'
 import { buildSeed, carryRegistries } from '../hooks/handoff'
-import { applyEdits, fingerprint, MAX_TEXT, prepare, STATE_SLOT, type Pinned, type QueuedEdit } from '../hooks/edits'
+import { applyEdits, fingerprint, MAX_TEXT, NOTHING_TO_FOLD, prepare, STATE_SLOT, type Pinned, type QueuedEdit } from '../hooks/edits'
 import { EMPTY_QUEUE, parseQueue, queueEdits } from '../hooks/queue'
 import { isReplacementText, STATE_REBUILT } from '../hooks/rows'
 import {
@@ -160,10 +160,30 @@ test('StateEdit — слот зник і id зник до застосуванн
   expect(now.rows[1]!.text).toBe(SLOT)
 })
 
-test('ScreenPinned і STATE_SLOT: a collapse over the slot is still refused; the state op on it passes', () => {
+// [SP_FOLD_02_04] the bypass: the slot's row is not folded and gives no refusal
+test('ScreenPinned і STATE_SLOT: a collapse over the slot goes around it, the slot stays before the record; the state op on it in the same batch runs before the collapse; a range of the slot alone is NOTHING_TO_FOLD', () => {
   const p = pins(registry())
   const out = prepare(chat(), [{ op: 'collapse', from_index: 1, to_index: 2, summary: 's' }], undefined, p)
-  expect(out.errors).toEqual([`collapse #1..#2: ${STATE_SLOT}`])
+  expect(out.errors).toEqual([])
+  const res = applyEdits(chat(), out.queued, '/a.json', undefined, undefined, { pinned: p })
+  expect(res.report.failed).toEqual([])
+  expect(res.report.applied).toEqual(['collapse #1..#2'])
+  expect(res.rows.map(r => r.role)).toEqual(['user', 'assistant', 'assistant', 'assistant'])
+  expect(res.rows[1]!.text).toBe(SLOT)
+  expect(res.rows[2]!.text).toContain("replaced these 1 rows you had read (1 of the person's messages)")
+  expect(res.rows[3]!.text).toBe('working on it')
+  expect(res.report.originals[0]!.rows.map(r => r.text)).toEqual(['go on'])
+  expect([...res.kept.values()]).toEqual([[1]])
+  // the state op on the kept row and the collapse around it: no "overlaps another edit"
+  const both = prepare(chat(), [{ op: 'collapse', from_index: 1, to_index: 3, summary: 's' }, { op: 'state', changes: [add('plan', 'a')] }], undefined, p)
+  expect(both.errors).toEqual([])
+  const two = applyEdits(chat(), both.queued, '/a.json', undefined, undefined, { pinned: p, state: { items: [], nextItem: 1, turn: 8 } })
+  expect(two.report.failed).toEqual([])
+  expect(two.report.applied).toEqual(['state (add plan)', 'collapse #1..#3'])
+  expect(two.rows.length).toBe(3)
+  expect(two.rows[1]!.text.endsWith(':\nPlan:\n- p1: a')).toBe(true)
+  expect(two.rows[2]!.text).toContain("replaced these 2 rows you had read (1 of the person's messages; 1 of your texts)")
+  expect(prepare(chat(), [{ op: 'collapse', from_index: 1, to_index: 1, summary: 's' }], undefined, p).errors).toEqual([`collapse #1..#1: ${NOTHING_TO_FOLD}`])
   expect(STATE_SLOT).toContain('or by the state op once it has items')
 })
 

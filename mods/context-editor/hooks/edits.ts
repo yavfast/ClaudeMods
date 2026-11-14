@@ -12,7 +12,8 @@ export type Edit =
   | { op: 'drop'; tool_use_id: string }
   // [SP_CTX_01_30] [SP_CTX_02_61] a host row by the id of its record
   | { op: 'drop'; host: string }
-  | { op: 'collapse'; from_index: number; to_index: number; summary: string }
+  // [SP_FOLD_02_04] `keep`: the person's rows of the span that stay verbatim
+  | { op: 'collapse'; from_index: number; to_index: number; summary: string; keep?: number[] }
   | { op: 'rewrite'; index: number; text: string }
   | { op: 'describe'; index: number; description: string }
   // [SP_CTX_01_30] [SP_CTX_02_67] the slot is the row with the state tag;
@@ -29,7 +30,11 @@ export type Edit =
 // [SP_FOLD_02_03] `via: 'return'`: a summarize of a recall pair, which
 // returns the recalled level (ReturnRecalled): the mod's own with an empty
 // `summary`, or the agent's summarize or disposable tag of that pair with its text.
-export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' | 'return'; quoted?: true; region?: FoldRegion }
+// [SP_FOLD_02_04] A collapse's anchors: the first and the last row of its
+// span, then one per `keep` index, in the order of `keep`. `kept`: only on an
+// applied collapse handed on after ApplyEdits (never written to the queue):
+// the rows of its span it left in place, by index on the apply's input rows.
+export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' | 'return'; quoted?: true; region?: FoldRegion; kept?: number[] }
 
 // [SP_FOLD_02_03] A return edit: a summarize of a recall pair.
 export function isReturnEdit(e: QueuedEdit): e is Extract<QueuedEdit, { op: 'summarize' }> {
@@ -1163,7 +1168,17 @@ export function checkShape(raw: unknown): Edit | string {
     case 'collapse':
       if (!isIndex(e.from_index)) return 'from_index is required'
       if (!isIndex(e.to_index)) return 'to_index is required'
-      return textError(e.summary, 'summary') ?? { op: 'collapse', from_index: e.from_index, to_index: e.to_index, summary: e.summary as string }
+      // [SP_FOLD_02_04] BAD_KEEP: a list of row indexes, each once
+      if (e.keep !== undefined && !(Array.isArray(e.keep) && e.keep.length <= MAX_KEEP && e.keep.every(isIndex) && new Set(e.keep).size === e.keep.length)) return BAD_KEEP
+      return (
+        textError(e.summary, 'summary') ?? {
+          op: 'collapse',
+          from_index: e.from_index,
+          to_index: e.to_index,
+          summary: e.summary as string,
+          ...(Array.isArray(e.keep) && e.keep.length ? { keep: [...(e.keep as number[])].sort((x, y) => x - y) } : {}),
+        }
+      )
     case 'rewrite':
       if (!isIndex(e.index)) return 'index is required'
       return textError(e.text, 'text') ?? { op: 'rewrite', index: e.index, text: e.text as string }
@@ -1202,7 +1217,9 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit, ix?
     case 'collapse': {
       const { from, to } = spanOf(rows, edit, ix)
       if (from < 0 || to < from || to >= rows.length) return undefined
-      const span = Array.from({ length: to - from + 1 }, (_, k) => from + k)
+      // [SP_FOLD_02_04] an applied collapse names the rows it left in place
+      const left = new Set(edit.kept ?? [])
+      const span = Array.from({ length: to - from + 1 }, (_, k) => from + k).filter(i => !left.has(i))
       const ids = span.flatMap(i => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...resultsOf(rows[i]!).map(r => r.tool_use_id)])
       return { rows: span, ids: [...new Set(ids)] }
     }
@@ -1220,10 +1237,95 @@ export function touchedBy(rows: readonly SessionMessage[], edit: QueuedEdit, ix?
   }
 }
 
+// [SP_CTX_02_02] [SP_CTX_02_58] PersonRow: a user row without results whose
+// PersonText is not empty, or a prompt after a describe (DescribedText: the
+// person's words follow the description).
+export function personRowKind(r: SessionMessage | undefined): 'prompt' | 'described prompt' | undefined {
+  if (!r || !isPlainUserRow(r)) return undefined
+  if (isDescribedText(r.text.trim())) return 'described prompt'
+  return personText(r.text) !== '' ? 'prompt' : undefined
+}
+
+// [SP_FOLD_01_06] [SP_FOLD_02_04] The refusals of FoldSpan.
+export const MAX_KEEP = 50
+export const BAD_KEEP = `"keep" lists the indexes of the person's message rows inside the range that stay verbatim, each once, at most ${MAX_KEEP}; take them from context_list`
+export const KEEP_SPLITS_PAIR = 'a row that stays (pinned, the state slot or one in "keep") would part a tool call from its result; split the range around it or remove the pin'
+export const NOTHING_TO_FOLD = 'every row of the range stays (pinned, the state slot or in "keep"); narrow the range'
+export const HEAD_ROW = 'the range would replace the first row of the conversation, which cannot become your own row; name it in "keep" or start the range after it'
+export const KEPT_GONE = 'a kept row is no longer there'
+
+// [SP_FOLD_02_04] FoldSpan: the rows of a collapse's span that it replaces
+// (`folded`) and those it goes around (`kept`): a pinned row, a row that
+// carries a pinned call or result, the row of the state slot, the rows of
+// `keep`. The record takes the place of the first folded row; a kept pair
+// may not stand on both sides of that place. `keep`: the rows of the edit's
+// `keep` as they stand on `rows` now. The reason when the span cannot fold.
+export type FoldSpan = { from: number; to: number; kept: number[]; folded: number[] }
+export function foldSpan(rows: readonly SessionMessage[], from: number, to: number, keep: readonly number[], pinned: Pinned): FoldSpan | string {
+  const stays = new Set<number>(keep)
+  const idsOf = (i: number) => [...rows[i]!.toolUses.map(u => u.tool_use_id), ...resultsOf(rows[i]!).map(r => r.tool_use_id)]
+  // a row with a pinned call or result stays whole, and so does every row
+  // that holds the other half of one of its pairs (a call row merged from
+  // parallel calls has its results in several rows): closed to a fixpoint
+  const pairRows = new Map<string, number[]>()
+  for (let i = from; i <= to; i++) for (const id of idsOf(i)) pairRows.set(id, [...(pairRows.get(id) ?? []), i])
+  const carried = new Set<number>()
+  const carry = (i: number) => {
+    if (carried.has(i)) return
+    carried.add(i)
+    stays.add(i)
+    for (const id of idsOf(i)) for (const j of pairRows.get(id) ?? []) carry(j)
+  }
+  for (let i = from; i <= to; i++) {
+    if (pinned.rows.has(i) || pinned.state === i) stays.add(i)
+    if (idsOf(i).some(id => pinned.ids.has(id))) carry(i)
+  }
+  const kept: number[] = []
+  const folded: number[] = []
+  for (let i = from; i <= to; i++) (stays.has(i) ? kept : folded).push(i)
+  if (!folded.length) return NOTHING_TO_FOLD
+  const first = folded[0]!
+  const callAt = new Map<string, number>()
+  for (let i = from; i <= to; i++) for (const u of rows[i]!.toolUses) callAt.set(u.tool_use_id, i)
+  for (let i = from; i <= to; i++)
+    for (const r of resultsOf(rows[i]!)) {
+      const c = callAt.get(r.tool_use_id)
+      if (c === undefined) continue
+      if (stays.has(c) !== stays.has(i) || (stays.has(c) && c < first && i > first)) return KEEP_SPLITS_PAIR
+    }
+  if (first === 0) return HEAD_ROW
+  return { from, to, kept, folded }
+}
+
+// [SP_FOLD_02_04] The rows a queued collapse's `keep` names now, by their
+// anchors (the third anchor on); undefined when one is not found inside the
+// span or is no row of the person any more.
+function keptNow(rows: readonly SessionMessage[], edit: Extract<QueuedEdit, { op: 'collapse' }>, from: number, to: number, ix?: RowIndex): number[] | undefined {
+  const out: number[] = []
+  for (const [k, hint] of (edit.keep ?? []).entries()) {
+    const anchor = edit.anchors?.[k + 2]
+    const at = anchor === undefined ? hint : locate(rows, anchor, hint + (from - edit.from_index), ix)
+    if (at < from || at > to || !personRowKind(rows[at])) return undefined
+    out.push(at)
+  }
+  return out
+}
+
+// [SP_FOLD_02_04] FoldSpan of a queued collapse on `rows` now: its span by
+// LocateSpan, its `keep` by anchors, the pins and the slot as given.
+// undefined: the span is not there.
+export function foldSpanOf(rows: readonly SessionMessage[], edit: Extract<QueuedEdit, { op: 'collapse' }>, pinned: Pinned, ix?: RowIndex): FoldSpan | string | undefined {
+  const { from, to } = spanOf(rows, edit, ix)
+  if (from < 0 || to < from || to >= rows.length) return undefined
+  const keep = keptNow(rows, edit, from, to, ix)
+  return keep ? foldSpan(rows, from, to, keep, pinned) : KEPT_GONE
+}
+
 // [SP_CTX_02_03] Whether an edit would change a pinned pair or row: a pair
-// edit also changes both rows of its pair, a collapse every row and pair of
-// its span.
+// edit also changes both rows of its pair. [SP_FOLD_02_04] A collapse never
+// does: it goes around the pinned rows of its span (FoldSpan).
 export function touchesPin(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned): boolean {
+  if (edit.op === 'collapse') return false
   const t = touchedBy(rows, edit)
   return !!t && (t.rows.some(i => pinned.rows.has(i)) || t.ids.some(id => pinned.ids.has(id)))
 }
@@ -1233,7 +1335,8 @@ export const PINNED = 'target is pinned; remove the pin with context_tag first'
 // [SP_CTX_02_03] [C_CTX_DEC_19] Whether an edit would change the row of the
 // state slot: only a rewrite of that very row or a state edit may.
 export function touchesState(rows: readonly SessionMessage[], edit: QueuedEdit, pinned: Pinned): boolean {
-  if (pinned.state === undefined) return false
+  // [SP_FOLD_02_04] a collapse goes around the slot's row (FoldSpan)
+  if (pinned.state === undefined || edit.op === 'collapse') return false
   const t = touchedBy(rows, edit)
   if (!t || !t.rows.includes(pinned.state)) return false
   return !((edit.op === 'rewrite' || edit.op === 'state') && t.rows[0] === pinned.state)
@@ -1321,6 +1424,11 @@ export function prepare(
     if (staleIndexes && (edit.op === 'collapse' || edit.op === 'rewrite' || edit.op === 'describe')) return void errors.push(`${name}: ${STALE_INDEXES}`)
     const checked = edit.op === 'state' ? prepareState(rows, edit, pinned, [...pending, ...queued]) : checkTarget(rows, edit, hasMedia)
     if (typeof checked === 'string') return void errors.push(`${name}: ${checked}`)
+    // [SP_FOLD_02_04] the bypass: KEEP_SPLITS_PAIR, NOTHING_TO_FOLD, HEAD_ROW
+    if (checked.op === 'collapse') {
+      const fold = foldSpan(rows, checked.from_index, checked.to_index, checked.keep ?? [], pinned)
+      if (typeof fold === 'string') return void errors.push(`${name}: ${fold}`)
+    }
     if (touchesPin(rows, checked, pinned)) return void errors.push(`${name}: ${PINNED}`)
     if (touchesState(rows, checked, pinned)) return void errors.push(`${name}: ${STATE_SLOT}`)
     const slotError = slotRewriteError(rows, checked, pinned, [...pending, ...queued])
@@ -1348,10 +1456,13 @@ function checkTarget(rows: readonly SessionMessage[], edit: Edit, hasMedia: (own
       return edit
     case 'collapse': {
       const { from_index: from, to_index: to } = edit
+      // [SP_FOLD_02_04] BAD_KEEP before the target's rules
+      const keep = edit.keep ?? []
+      if (keep.some(k => k < from || k > to || !personRowKind(rows[k]))) return BAD_KEEP
       if (!(from >= 0 && to >= from && to < rows.length)) return `indexes out of range (0..${rows.length - 1})`
       // [SP_CTX_02_03] the last row anchors the range (LocateSpan)
       if (thinkingOnly(rows[to]!)) return UNTRACKED_END(to)
-      return pairingError(rows, from, to) ?? { ...edit, anchors: [fingerprint(rows[from]!), fingerprint(rows[to]!)] }
+      return pairingError(rows, from, to) ?? { ...edit, anchors: [fingerprint(rows[from]!), fingerprint(rows[to]!), ...keep.map(k => fingerprint(rows[k]!))] }
     }
     case 'rewrite': {
       const row = rows[edit.index]
@@ -1651,11 +1762,13 @@ function ownersOf(rows: readonly SessionMessage[], edit: QueuedEdit, touched: re
 
 // Keys of the media owners the queued edits would replace, resolved on
 // `rows`; the handler archives only their media ([SP_CTX_02_07]).
-export function replacedOwners(rows: readonly SessionMessage[], edits: readonly QueuedEdit[]): Set<string> {
+// [SP_FOLD_02_04] `pinned`: a collapse replaces only the rows it folds.
+export function replacedOwners(rows: readonly SessionMessage[], edits: readonly QueuedEdit[], pinned: Pinned = NO_PINS): Set<string> {
   const keys = new Set<string>()
   for (const edit of edits) {
-    const touched = touchedBy(rows, edit)
-    if (touched) for (const key of ownersOf(rows, edit, touched.rows)) keys.add(key)
+    const fold = edit.op === 'collapse' ? foldSpanOf(rows, edit, pinned) : undefined
+    const touched = typeof fold === 'object' ? fold.folded : touchedBy(rows, edit)?.rows
+    if (touched) for (const key of ownersOf(rows, edit, touched)) keys.add(key)
   }
   return keys
 }
@@ -1795,6 +1908,9 @@ export type ApplyOptions = {
   // of the trace a return edit leaves; a pair without one is read by the
   // first line of its result
   recalls?: ReadonlyMap<string, { fold: string; scope: string }>
+  // [SP_FOLD_02_04] the pins and the state slot on the apply's rows: a
+  // collapse goes around them (FoldSpan); absent: none
+  pinned?: Pinned
 }
 
 // [SP_CTX_02_67] What run state starts from, and (ApplyEdits' `state`) what
@@ -1850,8 +1966,20 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; hostNamed: Set<string>; state?: StateOutput; folded: Folded[] } {
+): {
+  rows: SessionMessage[]
+  report: ApplyReport
+  made: Made[]
+  renamed: Map<string, string>
+  prefix: number
+  hostNamed: Set<string>
+  state?: StateOutput
+  folded: Folded[]
+  // [SP_FOLD_02_04] the rows each applied collapse left in place, on `input`
+  kept: Map<QueuedEdit, number[]>
+} {
   const rows = [...input]
+  const kept = new Map<QueuedEdit, number[]>()
   // [SP_FOLD_02_03] DescribeEdit name → `return of fold <id>` of the batch's return edits
   const labels = new Map<string, string>()
   const report: ApplyReport = {
@@ -1894,7 +2022,9 @@ export function applyEdits(
   // A pair edit conflicts only on its own pair and on rows a row edit takes;
   // a row edit (collapse, rewrite, describe) takes its rows exclusively.
   // `names`: the edits one step applies (every state edit of the batch)
-  type Step = { edit: QueuedEdit; names?: string[]; touched: number[]; pair?: string; hi: number; owners: string[]; run: () => void }
+  // [SP_FOLD_02_04] `folds`: a collapse's folded rows, the only ones it changes;
+  // `touched` is its whole span, which no other collapse may share
+  type Step = { edit: QueuedEdit; names?: string[]; touched: number[]; folds?: number[]; pair?: string; hi: number; owners: string[]; run: () => void }
   const plan: Step[] = []
   // [SP_CTX_02_04] the first row each applied step touches
   const firsts: number[] = []
@@ -1907,6 +2037,7 @@ export function applyEdits(
   for (const edit of edits) {
     const name = describeEdit(edit)
     let touched: number[]
+    let owned: number[] | undefined
     let pair: string | undefined
     let run: () => void
     switch (edit.op) {
@@ -2013,16 +2144,24 @@ export function applyEdits(
           report.failed.push(`${name}: ${bad}`)
           continue
         }
+        // [SP_FOLD_02_04] FoldSpan on the rows now: the span is the edit's
+        // alone (`touched`), the checks and the archive take what it folds
+        const fold = foldSpanOf(rows, edit, options.pinned ?? NO_PINS)
+        if (typeof fold !== 'object') {
+          report.failed.push(`${name}: ${fold ?? 'the rows it named are no longer there'}`)
+          continue
+        }
         touched = Array.from({ length: to - from + 1 }, (_, k) => from + k)
+        const foldedRows = fold.folded
         const known = options.knownResults
         if (known) {
           const firstKnown = rows.findIndex(r => resultsOf(r).some(t => known.has(t.tool_use_id)))
-          const unknownResult = touched.some(i => resultsOf(rows[i]!).some(t => !known.has(t.tool_use_id)))
+          const unknownResult = foldedRows.some(i => resultsOf(rows[i]!).some(t => !known.has(t.tool_use_id)))
           // [SP_CTX_02_04] a prompt before the first known result may lie
           // outside the API form only when that form is cut by its window
           const earlyPrompt =
             !!options.apiTruncated &&
-            touched.some(i => (firstKnown < 0 || i < firstKnown) && isPlainUserRow(rows[i]!))
+            foldedRows.some(i => (firstKnown < 0 || i < firstKnown) && isPlainUserRow(rows[i]!))
           if (unknownResult || earlyPrompt) {
             report.failed.push(`${name}: outside the API window; media unknown`)
             continue
@@ -2030,22 +2169,28 @@ export function applyEdits(
         }
         // [SP_CTX_DEC_06] Prompt media cannot be matched to rows yet, so a
         // span with a person's prompt row may hold media that cannot be archived.
-        if ((options.unmatchedPromptMedia ?? 0) > 0 && touched.some(i => isPlainUserRow(rows[i]!))) {
-          report.failed.push(`${name}: span may hold prompt media that cannot be archived; collapse a span without prompt rows`)
+        if ((options.unmatchedPromptMedia ?? 0) > 0 && foldedRows.some(i => isPlainUserRow(rows[i]!))) {
+          report.failed.push(`${name}: span may hold prompt media that cannot be archived; describe that media first, or name its prompt rows that have text in "keep"`)
           continue
         }
-        const keys = ownersOf(rows, edit, touched)
+        const keys = ownersOf(rows, edit, foldedRows)
+        owned = foldedRows
         run = () => {
-          const span = rows.slice(from, to + 1)
+          const span = foldedRows.map(i => rows[i]!)
+          const before = fold.kept.filter(i => i < foldedRows[0]!).map(i => rows[i]!)
+          const after = fold.kept.filter(i => i > foldedRows[0]!).map(i => rows[i]!)
           const list = collapsedList(span)
           const note = foldOf(edit, list)
           // [SP_FOLD_02_03] a recall the span holds goes into the archive as its trace
           report.originals.push({ edit: name, rows: withReturnedRecalls(span) })
           const text = `${collapsedWords(span.length, list, viaOf(edit), edit.quoted === true)}${note}${mediaNote(keys)}: ${edit.summary}`
-          // The carrier keeps roles and pairing valid around the span; it is
-          // never one of this plugin's own calls, which are dropped later. Its
-          // name is a tool the session has; its input names what the span
-          // held, never the first call's arguments ([SP_CTX_DEC_29]).
+          // The carrier keeps pairing valid around the span; it is never one
+          // of this plugin's own calls, which are dropped later. Its name is
+          // a tool the session has; its input names what the span held, never
+          // the first call's arguments ([SP_CTX_DEC_29]).
+          // [SP_FOLD_02_04] Without one the record is one text row of the
+          // assistant, whatever row the span starts with: never a row of the
+          // person's role. The rows that stay keep their order around it.
           const carrier = span.flatMap(r => r.toolUses).find(u => !u.tool.startsWith(OWN_TOOLS))
           const id = carrier && newId(carrier.tool_use_id)
           const replacement: SessionMessage[] =
@@ -2054,9 +2199,10 @@ export function applyEdits(
                   { role: 'assistant', text: '', toolUses: [{ ...editedUse(carrier, id), input: { [COLLAPSED_KEY]: list } }] },
                   { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, isError: false, text }] },
                 ]
-              : [{ role: span[0]!.role, text, toolUses: [] }]
-          rows.splice(from, span.length, ...replacement)
+              : [{ role: 'assistant', text, toolUses: [] }]
+          rows.splice(from, to - from + 1, ...before, ...replacement, ...after)
           made.push(id ? { edit: name, resultId: id } : { edit: name, text })
+          if (fold.kept.length) kept.set(edit, fold.kept)
         }
         break
       }
@@ -2112,12 +2258,13 @@ export function applyEdits(
         break
       }
     }
-    const owners = ownersOf(input, edit, touched)
+    // [SP_FOLD_02_04] a collapse owns the media of the rows it folds only
+    const owners = ownersOf(input, edit, owned ?? touched)
     if (owners.some(k => mediaOwners.has(k) && !archived(k))) {
       report.failed.push(`${name}: media could not be archived`)
       continue
     }
-    plan.push({ edit, touched, pair, hi: Math.max(...touched), owners, run })
+    plan.push({ edit, touched, ...(owned ? { folds: owned } : {}), pair, hi: Math.max(...touched), owners, run })
   }
   const stateStep = stateEdits.length ? runState(rows, stateEdits, note, options.state, report, made, out => (stateOut = out)) : undefined
   if (stateStep) plan.push(stateStep)
@@ -2125,23 +2272,42 @@ export function applyEdits(
   // Positions were resolved on the untouched list; applying from the end keeps
   // every earlier position valid (pair edits never splice).
   plan.sort((x, y) => y.hi - x.hi)
+  // [SP_FOLD_02_04] A step on rows a collapse goes around (a rewrite of the
+  // state slot, the state op, a describe of a kept prompt) runs before that
+  // collapse, which then carries the row as the step left it; such a step
+  // never splices, so the positions of the steps between them stay valid.
+  for (const c of plan.filter(x => x.folds && x.folds.length < x.touched.length)) {
+    const around = new Set(c.touched.filter(i => !c.folds!.includes(i)))
+    for (const x of plan.filter(x => x !== c && !x.folds && x.touched.every(i => around.has(i)))) {
+      const at = plan.indexOf(x)
+      const before = plan.indexOf(c)
+      if (at > before) {
+        plan.splice(at, 1)
+        plan.splice(before, 0, x)
+      }
+    }
+  }
   const anyRow = new Set<number>()
   const exclusiveRow = new Set<number>()
+  // the spans of the applied collapses: positions inside them are not valid any more
+  const spliced = new Set<number>()
   const pairs = new Set<string>()
   for (const step of plan) {
-    const conflict = step.pair
-      ? pairs.has(step.pair) || step.touched.some(i => exclusiveRow.has(i))
-      : step.touched.some(i => anyRow.has(i))
+    const changed = step.folds ?? step.touched
+    const conflict =
+      step.touched.some(i => spliced.has(i)) ||
+      (step.pair ? pairs.has(step.pair) || step.touched.some(i => exclusiveRow.has(i)) : changed.some(i => anyRow.has(i)))
     if (conflict) {
       for (const name of step.names ?? [describeEdit(step.edit)]) report.failed.push(`${name}: overlaps another edit`)
       continue
     }
     step.run()
     report.applied.push(...(step.names ?? [describeEdit(step.edit)]))
-    for (const i of step.touched) {
+    for (const i of changed) {
       anyRow.add(i)
       if (!step.pair) exclusiveRow.add(i)
     }
+    if (step.folds) for (const i of step.touched) spliced.add(i)
     if (step.pair) pairs.add(step.pair)
     for (const k of step.owners) report.mediaFiles.push(...(media.get(k) ?? []))
     firsts.push(Math.min(...step.touched))
@@ -2279,7 +2445,7 @@ export function applyEdits(
       const label = at < 0 ? undefined : labels.get(f.slice(0, at))
       return label ? `${label}${f.slice(at)}` : f
     })
-  return { rows: out, report, made, renamed, prefix, hostNamed, folded, ...(stateOut ? { state: stateOut } : {}) }
+  return { rows: out, report, made, renamed, prefix, hostNamed, folded, kept, ...(stateOut ? { state: stateOut } : {}) }
 }
 
 // [SP_CTX_02_67] run state: every state edit of the batch together, one

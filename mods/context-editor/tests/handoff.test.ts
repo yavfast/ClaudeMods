@@ -54,7 +54,7 @@ import {
   type SeedIO,
   carryRegistries,
 } from '../hooks/handoff'
-import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, type HandoffRequest, type Queue } from '../hooks/queue'
+import { DEFAULT_RESUME, EMPTY_QUEUE, MAX_DOCUMENT, parseQueue, PERSON_WORDS_NOW, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, MAX_TAGS, type TagRegistry } from '../hooks/tags'
 import { newTurns, turnCompleted, turnStarted } from '../hooks/turns'
@@ -458,7 +458,8 @@ test('BuildSeed — засів з правками: charsBefore is the visible r
   expect(text).toContain(`Conversation ~${totalChars(rows)} -> ~${seed.report.charsAfter} chars`)
 })
 
-test('BuildSeed — ScreenPinned: the state slot inside a collapse is refused as at an application; the rewrite of its row passes', async () => {
+// [SP_FOLD_02_04] the bypass in the seed, as at an application
+test('BuildSeed — ScreenPinned: a collapse goes around the state slot inside it as at an application; the rewrite of the slot\'s row runs first and the row stands before the record', async () => {
   const rows = conversation()
   const state: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'state', target: { anchor: fingerprint(rows[1]!), hint: 1 }, created_turn: 0 }] }
   const out = built(
@@ -469,8 +470,19 @@ test('BuildSeed — ScreenPinned: the state slot inside a collapse is refused as
       ])
     ).out,
   )
-  expect(out.report.failed.join()).toContain('collapse #1..#3: target holds the state slot')
-  expect(out.report.applied).toEqual(['rewrite #1'])
+  expect(out.report.failed).toEqual([])
+  expect([...out.report.applied].sort()).toEqual(['collapse #1..#3', 'rewrite #1'])
+  // the slot's row, rewritten, stays at its place; the record (a carrier pair:
+  // the folded rows hold the Read call) follows it
+  expect(out.rows[0]!.text).toContain('task: find KEY_0042')
+  expect(out.rows[1]!.role).toBe('assistant')
+  expect(out.rows[1]!.text).toContain('state: handed off')
+  expect(out.rows[1]!.toolUses).toEqual([])
+  expect(out.rows[2]!.toolUses.map(u => u.tool)).toEqual(['Read'])
+  expect(out.rows[3]!.toolResults![0]!.tool_use_id).toBe(out.rows[2]!.toolUses[0]!.tool_use_id)
+  expect(out.rows[3]!.toolResults![0]!.text).toContain('replaced these 2 rows you had read (Read big.txt)')
+  // the archive holds the folded pair and the row the rewrite replaced, not the slot as folded
+  expect(out.report.originals.find(o => o.edit === 'collapse #1..#3')!.rows).toEqual(rows.slice(2, 4))
   // [SP_CTX_02_05] the context_handoff pair went with DropOwnCalls
   expect(out.report.ownCallsRemoved).toBe(1)
 })
@@ -2278,13 +2290,42 @@ test('Передача — обхід: context_handoff and /handoff refuse and w
   expect(q.report).toContain(HANDOFF_PASSED_OVER)
 })
 
-// [SP_CTX_02_58] ScreenPerson in BuildSeed, as at an application
-test('BuildSeed — ScreenPerson: a collapse over the person\'s prompt is refused; the prompt goes into the seed verbatim; the rest applies', async () => {
-  const rows = conversation()
-  const seed = built((await seedOf({}, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }, { op: 'drop', tool_use_id: 'c' }])).out)
-  expect(seed.report.failed).toEqual(["collapse #0..#1: covers the person's words now; they stay verbatim"])
-  expect(seed.report.applied).toEqual(['drop c'])
-  expect(seed.rows[0]!.text).toBe(rows[0]!.text)
+// [SP_CTX_02_58] [SP_FOLD_02_04] ScreenPerson in BuildSeed, as at an application
+test('BuildSeed — ScreenPerson: a collapse over the person\'s prompt applies, the record is the assistant\'s row and the prompt is in the archive; a drop whose result carries the person\'s message sent during the call fails PERSON_WORDS_NOW and the message goes into the seed', async () => {
+  const base = conversation()
+  // a second prompt and its answer before the handoff call
+  const rows: SessionMessage[] = [
+    ...base.slice(0, 8),
+    { role: 'user', text: 'now check KEY_0043 too', toolUses: [], handle: 'h7a' },
+    { role: 'assistant', text: 'KEY_0043 is absent', toolUses: [], handle: 'h7b' },
+    ...base.slice(8),
+  ]
+  const sent = '<system-reminder>\nThe user sent a new message while you were working:\nPELICAN\n</system-reminder>'
+  const delivery: QueuedDelivery = { uuid: 'd1', anchor: ['c'], kind: 'person', origin: 'composer', text: sent, cut: 0, media: 0, at: 1 }
+  const seed = built(
+    (
+      await seedOf({ rows, transcript: rows, deliveries: okRead({ items: [delivery] }) }, [
+        { op: 'collapse', from_index: 8, to_index: 9, summary: 'KEY_0043: absent' },
+        { op: 'drop', tool_use_id: 'c' },
+      ])
+    ).out,
+  )
+  expect(seed.report.failed).toEqual([`drop c: ${PERSON_WORDS_NOW}`])
+  expect(seed.report.applied).toEqual(['collapse #8..#9'])
+  expect(seed.rows[0]!.text).toContain(rows[0]!.text)
+  // the pair stays, the message stands as a row right after its result
+  const c = seed.rows.findIndex(r => (r.toolResults ?? []).some(t => t.tool_use_id === 'c'))
+  expect(seed.rows[c]!.toolResults![0]!.text).toBe('matches')
+  expect(seed.rows[c + 1]!.text).toBe(sent)
+  // [SP_FOLD_02_04] the record: one text row of the assistant in the prompt's place
+  const record = seed.rows[c + 2]!
+  expect(record.role).toBe('assistant')
+  expect(record.toolUses).toEqual([])
+  expect(record.text).toContain("replaced these 2 rows you had read (1 of the person's messages; 1 of your texts)")
+  expect(record.text).toContain('KEY_0043: absent')
+  expect(seed.rows.some(r => r.text === 'now check KEY_0043 too')).toBe(false)
+  expect(seed.report.originals.find(o => o.edit === 'collapse #8..#9')!.rows.map(r => r.text)).toEqual(['now check KEY_0043 too', 'KEY_0043 is absent'])
+  expect(checkSeed(seed.rows)).toBeUndefined()
 })
 
 // ---- [SP_CTX_02_74] CarryTitle

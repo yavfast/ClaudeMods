@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-15
+> **Updated:** 2026-11-14
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_35, 02_36 специфікації [SP_CTX](./context_editor.sp.md): RecordDelivery і InsertDeliveries. Читати, коли змінюєте облік повідомлень, що хост доставляє посеред ходу.
@@ -80,7 +80,7 @@ Processing logic (pseudocode):
             IF a user row with item.text stands right after that row, past result-less user rows only: done += item; CONTINUE   # уже рядок (вставлено раніше, запис не видалився); той самий текст деінде — інша доставка (рев'ю 48)
             ids = item.anchor ∪ { renamed[id] : id ∈ item.anchor }
             k = the index in rows of the row that holds a result whose id is in ids
-            IF k absent: removed += 1; done += item; CONTINUE                  # якір прибрано (drop) або згорнуто (collapse): доставка йде з ним; людину попереджено при постановці (SP_CTX_02_02)
+            IF k absent: removed += 1; done += item; CONTINUE                  # якір прибрано (drop) або згорнуто (collapse): доставка йде з ним; для доставки людини така правка сюди не доходить — її відхилено при постановці й застосуванні (SP_CTX_02_58)
             IF rows[k] has handle AND NOT allRebuilt AND NOT goes(rows[k]): CONTINUE   # вкладення переносить хост; вставка дала б дубль (пункт 44); запис лишається. goes — рядок лише службових результатів, який DropOwnCalls прибере (рев'ю 48)
             insert Row { role: user, text: item.text, toolUses: [] } right after rows[k] and after the rows already inserted after it
             inserted += 1; added += size(item.text); done += item
@@ -104,4 +104,5 @@ Errors: відмов немає.
 
 | Date | Change |
 |------|--------|
+| 2026-11-14 | PL_FOLD, фаза 3: 02_36 — правку, що забрала б доставку людини разом з якорем, відхилено раніше ([SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)), а не «попереджено» |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.stages.sp.md](./context_editor.stages.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |

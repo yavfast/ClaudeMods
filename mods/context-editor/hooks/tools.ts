@@ -3,7 +3,7 @@
 // descriptions and JSON schemas. The limits they name come from the
 // constants that enforce them. Pure data; register.ts registers it (audit
 // PL_AUD_CTX, CF-20).
-import { LIST_COUNT, MAX_FULL_ROW, MAX_LIST_COUNT, MAX_QUEUE_EDITS, MAX_TEXT, ROW_WINDOW } from './edits'
+import { LIST_COUNT, MAX_FULL_ROW, MAX_KEEP, MAX_LIST_COUNT, MAX_QUEUE_EDITS, MAX_TEXT, ROW_WINDOW } from './edits'
 import { MAX_NOTE, MAX_NOTES, MAX_REMIND } from './notes'
 import { DEFAULT_RESUME, MAX_DOCUMENT } from './queue'
 import { MARK, RECALL_TOOL } from './rows'
@@ -49,29 +49,38 @@ const LIST_SCHEMA = {
 }
 
 // [SP_CTX_02_02] At most MAX_DESCRIPTION chars, by the priorities of the spec.
-export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have processed (screenshots and documents too), dead-end steps and wrong conclusions with summaries.
+export const EDIT_DESCRIPTION = `Edit your own earlier context to free space: replace tool outputs you have processed (screenshots, documents too), dead-end steps and wrong conclusions with summaries.
 
 Edits apply when your turn ends: after this call, end your turn with a one-line status. The session then resumes by itself with "resume_prompt" unless "resume" is false; in a /compact turn only on "resume": true or "resume_prompt".
 
 Ops (items of "edits"; every field shown is required):
-- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls sharing a result row: summarize those with media in one batch.
+- {"op":"summarize","tool_use_id" or "ref","summary"}: replace one tool result, with any image or document in it, by your summary of what mattered (describe the media too). Parallel calls in one result row: summarize those with media together.
 - {"op":"drop","tool_use_id", "ref" or "host"}: remove a useless call and its result, or a host row.
-- {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (from ${LIST}) with one summary; the range must hold every tool call together with its result.
-- {"op":"rewrite","index","text"}: replace the text of one of your assistant text rows (no tool calls in it).
-- {"op":"describe","index","description"}: replace the image, document or pasted text in a prompt row of the person (@ in ${LIST}) by your description; the text the person typed stays.
+- {"op":"collapse","from_index","to_index","summary"}: replace rows from_index..to_index (of ${LIST}) with one summary; never part a tool call from its result.
+- {"op":"rewrite","index","text"}: replace the text of your assistant text row (no tool calls in it).
+- {"op":"describe","index","description"}: replace the image, document or pasted text in a prompt row of the person (@ in ${LIST}) by your description; the typed text stays.
 - {"op":"state","changes"}: change the items of your state slot; the apply rebuilds the slot's text from them.
 
-A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite, or by the state op once it has items.
+A [pin] target cannot be edited; remove the pin with ${TAG} first. A row tagged [state] changes only by a rewrite, or by the state op once it has items. A collapse goes round both.
 
 Originals are archived: ${RECALL} unfolds a (fold fN; …) record, Read an older one. Summaries keep every fact, number, URL and source you still need.
 
-Compress a finished stage's block into a stage record. The person's messages (AskUserQuestion answers too) stay verbatim: edits that cover them are refused. Usually keep the rules and skills in force verbatim. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
+Compress a finished stage's block into a stage record. A collapse archives the person's messages in its range: put what is in force into your summary or list those rows in "keep". Usually keep the rules and skills in force verbatim. Batch edits in one call (see "keep_cache"). Record template and guide: skill ${PLUGIN}:${SKILL}.`
 
 // [SP_CTX_01_02] [SP_CTX_02_17] A call alias; exactly one of it and tool_use_id.
 // [SP_CTX_02_69] the paragraph about refs lives here, not in EDIT_DESCRIPTION
 const REF = {
   type: 'string',
   description: `Instead of tool_use_id: a call alias "cN" from the "${MARK} id cN" line after a call's result, or "last" for your latest call (context_* calls do not count); no ${LIST} needed.`,
+}
+
+// [SP_FOLD_02_04] The person's rows a collapse leaves in place; the details
+// live here, not in EDIT_DESCRIPTION ([SP_CTX_02_69]).
+const KEEP = {
+  type: 'array',
+  maxItems: MAX_KEEP,
+  items: { type: 'integer' },
+  description: `Optional: indexes (from ${LIST}) of the person's message rows inside the range that stay verbatim beside the record; the rest of the range, the person's other messages too, goes into the archive. The first row of the conversation cannot be replaced: list it here or start after it.`,
 }
 
 // [SP_CTX_01_30] [SP_CTX_02_61] A host row by its id; the details live here,
@@ -112,7 +121,11 @@ const EDIT_SCHEMA = {
           { type: 'object', properties: { op: { const: 'drop' }, tool_use_id: { type: 'string' } }, required: ['op', 'tool_use_id'] },
           { type: 'object', properties: { op: { const: 'drop' }, ref: REF }, required: ['op', 'ref'] },
           { type: 'object', properties: { op: { const: 'drop' }, host: HOST }, required: ['op', 'host'] },
-          { type: 'object', properties: { op: { const: 'collapse' }, from_index: { type: 'integer' }, to_index: { type: 'integer' }, summary: { type: 'string' } }, required: ['op', 'from_index', 'to_index', 'summary'] },
+          {
+            type: 'object',
+            properties: { op: { const: 'collapse' }, from_index: { type: 'integer' }, to_index: { type: 'integer' }, summary: { type: 'string' }, keep: KEEP },
+            required: ['op', 'from_index', 'to_index', 'summary'],
+          },
           { type: 'object', properties: { op: { const: 'rewrite' }, index: { type: 'integer' }, text: { type: 'string' } }, required: ['op', 'index', 'text'] },
           { type: 'object', properties: { op: { const: 'describe' }, index: { type: 'integer' }, description: { type: 'string' } }, required: ['op', 'index', 'description'] },
           { type: 'object', properties: { op: { const: 'state' }, changes: CHANGES }, required: ['op', 'changes'] },

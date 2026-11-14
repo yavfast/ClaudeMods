@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-10-17
+> **Updated:** 2026-11-14
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_21](#SP_CTX_02_21)
 >
@@ -342,7 +342,8 @@ Processing logic (pseudocode):
             head = Row { role: user, text: summary, toolUses: [] }
             FOR edit IN edits whose target lies in rows but not in visible:      # summarize, drop: call or result outside visible;
                 early += "<edit>: the model no longer sees this row"; remove edit  # collapse, rewrite, describe: Locate finds the anchor in rows, not in visible
-        (edits, refused) = ScreenPinned(visible, edits, tags)                               # SP_CTX_02_03: pin і state, як у SP_CTX_02_07
+        (edits, refused, pinned) = ScreenPinned(visible, edits, tags)                       # SP_CTX_02_03: pin і state, як у SP_CTX_02_07; collapse не відхиляється (PL_FOLD, фаза 3)
+        (edits, refused) = ScreenPerson(visible, edits, deliveries, pinned)                 # SP_CTX_02_58
         (found, unmatched) = CollectMedia(api, visible)                                    # власник {row} — індекс у visible, що закінчується там само, де api
         n = 0; items = {}                                                                  # items[owner][k] — шлях k-го медіа власника або відсутній
         FOR owner IN found WHERE owner is {tool_use_id} OR an edit of edits replaces it, FOR k, ref IN found[owner]:   # кожне медіа окремо; медіа промпту — лише для правки, що його замінює
@@ -351,7 +352,7 @@ Processing logic (pseudocode):
             IF NOT writeMedia(path, ref.data): REFUSE "media of <owner> could not be archived"
             items[owner][k] = path
         media = for each owner, the present paths of items[owner] in order                 # вхід ApplyEdits: шляхи для mediaNote
-        (seed, report, renamed) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatched, apiTruncated)   # SP_CTX_02_04
+        (seed, report, renamed) = ApplyEdits(visible, edits, archive, media, mediaOwners = ∅, knownResults, unmatched, apiTruncated, pinned)   # SP_CTX_02_04; pinned — згортання засіву обходить пін і слот стану, як при застосуванні (SP_FOLD_02_04)
         report.failed = early + refused + report.failed
         (seed, report.deliveries, _, added) = InsertDeliveries(visible, seed, deliveries, renamed, allRebuilt = true)   # SP_CTX_02_36: у засіві жоден рядок не має handle, тож вставляється кожна доставка, чий якір лишився; {as: 'api'} доставок не має (пункт 43), без вставки передана розмова їх губить; фаза 20
         (seed, report.ownCallsRemoved) = DropOwnCalls(seed, ∅, knownResults)                # зокрема виклик context_handoff; лічильник — для речення P13 (SP_CTX_01_05)
@@ -470,6 +471,7 @@ Errors:
 
 | Date | Change |
 |------|--------|
+| 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 02_22 BuildSeed — ScreenPinned повертає піни, ScreenPerson і ApplyEdits їх отримують; згортання засіву обходить пін і слот стану |
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_19–02_26 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.handoff.sp.md](./context_editor.handoff.sp.md), якорі без змін |
 | 2026-10-11 | PL_AUD_CTX фази 3–4 (CF-5, CF-6): блок-нагадування в першому повідомленні API-подання — за префіксом `<system-reminder` (REMINDER_PREFIX), зокрема з атрибутами (02_22); HandedOff скидає вибори пакета старої черги через KeepOtherSteps, звіт — AppendReport (02_21) |
 | 2026-10-11 | PL_AUD_CTX фаза 5 (CF-8): документ передачі відкриває DOCUMENT_FRAME (DocumentText), текст продовження агента — за рамкою HANDOFF_RESUME_FRAME, DEFAULT_RESUME — з префіксом мода (Deliver, DocumentWay, AfterClear у 02_21; SP_CTX_DEC_17) |

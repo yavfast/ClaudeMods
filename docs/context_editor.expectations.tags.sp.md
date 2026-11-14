@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-17
+> **Updated:** 2026-11-14
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > Частина §05_01 Functional Expectations специфікації [SP_CTX](./context_editor.sp.md): модульні очікування (теги, псевдоніми, поточна розмова). Читати, коли пишете або звіряєте модульні тести цих контрактів.
@@ -60,7 +60,7 @@
 | context_tag | слот стану | `add state` на #5 (текст агента), потім `add state` на #9 | один тег `state` на #9; результат `The state slot moved from #5 to #9.` |
 | context_tag | слот стану не там | `add state` на рядок з викликом / на результат за `tool_use_id` / рядок лише з thinking | BAD_TARGET |
 | context_tag | disposable на слоті стану | `state` на #1; `add disposable` за `index: 1` без `to` / за `index: 4` (інший текстовий рядок агента) | BAD_TARGET, тег `state` лишається / тег поставлено |
-| context_tag | діапазон | `add disposable` з `index: 4`, `to: 7`, note — пари цілі / `to: 5` розриває пару / у діапазоні `pin` / `to` з `pin` | тег-діапазон / BAD_RANGE / BAD_RANGE / BAD_RANGE |
+| context_tag | діапазон | `add disposable` з `index: 4`, `to: 7`, note — пари цілі / `to: 5` розриває пару / у діапазоні `pin` чи слот стану / у діапазоні лише рядки, які заміна обходить / діапазон від рядка 0 розмови | тег-діапазон / BAD_RANGE / тег-діапазон: заміна обійде пін і слот ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)) / BAD_RANGE (NOTHING_TO_FOLD) / BAD_RANGE (HEAD_ROW) [тест: «context_tag — діапазон»] |
 | context_tag | зняття діапазону | `remove` з `index: 4` | тег-діапазон, що починається на #4, знято |
 | context_tag | агентський review | `add review` на пару | `reason = agent` |
 | context_tag | застарілі індекси етапу | `open` з `index` після компактизації без нового переліку | INDEXES_STALE [тест: «context_tag — stage errors: STAGE_FIELDS, STAGE_NAME_REQUIRED, TARGET_NOT_FOUND, INDEXES_STALE»] |
@@ -84,7 +84,7 @@
 | MarkCall | читання після власної зміни | `apply` з `compressed` [`/p/f`]; Edit `/p/f`; Read `/p/f` | запис `changed { path: /p/f }`; `reread` немає |
 | MarkCall | R4 лише раніші читання | одна відповідь: Edit `f`, далі паралельний Read `f`; раніше — Read `f` у минулому ході | `stale` лише на раніше читання; Read після запису без тегу |
 | MarkCall | читання архіву | Read `<archives>/<at>.json` / `<archives>/<at>/1.png` запису `apply` (і так само в `<storage>` для старих архівів) | `reread` з `archive: true` |
-| context_tag | відмова над словами людини ([SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)) | `add disposable` з `index` 10, `to` 14, у діапазоні промпт людини #11 і результат AskUserQuestion #13 / `add disposable` за `tool_use_id` пари AskUserQuestion / діапазон без рядків людини | тег не поставлено; результат `Rejected: tag 1: disposable #10..#14: covers the person's words: #11 (prompt), #13 (AskUserQuestion answer); they stay verbatim in this session: narrow the range or split it around them` / тег не поставлено: `disposable <id>: the AskUserQuestion answer is the person's words; it stays verbatim` / тег поставлено [тест: «PersonWords — тег над промптом»] |
+| context_tag | слова людини в цілі тегу ([SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)) | `add disposable` з `index` 10, `to` 14, у діапазоні промпт людини #11 і результат AskUserQuestion #13 / `add disposable` за `tool_use_id` пари AskUserQuestion / діапазон без рядків людини / діапазон з результатом, за яким висить повідомлення людини, доставлене посеред ходу | тег поставлено / тег поставлено / тег поставлено / тег не поставлено (PERSON_TAG): `Rejected: tag 1: disposable #<a>..#<b>: covers the person's #<k> (message sent during this tool call); such a message has no row of its own, so it can be neither kept nor archived: narrow the range or split it around that result`, крім випадку, коли та пара під піном [тест: «PersonWords — тег над промптом»] |
 | context_tag | блок, що чекав ([SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)) | `waiting = advised`, `lastClosed` — етап «A» #3..#10, `disposable` на парі в ньому; виклик `open` «B» / `close` (етап «B» відкрито) / `open` «B» і `close` | результат — спершу звіт «A» з індексами `#3..#10`, `You marked stage "A" …` і WAIT_MOVED, потім `Stage "B" opened…` / звіт закриття «B»; `waiting` знято; QueueTagReplacements один раз; `listedKey` оновлено |
 | context_tag | очікування не зняте | `waiting = marked`; лише `add`/`remove` / `close` без етапу (NO_STAGE) / запис реєстру падає | `waiting` без змін; звіту блоку немає |
 | RebindTags | межа після перегляду | `stage.after` — рядок результату `context_list` (#7), #6 — рядок асистента лише з викликом `context_list`, #5 — текст агента; застосовано summarize іншої пари | DropOwnCalls прибрав #6 і #7; `stage.after` — відбиток #5 з новим індексом |
@@ -142,6 +142,7 @@
 
 | Date | Change |
 |------|--------|
+| 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): рядки «context_tag — діапазон» і «слова людини в цілі тегу» — діапазон із піном чи слотом стану ставиться, BAD_RANGE для NOTHING_TO_FOLD і HEAD_ROW, PERSON_TAG лише для доставленого посеред ходу |
 | 2026-10-16 | Фаза 41: рядок «заміна з тегу називає автора» — відкривач з джерелом, без `via` — SUMMARIZED_OF |
 | 2026-10-15 | Рядки §05_01 перенесено дослівно з [context_editor.expectations.sp.md](./context_editor.expectations.sp.md): поділ таблиці за модулями (structural-event) |
 | 2026-10-17 | Аудит коду (TST-5): рядки «context_tag — відмова над словами людини» і «AutoTag — без R1» — `[тест: «…»]` на наявні тести за правилом [SP_CTX_05_01](./context_editor.expectations.sp.md#SP_CTX_05_01) |

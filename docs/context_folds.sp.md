@@ -325,13 +325,26 @@ Processing logic (pseudocode):
         kept = rows in from..to that are pinned, or carry a pinned call or result (with their pair rows), or are the state slot, or are in keep
         folded = rows in from..to not in kept
         IF folded is empty: reject NOTHING_TO_FOLD
+        IF a tool call and its result fall on different sides, or both are kept and the record would stand between them: reject KEEP_SPLITS_PAIR
         IF the first folded row is row 0 of the conversation: reject HEAD_ROW
-        IF a tool call and its result fall on different sides: reject KEEP_SPLITS_PAIR
         archive element = folded rows, in order
         record = carrier pair IF folded holds a foreign tool call ELSE one assistant text row
         result = kept rows before the first folded row + [record] + the other kept rows, in original order
 
-Порядок перевірок у підготовці правки: форма → свіжість індексів (`STALE_INDEXES`) → `keep` (BAD_KEEP) → ціль → обхід (KEEP_SPLITS_PAIR, NOTHING_TO_FOLD, HEAD_ROW) → PersonDelivered.
+Порядок перевірок у підготовці правки: форма (зокрема форма `keep`) → свіжість індексів (`STALE_INDEXES`) → `keep` (BAD_KEEP) → ціль → обхід (NOTHING_TO_FOLD, KEEP_SPLITS_PAIR, HEAD_ROW — у цьому порядку) → PersonDelivered.
+
+Примітки реалізації (фаза 3):
+- **(a) Пара по обидва боки запису.** KEEP_SPLITS_PAIR дається й тоді, коли обидва рядки пари обійдено, але рядок виклику стоїть перед першим згорнутим рядком, а рядок результату — після нього: запис став би між викликом і його результатом.
+- **(b) Порядок усередині обходу.** NOTHING_TO_FOLD, потім KEEP_SPLITS_PAIR, потім HEAD_ROW (`foldSpan` у `hooks/edits.ts`).
+- **(c) Крок на обійденому рядку в тому самому пакеті.** Правка, чия ціль — рядок, який згортання обходить (`rewrite` рядка слота стану, операція `state`, `describe` залишеного промпту), застосовується перед цим згортанням, і воно несе рядок таким, яким його лишив той крок. До цієї фази така пара правок давала невдачу `overlaps another edit`. Два згортання спільного проміжку не мають і далі ([SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)).
+- **(d) Тимчасове поле `kept`.** Застосоване згортання після ApplyEdits несе поле `kept` — індекси рядків, які воно лишило, на вхідних рядках застосування; у чергу поле не пишеться. За ним RebindTags, нотатки, псевдоніми, журнал ефекту й межі етапів читають ці рядки як незачеплені: `touchedBy` їх не називає ([SP_CTX_01_03](./context_editor.structures.sp.md#SP_CTX_01_03), [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07), [SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)).
+- **(e) Перевірки медіа — лише над згорнутими рядками.** Перевірки вікна API, медіа промптів, які не можна архівувати, і заархівованих медіа, як і самі медіа, що йдуть в архів, стосуються лише згорнутих рядків. Текст невдачі для медіа промпту: `span may hold prompt media that cannot be archived; describe that media first, or name its prompt rows that have text in "keep"` (промпт із самих медіа не є рядком людини, і `keep` його не бере).
+- **(f) Обхід закріпленої пари замкнено по парах.** Рядок із закріпленим викликом чи результатом лишається цілим разом з усіма рядками, що несуть другу половину будь-якої пари цього рядка, і так далі до нерухомої точки: рядок викликів, зібраний із паралельних викликів, має результати в кількох рядках, і всі вони лишаються. Рядок, закріплений за індексом, рядок слота стану й рядки `keep` по парах не замикаються: для них розрив пари дає KEEP_SPLITS_PAIR.
+- **(g) Передача сесії.** BuildSeed повертає пакет, у якому застосоване згортання теж несе `kept` (індекси на видимих рядках), тож CarryRegistries переносить теги, нотатки й псевдоніми обійдених рядків у нову сесію ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)).
+- **(h) Тег діапазону.** Відмови обходу для тегу `disposable` на діапазон ідуть без поради про `keep`, якого тег не має (`rangeRefusal` у `hooks/tags.ts`); оцінка звільненого для замін із тегів рахує лише згорнуті рядки.
+- **(i) Живий зонд початку розмови (2026-11-14, хост 2.1.325, stream-json).** З вимкненою відмовою HEAD_ROW згортання від рядка 0 дало розмову, що починається парою-носієм; хост прийняв її, два наступні ходи пройшли без помилок API. Варіант із текстовим записом асистента на початку не перевірено. Відмова HEAD_ROW лишається до окремого рішення.
+
+Піни й слот стану для обходу на застосуванні дає ScreenPinned: він більше не відхиляє `collapse` і повертає закріплені цілі, які HandleCompaction і BuildSeed передають в ApplyEdits (`pinned`), де FoldSpan рахується наново на рядках застосування ([SP_CTX_02_03](./context_editor.edits.sp.md#SP_CTX_02_03), [SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04)). Тексти відмов слів людини й PERSON_WORDS_NOW — у [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58).
 
 ### 02_05. Області: відкриття й закриття  {#SP_FOLD_02_05}
 
@@ -763,6 +776,7 @@ Rule: пара інструмента RECALL_TOOL лишається в розм
 | Date | Change |
 |------|--------|
 | 2026-11-14 | Initial version |
+| 2026-11-14 | PL_FOLD, фаза 3: 02_04 — примітки реалізації (a)–(e): KEEP_SPLITS_PAIR і для обійденої пари по обидва боки запису; порядок обходу NOTHING_TO_FOLD → KEEP_SPLITS_PAIR → HEAD_ROW; крок на обійденому рядку йде перед згортанням; тимчасове поле `kept`; перевірки медіа лише над згорнутими рядками й новий текст невдачі медіа промпту; ScreenPinned передає піни в ApplyEdits |
 | 2026-11-14 | PL_FOLD, фаза 2, рев'ю коду: кожна невдача правки повернення має мітку `return of fold <id>`, правка мода над парою під піном пропускається без невдачі; Recall береже лише записи викликів поточного ходу (не за номером ходу); FOLD_UNKNOWN для рядка без форми ідентифікатора; межа черги не рахує правок повернення мода; заголовок рахує лише пари, що є в розмові; облік переносить лише спосіб «транскрипт» |
 | 2026-11-14 | PL_FOLD, фаза 2: Recall не чистить запис поточного ходу й читає архів через процес; одне правило прибирання записів у точці фіксації; текст рядка заголовка про згадування; передача прибирає й сліди повернення |
 | 2026-11-14 | PL_FOLD, фаза 1, рев'ю коду: номер згортки — до дев'яти цифр; `parent` більший за номер запису й менший за `nextFold`; власний хвіст запису згортки стоїть одразу після слів відкривача; FOLDS_UNSAVED і для номерів, призначених без обліку, які облік уже видав |

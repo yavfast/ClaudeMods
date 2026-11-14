@@ -31,7 +31,7 @@ Write a stage record in place of the processed rows, e.g. as the summary of a `c
 - changed artifacts (files, commits, settings);
 - open questions.
 
-Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: shrink them to a pointer (what, where, what was found; read again if needed). Everything else needs a careful summary or stays: live probes, subagent reports, web content. The person's messages, including answers to your questions (`AskUserQuestion`), stay verbatim in this session: `context_edit` and `context_tag` refuse an edit that covers them; split the range around them.
+Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: shrink them to a pointer (what, where, what was found; read again if needed). Everything else needs a careful summary or stays: live probes, subagent reports, web content. A `collapse` may cover the person's messages and answers (`AskUserQuestion`): they go to the archive, so quote in the record what is still in force, or list rows to stay verbatim in `"keep"`. It goes around `[pin]` and `[state]` rows.
 
 Usually keep verbatim the rules and skills still in force and the conclusions you need next. A `[pin]` target cannot be edited; pins are yours to set and remove (the mod pins only a handoff's document or seed summary).
 
@@ -39,7 +39,7 @@ Edits apply when your turn ends: end it with a one-line status, and the session 
 
 ## Dead ends
 
-When you abandon a branch, mark it at once: tag the span `disposable` with a note, `{"op":"add","kind":"disposable","index":<first row>,"to":<last row>,"note":"dead end: X fails because Y"}` (the range holds every tool call with its result; `context_tag` warns when it covers the person's messages). A single text row of yours or an output by `ref`/`tool_use_id` works too. The replacements are queued when you close the stage or move on from a block you marked; a range becomes one `collapse`.
+When you abandon a branch, mark it at once: tag the span `disposable` with a note, `{"op":"add","kind":"disposable","index":<first row>,"to":<last row>,"note":"dead end: X fails because Y"}` (the range holds every tool call with its result). A single text row of yours or an output by `ref`/`tool_use_id` works too. The replacements are queued when you close the stage or move on from a block you marked; a range becomes one `collapse`.
 
 ## Optimization mark
 

@@ -19,6 +19,8 @@ import {
   STATE_SLOT,
   stampState,
   touchesPin,
+  NO_PINS,
+  type Pinned,
   touchesState,
   type ApplyReport,
   type Boundary,
@@ -215,7 +217,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // deliveries file; refused edits go first in report.failed
   const delivered = await readDeliveries(io)
   const pins = screenPinned(messages, q.edits, tagsRead)
-  const person = screenPerson(messages, pins.edits, delivered.items)
+  const person = screenPerson(messages, pins.edits, delivered.items, pins.pinned)
   const edits = person.edits
   const refused = [...pins.refused, ...person.refused]
   // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
@@ -227,7 +229,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   const apiSize = api.length > 0 && !apiTruncated ? apiChars(api) : undefined
   const mediaOwners = new Set(found.keys())
   const id = io.now()
-  const media = await archiveMedia(found, replacedOwners(messages, edits), `${io.archives}/${id}`, io.writeMedia)
+  const media = await archiveMedia(found, replacedOwners(messages, edits, pins.pinned), `${io.archives}/${id}`, io.writeMedia)
 
   // [SP_CTX_02_04] [SP_CTX_DEC_22] FrozenPrefix, only when the batch asked for
   // it ("keep_cache"): the rows before the response of the first change come
@@ -250,6 +252,8 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     ...(io.cwd ? { cwd: io.cwd } : {}),
     ...(q.keepCache ? { freeze: { api } } : {}),
     ...(state ? { state } : {}),
+    // [SP_FOLD_02_04] FoldSpan is checked again on the rows of the apply
+    pinned: pins.pinned,
   }
   const archive = `${io.archives}/${id}.json`
   // [SP_FOLD_02_01] AssignFoldIds before the replacement rows are built: the
@@ -322,7 +326,9 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // With nothing applied the conversation stays as it was. The stage marks
   // move with the rows, never vanish.
   const names = new Set(applied.report.applied)
-  const done = edits.filter(e => names.has(describeEdit(e)))
+  // [SP_FOLD_02_04] an applied collapse names the rows it left in place, so
+  // the tags, notes, aliases and the journal read them as untouched
+  const done = edits.filter(e => names.has(describeEdit(e))).map(e => (applied.kept.has(e) ? { ...e, kept: applied.kept.get(e)! } : e))
   const after = done.length ? rows : messages
   const produced = applied.report.produced
   // [SP_CTX_02_40] the files the attachments' sections name, read before the
@@ -594,8 +600,8 @@ export function screenPinned(
   messages: readonly SessionMessage[],
   queued: readonly QueuedEdit[],
   tags: Read<TagRegistry>,
-): { edits: QueuedEdit[]; refused: string[] } {
-  if (tags.state === 'unreadable') return { edits: [], refused: queued.map(e => `${editLabel(messages, e)}: tag registry unreadable`) }
+): { edits: QueuedEdit[]; refused: string[]; pinned: Pinned } {
+  if (tags.state === 'unreadable') return { edits: [], refused: queued.map(e => `${editLabel(messages, e)}: tag registry unreadable`), pinned: NO_PINS }
   const pinned = pinnedTargets(messages, tags.value)
   const edits: QueuedEdit[] = []
   const refused: string[] = []
@@ -610,7 +616,9 @@ export function screenPinned(
     else if (touchesState(messages, e, pinned)) refused.push(`${describeEdit(e)}: ${STATE_SLOT}`)
     else edits.push(e)
   }
-  return { edits, refused }
+  // [SP_FOLD_02_04] a collapse is not refused here: ApplyEdits takes `pinned`
+  // and goes around the pinned rows and the slot of its span (FoldSpan)
+  return { edits, refused, pinned }
 }
 
 // [SP_CTX_01_06] Writes the media of the owners the edits replace into

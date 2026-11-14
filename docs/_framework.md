@@ -27,7 +27,7 @@
 | L0 | `rows` (ядро рядків: предикати, пошук пари, розміри, префікси тексту мода, відкривачі замін, маркери), `turns` | — |
 | L1 | `media`, `store`, `state` (пункти слоту стану, ф44) | rows |
 | L2 | `deliveries`, `hostrows` (рядки хоста, ф45), `cleanup` (старі сесії, ф36) | deliveries: media, rows, store; hostrows: rows, store; cleanup: store |
-| L3 | `edits` | deliveries, hostrows, media, rows, state |
+| L3 | `edits` (також FoldSpan, PL_FOLD ф3: обхід пінів, слота стану й `keep` у згортанні діапазону; предикат рядка людини `personRowKind`) | deliveries, hostrows, media, rows, state |
 | L4 | `cache`, `hostattach`, `folds` (облік згорток і розгортання, PL_FOLD ф1–2: FoldEntry, FoldLedger, AssignFoldIds, RecordFolds, Recall, MarkDue, AddReturns, перелік; ClosedSpan рахує `stages`), `queue`, `aliases`, `subagents` (обрізання результатів субагента, ф34) | cache: edits, rows; hostattach: edits, rows, store; folds: edits, rows, store; queue: deliveries, edits, folds (той самий шар, без циклу), hostrows, rows, store, t: stages; aliases: edits, rows, store; subagents: edits |
 | L5 | `journal` | journal: edits, queue, store |
 | L6 | `tags` ⇄ `stages` ⇄ `notes` ⇄ `capabilities` (цикл значень) | edits, rows, store; tags також folds, queue, state, t: deliveries; stages також aliases, cache, folds, hostrows, t: journal, queue; capabilities також deliveries, t: notes, queue |

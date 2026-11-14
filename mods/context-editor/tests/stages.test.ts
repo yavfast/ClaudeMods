@@ -660,7 +660,7 @@ test('SessionIntro — introFor and withIntroduced with reintroduce', async () =
 
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
-  expect(INTRO_TEXT.length).toBe(1000)
+  expect(INTRO_TEXT.length).toBe(997)
   // [SP_FOLD_02_02] how to get an original back
   expect(INTRO_TEXT).toContain('context_recall unfolds a fold record')
   // [SP_CTX_02_69] the curation rules

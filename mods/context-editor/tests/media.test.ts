@@ -1,7 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction, type CompactionIO } from '../hooks/compaction'
-import { applyEdits, collectMedia, DESCRIBE_DROPS, formatReport, listRows, NO_MEDIA_NOW, ownerKey, prepare, replacedOwners } from '../hooks/edits'
+import { applyEdits, BAD_KEEP, collectMedia, DESCRIBE_DROPS, formatReport, listRows, NO_MEDIA_NOW, ownerKey, prepare, replacedOwners } from '../hooks/edits'
 import { matchPrompts } from '../hooks/media'
 import { EMPTY_ALIASES } from '../hooks/aliases'
 import { buildSeed, SUMMARY_OPENER } from '../hooks/handoff'
@@ -456,16 +456,32 @@ test('DescribePasted — поза вікном API: a paste-only describe of a p
   expect(res.rows[0]!.text).toBe(PASTED)
 })
 
-// [SP_CTX_02_58] [SP_CTX_05_08] a described prompt stays the person's words
-test('PersonWords — описаний промпт: a collapse over it names "(described prompt)"; a paste-only prompt keeps only the mark and stays protected', async () => {
+// [SP_CTX_02_58] [SP_CTX_05_08] [SP_FOLD_02_04] a described prompt stays the person's row
+test('PersonWords — описаний промпт: a paste-only prompt keeps only the mark after a describe and stays a row of the person: "keep" takes it, a collapse over it is not refused and counts it among the person\'s messages', async () => {
   const only = '<pasted_content id="f1">a log</pasted_content id="f1">'
-  const rows = [prompt(only, 'h0'), reply('ok', 'h1')]
-  const done = applyEdits(rows, prepare(rows, [{ op: 'describe', index: 0, description: 'a log line' }]).queued, '/a.json', new Map(), new Set())
-  expect(done.rows[0]!.text.endsWith('\n\n[pasted text 1, 5 chars: see your description above]')).toBe(true)
+  const rows = [prompt('hello', 'g0'), reply('Hello.', 'g1'), prompt(only, 'h0'), reply('ok', 'h1')]
+  const done = applyEdits(rows, prepare(rows, [{ op: 'describe', index: 2, description: 'a log line' }]).queued, '/a.json', new Map(), new Set())
+  expect(done.rows[2]!.text.endsWith('\n\n[pasted text 1, 5 chars: see your description above]')).toBe(true)
   const after = done.rows
-  expect(personRow(after, 0)).toBe(true)
-  const [collapse] = prepare(after, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }]).queued
-  expect(personRefusal(after, collapse!)).toContain('#0 (described prompt)')
+  expect(personRow(after, 2)).toBe(true)
+  // the collapse takes the described prompt into its archive: no refusal
+  const whole = prepare(after, [{ op: 'collapse', from_index: 2, to_index: 3, summary: 's' }])
+  expect(whole.errors).toEqual([])
+  expect(personRefusal(after, whole.queued[0]!)).toBeUndefined()
+  const folded = applyEdits(after, whole.queued, '/b.json', new Map(), new Set())
+  expect(folded.report.applied).toEqual(['collapse #2..#3'])
+  expect(folded.rows[2]!.role).toBe('assistant')
+  expect(folded.rows[2]!.text).toContain("replaced these 2 rows you had read (1 of the person's messages; 1 of your texts)")
+  expect(folded.report.originals[0]!.rows).toEqual(after.slice(2, 4))
+  // "keep" names rows of the person only: the described prompt is one, the answer is not
+  const keeping = prepare(after, [
+    { op: 'collapse', from_index: 2, to_index: 3, keep: [2], summary: 's' },
+    { op: 'collapse', from_index: 2, to_index: 3, keep: [3], summary: 's' },
+  ])
+  expect(keeping.errors).toEqual([`collapse #2..#3: ${BAD_KEEP}`])
+  const kept = applyEdits(after, keeping.queued, '/b.json', new Map(), new Set())
+  expect(kept.rows[2]!.text).toBe(after[2]!.text)
+  expect(kept.rows[3]!.text).toContain('replaced these 1 rows you had read (1 of your texts)')
 })
 
 test('PersonWords — промпт лише з медіа і описаний промпт плагіна: no person\'s words before a describe, the person\'s words after it', async () => {

@@ -44,6 +44,7 @@ import {
   sourceOf,
   type QueuedEdit,
   oneLine,
+  HEAD_ROW,
   MAX_COLLAPSED_ARG,
   MAX_COLLAPSED_LIST,
 } from '../hooks/edits'
@@ -70,6 +71,17 @@ function rows(): SessionMessage[] {
     { role: 'assistant', text: 'Conclusion: X is true.', toolUses: [], handle: 'h6' },
     use('c', 'Read', 'h7'),
     result('c', 'small', 'h8'),
+  ]
+}
+
+// [SP_FOLD_02_04] rows() after an opening exchange (#0, #1), every index two
+// higher: a collapse cannot replace row 0 of the conversation (HEAD_ROW), so
+// a span that starts with the person's prompt takes the prompt of #2.
+function led(): SessionMessage[] {
+  return [
+    { role: 'user', text: 'hello', toolUses: [], handle: 'g0' },
+    { role: 'assistant', text: 'Hello.', toolUses: [], handle: 'g1' },
+    ...rows(),
   ]
 }
 
@@ -255,11 +267,28 @@ test('a collapse starting with an own call keeps its summary after the own calls
   expect(out.some(r => r.toolUses.some(u => u.tool.startsWith('mcp__context-editor__')))).toBe(false)
 })
 
-test('a collapse of text rows only becomes one text row', async () => {
-  const { rows: out } = run([{ op: 'collapse', from_index: 0, to_index: 1, summary: 'intro' }])
-  expect(out[0]!.text).toContain("Later, your context_edit collapse call replaced these 2 rows you had read (1 of the person's messages; 1 of your texts) with your own note")
-  expect(out[0]!.toolUses.length).toBe(0)
-  expect(out.length).toBe(8)
+test('a collapse of text rows only becomes one text row of the assistant, also when it starts with the person\'s prompt; one that would replace row 0 is refused HEAD_ROW', async () => {
+  const input = led()
+  const { queued, errors } = prepare(input, [{ op: 'collapse', from_index: 2, to_index: 3, summary: 'intro' }])
+  expect(errors).toEqual([])
+  const { rows: out, report } = applyEdits(input, queued, '/archive.json')
+  expect(report.applied).toEqual(['collapse #2..#3'])
+  expect(out[2]!.text).toContain("Later, your context_edit collapse call replaced these 2 rows you had read (1 of the person's messages; 1 of your texts) with your own note")
+  expect(out[2]!.text).toContain('intro')
+  // [SP_FOLD_02_04] the record is never a row of the person's role
+  expect(out[2]!.role).toBe('assistant')
+  expect(out[2]!.toolUses.length).toBe(0)
+  expect(out[2]!.toolResults ?? []).toEqual([])
+  expect(out.length).toBe(input.length - 1)
+  expect(out[1]!.text).toBe('Hello.')
+  expect(out[3]!.toolUses[0]!.tool).toBe('WebSearch')
+  // the person's prompt is in the archive element
+  expect(report.originals[0]!.rows.map(r => r.text)).toEqual(['research task', 'I will search.'])
+  // [SP_FOLD_02_04] HEAD_ROW: the first folded row is row 0 of the conversation
+  const head = run([{ op: 'collapse', from_index: 0, to_index: 1, summary: 'intro' }])
+  expect(head.errors).toEqual([`collapse #0..#1: ${HEAD_ROW}`])
+  expect(head.queued).toEqual([])
+  expect(head.rows.length).toBe(9)
 })
 
 test('missing or empty required fields are refused', async () => {
@@ -356,12 +385,26 @@ test('a pair edit is refused when its shared row holds media of another pair not
   expect(both.report.applied.length).toBe(2)
 })
 
-test('a collapse over a prompt row is refused while prompt media cannot be matched', async () => {
-  const input = rows()
-  const { queued } = prepare(input, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }])
+test('a collapse that folds a prompt row fails while prompt media cannot be matched; with the prompt in "keep" it applies', async () => {
+  const input = led()
+  const { queued } = prepare(input, [{ op: 'collapse', from_index: 2, to_index: 3, summary: 's' }])
   const res = applyEdits(input, queued, '', new Map(), new Set(), { unmatchedPromptMedia: 1 })
-  expect(res.report.failed[0]).toContain('prompt media')
-  expect(res.rows[0]!.handle).toBe('h0')
+  expect(res.report.failed).toEqual(['collapse #2..#3: span may hold prompt media that cannot be archived; describe that media first, or name its prompt rows that have text in "keep"'])
+  expect(res.report.applied).toEqual([])
+  expect(res.rows[2]!.handle).toBe('h0')
+  // [SP_FOLD_02_04] the check looks only at the folded rows
+  const keeping = prepare(input, [{ op: 'collapse', from_index: 2, to_index: 3, keep: [2], summary: 's' }])
+  expect(keeping.errors).toEqual([])
+  const kept = applyEdits(input, keeping.queued, '', new Map(), new Set(), { unmatchedPromptMedia: 1 })
+  expect(kept.report.failed).toEqual([])
+  expect(kept.report.applied).toEqual(['collapse #2..#3'])
+  expect(kept.rows.length).toBe(input.length)
+  expect(kept.rows[2]!.role).toBe('user')
+  expect(kept.rows[2]!.text).toBe('research task')
+  expect(kept.rows[3]!.role).toBe('assistant')
+  expect(kept.rows[3]!.text).toContain('(1 of your texts) with your own note: s')
+  expect(kept.report.originals[0]!.rows.map(r => r.text)).toEqual(['I will search.'])
+  expect([...kept.kept.values()]).toEqual([[2]])
 })
 
 test('tool_result rows outside the API window keep their handle', async () => {
@@ -484,36 +527,41 @@ test('own calls whose result row shares media or unknown results with another pa
 
 const OUTSIDE = 'outside the API window; media unknown'
 
-test('ApplyEdits — правка поза вікном: a summarize whose result row has an id outside knownResults; a collapse with such a row; a collapse with a prompt before the first known result when apiTruncated', async () => {
-  const input = rows()
+test('ApplyEdits — правка поза вікном: a summarize whose result row has an id outside knownResults; a collapse with such a row; a collapse that folds a prompt before the first known result when apiTruncated; the same prompt in "keep" lets it apply', async () => {
+  const input = led()
   const apply = (edit: unknown, options: Parameters<typeof applyEdits>[5]) => applyEdits(input, prepare(input, [edit]).queued, '', new Map(), new Set(), options)
   const pair = apply({ op: 'summarize', tool_use_id: 'a', summary: 's' }, { knownResults: new Set(['b', 'c']) })
   expect(pair.report.failed).toEqual([`summarize a: ${OUTSIDE}`])
-  const unknownRow = apply({ op: 'collapse', from_index: 2, to_index: 5, summary: 's' }, { knownResults: new Set(['b', 'c']) })
-  expect(unknownRow.report.failed).toEqual([`collapse #2..#5: ${OUTSIDE}`])
-  const early = apply({ op: 'collapse', from_index: 0, to_index: 1, summary: 's' }, { knownResults: new Set(['b', 'c']), apiTruncated: true })
-  expect(early.report.failed).toEqual([`collapse #0..#1: ${OUTSIDE}`])
-  const inside = apply({ op: 'collapse', from_index: 6, to_index: 8, summary: 's' }, { knownResults: new Set(['a', 'b', 'c']), apiTruncated: true })
+  const unknownRow = apply({ op: 'collapse', from_index: 4, to_index: 7, summary: 's' }, { knownResults: new Set(['b', 'c']) })
+  expect(unknownRow.report.failed).toEqual([`collapse #4..#7: ${OUTSIDE}`])
+  const early = apply({ op: 'collapse', from_index: 2, to_index: 3, summary: 's' }, { knownResults: new Set(['b', 'c']), apiTruncated: true })
+  expect(early.report.failed).toEqual([`collapse #2..#3: ${OUTSIDE}`])
+  // [SP_FOLD_02_04] the window checks look only at the folded rows
+  const keeping = apply({ op: 'collapse', from_index: 2, to_index: 3, keep: [2], summary: 's' }, { knownResults: new Set(['b', 'c']), apiTruncated: true })
+  expect(keeping.report.failed).toEqual([])
+  expect(keeping.report.applied).toEqual(['collapse #2..#3'])
+  expect(keeping.rows[2]!.text).toBe('research task')
+  const inside = apply({ op: 'collapse', from_index: 8, to_index: 10, summary: 's' }, { knownResults: new Set(['a', 'b', 'c']), apiTruncated: true })
   expect(inside.report.applied.length).toBe(1)
 })
 
 test('ApplyEdits — промпт перед першою парою, повне подання: the person\'s prompt and the first pair collapse when the API form is whole', async () => {
-  const input = rows()
-  const res = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 0, to_index: 3, summary: 's' }]).queued, '', new Map(), new Set(), {
+  const input = led()
+  const res = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 2, to_index: 5, summary: 's' }]).queued, '', new Map(), new Set(), {
     knownResults: new Set(['a', 'b', 'c']),
     apiTruncated: false,
   })
-  expect(res.report.applied).toEqual(['collapse #0..#3'])
+  expect(res.report.applied).toEqual(['collapse #2..#5'])
   expect(res.report.failed).toEqual([])
 })
 
 test('ApplyEdits — промпт перед першою парою, обрізане подання: the same collapse when the API form fills its window is refused', async () => {
-  const input = rows()
-  const res = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 0, to_index: 3, summary: 's' }]).queued, '', new Map(), new Set(), {
+  const input = led()
+  const res = applyEdits(input, prepare(input, [{ op: 'collapse', from_index: 2, to_index: 5, summary: 's' }]).queued, '', new Map(), new Set(), {
     knownResults: new Set(['a', 'b', 'c']),
     apiTruncated: true,
   })
-  expect(res.report.failed).toEqual([`collapse #0..#3: ${OUTSIDE}`])
+  expect(res.report.failed).toEqual([`collapse #2..#5: ${OUTSIDE}`])
   expect(res.report.applied).toEqual([])
 })
 
@@ -1261,20 +1309,26 @@ test('ApplyEdits — collapse, зсунутий проміжок розрива�
 })
 
 // TST-14
-test('ApplyEdits — collapse, медіа не заархівовано: a span holding a media owner (a pair or a prompt row) without an archived file fails "media could not be archived"; with the file it applies', async () => {
-  const input = rows()
-  const { queued } = prepare(input, [{ op: 'collapse', from_index: 6, to_index: 8, summary: 'S' }])
+test('ApplyEdits — collapse, медіа не заархівовано: a span that folds a media owner (a pair or a prompt row) without an archived file fails "media could not be archived"; with the file, or with the prompt in "keep", it applies', async () => {
+  const input = led()
+  const { queued } = prepare(input, [{ op: 'collapse', from_index: 8, to_index: 10, summary: 'S' }])
   const pair = applyEdits(input, queued, '/archive.json', new Map(), new Set([ownerKey({ tool_use_id: 'c' })]))
   expect(pair.report.applied).toEqual([])
-  expect(pair.report.failed).toEqual(['collapse #6..#8: media could not be archived'])
-  expect(pair.rows[8]!.handle).toBe('h8')
+  expect(pair.report.failed).toEqual(['collapse #8..#10: media could not be archived'])
+  expect(pair.rows[10]!.handle).toBe('h8')
   expect(pair.report.mediaFiles).toEqual([])
-  const head = prepare(input, [{ op: 'collapse', from_index: 0, to_index: 1, summary: 'S' }]).queued
-  const prompt = applyEdits(input, head, '/archive.json', new Map(), new Set([ownerKey({ row: 0 })]))
-  expect(prompt.report.failed).toEqual(['collapse #0..#1: media could not be archived'])
-  expect(prompt.rows[0]!.handle).toBe('h0')
+  const head = prepare(input, [{ op: 'collapse', from_index: 2, to_index: 3, summary: 'S' }]).queued
+  const prompt = applyEdits(input, head, '/archive.json', new Map(), new Set([ownerKey({ row: 2 })]))
+  expect(prompt.report.failed).toEqual(['collapse #2..#3: media could not be archived'])
+  expect(prompt.rows[2]!.handle).toBe('h0')
+  // [SP_FOLD_02_04] a collapse owns the media of the rows it folds only
+  const around = prepare(input, [{ op: 'collapse', from_index: 2, to_index: 3, keep: [2], summary: 'S' }]).queued
+  const keeping = applyEdits(input, around, '/archive.json', new Map(), new Set([ownerKey({ row: 2 })]))
+  expect(keeping.report.failed).toEqual([])
+  expect(keeping.report.applied).toEqual(['collapse #2..#3'])
+  expect(keeping.rows[2]!.text).toBe('research task')
   const archived = applyEdits(input, queued, '/archive.json', new Map([[ownerKey({ tool_use_id: 'c' }), ['/m/c.png']]]), new Set([ownerKey({ tool_use_id: 'c' })]))
-  expect(archived.report.applied).toEqual(['collapse #6..#8'])
+  expect(archived.report.applied).toEqual(['collapse #8..#10'])
   expect(archived.report.mediaFiles).toEqual(['/m/c.png'])
 })
 
