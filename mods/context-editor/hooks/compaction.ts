@@ -24,12 +24,13 @@ import {
   type QueuedEdit,
 } from './edits'
 import { insertDeliveries, type Deliveries } from './deliveries'
+import { assignFoldIds, FOLDS_UNSAVED, recordFolds, type FoldLedger, type FoldPort } from './folds'
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { goneText, handlesOf, rebaseHostRows, type HostRows } from './hostrows'
 import { applyEntry, type JournalEntry } from './journal'
-import { appendReport, keepOtherSteps, markerKind, resumesAfter, screenPerson, withCommandNote, type Queue } from './queue'
+import { appendReport, keepOtherSteps, markerKind, MAX_QUEUE_BYTES, resumesAfter, screenPerson, withCommandNote, type Queue } from './queue'
 import { dropPulled, type Pulled } from './repair'
-import { apiChars, modText, resultsOf, totalChars } from './rows'
+import { apiChars, errorText, modText, resultsOf, totalChars } from './rows'
 import type { ChangeFn, Held, Read, Update } from './store'
 import { rebindAfter } from './notes'
 import { ITEMS_UNSAVED } from './state'
@@ -177,6 +178,11 @@ export type CompactionIO = {
   // (KeepHostRows over the handles of the input and of the rows returned);
   // never awaited
   keepHostRows?: (input: readonly SessionMessage[], out: readonly (string | undefined)[]) => void
+  // [SP_FOLD_02_01] the fold ledger: read before the rows are built, written
+  // at the commit point with the registries; absent: no fold gets an id
+  folds?: FoldPort
+  // [ERR-01] the trace of a failure the apply swallows: a label and the error
+  debug?: (text: string) => void
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -244,7 +250,12 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     ...(state ? { state } : {}),
   }
   const archive = `${io.archives}/${id}.json`
-  const applied = applyEdits(messages, edits, archive, media, mediaOwners, options)
+  // [SP_FOLD_02_01] AssignFoldIds before the replacement rows are built: the
+  // record's text carries the id. An unreadable ledger numbers from the
+  // conversation's own records (the lower bound).
+  const foldsRead = io.folds ? await io.folds.read() : undefined
+  const numbered = foldsRead ? assignFoldIds(edits, messages, foldsRead.state === 'unreadable' ? undefined : foldsRead.value) : undefined
+  const applied = applyEdits(messages, edits, archive, media, mediaOwners, numbered ? { ...options, foldIds: numbered.ids } : options)
   const frozen = new Set(messages.slice(0, applied.prefix))
   applied.report.failed.unshift(...refused)
   // [SP_CTX_01_05] PULLED_TEXT in the report
@@ -351,10 +362,25 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     const aliasesWritten = aliases && !io.isAborted() ? await io.writeAliases(aliases.next).then(() => true, () => false) : false
     // [SP_CTX_02_40] the attachments' decisions; a failure leaves the ones in force
     const attached = attach && disk && !io.isAborted() ? await attach.commit(disk, frozenAttach, ratio, held).catch(() => undefined) : undefined
+    // [SP_FOLD_02_01] RecordFolds on the ledger as it is now; FOLDS_UNSAVED
+    // never stops the apply: the records carry FOLD_NOTE and their paths
+    let foldsBefore: FoldLedger | undefined
+    let foldsUnsaved = ''
+    if (io.folds && numbered && applied.folded.length && !io.isAborted()) {
+      const turn = tagsNow.state === 'unreadable' ? 0 : tagsNow.value.turn
+      try {
+        foldsBefore = await io.folds.record(ledger => recordFolds(ledger, applied.folded, applied.report.originals, numbered.next, archived, turn, MAX_QUEUE_BYTES), held)
+        if (!foldsBefore) throw new Error('the unreadable ledger could not be moved aside')
+      } catch (err) {
+        foldsUnsaved = FOLDS_UNSAVED
+        io.debug?.(modText(`RecordFolds failed: ${errorText(err)}`))
+      }
+    }
     const putBack = async () => {
       if (tags && tagsWritten) await io.writeTags(tags.before).catch(() => undefined)
       if (aliases && aliasesWritten) await io.writeAliases(aliases.before).catch(() => undefined)
       if (attach && attached?.written) await attach.putBack(attached).catch(() => undefined)
+      if (io.folds && foldsBefore) await io.folds.putBack(foldsBefore, held).catch(err => io.debug?.(modText(`fold ledger put back failed: ${errorText(err)}`)))
     }
     if (io.isAborted()) {
       await putBack()
@@ -364,7 +390,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     // [SP_CTX_01_05] [SP_CTX_02_40] the attachments newly left out, after the rest
     // [SP_CTX_02_67] ITEMS_UNSAVED: the slot shows items the registry lacks
     const unsaved = items && !tagsWritten ? ITEMS_UNSAVED(tagsError || 'not written') : ''
-    const report = [formatReport(applied.report, archived, 'compaction', ratio), attached?.text ?? '', unsaved].filter(Boolean).join(' ')
+    const report = [formatReport(applied.report, archived, 'compaction', ratio), attached?.text ?? '', unsaved, foldsUnsaved].filter(Boolean).join(' ')
     try {
       await io.writeQueue(reported(q, report, id))
     } catch (err) {

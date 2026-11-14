@@ -30,7 +30,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, contextList, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { errorText, modText, REPAIR_MARKER } from './rows'
 import {
@@ -128,6 +128,7 @@ import {
   STORAGE_BASE,
 } from './store'
 import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
+import { emptyFolds, foldPort, parseFolds, type FoldLedger } from './folds'
 import { closeWindow, emptyHostRows, keepHostRows, newHostMemory, observeHostRow, openWindow, parseHostRows, recordHostRow, type HostRowRecord, type HostRows } from './hostrows'
 import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
@@ -256,6 +257,7 @@ type Stores = {
   hostattach: Store<HostAttachState>
   ledger: Store<ApplyLedger>
   hostrows: Store<HostRows>
+  folds: Store<FoldLedger>
 }
 
 // [SP_CTX_01_07] The storage files of the session whose storage is `dir`,
@@ -279,6 +281,8 @@ function stores($: EngineInterface, dir: string): Stores {
     ledger: jsonFile(fs, `${dir}/ledger.json`, emptyLedger, parseLedger, { lock: chainOf($, 'ledger') }),
     // [SP_CTX_01_31] the host rows' records (phase 45)
     hostrows: jsonFile(fs, `${dir}/hostrows.json`, emptyHostRows, parseHostRows, { lock: chainOf($, 'hostrows') }),
+    // [SP_FOLD_01_02] the fold ledger
+    folds: jsonFile(fs, `${dir}/folds.json`, emptyFolds, parseFolds, { lock: chainOf($, 'folds') }),
   }
 }
 
@@ -1103,6 +1107,8 @@ function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
     },
     // [SP_CTX_02_61] the host rows' records
     hostRows: dir => hostRowsNow($, dir),
+    // [SP_FOLD_02_07] the fold ledger, a view
+    folds: dir => stores($, dir).folds.read(),
     // [SP_CTX_02_69] the mod reads its own file: no permission asked
     rules: () => $.fs.read(`${$.plugin.root}/skills/${SKILL}/${RULES_FILE}`),
   }
@@ -1347,7 +1353,10 @@ export const register: Register = on => {
       const { rows, key } = await snap.view()
       // [SP_CTX_02_10] the API form is read only for a describe
       const found = needsApi(args) ? collectMedia(await snap.api(), rows).found : undefined
-      const pins = pinsFrom(await stores($, dir).tags.read(), rows)
+      const tagsRead = await stores($, dir).tags.read()
+      const pins = pinsFrom(tagsRead, rows)
+      // [SP_FOLD_01_01] the last closed block with a name, for `region`
+      const closed = closedSpan(rows, tagsRead)
       // [SP_CTX_DEC_37] an accepted edit ends the waiting block (the registry's
       // chain inside the queue's) and queues its disposable replacements on
       // the queue's chain this call holds
@@ -1367,7 +1376,7 @@ export const register: Register = on => {
           queueTagReplacements({ ...tagIO($, dir, snap), onRegistry: work => chainOf($, 'tags')(() => work(), held), deliveries: () => deliveredNow($, dir, held) }),
         hostRows: () => hostRowsNow($, dir, held),
       }
-      return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held))
+      return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held), closed)
     })
     // [SP_CTX_02_33] no reminder: this call goes with the apply it triggers (DropOwnCalls)
     return 'deny' in out ? deny(out.deny) : out
@@ -1719,6 +1728,9 @@ export const register: Register = on => {
           // [SP_CTX_02_61] [SP_CTX_02_60] the host rows' records on their chain (rank 4, inside the queue's)
           readHostRows: () => s.hostrows.onChain(() => s.hostrows.read(), q),
           keepHostRows: (input, out) => keepHostRowsAt($, dir, input, out),
+          // [SP_FOLD_02_01] the fold ledger on its chain (rank 4, inside the queue's)
+          folds: foldPort(s.folds, q),
+          debug: text => $.ui.log(text, { to: 'debug' }),
         },
         e.messages,
       )

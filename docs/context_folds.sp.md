@@ -49,7 +49,7 @@ Fields:
 
 Invariants:
 - Запис не змінюється після створення, крім поля `parent`, яке ставиться один раз.
-- `parent` вказує на запис пізнішого застосування.
+- `parent` вказує на запис пізнішого застосування: його номер більший за номер самого запису й менший за `nextFold`; інакше файл обліку нечитабельний.
 - Запис із `region.kind = 'task'` — картка завдання.
 
 ### 01_02. FoldLedger  {#SP_FOLD_01_02}
@@ -165,7 +165,7 @@ Output:
 Errors:
 | Code | Condition | Guidance |
 |------|-----------|----------|
-| FOLDS_UNSAVED | облік не записався в точці фіксації | застосування не скасовується; записи згорток несуть FOLD_NOTE; звіт застосування отримує речення `The fold ledger could not be saved: context_recall will not know these folds; their originals are at the paths in the records.`; у журнал налагодження — один рядок з міткою й помилкою (правило ERR-01, [errors.md](../.dev_flow/rules/errors.md)) |
+| FOLDS_UNSAVED | облік не записався в точці фіксації; або номери призначено без обліку (перше читання не вдалося), а облік, прочитаний у точці фіксації, уже видав їх (номер нової згортки менший за `nextFold`) — тоді облік лишається як є | застосування не скасовується; записи згорток несуть FOLD_NOTE; звіт застосування отримує речення `The fold ledger could not be saved: context_recall will not know these folds; their originals are at the paths in the records.`; у журнал налагодження — один рядок з міткою й помилкою (правило ERR-01, [errors.md](../.dev_flow/rules/errors.md)) |
 
 Processing logic (pseudocode):
 
@@ -179,6 +179,9 @@ Processing logic (pseudocode):
     FUNCTION RecordFolds(report, ids, next, ledger, archivePath, turn):   # after the apply ran
         FOR EACH applied edit WITH an id:
             inner = fold ids named by FOLD_NOTE in those replaced rows that are fold records (replacement texts)
+            # the record's own note only: the text starts with a summarize, collapse or describe opener and the note
+            # stands right after the opener's closing words ("with your own summary|note|description");
+            # a note quoted in the source, the list or the agent's words is not counted
             FOR EACH f IN inner WHERE f in ledger.folds AND f.parent absent: f.parent = ids[edit]
             ledger.folds += { id: ids[edit], archive: archivePath,
                               entry: index of this edit's element in report.originals,
@@ -429,7 +432,7 @@ Rule: пара інструмента RECALL_TOOL лишається в розм
 
 ### 03_01. Input Validation  {#SP_FOLD_03_01}
 
-- Ідентифікатор згортки — `FOLD_PREFIX` і десяткове число без провідних нулів.
+- Ідентифікатор згортки — `FOLD_PREFIX` і десяткове число без провідних нулів, не довше дев'яти цифр. Довший схожий рядок у виводі інструмента чи файлі номером не вважається і на нижню межу не впливає.
 - Назви `stage` і `task` — ті самі обмеження, що в чинної назви етапу.
 - Текст вставки `note` — один рядок; довший за MAX_NOTE дає нерозпізнаний рядок, а не обрізання.
 - Тексти, які мод вписує в розмову від себе (RECALLED, RETURNED, речення звітів), — факти, не накази ([спайк](./context_service_info.spike.md), варіант Г5).
@@ -760,4 +763,5 @@ Rule: пара інструмента RECALL_TOOL лишається в розм
 | Date | Change |
 |------|--------|
 | 2026-11-14 | Initial version |
+| 2026-11-14 | PL_FOLD, фаза 1, рев'ю коду: номер згортки — до дев'яти цифр; `parent` більший за номер запису й менший за `nextFold`; власний хвіст запису згортки стоїть одразу після слів відкривача; FOLDS_UNSAVED і для номерів, призначених без обліку, які облік уже видав |
 | 2026-11-14 | Рев'ю (раунд 1): запис згортки — завжди рядок асистента чи пара-носій; доставлене посеред ходу не згортається; FoldEntry несе шлях архіву й дію; нижня межа номера згортки; розгортання відмовляє на хості, що обходить компактизацію; повний контракт повернення (вид правки, правки агента над парою, заморожений префікс); пари розгортання лишаються лише із записом чи слідом; якорі `keep`; нормалізація `outer`; відбиток архіву й примітку про схожі рядки відкладено (рішення розробника); запису журналу `recall` немає |

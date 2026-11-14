@@ -46,7 +46,7 @@
 
 ## Progress
 
-- [ ] [Phase 1 — Облік згорток](#PL_FOLD_P1)
+- [x] [Phase 1 — Облік згорток](#PL_FOLD_P1)
 - [ ] [Phase 2 — Розгортання й повернення згаданого](#PL_FOLD_P2)
 - [ ] [Phase 3 — Згортка зі словами людини й обхід закріплених рядків](#PL_FOLD_P3)
 - [ ] [Phase 4 — Порівняльний прогін](#PL_FOLD_P4)
@@ -57,7 +57,7 @@
 
 Кожна фаза з кодом проходить повний цикл: тести, рев'ю з чистим контекстом, живий прогін, коміт. У тій самій фазі оновлюються тексти для агента (описи інструментів, навичка мода `skills/context-stages/`), розділи SP_CTX з таблиці [SP_FOLD_03_03](./context_folds.sp.md#SP_FOLD_03_03) і розділи C_CTX, які фаза змінює. Перевірки входів [SP_FOLD_03_01](./context_folds.sp.md#SP_FOLD_03_01) і інваріанти [SP_FOLD_03_02](./context_folds.sp.md#SP_FOLD_03_02) реалізує та фаза, що вводить відповідний контракт; відкат [SP_FOLD_06](./context_folds.sp.md#SP_FOLD_06) перевіряє фаза 2 (черга з правкою повернення) і фаза 5 (реєстр із `outer`).
 
-### Phase 1 — Облік згорток (`hooks/folds.ts`) [TODO]  {#PL_FOLD_P1}
+### Phase 1 — Облік згорток (`hooks/folds.ts`) [DONE]  {#PL_FOLD_P1}
 
 **Depends on:** none
 **Implements:** [SP_FOLD_01_01](./context_folds.sp.md#SP_FOLD_01_01), [SP_FOLD_01_02](./context_folds.sp.md#SP_FOLD_01_02), константи FOLD_PREFIX, MAX_FOLDS, FOLD_NOTE з [SP_FOLD_01_06](./context_folds.sp.md#SP_FOLD_01_06), [SP_FOLD_02_01](./context_folds.sp.md#SP_FOLD_02_01), параметр `folds` з [SP_FOLD_02_07](./context_folds.sp.md#SP_FOLD_02_07) без позначки `recalled`

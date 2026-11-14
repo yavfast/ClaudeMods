@@ -87,9 +87,12 @@ export const REWRITTEN = `${BY_EDIT}rewrite call replaced the text of this row w
 export const DESCRIBED_HEAD = `${BY_EDIT}describe call replaced the `
 export const DESCRIBED = `${DESCRIBED_HEAD}media you had seen here with your own description`
 // [SP_CTX_02_59] DescribedWords: what the describe replaced
+// What a describe replaced: the media of the row, the pasted text, or both.
+export function describedWhat(media: boolean, pasted: boolean): string {
+  return media && pasted ? 'media and the pasted text' : pasted ? 'pasted text' : 'media'
+}
 export function describedWords(media: boolean, pasted: boolean): string {
-  const what = media && pasted ? 'media and the pasted text' : pasted ? 'pasted text' : 'media'
-  return `${DESCRIBED_HEAD}${what} you had seen here with your own description`
+  return `${DESCRIBED_HEAD}${describedWhat(media, pasted)} you had seen here with your own description`
 }
 export const TAG_SUMMARIZED = `${BY_TAG}the full output you had read here with your own note`
 export const TAG_REWRITTEN = `${BY_TAG}the text of this row with your own note`
@@ -150,6 +153,44 @@ export function isCollapseText(text: string): boolean {
 // description), of now or of phases 19–27.
 export function isDescribedText(text: string): boolean {
   return text.startsWith(DESCRIBED_HEAD) || text.startsWith(LEGACY_DESCRIBED)
+}
+
+// ---- [SP_FOLD_01_06] fold records
+
+// [SP_FOLD_01_06] FOLD_PREFIX: a fold's id is the prefix and its number.
+export const FOLD_PREFIX = 'f'
+// [SP_FOLD_01_06] RECALL_TOOL: the tool a fold record names for unfolding.
+export const RECALL_TOOL = 'context_recall'
+// [SP_FOLD_01_06] FOLD_NOTE: the tail of a fold record (a summarize, collapse
+// or describe replacement of an apply that numbered it), in the place of
+// ` (original: <archive>, open with Read)`; records of earlier applies keep
+// that tail and stay valid.
+export function foldNote(id: string, archive: string): string {
+  return ` (fold ${id}; original: ${archive}; unfold one level with ${RECALL_TOOL})`
+}
+// [SP_FOLD_03_01] an id is FOLD_PREFIX and a decimal number without leading
+// zeros, of at most nine digits: a longer look-alike in a tool output is no
+// fold number (it would not survive Number())
+export const FOLD_NUMBER = '[1-9]\\d{0,8}'
+const FOLD_NOTE_HEAD = ` \\(fold ${FOLD_PREFIX}(${FOLD_NUMBER}); original: `
+const FOLD_NOTES = new RegExp(FOLD_NOTE_HEAD, 'g')
+// The openers of the records that carry a FOLD_NOTE (summarize, collapse,
+// describe; by a call or by a tag), and the note in its own place: right
+// after the closing words of summarizedWords, collapsedWords, describedWords.
+// A note quoted in the source, the list or the agent's words is not it.
+const FOLD_OPENERS: readonly string[] = [SUMMARIZED, SUMMARIZED_OF, TAG_SUMMARIZED, TAG_SUMMARIZED_OF, COLLAPSED_OPENER, TAG_COLLAPSED_OPENER, DESCRIBED_HEAD]
+const OWN_FOLD_NOTE = new RegExp(` with your own (?:summary|note|description)${FOLD_NOTE_HEAD}`)
+// [SP_FOLD_02_01] The fold numbers the FOLD_NOTEs in `text` name, in order.
+export function foldNumbers(text: string): number[] {
+  return Array.from(text.matchAll(FOLD_NOTES), m => Number(m[1]))
+}
+// [SP_FOLD_02_01] The fold a record names: the FOLD_NOTE of a fold record in
+// its own place; undefined for any other text, a rewrite, the state slot and
+// a record of an earlier apply included.
+export function foldOfRecord(text: string): number | undefined {
+  if (!FOLD_OPENERS.some(o => text.startsWith(o))) return undefined
+  const own = OWN_FOLD_NOTE.exec(text)
+  return own ? Number(own[1]) : undefined
 }
 
 // [SP_CTX_01_32] [SP_CTX_02_58] The frames of the text the host adds as a

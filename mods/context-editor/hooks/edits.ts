@@ -4,7 +4,7 @@ import { isMediaBlock, matchPrompts } from './media'
 import { applyChanges, checkChanges, draftChanges, MAX_STATE_ITEMS, NO_ITEM_NOW, TOO_MANY_ITEMS, NO_STATE_SLOT, SLOT_TOO_LONG, STATE_CONFLICT, STATE_GONE, STATE_ITEMS, stateText, type DraftItem, type StateChange, type StateItem } from './state'
 import { detachNote, HOST_EXCLUSIVE, HOST_ID, HOST_MEDIA, HOST_TWICE, HOST_UNKNOWN, hostRecord, type HostRowRecord } from './hostrows'
 import { isRenameRow, type TitleRun } from './title'
-import { apiBlocks, BIG_ROW, collapsedWords, describedWords, errorText, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
+import { apiBlocks, BIG_ROW, collapsedWords, describedWhat, describedWords, errorText, foldNote, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, resultsOf, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -24,7 +24,35 @@ export type Edit =
 // queued (QueueTagReplacements); its text names context_tag, not context_edit.
 // [SP_CTX_01_30] `quoted`: DependencyCheck found the original's facts quoted
 // in later texts of the agent (summarize, drop, collapse; the mod writes it).
-export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag'; quoted?: true }
+// [SP_FOLD_01_01] `region`: a collapse whose span was, when it was queued,
+// the whole block of the last closed region that has a name (the mod writes it).
+export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag'; quoted?: true; region?: FoldRegion }
+
+// [SP_FOLD_01_01] The region a fold of a range stands for.
+export type FoldRegion = { name: string; kind: 'task' | 'stage' }
+
+// [SP_FOLD_01_01] The block of the last closed region that has a name, by
+// row indexes (ClosedSpan of folds.ts finds it).
+export type ClosedSpan = { name: string; from: number; to: number }
+
+// [SP_FOLD_01_01] The region of a collapse being queued: its span is the
+// whole closed block, from its first row to its last. In this phase a region
+// is always a stage.
+// [SP_FOLD_01_01] The shape of a stored region (the queue file, the ledger).
+export function isFoldRegion(v: unknown): v is FoldRegion {
+  if (typeof v !== 'object' || v === null) return false
+  const r = v as Record<string, unknown>
+  return typeof r.name === 'string' && r.name !== '' && (r.kind === 'task' || r.kind === 'stage')
+}
+export function regionOf(e: Edit, span: ClosedSpan | undefined): FoldRegion | undefined {
+  return span && e.op === 'collapse' && e.from_index === span.from && e.to_index === span.to ? { name: span.name, kind: 'stage' } : undefined
+}
+
+// [SP_FOLD_02_01] What an applied fold edit (summarize, collapse, describe)
+// with an id left for RecordFolds: `entry`, the index of its element in
+// ApplyReport.originals; `what`, the source of the output or the list of the
+// span ('' for a describe).
+export type Folded = { id: string; entry: number; edit: QueuedEdit; what: string }
 
 // [SP_CTX_02_61] A summarize or drop of a tool call, and a drop of a host row.
 export function isPairEdit<E extends Edit>(e: E): e is Extract<E, { tool_use_id: string }> {
@@ -1720,6 +1748,9 @@ export type ApplyOptions = {
   hostRows?: readonly HostRowRecord[]
   // [SP_CTX_02_73] the mod's renames whose rows are still in the conversation
   renames?: readonly TitleRun[]
+  // [SP_FOLD_02_01] AssignFoldIds: the id of each fold edit of the batch, by
+  // the edit object; its record carries FOLD_NOTE with it. Absent: no ids
+  foldIds?: ReadonlyMap<QueuedEdit, string>
 }
 
 // [SP_CTX_02_67] What run state starts from, and (ApplyEdits' `state`) what
@@ -1737,7 +1768,7 @@ export function applyEdits(
   media: ReadonlyMap<string, readonly string[]> = new Map(),
   mediaOwners: ReadonlySet<string> = new Set(),
   options: ApplyOptions = {},
-): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; hostNamed: Set<string>; state?: StateOutput } {
+): { rows: SessionMessage[]; report: ApplyReport; made: Made[]; renamed: Map<string, string>; prefix: number; hostNamed: Set<string>; state?: StateOutput; folded: Folded[] } {
   const rows = [...input]
   const report: ApplyReport = {
     applied: [],
@@ -1756,6 +1787,15 @@ export function applyEdits(
   const renamed = new Map<string, string>()
   // [C_CTX_DEC_18] the replacement itself says how to get the original back
   const note = archive ? ` (original: ${archive}, open with Read)` : ''
+  // [SP_FOLD_02_01] a fold edit with an id: its record ends with FOLD_NOTE,
+  // and RecordFolds gets where its level lies in the archive
+  const folded: Folded[] = []
+  const foldOf = (edit: QueuedEdit, what: string): string => {
+    const id = archive ? options.foldIds?.get(edit) : undefined
+    if (!id) return note
+    folded.push({ id, entry: report.originals.length, edit, what })
+    return foldNote(id, archive)
+  }
   const mediaNote = (keys: readonly string[]) => {
     const paths = keys.flatMap(k => media.get(k) ?? [])
     return paths.length ? ` (media: ${paths.join(', ')})` : ''
@@ -1826,6 +1866,7 @@ export function applyEdits(
                 const res = rows[resAt]!
                 const call = use.toolUses.find(u => u.tool_use_id === edit.tool_use_id)!
                 const source = sourceOf(call.tool, call.input, options.cwd)
+                const note = foldOf(edit, source)
                 report.originals.push({ edit: name, rows: [use, res] })
                 rows[useAt] = plain(use, {
                   toolUses: use.toolUses.map(u => (u.tool_use_id === edit.tool_use_id ? editedUse(u, id) : stripUse(u))),
@@ -1884,8 +1925,9 @@ export function applyEdits(
         const keys = ownersOf(rows, edit, touched)
         run = () => {
           const span = rows.slice(from, to + 1)
-          report.originals.push({ edit: name, rows: span })
           const list = collapsedList(span)
+          const note = foldOf(edit, list)
+          report.originals.push({ edit: name, rows: span })
           const text = `${collapsedWords(span.length, list, viaOf(edit), edit.quoted === true)}${note}${mediaNote(keys)}: ${edit.summary}`
           // The carrier keeps roles and pairing valid around the span; it is
           // never one of this plugin's own calls, which are dropped later. Its
@@ -1945,11 +1987,12 @@ export function applyEdits(
         }
         run = () => {
           const row = rows[at]!
+          const tail = edit.op === 'describe' ? foldOf(edit, describedWhat(withMedia, pastes.length > 0)) : note
           report.originals.push({ edit: name, rows: [row] })
           const text =
             edit.op === 'rewrite'
               ? `${rewrittenWords(viaOf(edit))}${note}: ${edit.text}`
-              : `${describedWords(withMedia, pastes.length > 0)}${note}${withMedia ? mediaNote([ownerKey({ row: at })]) : ''}: ${edit.description}\n\n${withPasteMarks(row.text, pastes)}`
+              : `${describedWords(withMedia, pastes.length > 0)}${tail}${withMedia ? mediaNote([ownerKey({ row: at })]) : ''}: ${edit.description}\n\n${withPasteMarks(row.text, pastes)}`
           rows[at] = plain(row, { text })
           made.push({ edit: name, text })
         }
@@ -2116,7 +2159,7 @@ export function applyEdits(
   )
   report.charsAfter = totalChars(out)
   report.produced = producedRows(out, made)
-  return { rows: out, report, made, renamed, prefix, hostNamed, ...(stateOut ? { state: stateOut } : {}) }
+  return { rows: out, report, made, renamed, prefix, hostNamed, folded, ...(stateOut ? { state: stateOut } : {}) }
 }
 
 // [SP_CTX_02_67] run state: every state edit of the batch together, one

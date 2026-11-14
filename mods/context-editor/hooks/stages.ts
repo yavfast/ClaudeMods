@@ -33,9 +33,11 @@ import {
   type Produced,
   type QueuedEdit,
   type RowIndex,
+  type ClosedSpan,
   type Snapshot,
 } from './edits'
 import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
+import { BAD_FOLDS, foldsList, type FoldLedger } from './folds'
 import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './hostrows'
 import { apiChars, charsOf, errorText, findToolUse, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
@@ -222,6 +224,18 @@ export function relocateStageMarks<R extends StageFields>(
 // open stage, `[block ▶ <name>]` (`[block ▶]` without a name) on the first
 // row of the last closed block and `[block end]` on its last. A lost start
 // counts as the head; a lost end gives no `[block end]`; an empty block no marks.
+// [SP_FOLD_01_01] The rows of the last closed block when it has a name and
+// both its ends are found, for the `region` of a queued collapse; undefined
+// otherwise (a block closed by the mark has no name; an unreadable registry).
+export function closedSpan(rows: readonly SessionMessage[], read: Read<Pick<StageFields, 'lastClosed'>>): ClosedSpan | undefined {
+  const b = read.state === 'unreadable' ? undefined : read.value.lastClosed
+  if (!b || b.name === undefined || b.end === null) return undefined
+  if (markIndex(rows, b.after) === 'lost') return undefined
+  const to = markIndex(rows, b.end)
+  const from = startOf(rows, b.after)
+  return to === 'lost' || to < from ? undefined : { name: b.name, from, to }
+}
+
 export function markLabels(rows: readonly SessionMessage[], reg: StageFields): Map<number, string[]> {
   const labels = new Map<number, string[]>()
   const put = (i: number, label: string) => {
@@ -640,9 +654,11 @@ export type ListIO = {
   hostRows?: (dir: string) => Promise<readonly HostRowRecord[]>
   // [SP_CTX_02_69] the text of RULES_FILE from the plugin's root; throws when unreadable
   rules?: () => Promise<string>
+  // [SP_FOLD_02_07] the fold ledger in `dir`, a view; absent: none
+  folds?: (dir: string) => Promise<Read<FoldLedger>>
 }
 
-export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown; rules?: unknown }
+export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown; rules?: unknown; folds?: unknown }
 
 // [SP_CTX_02_69] The curation rules: the skill's second file, which
 // context_list with "rules": true returns ([SP_CTX_DEC_43]).
@@ -691,9 +707,22 @@ async function curationRules(io: ListIO, args: ListArgs): Promise<{ result: stri
   }
 }
 
+// [SP_FOLD_02_07] "folds": true returns the fold ledger in place of the rows
+// and takes only "from" and "count", which page it (BAD_FOLDS); it renews no
+// listedKey. An unreadable ledger is a line of the result, not a refusal.
+async function foldLedger(io: ListIO, args: ListArgs): Promise<{ result: string } | { deny: string }> {
+  if (args.folds !== true || (['index', 'full', 'rules'] as const).some(k => args[k] !== undefined)) return { deny: BAD_FOLDS }
+  const dir = await io.storage()
+  const read = dir && io.folds ? await io.folds(dir).catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) })) : undefined
+  return { result: foldsList(read, args.from, args.count) }
+}
+
 export async function contextList(io: ListIO, args: ListArgs): Promise<{ result: string } | { deny: string }> {
   if (args.agentId) return { deny: 'only the main conversation can be listed and edited.' }
-  if (args.rules !== undefined) return curationRules(io, args)
+  // [SP_FOLD_02_07] "folds": false is the listing as without it
+  const folds = args.folds !== undefined && args.folds !== false
+  if (args.rules !== undefined && !folds) return curationRules(io, args)
+  if (folds) return foldLedger(io, args)
   const { rows, key } = await io.view()
   const mode = listMode(args, rows.length)
   if ('bad' in mode) return { deny: mode.bad }

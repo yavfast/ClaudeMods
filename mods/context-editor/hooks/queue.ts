@@ -1,5 +1,5 @@
 import type { SessionMessage } from 'claude-code'
-import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, isHostDrop, isPairEdit, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
+import { checkShape, dependencyHits, dependencyNote, DESCRIBE_DROPS, describeEdit, indexRows, isFoldRegion, isHostDrop, isPairEdit, regionOf, type ClosedSpan, type RowIndex, ownerKey, type MediaRef, MAX_QUEUE_EDITS, MAX_TEXT, NO_PINS, NO_REFS, prepare, resolveEditRefs, touchedBy, type MediaOwner, type Pinned, type QueuedEdit, type RefResolver } from './edits'
 import { personDelivered, personText, type QueuedDelivery } from './deliveries'
 import { isDescribedText, isPlainUserRow, modText, PREFIX, resultsOf } from './rows'
 import { bytes, jsonObject, type Read } from './store'
@@ -190,7 +190,7 @@ function isHandoff(raw: unknown): boolean {
 
 function isQueuedEdit(raw: unknown): boolean {
   if (typeof checkShape(raw) === 'string') return false
-  const { op, index, anchors, via, quoted } = raw as { op?: unknown; index?: unknown; anchors?: unknown; via?: unknown; quoted?: unknown }
+  const { op, index, anchors, via, quoted, region } = raw as { op?: unknown; index?: unknown; anchors?: unknown; via?: unknown; quoted?: unknown; region?: unknown }
   // [SP_CTX_01_03] `via` names who asked for the replacement: only 'tag' is written
   // [SP_CTX_01_30] `quoted`: only true is written; a queue before phase 42 has none
   // [SP_CTX_02_67] a state edit's stamped slot index, when it has one
@@ -198,7 +198,9 @@ function isQueuedEdit(raw: unknown): boolean {
     (op !== 'state' || index === undefined || (typeof index === 'number' && Number.isInteger(index))) &&
     (anchors === undefined || (Array.isArray(anchors) && anchors.every(a => typeof a === 'string'))) &&
     (via === undefined || via === 'tag') &&
-    (quoted === undefined || quoted === true)
+    (quoted === undefined || quoted === true) &&
+    // [SP_FOLD_01_01] `region`: only on a collapse, a name and its kind
+    (region === undefined || (op === 'collapse' && isFoldRegion(region)))
   )
 }
 
@@ -347,6 +349,9 @@ export function queueEdits(
   delivered: readonly QueuedDelivery[] = [],
   // [SP_CTX_02_61] the host rows' records: HOST_UNKNOWN and DetachNote
   hostRows: readonly HostRowRecord[] = [],
+  // [SP_FOLD_01_01] the block of the last closed region with a name: a
+  // collapse of exactly its rows carries `region`
+  closed?: ClosedSpan,
 ): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
@@ -361,7 +366,9 @@ export function queueEdits(
   const queued: QueuedEdit[] = []
   const notes: string[] = []
   let ix: RowIndex | undefined
-  for (const e of prepared.queued) {
+  for (const edit of prepared.queued) {
+    const region = regionOf(edit, closed)
+    const e: QueuedEdit = region ? { ...edit, region } : edit
     // [SP_CTX_02_61] DetachNote: what the row before the host row loses
     if (isHostDrop(e)) {
       const rec = hostRecord(hostRows, e.host)
@@ -466,6 +473,7 @@ export async function contextEdit(
   staleIndexes = false,
   hasMedia: (owner: MediaOwner) => boolean = () => false,
   delivered: readonly QueuedDelivery[] = [],
+  closed?: ClosedSpan,
 ): Promise<{ result: string } | { deny: string }> {
   let read = await io.readQueue()
   let notice = ''
@@ -477,7 +485,7 @@ export async function contextEdit(
   }
   const wantsHost = Array.isArray(args.edits) && args.edits.some(x => (x as { host?: unknown } | null)?.host !== undefined)
   const hostRows = wantsHost && io.hostRows ? await io.hostRows().catch(() => []) : []
-  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows)
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows, closed)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)

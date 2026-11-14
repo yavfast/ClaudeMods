@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_C_FOLD`
 > **Created:** 2026-11-14
-> **Last updated:** 2026-11-14
+> **Last updated:** 2026-11-14 22:22
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-90e21609`
 > **Autonomy:** `checkpoints`
@@ -17,7 +17,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Pipeline phase** | plan (специфікація й план написані) |
+| **Document** | `docs/context_folds.plan.md` (PL_FOLD), фаза 1 |
+| **Pipeline phase** | implement — фаза 1 закомічена; далі фаза 2 |
 | **Role style** | `deliberate` — default |
 
 ## Subtasks
@@ -35,11 +36,23 @@
 - [x] Рев'ю специфікації й плану, раунд 1 (чистий контекст, `meticulous`): blocked — 5 `must` (одна безпекова) і 13 `should`. Виправлено переписом специфікації й плану; розробник відклав безпекові механізми (C_FOLD_DEC_15).
 - [x] Рев'ю, раунд 2 (дельта): F1–F18 закрито; вісім нових `should` (G1–G8) без `must` і безпекових — виправлено за приписом і підтверджено механічно (перевірки наявності виправлень, посилання, якорі).
 - [x] Коміт документів (розробник: `/dev-flow review & commit`).
-- [ ] Погодження дизайну розробником перед кодом.
+- [x] Погодження дизайну розробником перед кодом: `/dev-flow implement task_C_FOLD` після показу рішень SP_FOLD_DEC_05, 06, 08 і PL_FOLD_DEC_01, 02.
+- [x] Фаза 1, код: `hooks/folds.ts` (новий), зміни в `rows`, `edits`, `compaction`, `queue`, `stages`, `store`, `tools`, `register`; `tests/folds.test.ts` (8 тестів). Набір мода: 1026 тестів пройшло, `validate` ✔, `tsc` 0 помилок.
+- [x] Фаза 1, документи: SP_CTX_01_03, 01_07, 01_12, 02_01, 02_04, 02_07, `docs/_framework.md`, `CLAUDE.md`.
+- [x] Фаза 1: рев'ю з чистим контекстом, раунд 1 (повний): WARNINGS — жодної `must`, шість `should` і шість `prefer`. Виправлено: номер згортки до дев'яти цифр; власний хвіст запису (`foldOfRecord`); номери, призначені без обліку, проти обліку в точці фіксації (FOLDS_UNSAVED); рядок навички; `closedSpan` перенесено в `stages.ts` (циклу `folds` ⇄ `stages` немає); один предикат `isFoldRegion`; `parent` у `parseFolds`; `what` опису; переліки SP_CTX_01_07; тести тегу й опису. Раунд 2 — `confirm` у головному контексті: 1027 тестів, `tsc` 0, `validate` ✔, межі навички ✔.
+- [x] Фаза 1: живий прогін (stream-json, haiku, хост 2.1.325; двічі, до і після виправлень): запис із `(fold f1; original: …)`, `folds.json` з `f1`, перелік `"folds": true`; попереджень ланцюжків і збоїв запису немає.
+- [x] Фаза 1: рефлексія — навичка `claude-code/plugin-hooks.md` (перевірка типів, коли мод керований плагін).
+- [x] Фаза 1: погодження коміту розробником (`/dev-flow commit`).
 
-**Next:** погодження дизайну розробником; далі фаза 1 плану PL_FOLD — `phases/implement.md` § Gate Check (Plan -> Code)
+Причини збереження тестів `tests/folds.test.ts` (усі `complex`: розбір і серіалізація обліку, порядок і злиття номерів та `parent`, фіксація з перериванням): 9 тестів — «пакет із двома згортками», «згортка поверх згортки», «нижня межа номера», «невдала правка», «облік не записався або застосування перервано», «region», «FoldLedger — розбір і межа», «Перелік — folds», «FoldEntry — заміна з тегу і опис медіа».
+
+**Next:** фаза 2 PL_FOLD «Розгортання й повернення згаданого» — `phases/implement.md` § Implementation Workflow, крок 1
 
 Activity:
+- 2026-11-14 22:22 — Раунд 1 рев'ю фази 1, база: `31dbe01` + робоче дерево на 2026-11-14 22:22; відкритих блокуючих знахідок немає. Не виправлено за рішенням агента: FOLD_NOTE називає `context_recall` до фази 2 (текст задано SP_FOLD_01_06; шлях оригіналу лишається в записі) — винесено на погодження коміту.
+- 2026-11-14 22:06 — Типи хоста не генеруються: мод тут керований плагін, копію з `--plugin-dir` хост 2.1.325 відхиляє, і теки `.claude-plugin/types/` немає. `tsc` запущено з тимчасовим tsconfig над `types/claude-code.d.ts` вбудованої навички plugin-authoring (`/tmp/claude-1000/bundled-skills/2.1.325/…`).
+- 2026-11-14 22:06 — Фаза 1: текст FOLD_NOTE називає `context_recall`, якого до фази 2 немає; робоче дерево завантажується в кожну нову сесію на цій машині. `region` ставить лише `context_edit`; заміни з тегів `disposable` його не мають (план: `hooks/queue.ts`).
+- 2026-11-14 21:43 — Контрольна точка: гілка `main`, робоче дерево чисте, крім файлів `.dev_flow/` цієї точки; два коміти не запушено (концепт зі спайком; специфікація з планом). Мод працює на цій машині як керований плагін.
 - 2026-11-14 — Розбіжності SP_CTX і коду з розвідки контрактів: (1) SP_CTX_02_02 і 02_11 називають попередженням те, що код відхиляє; (2) SP_CTX_02_14 — формат тексту переписаного слота; (3) SP_CTX_02_04 — текст `describe`; (4) SP_CTX_01_19 — шлях перечитування архіву; (5) SP_CTX_01_17 — шлях архіву передачі; (6) константа REVIEW_REASONS без `superseded`; (7) SP_CTX_01_29 — обов'язковість `items`, `nextItem`, `docChecked`; (8) SP_CTX_02_13 — тип результату QueueTagReplacements; (9) SP_CTX_02_30 — ланцюжки в DetectOptimize. Пункт у backlog PL_FOLD.
 - 2026-11-14 — Раунд 1 рев'ю специфікації й плану, база: `cee2907` + робоче дерево на 21:21; у раунд 2 перенесено F1–F18.
 - 2026-11-14 — Розвідка контрактів знайшла дев'ять розбіжностей між чинною специфікацією SP_CTX і кодом (попередження проти відмови за слова людини, формат тексту переписаного слота, шляхи архівів та ін.); поза обсягом цієї задачі, кандидат на `/dev-flow audit docs`.
@@ -53,6 +66,17 @@ Activity:
 - answer `risk-awaiting` `C_FOLD_DEC_10-person-words` #1 → `accept` — [claude-session-90e21609] 2026-11-14
 - row `risk-awaiting` `C_FOLD_DEC_14-premise` #1 — користь картки завдання й згадування не виміряна — [claude-session-90e21609] 2026-11-14
 - answer `risk-awaiting` `C_FOLD_DEC_14-premise` #1 → `handle` — [claude-session-90e21609] 2026-11-14
+
+## Relevant Context
+
+- `docs/context_folds.concept.md` — концепт C_FOLD: 15 рішень; DEC_14 відкрите (порівняльний прогін після фази 3 плану), DEC_15 — безпекові механізми відкладено. [claude-session-90e21609]
+- `docs/context_folds.sp.md` — специфікація SP_FOLD: контракти 02_01–02_09, таблиця змінених розділів SP_CTX (§03_03). [claude-session-90e21609]
+- `docs/context_folds.plan.md` — план PL_FOLD: шість фаз, backlog. [claude-session-90e21609]
+- `docs/context_service_info.spike.md` — спайк-джерело: Entry 9–13 (думковий експеримент, рамка розробника, зонди, живе застосування). [claude-session-90e21609]
+- `docs/_glossary.md` — терміни: область, згортка, згадане, службова вставка. [claude-session-90e21609]
+- `.dev_flow/skills/context-editing/service-info-evidence.md`, `.dev_flow/skills/claude-code/plugin-hooks.md` (`stale`, 2.1.296; хост 2.1.325). [claude-session-90e21609]
+- `.dev_flow/proto/recall/probe/`, `.dev_flow/proto/trailer/` — прототипи зондів поза обліком git: емулятор згортання, драйвери, результати прогонів. [claude-session-90e21609]
+- Код фази 1: `mods/context-editor/hooks/{compaction,edits,rows,queue,stages,tools,store,register}.ts`; новий `hooks/folds.ts`, `tests/folds.test.ts`. [claude-session-90e21609]
 
 ## Coordination Notes
 
