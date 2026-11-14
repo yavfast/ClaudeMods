@@ -25,7 +25,7 @@ The parent file [`../active_context.md`](../active_context.md) is a thin dashboa
 
 - [task_C_CTX](task_C_CTX.md) — `bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6` — `plan` — Редактор контексту агента: фази PL_CTX 1–46 закомічені, відкрите — backlog PL_CTX
 - [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md) — `decd4bc6, d5614704, 355660b2` — `verify` — Динамічна оптимізація частини контексту за етапами; практика на реальних задачах (P1–P25)
-- [task_C_FOLD](task_C_FOLD.md) — `90e21609` — `spec` — Згортки й пам'ять завдань: концепт C_FOLD (draft)
+- [task_C_FOLD](task_C_FOLD.md) — `90e21609` — `plan` — Згортки й пам'ять завдань: концепт, специфікація й план (draft)
 
 ## Recently Completed
 

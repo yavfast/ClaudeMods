@@ -9,7 +9,9 @@
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): спільні філософія й обмеження хоста, склад набору, покажчик рішень C_CTX_DEC_*; дочірні концепти — ядро й інструменти, методи оптимізації контексту, курування історії |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, покажчик рішень SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
 | [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–47 виконано, фаза 48 (заголовок сесії) в роботі (38 — можливості хоста, 39–46 — курування історії, 47 — тека архівів від кореня проєкту сесії); backlog відкритий |
-| [context_folds.concept.md](context_folds.concept.md) | C_FOLD | draft | Концепт згорток і пам'яті завдань: згортка як єдина дія, вкладені області, покрокове розгортання в кінець контексту з поверненням, картки завдань, вставки після ходу, довіра за авторством; спирається на C_CTX і змінює шість його правил; відкрите рішення DEC_14 з тригером |
+| [context_folds.concept.md](context_folds.concept.md) | C_FOLD | draft | Концепт згорток і пам'яті завдань: згортка як єдина дія, вкладені області, покрокове розгортання в кінець контексту з поверненням, картки завдань, вставки після ходу, довіра за авторством; спирається на C_CTX і змінює шість його правил; відкрите рішення DEC_14 з тригером; безпекові механізми відкладено (DEC_15) |
+| [context_folds.sp.md](context_folds.sp.md) | SP_FOLD | draft | Специфікація згорток: облік згорток, інструмент розгортання `context_recall`, повернення згаданого, згортка зі словами людини й обходом пінів, ланцюжок областей, службові вставки; таблиця змінених розділів SP_CTX |
+| [context_folds.plan.md](context_folds.plan.md) | PL_FOLD | draft | План: шість фаз у моді context-editor; фаза 4 — порівняльний прогін, якого чекають вкладені області й вставки |
 
 ## Maps
 
@@ -76,7 +78,9 @@
 | `SP_CTX_DEC_21`–`DEC_38`, `DEC_45` | [context_editor.decisions-21.sp.md](context_editor.decisions-21.sp.md) |
 | `SP_CTX_02`, `SP_CTX_03`, `SP_CTX_05`, `SP_CTX_06`, `SP_CTX_DEC` (покажчик рішень) | [context_editor.sp.md](context_editor.sp.md) |
 | `PL_CTX` | [context_editor.plan.md](context_editor.plan.md) |
-| `C_FOLD`, `C_FOLD_01`–`C_FOLD_04`, `C_FOLD_DEC_01`–`14` | [context_folds.concept.md](context_folds.concept.md) |
+| `C_FOLD`, `C_FOLD_01`–`C_FOLD_04`, `C_FOLD_DEC_01`–`15` | [context_folds.concept.md](context_folds.concept.md) |
+| `SP_FOLD`, `SP_FOLD_01`–`SP_FOLD_06`, `SP_FOLD_DEC_01`–`08` | [context_folds.sp.md](context_folds.sp.md) |
+| `PL_FOLD`, `PL_FOLD_P1`–`P6`, `PL_FOLD_DEC_01`–`02` | [context_folds.plan.md](context_folds.plan.md) |
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
 Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` і `context_editor.{edits,structures}.sp.log.md` (поза перевірками цілісності).
