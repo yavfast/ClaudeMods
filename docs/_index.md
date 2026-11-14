@@ -9,12 +9,14 @@
 | [context_editor.concept.md](context_editor.concept.md) | C_CTX | active | Концепт мода-редактора контексту (парасолька набору): спільні філософія й обмеження хоста, склад набору, покажчик рішень C_CTX_DEC_*; дочірні концепти — ядро й інструменти, методи оптимізації контексту, курування історії |
 | [context_editor.sp.md](context_editor.sp.md) | SP_CTX | active | Специфікація (парасолька набору): правила валідації, відкат, покажчик рішень SP_CTX_DEC_*, перелік дочірніх файлів зі структурами, контрактами за модулями, станами і критеріями перевірки |
 | [context_editor.plan.md](context_editor.plan.md) | PL_CTX | in-progress | План (парасолька): мета, технологічні рішення, прогрес, таблиця фаз, backlog, рішення; кожна фаза — у дочірньому `context_editor.p<NN>.plan.md`. Фази 1–47 виконано, фаза 48 (заголовок сесії) в роботі (38 — можливості хоста, 39–46 — курування історії, 47 — тека архівів від кореня проєкту сесії); backlog відкритий |
+| [context_folds.concept.md](context_folds.concept.md) | C_FOLD | draft | Концепт згорток і пам'яті завдань: згортка як єдина дія, вкладені області, покрокове розгортання в кінець контексту з поверненням, картки завдань, вставки після ходу, довіра за авторством; спирається на C_CTX і змінює шість його правил; відкрите рішення DEC_14 з тригером |
 
 ## Maps
 
 | File | Що це |
 |------|-------|
 | [_framework.md](_framework.md) | Архітектурна карта коду мода: шари модулів `hooks/*.ts`, шаблон портів, де живе стан, заплановані абстракції з аудиту коду (ведуть лише onboard і `audit code`) |
+| [_glossary.md](_glossary.md) | Канонічні терміни предметної області (область, згортка, згадане, вставка тощо) з посиланням на концепт, що їх визначає |
 
 ## Spikes
 
@@ -34,6 +36,7 @@
 | [context_editor_hostrows.spike.md](context_editor_hostrows.spike.md) | concluded | Рядки, які додає хост (`isMeta`: розгорнуті навички, звіти субагентів, примітки до команд): ні перегляд `$.session.messages()`, ні `e.messages` обробника їх не мають; після застосування хост повертає кожен за рядком перед ним, якщо той зберіг `handle`; мод записує їх при `session.append` |
 | [context_editor_session_title.spike.md](context_editor_session_title.spike.md) | concluded | Заголовок сесії за темою задачі: `/rename` через `$.command.run` працює в терміналі й stream-json, заголовок доходить до людини й VS Code; ціна — три рядки в розмові на запуск, у терміналі ще нагадування «The user named this session» |
 | [context_editor_uses.spike.md](context_editor_uses.spike.md) | concluded | Інші застосування вільного редагування попередніх повідомлень, крім стиснення: правка історії як важіль поведінки, урок замість сирої невдачі, «вигляд ≠ запис», «присвоювати дію, а не зміст»; thinking-підписи й авто-режим як обмеження |
+| [context_service_info.spike.md](context_service_info.spike.md) | concluded | Службова інформація в контексті чату як універсальний інструмент агента: мод уже несе всі чотири класи, бракує узагальнення; «змінне поза контекстом, у хвіст лише незмінне», «справжність маркера дає канал»; 29 варіантів — 10 варті концепту, 13 потребують даних; думковий експеримент нескінченної сесії, рамка розробника, два живі зонди; джерело концепту C_FOLD |
 
 ## ID prefixes
 
@@ -73,6 +76,7 @@
 | `SP_CTX_DEC_21`–`DEC_38`, `DEC_45` | [context_editor.decisions-21.sp.md](context_editor.decisions-21.sp.md) |
 | `SP_CTX_02`, `SP_CTX_03`, `SP_CTX_05`, `SP_CTX_06`, `SP_CTX_DEC` (покажчик рішень) | [context_editor.sp.md](context_editor.sp.md) |
 | `PL_CTX` | [context_editor.plan.md](context_editor.plan.md) |
+| `C_FOLD`, `C_FOLD_01`–`C_FOLD_04`, `C_FOLD_DEC_01`–`14` | [context_folds.concept.md](context_folds.concept.md) |
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
 Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` і `context_editor.{edits,structures}.sp.log.md` (поза перевірками цілісності).

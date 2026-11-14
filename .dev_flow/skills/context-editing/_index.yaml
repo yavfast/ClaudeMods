@@ -1,6 +1,6 @@
 domain: context-editing
-description: Знання для дизайну мода context-editor — що виміряно про редагування агентом власної історії, правила й ризики
-updated: 2026-10-16
+description: Знання для дизайну мода context-editor — що виміряно про редагування агентом власної історії та про службову інформацію навколо повідомлень (згортки, згадування, вставки), правила й ризики
+updated: 2026-11-14
 
 skills:
   - file: history-editing-evidence.md
@@ -9,4 +9,11 @@ skills:
     source: research
     updated: 2026-10-16
     written_against: 'література до 2026-09 (заморожені моделі); документація Claude API 2026-10; Claude Code 2.1.296'
+    promotion: candidate
+  - file: service-info-evidence.md
+    skill: ServiceInfoEvidence
+    topics: [service-info, folds, recall, trailers, annotations, tags, notes, metrics, budget-awareness, telemetry, sidecar, archives, markers, in-band-signalling, delimiter-forgery, prompt-injection, memory-poisoning, prompt-cache]
+    source: research
+    updated: 2026-11-14
+    written_against: 'література й документація вендорів, відкриті 2026-11-14; документація Claude API 2026-11; канали хоста — з навички plugin-hooks (Claude Code 2.1.296, stale); живі зонди — Claude Code 2.1.325, stream-json'
     promotion: candidate

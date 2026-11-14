@@ -1,4 +1,4 @@
-updated: 2026-10-17
+updated: 2026-11-14
 
 domains:
   - path: claude-code/
@@ -6,6 +6,6 @@ domains:
     topics: [claude-code, plugin, hooks, mod, session.compact, session.append, tool.call, prompt.submit, command.run, prompt-cache, install]
     applies_to: { paths: ["mods/**"], phases: [implement, fix, test, review, verify] }
   - path: context-editing/
-    description: Редагування агентом власної історії — виміряні ефекти, правила дизайну й ризики (спайк context_editor_uses)
-    topics: [context-editing, self-editing, history, lessons, interference, provenance, trust-framing, prompt-injection, thinking-signatures, auto-mode]
-    applies_to: { paths: ["mods/context-editor/**", "docs/context_editor*"], phases: [research, concept, spec, plan, implement, review] }
+    description: Редагування агентом власної історії та службова інформація навколо повідомлень — виміряні ефекти, правила дизайну й ризики (спайки context_editor_uses, context_service_info)
+    topics: [context-editing, self-editing, history, lessons, interference, provenance, trust-framing, prompt-injection, thinking-signatures, auto-mode, service-info, annotations, metrics, markers, folds, recall, trailers]
+    applies_to: { paths: ["mods/context-editor/**", "docs/context_editor*", "docs/context_folds*", "docs/context_service_info*"], phases: [research, concept, spec, plan, implement, review] }
