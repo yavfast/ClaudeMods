@@ -150,11 +150,11 @@ Targets of add and remove: exactly one of "tool_use_id" (a call with its result)
 
 Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index". Opening a stage closes an open stage, unless "nested": true opens it inside. {"op":"open","task":"<name>"} starts a task, the outermost region, closing every open one. {"op":"close"} closes the deepest region, with "task": true the task and all inside it: its result names the block's rows #a..#b, size, candidates and advice; then compress what is processed with ONE ${EDIT} (a task into a task card). A block you did not open: open with the "index" of its first row, then close, in one call.
 
-Title: {"op":"title","text":"<topic>"} renames the session after the turn when the topic changes, unless the person named it.
+Title: {"op":"title","text":"<topic>"} renames the session after the turn on a topic change, unless the person named it.
 
 Kinds (op "add"):
 - "pin": nothing may edit the target, not even a disposable tag's replacement. Pins are yours to set and remove.
-- "disposable" + "note": once you close a region or move on from a block you marked, your note replaces the target; the original is archived. Write in it every fact you still need. By index alone only your own assistant text rows.
+- "disposable" + "note": once this tool closes a region or you move on from a block you marked, your note replaces the target; the original is archived. Put in it every fact you still need. By index alone only your own assistant text rows.
 - "review" (optional "ttl_turns"): your marker, shown after ttl_turns turns. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
 - "state": your one state slot, an assistant text row by "index"; change it by a rewrite of that row, or by the state op of ${EDIT} once it has items; a new state tag moves it.
 

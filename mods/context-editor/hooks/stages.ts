@@ -21,6 +21,7 @@ import {
   indexRows,
   listMode,
   listRows,
+  oneLine,
   locate,
   MAX_BLOCK_INDEXES,
   MAX_LIST_COUNT,
@@ -44,11 +45,13 @@ import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
-import { afterReminders, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
+import { afterReminders, applyNoteRequests, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
+import { answerRow, OPTIMIZE_MARK, parseTrailers } from './trailers'
 
 // ---- [SP_CTX_01_12] constants
 
-export const OPTIMIZE_MARK = '[context-editor: optimize]'
+// [SP_FOLD_01_06] the trailer `optimize` (trailers.ts)
+export { OPTIMIZE_MARK }
 // the breakdown row with the conversation's rows without the fixed part
 // (plugin-hooks pitfall 37); found by name, as it has no `kind` of its own
 export const MESSAGES_ROW = 'Messages'
@@ -71,7 +74,7 @@ export const CALIB_TOKENS = 20_000
 
 // [SP_CTX_02_27] [SP_CTX_DEC_11] The intro in the hidden context of the first prompt of a session.
 export const INTRO_TEXT = modText(
-  'you can manage your own context. At the start of a logical stage call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when it is done, {"tags":[{"op":"close"}]} returns its rows, size, candidates and advice, and you compress what is processed there with ONE context_edit (context_recall unfolds a fold record; quote the person\'s words still in force; keep rules and skills in use). If you end your turn with the block done, make [context-editor: optimize] the last line of your answer: the block waits; compress it when the next stage begins. context_list with "count":0 shows telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list). Guide: skill context-editor:context-stages; curation rules: context_list with "rules":true.',
+  'you can manage your own context. At the start of a logical stage call context_tag with {"tags":[{"op":"open","stage":"<name>"}]}; when done, {"tags":[{"op":"close"}]} returns its rows, size, candidates and advice; compress what is processed there with ONE context_edit (context_recall unfolds a fold record; quote the person\'s words still in force; keep rules and skills in use). Trailers end an answer, each on its own line: [context-editor: optimize] (block done: it waits; compress it at the next stage), [context-editor: close] (no wait), [context-editor: note <text>]. context_list with "count":0 shows telemetry. A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work. When edits apply, your own context_* calls are removed from the conversation; tags and notes stay. Guide: skill context-editor:context-stages; curation rules: context_list with "rules":true.',
 )
 
 // [SP_CTX_02_27] [SP_CTX_DEC_36] The opener of the skill's guide in the
@@ -1086,7 +1089,8 @@ export const LIST_HINT =
 
 // [SP_CTX_02_29] [SP_CTX_DEC_15] [SP_CTX_DEC_37] WaitingAdvice: the first
 // prompt after the mark names the waiting block; no indexes, sizes or
-// candidates: the listing shows the block's bounds.
+// candidates: the listing shows the block's bounds. A waiting task block
+// gets TASK_CARD, as its close report does ([SP_FOLD_02_05]).
 export function waitingAdvice(block: ClosedBlock, notes = 0): string {
   return (
     modText(`you ended your previous answer with ${OPTIMIZE_MARK}; ${blockName(block)} waits for compression.`) +
@@ -1094,7 +1098,8 @@ export function waitingAdvice(block: ClosedBlock, notes = 0): string {
     LIST_HINT +
     notesHint(notes) +
     '\n' +
-    STAGE_ADVICE
+    STAGE_ADVICE +
+    (isTask(block) ? ' ' + TASK_CARD : '')
   )
 }
 
@@ -1112,7 +1117,7 @@ export function compactTurnText(notes = 0): string {
     notesHint(notes) +
     '\n' +
     STAGE_ADVICE +
-    '\nThe session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if a task was running and should go on. End your turn with a one-line status. The optimization mark has no effect in this turn.'
+    '\nThe session stops after this batch: pass "resume": true (or a resume_prompt) in context_edit only if a task was running and should go on. End your turn with a one-line status. Trailer lines have no effect in this turn.'
   )
 }
 
@@ -1177,13 +1182,6 @@ export function endWaiting<R extends TagRegistry>(reg: R): { registry: R; block:
 
 // ---- [SP_CTX_02_30] DetectOptimize
 
-// LastLine(answer) = OPTIMIZE_MARK: the last line that is not empty once
-// trimmed, compared verbatim, case included.
-export function hasOptimizeMark(answer: string | undefined): boolean {
-  const lines = (answer ?? '').split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-  return lines.at(-1) === OPTIMIZE_MARK
-}
-
 // [SP_CTX_02_30] [SP_CTX_DEC_14] The block of the mark: a region closed by
 // the tool in this turn stays the block (a region opened after it stays
 // open); else the deepest open region closes at the end of the turn
@@ -1215,6 +1213,20 @@ export function markClose(reg: TagRegistry, rows: readonly SessionMessage[]): Ta
   return { ...rest, lastClosed: block, waiting: 'marked' }
 }
 
+// [SP_FOLD_02_06] The trailer `close`, `count` times at the end of the turn:
+// each closes the deepest open region without waiting; the block, the
+// outermost region closed, ends at the end of the turn. A block still
+// waiting ends first, as when the tool closes a region ([SP_CTX_DEC_37]);
+// nothing is queued. `depth`: the length of the chain left. Undefined when no
+// region is open. Lost starts become null. Pure.
+export function closeAtTurnEnd<R extends TagRegistry>(reg: R, rows: readonly SessionMessage[], count: number): { registry: R; depth: number } | undefined {
+  const r = normalizeLost(reg, rows)
+  const chain = chainOf(r)
+  if (!chain.length || count < 1) return undefined
+  const closed = closeStage(endWaiting(r)?.registry ?? r, rows, rows.length, Math.max(0, chain.length - count))!
+  return { registry: closed.registry, depth: closed.depth }
+}
+
 // What DetectOptimize needs from the host; register.ts binds it to `$`.
 export type DetectIO = {
   ready: () => Promise<boolean>
@@ -1236,6 +1248,9 @@ export type DetectIO = {
   markDue?: (after: number) => Promise<void>
 }
 
+// [SP_FOLD_02_06] how much of an unknown trailer line the person's status line repeats
+export const TRAILER_ECHO = 80
+
 export type DetectOutcome =
   | 'none'
   | 'in-optimization'
@@ -1244,11 +1259,18 @@ export type DetectOutcome =
   | 'handoff'
   | 'registry-unreadable'
   | 'waiting'
+  // [SP_FOLD_02_06] `close` or `note` ran, without `optimize`
+  | 'trailers'
 
-// [SP_CTX_02_30] At the end of a turn of the main conversation (completed or
-// aborted), before TagRegistry.turn += 1 and before Flush is planned. The
-// mark closes the block and leaves it waiting: no optimization turn, nothing
-// queued ([SP_CTX_DEC_37]). The end of the turn after the compression prompt
+// [SP_CTX_02_30] [SP_FOLD_02_06] At the end of a turn of the main
+// conversation (completed or aborted), before TagRegistry.turn += 1 and
+// before Flush is planned, the trailers of the answer run in the order of
+// their lines. The mark (`optimize`) closes the block and leaves it waiting:
+// no optimization turn, nothing queued ([SP_CTX_DEC_37]); with it the
+// answer's `close` lines do not run. `close` closes the deepest open region
+// without waiting; `note` puts a note on the row of the answer. An unknown
+// trailer and a note not saved give the person a status line; no signal
+// queues an edit or starts an apply. The end of the turn after the compression prompt
 // of the person's /compact takes the loop guard down and ignores the mark in
 // it. None of its failures reaches the agent.
 export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer?: string }): Promise<DetectOutcome> {
@@ -1269,36 +1291,84 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
       .catch(() => undefined)
   // COMPACT_NOTHING: the host's summary is never run in its place
   if (compacted?.empty && !e.aborted) io.toast(COMPACT_NOTHING)
-  if (e.aborted || !hasOptimizeMark(e.answer)) return 'none'
+  const t = parseTrailers(e.answer)
+  if (e.aborted || !t.lines.length) return 'none'
   // MARK_IN_OPTIMIZATION: silently ignored; the mod never loops
   if (prompted) return 'in-optimization'
-  const ignored = (why: string) => io.status(modText(`optimization mark ignored: ${why}`))
-  if (!ready) return ignored('storage unavailable'), 'no-storage'
-  const q = await io.readQueue()
-  if (q.state === 'unreadable') return ignored('the queue is unreadable'), 'queue-unreadable'
-  if (q.value.handoff) return ignored('a handoff is pending'), 'handoff'
-  const rows = await io.rows()
+  // [SP_FOLD_02_06] the person's status lines of this turn end, as one line
+  const said: string[] = t.unknown.map(line => `trailer ignored: ${oneLine(line, TRAILER_ECHO)}`)
+  const say = () => void (said.length && io.status(modText(said.join('; '))))
+  const optimize = t.signals.some(s => s.kind === 'optimize')
+  // with `optimize`, the closes of the same answer do not run
+  const closes = optimize ? 0 : t.signals.filter(s => s.kind === 'close').length
+  const notes = t.signals.flatMap(s => (s.kind === 'note' ? [s.text] : []))
+  if (!optimize && !closes && !notes.length) return say(), 'none'
+  // a failure common to every signal that is left
+  const failAll = (why: string, mark = optimize) => {
+    if (mark) said.push(`optimization mark ignored: ${why}`)
+    if (closes) said.push(`trailer close ignored: ${why}`)
+    if (notes.length) said.push(`trailer note not saved: ${why}`)
+  }
+  if (!ready) return failAll('storage unavailable'), say(), 'no-storage'
+  // the mark's own conditions; the notes run without them
+  let markOut: DetectOutcome | undefined
+  if (optimize) {
+    const q = await io.readQueue()
+    const why = q.state === 'unreadable' ? 'the queue is unreadable' : q.value.handoff ? 'a handoff is pending' : undefined
+    if (why) {
+      said.push(`optimization mark ignored: ${why}`)
+      markOut = q.state === 'unreadable' ? 'queue-unreadable' : 'handoff'
+    }
+  }
+  const marks = optimize && !markOut
+  // only the mark was left, and it is ignored
+  if (!marks && !closes && !notes.length) return say(), markOut!
   let regWhy: string | undefined
-  // [SP_FOLD_02_03] the length of the chain the mark left open
-  let depth = 0
+  // [SP_FOLD_02_03] the length of the chain the mark or the closes left; undefined: nothing closed
+  let depth: number | undefined
+  const notSaved: string[] = []
   try {
+    const rows = await io.rows()
     await io.changeTags(read => {
+      depth = undefined
+      notSaved.length = 0
       if (read.state === 'unreadable') {
         regWhy = 'the tag registry is unreadable'
         return undefined
       }
-      const next = markClose(read.value, rows)
-      depth = chainOf(next).length
-      return next
+      let next = read.value
+      if (marks) {
+        next = markClose(next, rows)
+        depth = chainOf(next).length
+      } else if (closes) {
+        const closed = closeAtTurnEnd(next, rows, closes)
+        if (closed) {
+          next = closed.registry
+          depth = closed.depth
+        }
+      }
+      // [SP_CTX_02_32] the notes go on the row of the final answer
+      if (notes.length) {
+        const at = answerRow(rows, t.lines.at(-1)!)
+        if (at === undefined) notSaved.push(...notes.map(() => 'the row of the answer was not found'))
+        else {
+          const out = applyNoteRequests(next, rows, notes.map(text => ({ op: 'add', index: at, text })))
+          if (out.added.length) next = out.registry
+          notSaved.push(...out.rejected.map(r => r.reason.replace(/^note \d+: /, '').replace(/; remove notes you no longer need/, '')))
+        }
+      }
+      return next === read.value ? undefined : next
     })
   } catch (err) {
     regWhy = errorText(err)
   }
-  if (regWhy) return ignored(regWhy), 'registry-unreadable'
+  if (regWhy) return failAll(regWhy, marks), say(), 'registry-unreadable'
+  said.push(...notSaved.map(why => `trailer note not saved: ${why}`))
+  say()
   // [SP_FOLD_02_03] the recalls of the closed block are due (the port logs its own failure)
-  await io.markDue?.(depth).catch(() => undefined)
-  // [SP_CTX_DEC_37] nothing queued: the block waits for the agent's move to the next stage
-  return 'waiting'
+  if (depth !== undefined) await io.markDue?.(depth).catch(() => undefined)
+  // [SP_CTX_DEC_37] nothing queued: the mark's block waits for the agent's move to the next stage
+  return marks ? 'waiting' : (markOut ?? 'trailers')
 }
 
 // ---- [SP_CTX_02_11] context_tag: the carrier row of the call

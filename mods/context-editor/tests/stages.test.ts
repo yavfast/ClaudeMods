@@ -25,10 +25,10 @@ import {
   carrierRow,
   detectOptimize,
   distinctive,
-  hasOptimizeMark,
   GUIDE_FRAME,
   guideText,
   INTRO_TEXT,
+  TRAILER_ECHO,
   introFor,
   withIntroduced,
   LIST_HINT,
@@ -63,7 +63,9 @@ import {
   type UsageInfo,
 } from '../hooks/stages'
 import { contextTag, EMPTY_REGISTRY, parseRegistry, rebindTags, tagLabels, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
+import { MAX_NOTES } from '../hooks/notes'
 import { apiOf, prompt, reg, reply, result, use as callRow, missingRead, okRead, unreadableRead } from './row-fixtures'
+import { parseTrailers } from '../hooks/trailers'
 
 const think = (): SessionMessage => ({ role: 'assistant', text: '', toolUses: [] })
 // every call here reads its own file: the block reports count reproducible pairs by path
@@ -830,6 +832,10 @@ test('WaitingAdvice — без індексів: the block name, move on or leav
   expect(text).not.toContain('optimization turn')
   expect(/#\d/.test(text)).toBe(false)
   expect(waitingAdvice({ ...a, name: undefined })).toContain('the last block (no stage) waits for compression.')
+  expect(text).not.toContain(TASK_CARD)
+  const task = waitingAdvice({ ...a, name: 'T', kind: 'task' })
+  expect(task).toContain('task "T" waits for compression.')
+  expect(task.endsWith(STAGE_ADVICE + ' ' + TASK_CARD)).toBe(true)
 })
 
 test('WaitingAdvice — лише при waiting = marked: adviceFor; AdviseWaiting marked → advised; endWaiting', async () => {
@@ -873,6 +879,9 @@ test('SessionIntro — introFor and withIntroduced with reintroduce', async () =
 test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, close, count 0 and the skill', async () => {
   expect(INTRO_TEXT.length <= 1000).toBe(true)
   expect(INTRO_TEXT.length).toBe(997)
+  expect(INTRO_TEXT).toContain('Trailers end an answer, each on its own line:')
+  // [SP_FOLD_02_06] the three trailers
+  expect(INTRO_TEXT).toContain('[context-editor: close] (no wait), [context-editor: note <text>]')
   // [SP_FOLD_02_02] how to get an original back
   expect(INTRO_TEXT).toContain('context_recall unfolds a fold record')
   // [SP_CTX_02_69] the curation rules
@@ -881,7 +890,7 @@ test('SessionIntro — INTRO_TEXT: at most 1000 chars; holds the mark, open, clo
   expect(INTRO_TEXT).toContain('A [context-editor: suggestion] line may propose compressing earlier outputs, with gain, cache cost and a verdict; it only informs: decide by the logical state of the work.')
   expect(INTRO_TEXT.includes('Nothing reminds you by size')).toBe(false)
   // [SP_CTX_01_12] P13: the sentence about the agent's own calls (keep_cache, which keeps some, is told by its field)
-  expect(INTRO_TEXT).toContain('When edits apply, your own context_* calls are removed from the conversation; tags and notes stay (see context_list).')
+  expect(INTRO_TEXT).toContain('When edits apply, your own context_* calls are removed from the conversation; tags and notes stay.')
   expect(INTRO_TEXT).toContain(OPTIMIZE_MARK)
   expect(INTRO_TEXT).toContain('"op":"open"')
   expect(INTRO_TEXT).toContain('"op":"close"')
@@ -1001,6 +1010,7 @@ test('DetectOptimize — закрито інструментом у цьому �
 })
 
 test('DetectOptimize — the mark only as the last line, verbatim', async () => {
+  const hasOptimizeMark = (a: string) => parseTrailers(a).signals.some(s => s.kind === 'optimize')
   expect(hasOptimizeMark('text\n\n  [context-editor: optimize]  \n\n')).toBe(true)
   for (const no of [
     'x\n[context-editor:optimize]',
@@ -1061,6 +1071,180 @@ test('DetectOptimize — запобіжник петлі: after the /compact com
     expect(regOf(h)!.stage!.name).toBe('S')
     expect(regOf(h)!.lastClosed).toBeUndefined()
   }
+})
+
+// ---- [SP_FOLD_02_06] the trailers at the end of the turn
+
+const T_OPEN = { name: 'T', after: null, openedTurn: 1, kind: 'task' as const }
+const CLOSE = '[context-editor: close]'
+const noteOf = (text: string) => `[context-editor: note ${text}]`
+// the rows of a turn whose last row is the final answer (#21)
+const answered = (text: string) => [...longRows(), reply(text)]
+
+test('Вставки — `optimize` і `close` разом: the region closes and waits; `close` does not run; MarkDue once', async () => {
+  const seen: number[] = []
+  const h = detectHarness(okRead(reg({ turn: 6, outer: [T_OPEN], stage: { name: 'S', after: null, openedTurn: 2 } })), undefined, { markDue: async after => void seen.push(after) })
+  expect(await detectOptimize(h.io, { aborted: false, answer: `Done.\n${CLOSE}\n${OPTIMIZE_MARK}` })).toBe('waiting')
+  expect(regOf(h)!.lastClosed).toEqual({ name: 'S', after: null, end: mark(h.list, 20), turn: 6 })
+  expect(regOf(h)!.waiting).toBe('marked')
+  expect(regOf(h)!.stage).toEqual(T_OPEN)
+  expect(seen).toEqual([1])
+  expect(h.log.statuses).toEqual([])
+})
+
+test('Вставки — два `close`: of a chain of three one region is left; the block is the outer one closed, to the end of the turn; nothing waits', async () => {
+  const seen: number[] = []
+  const list = longRows()
+  const start = reg({ turn: 6, outer: [T_OPEN, { name: 'S1', after: mark(list, 2), openedTurn: 2 }], stage: { name: 'S2', after: mark(list, 6), openedTurn: 3 } })
+  const h = detectHarness(okRead(start), undefined, { markDue: async after => void seen.push(after) })
+  expect(await detectOptimize(h.io, { aborted: false, answer: `Done.\n${CLOSE}\n${CLOSE}` })).toBe('trailers')
+  expect(regOf(h)!.stage).toEqual(T_OPEN)
+  expect(regOf(h)!.outer).toBeUndefined()
+  expect(regOf(h)!.lastClosed).toEqual({ name: 'S1', after: mark(list, 2), end: mark(h.list, 20), turn: 6 })
+  expect(regOf(h)!.waiting).toBeUndefined()
+  expect(seen).toEqual([1])
+  // more closes than regions: the whole chain closes, the task as a task block
+  const all = detectHarness(okRead(start), undefined, { markDue: async after => void seen.push(after) })
+  await detectOptimize(all.io, { aborted: false, answer: [CLOSE, CLOSE, CLOSE, CLOSE].join('\n') })
+  expect(chainOf(regOf(all)!)).toEqual([])
+  expect(regOf(all)!.lastClosed).toEqual({ name: 'T', after: null, end: mark(all.list, 20), turn: 6, kind: 'task' })
+  expect(seen).toEqual([1, 0])
+})
+
+test('Вставки — `close` при блоці, що чекає: the wait ends as when the tool closes; the new block does not wait; nothing is queued', async () => {
+  const list = longRows()
+  const waited = { name: 'A', after: null, end: mark(list, 4), turn: 4 }
+  const h = detectHarness(okRead(reg({ turn: 6, lastClosed: waited, waiting: 'marked', stage: { name: 'B', after: mark(list, 4), openedTurn: 5 } })))
+  expect(await detectOptimize(h.io, { aborted: false, answer: `ok\n${CLOSE}` })).toBe('trailers')
+  expect(regOf(h)!.lastClosed).toEqual({ name: 'B', after: mark(list, 4), end: mark(h.list, 20), turn: 6 })
+  expect(regOf(h)!.waiting).toBeUndefined()
+  expect(h.log.order).toEqual(['tags'])
+})
+
+test('Вставки — нотатка на рядку відповіді: the note targets the row of the final answer; the region stays open', async () => {
+  const list = answered(`Done.\n${noteOf('the fix is in parse.py:78')}`)
+  const h = detectHarness(okRead(reg({ turn: 6, nextNote: 3, stage: { name: 'S', after: null, openedTurn: 2 } })), undefined, { rows: async () => list })
+  expect(await detectOptimize(h.io, { aborted: false, answer: `Done.\n${noteOf('the fix is in parse.py:78')}` })).toBe('trailers')
+  expect(regOf(h)!.notes).toEqual([{ id: 'n3', target: { anchor: fingerprint(list[21]!), hint: 21 }, text: 'the fix is in parse.py:78', createdTurn: 6 }])
+  expect(regOf(h)!.nextNote).toBe(4)
+  expect(regOf(h)!.stage!.name).toBe('S')
+  expect(h.log.statuses).toEqual([])
+})
+
+test('Вставки — нерозпізнане й невдала нотатка: status lines for the person in one line; the other signals run', async () => {
+  const full = Array.from({ length: MAX_NOTES }, (_, i) => ({ id: `n${i + 1}`, target: { tool_use_id: 'p0' }, text: 'x', createdTurn: 0 }))
+  const answer = `Done.\n[context-editor: foo]\n${noteOf('keep this')}\n${CLOSE}`
+  const h = detectHarness(okRead(reg({ turn: 6, notes: full, nextNote: MAX_NOTES + 1, stage: { name: 'S', after: null, openedTurn: 2 } })), undefined, { rows: async () => answered(answer) })
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('trailers')
+  expect(h.log.statuses.length).toBe(1)
+  expect(h.log.statuses[0]!.startsWith('context-editor: trailer ignored: [context-editor: foo]; trailer note not saved: the registry is full')).toBe(true)
+  expect(h.log.statuses[0]).toContain('(NOTES_FULL)')
+  expect(h.log.statuses[0]).not.toContain('remove notes')
+  expect(regOf(h)!.notes.length).toBe(MAX_NOTES)
+  // the close ran
+  expect(regOf(h)!.stage).toBeUndefined()
+  expect(regOf(h)!.lastClosed!.name).toBe('S')
+  // the answer is not among the rows: the note is not saved, said so
+  const lost = detectHarness(okRead(reg({ turn: 6 })))
+  expect(await detectOptimize(lost.io, { aborted: false, answer: `x\n${noteOf('n')}` })).toBe('trailers')
+  expect(lost.log.statuses).toEqual(['context-editor: trailer note not saved: the row of the answer was not found'])
+  expect(lost.log.order).toEqual([])
+  // only unknown lines: the status, nothing else
+  const odd = detectHarness(okRead(reg({ turn: 6 })))
+  expect(await detectOptimize(odd.io, { aborted: false, answer: 'x\n[context-editor: Optimize]' })).toBe('none')
+  expect(odd.log.statuses).toEqual(['context-editor: trailer ignored: [context-editor: Optimize]'])
+  expect(odd.log.order).toEqual([])
+})
+
+test('Вставки — відмови: no storage / unreadable registry name every signal left; a mark ignored for a handoff still saves the note', async () => {
+  const both = `x\n${noteOf('n')}\n${CLOSE}`
+  const down = detectHarness(okRead(reg()), undefined, { ready: async () => false })
+  expect(await detectOptimize(down.io, { aborted: false, answer: both })).toBe('no-storage')
+  expect(down.log.statuses).toEqual(['context-editor: trailer close ignored: storage unavailable; trailer note not saved: storage unavailable'])
+  const unread = detectHarness(unreadableRead('x'))
+  expect(await detectOptimize(unread.io, { aborted: false, answer: both })).toBe('registry-unreadable')
+  expect(unread.log.statuses).toEqual(['context-editor: trailer close ignored: the tag registry is unreadable; trailer note not saved: the tag registry is unreadable'])
+  const text = `x\n${noteOf('n')}\n${OPTIMIZE_MARK}`
+  const handoff = detectHarness(okRead(reg({ turn: 6, stage: { name: 'S', after: null, openedTurn: 2 } })), okRead({ ...EMPTY_QUEUE, handoff: HANDOFF }), { rows: async () => answered(text) })
+  expect(await detectOptimize(handoff.io, { aborted: false, answer: text })).toBe('handoff')
+  expect(handoff.log.statuses).toEqual(['context-editor: optimization mark ignored: a handoff is pending'])
+  expect(regOf(handoff)!.notes.map(n => n.text)).toEqual(['n'])
+  expect(regOf(handoff)!.stage!.name).toBe('S')
+})
+
+test('MarkDue — без області: `optimize` without an open region marks the recalls of depth 0 due; `close` changes nothing', async () => {
+  const seen: number[] = []
+  const opt = detectHarness(okRead(reg({ turn: 6 })), undefined, { markDue: async after => void seen.push(after) })
+  expect(await detectOptimize(opt.io, { aborted: false, answer: `x\n${OPTIMIZE_MARK}` })).toBe('waiting')
+  expect(seen).toEqual([0])
+  const close = detectHarness(okRead(reg({ turn: 6 })), undefined, { markDue: async after => void seen.push(after) })
+  expect(await detectOptimize(close.io, { aborted: false, answer: `x\n${CLOSE}` })).toBe('trailers')
+  expect(seen).toEqual([0])
+  expect(close.log.order).toEqual([])
+  expect(close.log.statuses).toEqual([])
+})
+
+test('Вставки — межові випадки: CRLF, aborted, failed write or read, unreadable queue, close while a block waits without a region, a long unknown line', async () => {
+  const S = { name: 'S', after: null, openedTurn: 2 }
+  // CRLF line ends read as LF
+  const crlf = `Done.\r\n${noteOf('n')}\r\n${CLOSE}\r\n`
+  const c = detectHarness(okRead(reg({ turn: 6, stage: S })), undefined, { rows: async () => answered(crlf) })
+  expect(await detectOptimize(c.io, { aborted: false, answer: crlf })).toBe('trailers')
+  expect(regOf(c)!.stage).toBeUndefined()
+  expect(regOf(c)!.notes.map(n => n.text)).toEqual(['n'])
+  // an aborted turn runs no trailer, says nothing
+  const both = `x\n${noteOf('n')}\n${CLOSE}`
+  const ab = detectHarness(okRead(reg({ turn: 6, stage: S })), undefined, { rows: async () => answered(both) })
+  expect(await detectOptimize(ab.io, { aborted: true, answer: both })).toBe('none')
+  expect(regOf(ab)!.stage!.name).toBe('S')
+  expect(ab.log.order).toEqual([])
+  expect(ab.log.statuses).toEqual([])
+  // the registry write fails: every signal left is named with the error
+  const wr = detectHarness(okRead(reg({ turn: 6, stage: S })), undefined, { rows: async () => answered(both), changeTags: async () => { throw new Error('disk full') } })
+  expect(await detectOptimize(wr.io, { aborted: false, answer: both })).toBe('registry-unreadable')
+  expect(wr.log.statuses).toEqual(['context-editor: trailer close ignored: disk full; trailer note not saved: disk full'])
+  // the read of the conversation fails: the same status line, not silence
+  const rd = detectHarness(okRead(reg({ turn: 6, stage: S })), undefined, { rows: async () => { throw new Error('no rows') } })
+  expect(await detectOptimize(rd.io, { aborted: false, answer: both })).toBe('registry-unreadable')
+  expect(rd.log.statuses).toEqual(['context-editor: trailer close ignored: no rows; trailer note not saved: no rows'])
+  expect(regOf(rd)!.stage!.name).toBe('S')
+  // an unreadable queue stops the mark, not the note of the same answer
+  const text = `x\n${noteOf('n')}\n${OPTIMIZE_MARK}`
+  const q = detectHarness(okRead(reg({ turn: 6, stage: S })), unreadableRead('x'), { rows: async () => answered(text) })
+  expect(await detectOptimize(q.io, { aborted: false, answer: text })).toBe('queue-unreadable')
+  expect(q.log.statuses).toEqual(['context-editor: optimization mark ignored: the queue is unreadable'])
+  expect(regOf(q)!.notes.map(n => n.text)).toEqual(['n'])
+  expect(regOf(q)!.stage!.name).toBe('S')
+  // `close` with no open region while a block waits: nothing closes, the wait stays
+  const list = longRows()
+  const waited = { name: 'A', after: null, end: mark(list, 4), turn: 4 }
+  const w = detectHarness(okRead(reg({ turn: 6, lastClosed: waited, waiting: 'marked' })))
+  expect(await detectOptimize(w.io, { aborted: false, answer: `ok\n${CLOSE}` })).toBe('trailers')
+  expect(regOf(w)!.waiting).toBe('marked')
+  expect(regOf(w)!.lastClosed).toEqual(waited)
+  expect(w.log.order).toEqual([])
+  // a long unknown line is cut in the person's status line; a full registry's reason has no advice for the agent
+  const long = `x\n[context-editor: ${'y'.repeat(200)}]`
+  const l = detectHarness(okRead(reg({ turn: 6 })))
+  expect(await detectOptimize(l.io, { aborted: false, answer: long })).toBe('none')
+  expect(l.log.statuses[0]).toBe(`context-editor: trailer ignored: [context-editor: ${'y'.repeat(TRAILER_ECHO - 17)}…`)
+})
+
+test('Вставки не запускають застосування (05_02): a turn with trailers only leaves the empty queue as it was', async () => {
+  const answer = `Done.\n${noteOf('n')}\n${CLOSE}`
+  const h = detectHarness(okRead(reg({ turn: 6, stage: { name: 'S', after: null, openedTurn: 2 } })), undefined, { rows: async () => answered(answer) })
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('trailers')
+  expect(queueOf(h)).toEqual({ ...EMPTY_QUEUE })
+  expect(h.log.order).toEqual(['tags'])
+})
+
+test('Вставка в ході оптимізації після /compact (05_04): not run; the region stays open; no status', async () => {
+  const answer = `Done.\n${noteOf('n')}\n${CLOSE}`
+  const h = detectHarness(okRead(reg({ stage: { name: 'S', after: null, openedTurn: 0 } })), okRead({ ...EMPTY_QUEUE, optimizePrompted: true }), { rows: async () => answered(answer) })
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('in-optimization')
+  expect(regOf(h)!.stage!.name).toBe('S')
+  expect(regOf(h)!.notes).toEqual([])
+  expect(h.log.statuses).toEqual([])
 })
 
 test('markClose: a lost stage start becomes null; a lost lastClosed.end stays as the next block start', async () => {

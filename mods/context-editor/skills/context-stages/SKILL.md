@@ -1,11 +1,11 @@
 ---
 name: context-stages
-description: Open this for a long or multi-stage task with the context-editor mod: when to open and close stages, how to compress a finished block, the optimization mark, the telemetry, and what "Later, your context_…" or [context-editor] rows mean.
+description: Open this for a long or multi-stage task with the context-editor mod: when to open and close stages, how to compress a finished block, the trailer lines, the telemetry, and what "Later, your context_…" or [context-editor] rows mean.
 ---
 
 # Managing your context in stages
 
-The context-editor mod lets you edit your own conversation. You decide when to clean, by the logical state of the work. Attention degrades as the context grows: compress what is processed once a piece of work is done.
+The context-editor mod lets you edit your own conversation. Attention degrades as the context grows: compress what is processed once a piece of work is done.
 
 Tools: `context_tag`, `context_list`, `context_edit`, `context_note`, `context_recall`. Curation rules (lessons from failures, corrections, quoting, state items, host rows): `context_list` with `"rules": true`.
 
@@ -23,7 +23,7 @@ A closed task becomes a task card, one `collapse` of its whole block: goal; what
 
 ## Compressing a block
 
-After a close, review the block as a whole and queue ONE `context_edit` for what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media you have already looked at (`describe` for an image, document or pasted text in the person's prompt keeps their typed words; the host's attachments to that prompt go with it). If nothing needs compressing, queue nothing.
+After a close, review the block as a whole and queue ONE `context_edit` for what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media you have already looked at (`describe` on media or pasted text in the person's prompt keeps their typed words; the host's attachments to it go too). If nothing needs compressing, queue nothing.
 
 Write a stage record in place of the processed rows, e.g. as the summary of a `collapse`:
 
@@ -35,24 +35,23 @@ Write a stage record in place of the processed rows, e.g. as the summary of a `c
 
 Pairs flagged `~` in `context_list` (`Read`, `Grep`, `Glob`) are reproducible: shrink them to a pointer (what, where, what was found; read again if needed). Everything else needs a careful summary or stays: live probes, subagent reports, web content. A `collapse` may cover the person's messages and answers (`AskUserQuestion`): they go to the archive, so quote in the record what is still in force, or list rows to stay verbatim in `"keep"`. It goes around `[pin]` and `[state]` rows.
 
-Usually keep verbatim the rules and skills still in force and the conclusions you need next. A `[pin]` target cannot be edited; pins are yours to set and remove (the mod pins only a handoff's document or seed summary).
+Usually keep verbatim the rules and skills still in force and the conclusions you need next. A `[pin]` target cannot be edited; pins are yours to set and remove (the mod pins only what a handoff seeds).
 
 Edits apply when your turn ends: end it with a one-line status, and the session resumes by itself. An apply rewrites the prompt cache once: batch a block's edits in one call. `"keep_cache": true` keeps it up to the earliest edit (the `Cache:` line says when that pays). Your `context_*` calls leave the conversation; tags and notes stay.
 
 ## Dead ends
 
-When you abandon a branch, mark it at once: tag the span `disposable` with a note, `{"op":"add","kind":"disposable","index":<first row>,"to":<last row>,"note":"dead end: X fails because Y"}`. A single text row of yours or an output by `ref`/`tool_use_id` works too. The replacements are queued when you close the stage or move on from a block you marked; a range becomes one `collapse`.
+When you abandon a branch, mark it at once: tag the span `disposable` with a note, `{"op":"add","kind":"disposable","index":<first row>,"to":<last row>,"note":"dead end: X fails because Y"}`. A single text row of yours or an output by `ref`/`tool_use_id` works too. The replacements are queued when the tool closes the stage or you move on from a block you marked; a range becomes one `collapse`.
 
-## Optimization mark
+## Trailers
 
-When you finish your turn for the person and the block is done, end your answer with this line, on its own:
+Each alone on one of an answer's last non-empty lines (at most 5):
 
-[context-editor: optimize]
+- `[context-editor: optimize]` when you end a turn for the person with the block done. It closes the deepest open region (none: the block since the last closed one; a region the tool closed that turn stays the block), which then waits, uncompressed. The next prompt names it: compress it then if the work moves on, else leave it. Opening a stage reports it with indexes; that or an accepted `context_edit` ends the wait.
+- `[context-editor: close]` closes the deepest open region, one per line, none with `optimize`: no report, no wait, nothing queued; a waiting block stops waiting.
+- `[context-editor: note <text>]` puts a one-line note on this answer.
 
-- Only alone on the last non-empty line; elsewhere, or in the `/compact` turn, it does nothing.
-- It closes the deepest open region (if none: the block since the last closed one; a region closed by the tool in that turn stays the block). The block then waits; nothing is compressed.
-- The next prompt names the block: compress it in that turn if the work moves on, else leave it. Opening a stage reports it with indexes; that or an accepted `context_edit` ends the wait and queues your `disposable` replacements.
-- Following a plan on your own: open a stage per phase; at the next one compress the previous block and end the turn with a status line; the session resumes. Mid-work, close stages by the tool.
+Elsewhere, or in the `/compact` turn, they do nothing. Following a plan on your own: a stage per phase; at the next one compress the previous block and end the turn with a status line; the session resumes. Mid-work, close stages by the tool.
 
 ## Telemetry
 
@@ -67,7 +66,7 @@ The close report lists them, with ready texts for outdated and duplicate reads.
 
 ## State slot
 
-Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state. Or keep it as items: `context_edit` with `{"op":"state","changes":[{"do":"add","kind":"plan","text":"…"}]}` (`set`, `mark` harmful/outdated, `unmark`, `remove` by id such as `p3`); the apply rebuilds the slot from them, and while it has items only the `state` op changes it. The tag follows the rebuilt row. Each update is an apply: do it together with a block's edits, not on its own.
+Keep the task's state (goal, plan, done, next) in ONE of your own text rows tagged `state`: `{"tags":[{"op":"add","kind":"state","index":<row>}]}`. Update it in place with a `rewrite` of that row, never by appending a new state. Or keep it as items: `context_edit` with `{"op":"state","changes":[{"do":"add","kind":"plan","text":"…"}]}` (`set`, `mark` harmful/outdated, `unmark`, `remove` by id such as `p3`); the apply rebuilds the slot from them, and while it has items only the `state` op changes it. The tag follows the rebuilt row. Each update is an apply: batch it with a block's edits.
 
 ## Notes
 
