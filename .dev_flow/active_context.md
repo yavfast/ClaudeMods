@@ -6,7 +6,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 - `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog PL_CTX (фази 1–48 закомічені; фаза 48 — заголовок сесії) — branch `main` — 2026-10-21
 - `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: практика — реальна довга задача з модом (≥150k, opus), потім розбір сесії → P26+ — branch `main` (= `feat/context-editor`) — 2026-10-11
-- `/dev-flow resume task_C_FOLD` — `verify` — next: рішення розробника про межі блоку завдання (знахідка живого прогону в терміналі) і про push; регресія й живі прогони PL_FOLD зелені — branch `main`, фази 1–3 запушені, фази 4–6 закомічені, verify не закомічено — 2026-11-15 15:57
+- `/dev-flow resume task_C_FOLD` — `verify` — next: push PL_FOLD (розробник: «Після виправлення»), потім рішення про закриття задачі чи backlog — branch `main`, межі завдання від запиту закомічено — 2026-11-15 16:37
 
 ## Active Tasks
 
@@ -14,7 +14,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 |------|-------|--------|--------------|---------|
 | [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan (backlog PL_CTX; фази 1–47 закомічені) | in-progress | bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6, a477d71d | 2026-10-21 |
 | [task_20261010_083402_stage-cleanup](tasks/task_20261010_083402_stage-cleanup.md) — Динамічна оптимізація частини контексту за етапами | verify (практика) | in-progress | decd4bc6, d5614704, 355660b2 | 2026-10-17 |
-| [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | verify (фази 1–6 PL_FOLD закомічені; регресія й живі прогони зелені; рішення про межі блоку завдання) | in-progress | 90e21609, 85408971 | 2026-11-15 |
+| [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | verify (PL_FOLD фази 1–6, verify і межі завдання від запиту закомічені; push) | in-progress | 90e21609, 85408971 | 2026-11-15 |
 
 ## Recently Completed
 

@@ -8,6 +8,7 @@
 // value of one module reads the other's.
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, type AliasRegistry } from './aliases'
+import { personText } from './deliveries'
 import { PASSED_ADVICE } from './capabilities'
 import {
   apiCut,
@@ -25,6 +26,7 @@ import {
   locate,
   MAX_BLOCK_INDEXES,
   MAX_LIST_COUNT,
+  OWN_TOOLS,
   ownerKey,
   REPRO_FLAG,
   REPRODUCIBLE_TOOLS,
@@ -40,7 +42,7 @@ import {
 import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
 import { BAD_FOLDS, foldsList, recallsHeader, type FoldLedger } from './folds'
 import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './hostrows'
-import { apiChars, charsOf, errorText, findToolUse, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
+import { apiChars, charsOf, errorText, findToolUse, isPromptRow, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { JournalSummary } from './journal'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
@@ -172,12 +174,32 @@ export function chainStarts(rows: readonly SessionMessage[], chain: readonly Sta
   return out
 }
 
+// [SP_FOLD_02_05] TurnPrompt: the person's request of a call at `carrier`,
+// the last PromptRow before it with the person's words (PersonText) or with
+// no text (media alone); the mod's resume prompts, its /compact rows and the
+// host's notifications are no request. -1 when none.
+export function turnPrompt(rows: readonly SessionMessage[], carrier: number): number {
+  for (let k = Math.min(carrier, rows.length) - 1; k >= 0; k--) {
+    const row = rows[k]!
+    if (isPromptRow(row) && (row.text.trim() === '' || personText(row.text) !== '')) return k
+  }
+  return -1
+}
+
+// [SP_FOLD_02_05] TurnWorked: a row after the request `p` and before the
+// carrier holds a call other than the mod's own.
+export function turnWorked(rows: readonly SessionMessage[], p: number, carrier: number): boolean {
+  for (let k = p + 1; k < Math.min(carrier, rows.length); k++) if (rows[k]!.toolUses.some(u => !u.tool.startsWith(OWN_TOOLS))) return true
+  return false
+}
+
 // [SP_CTX_02_29] [SP_FOLD_02_05] CloseRegions: the regions of the chain from
 // `keep` on close; the outermost of them becomes the last closed block, with
-// its name and kind, ending with the last row before the carrier row of the
-// call. `keep` defaults to the deepest region alone. Undefined when nothing
-// closes (NO_STAGE). `depth`: the length of the chain left. The caller
-// writes the registry. Pure.
+// its name and kind, ending with the last row before `carrier`: the carrier
+// row of the call, or the prompt of its turn for a task that ends before the
+// turn's request (context_tag). `keep` defaults to the deepest region alone.
+// Undefined when nothing closes (NO_STAGE). `depth`: the length of the chain
+// left. The caller writes the registry. Pure.
 export function closeStage<R extends StageFields>(
   reg: R,
   rows: readonly SessionMessage[],

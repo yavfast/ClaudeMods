@@ -13,8 +13,8 @@ Tools: `context_tag`, `context_list`, `context_edit`, `context_note`, `context_r
 
 A stage is a logical block of your work: a phase, a sub-task, a fix. A task is one request of the person, start to done: in a session that takes task after task, open each as a task, its phases as stages inside it.
 
-- Open: `{"tags":[{"op":"open","stage":"read the config files"}]}`, or `"task":"<name>"` in place of `"stage"`. The block starts with the response that opens it; with `"index"`, at that row of `context_list`.
-- Close when the block is done: `{"op":"close"}` closes the deepest open region, `{"op":"close","task":true}` the task with all inside it. The result names the block's rows `#a..#b`, its size and media, cleanup candidates, the telemetry and the advice; its indexes are current.
+- Open: `{"tags":[{"op":"open","stage":"read the config files"}]}`, or `"task":"<name>"` in place of `"stage"`. The block starts with the response that opens it, a task's with the person's request; with `"index"`, at that row of `context_list`.
+- Close when the block is done: `{"op":"close"}` closes the deepest open region, `{"op":"close","task":true}` the task with all inside it. The result names the block's rows `#a..#b`, size, candidates, telemetry and advice; its indexes are current. Close a task, or open the next, before any other call in a new request's turn: it ends before the request.
 - Opening a stage closes the open stage first (inside a task it stays inside); `"nested": true` opens it inside the open one. Opening a task closes all.
 - To close a block you never opened: `{"tags":[{"op":"open","stage":"<name>","index":<its first row>},{"op":"close"}]}`.
 - `context_list` marks the first row of each open region (`[task ▶ name]`, `[stage ▶ name]`) and the last closed block (`[block ▶ name]` .. `[block end]`).
@@ -51,11 +51,11 @@ Each alone on one of an answer's last non-empty lines (at most 5):
 - `[context-editor: close]` closes the deepest open region, one per line, none with `optimize`: no report, no wait, nothing queued; a waiting block stops waiting.
 - `[context-editor: note <text>]` puts a one-line note on this answer.
 
-Elsewhere, or in the `/compact` turn, they do nothing. Following a plan on your own: a stage per phase; at the next one compress the previous block and end the turn with a status line; the session resumes. Mid-work, close stages by the tool.
+Elsewhere, or in the `/compact` turn, they do nothing. Following a plan on your own: a stage per phase; at the next one compress the previous block and end the turn with a status line. Mid-work, close stages by the tool.
 
 ## Telemetry
 
-`context_list` with `"count":0` gives the header alone. `Effect: … M reread(s) of compressed content`: many mean you compress too much. A `[context-editor: suggestion]` line proposes a batch with gain, cache cost and verdict; it only informs. Decide by the state of the work.
+`context_list` with `"count":0` gives the header alone. `Effect: … M reread(s) of compressed content`: many mean you compress too much. A `[context-editor: suggestion]` line proposes a batch with gain, cache cost and verdict; it only informs.
 
 ## Candidates
 
@@ -81,7 +81,7 @@ Write about the content, not row numbers: indexes change after an apply. A stage
 
 Text opening with `Later, your context_edit` (or `context_tag`) is your own replacement: you read the original there, then compressed it to save context. You made the replacement; the source it names (`the full output of Read docs/x.md`) says where its content came from. Before you call anything in it made up, unfold it.
 
-- `… summarize call replaced the full output of <source> you had read here …`, `… collapse call replaced these N rows you had read (what they held) …` (its call's `collapsed` input lists the same), and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
+- `… summarize call replaced the full output of <source> you had read here …`, `… collapse call replaced these N rows you had read (what they held) …`, and likewise `rewrite`, `describe`: your text follows the colon. After a `describe` on a person's prompt, their own text follows yours.
 - `(fold fN; original: <path>; …)`: `context_recall` with `{"fold":"fN"}` unfolds one level here; once its region closes, your next edits turn it back into a trace. `(original: <path>, …)`, `(media: <path>)`, `media carried as files`: `Read` only what you need.
 - Text that starts with `[context-editor` or `context-editor:` is the mod's, not the person's or a tool's. `context-editor: applied N edit(s): …`: the apply report; the `context_*` calls that made the replacements are removed, yet what you quoted from their results is real. A `/compact` row whose args start with `context-editor:` is the mod's command; `… repair the resumed conversation …`: the mod dropped answers a resume had loaded twice; earlier thinking is gone.
 - `/rename`, `Session renamed to: …`, `The user named this session …` right after a turn where you set a title (`{"op":"title"}`): the mod's, removed by the next apply; elsewhere: the person's.

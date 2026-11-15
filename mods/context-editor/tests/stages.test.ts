@@ -388,10 +388,11 @@ test('Області — завдання й етапи: open task, open stage t
   const { io, log } = harness(reg())
   const text = await tagCall(io, [{ op: 'open', task: 'T' }, { op: 'open', stage: 'A' }, { op: 'open', stage: 'B' }])
   expect(names(log.tags)).toEqual(['task:T', 'stage:B'])
-  expect(log.tags.outer).toEqual([{ name: 'T', after: mark(rows(), 11), openedTurn: 0, kind: 'task' }])
+  // the task starts after the prompt of its turn (row #0: HEAD_ROW), its stages at the call
+  expect(log.tags.outer).toEqual([{ name: 'T', after: mark(rows(), 0), openedTurn: 0, kind: 'task' }])
   expect(log.tags.lastClosed!.name).toBe('A')
   expect(log.tags.lastClosed!.kind).toBeUndefined()
-  expect(text).toContain('Task "T" opened; its block starts at #12.')
+  expect(text).toContain('Task "T" opened; its block starts at #1.')
   expect(text).toContain('Stage "A" opened inside "T"; its block starts at #12.')
   expect(text).toContain('Stage "B" opened inside "T"')
   // a task opened over a chain closes the whole chain: one block, the outermost
@@ -399,6 +400,118 @@ test('Області — завдання й етапи: open task, open stage t
   expect(names(log.tags)).toEqual(['task:U'])
   expect(log.tags.outer).toBeUndefined()
   expect(log.tags.lastClosed).toEqual(expect.objectContaining({ name: 'T', kind: 'task' }))
+})
+
+// Two turns: the task's first turn (#0..#3), then the next request (#4) and,
+// before the carrier, the rows `between`.
+function twoTurns(between: SessionMessage[] = []): SessionMessage[] {
+  return [prompt('task one'), use('a'), result('a'), reply('done'), prompt('next request'), ...between, use('tc', TAG_TOOL)]
+}
+
+test('Межі завдання від запиту: open task takes the prompt of its turn; a task closed by a later turn before it worked ends before that prompt', async () => {
+  const task = (r: SessionMessage[]): Partial<TagRegistry> => ({ stage: { name: 'T', after: mark(r, 0), openedTurn: 0, kind: 'task' } })
+  // open task: the old task ends before the request, the new one starts at it
+  let r = twoTurns()
+  let h = harness(reg(task(r)), r)
+  let text = await tagCall(h.io, [{ op: 'open', task: 'U' }])
+  expect(h.log.tags.lastClosed).toEqual(expect.objectContaining({ name: 'T', end: mark(r, 3) }))
+  expect(h.log.tags.stage).toEqual(expect.objectContaining({ name: 'U', after: mark(r, 3) }))
+  expect(text).toContain('Task "T" closed: rows #1..#3')
+  expect(text).toContain('Task "U" opened; its block starts at #4.')
+  // the turn worked: that work is the open task's; the next task starts at the call, as close + open does
+  r = twoTurns([use('w'), result('w')])
+  h = harness(reg(task(r)), r)
+  await tagCall(h.io, [{ op: 'open', task: 'U' }])
+  expect(h.log.tags.lastClosed!.end).toEqual(mark(r, 6))
+  expect(startOf(r, h.log.tags.stage!.after)).toBe(7)
+  // nothing open: the request and the work since it are the new task's
+  h = harness(reg(), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'U' }])).toContain('Task "U" opened; its block starts at #4.')
+  // close task before the turn worked (the mod's own calls are no work): ends before the prompt
+  for (const between of [[], [use('l', 'mcp__context-editor__context_list'), result('l')]]) {
+    r = twoTurns(between)
+    for (const request of [{ op: 'close', task: true }, { op: 'close' }]) {
+      h = harness(reg(task(r)), r)
+      await tagCall(h.io, [request])
+      expect(h.log.tags.lastClosed!.end).toEqual(mark(r, 3))
+    }
+  }
+  // close task after the turn worked: the turn's work is the task's, the block ends before the call
+  r = twoTurns([use('w'), result('w')])
+  h = harness(reg(task(r)), r)
+  await tagCall(h.io, [{ op: 'close', task: true }])
+  expect(h.log.tags.lastClosed!.end).toEqual(mark(r, 6))
+  // the same call opens the next task: it starts after the closed block, never inside it
+  h = harness(reg(task(r)), r)
+  text = await tagCall(h.io, [{ op: 'close', task: true }, { op: 'open', task: 'U' }])
+  expect(h.log.tags.lastClosed!.end).toEqual(mark(r, 6))
+  expect(text).toContain('Task "U" opened; its block starts at #7.')
+  // close + open before the turn worked: ends before the prompt, the new task starts at it
+  r = twoTurns()
+  h = harness(reg(task(r)), r)
+  text = await tagCall(h.io, [{ op: 'close', task: true }, { op: 'open', task: 'U' }])
+  expect(h.log.tags.lastClosed!.end).toEqual(mark(r, 3))
+  expect(text).toContain('Task "U" opened; its block starts at #4.')
+  // a stage inside the task ends before the call: only a task follows the request
+  h = harness(reg({ outer: [{ name: 'T', after: mark(r, 0), openedTurn: 0, kind: 'task' }], stage: { name: 'S', after: mark(r, 1), openedTurn: 0 } }), r)
+  await tagCall(h.io, [{ op: 'close' }])
+  expect(h.log.tags.lastClosed).toEqual(expect.objectContaining({ name: 'S', end: mark(r, 4) }))
+  // a task opened in this turn (after its prompt): it ends before the call, the next task starts there
+  r = twoTurns([use('w'), result('w')])
+  h = harness(reg({ stage: { name: 'T', after: mark(r, 5), openedTurn: 1, kind: 'task' } }), r)
+  text = await tagCall(h.io, [{ op: 'open', task: 'U' }])
+  expect(h.log.tags.lastClosed!.end).toEqual(mark(r, 6))
+  expect(text).toContain('Task "U" opened; its block starts at #7.')
+  // an index wins over the prompt; a close after it in the same call follows the close rule
+  r = twoTurns()
+  h = harness(reg(), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'U', index: 2 }])).toContain('Task "U" opened; its block starts at #2.')
+  h = harness(reg(), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'X', index: 1 }, { op: 'close' }])).toContain('Task "X" closed: rows #1..#3')
+  // the call's row not written yet (carrier = len(rows)): the same bounds
+  h = harness(reg(task(r)), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'U' }], false, 'unwritten')).toContain('Task "U" opened; its block starts at #4.')
+})
+
+test('Межі завдання від запиту — закриті блоки й запит людини: no bound goes behind a closed block; the mod\'s prompts and the host\'s rows are no request; fallbacks', async () => {
+  // a block an earlier call of this turn closed after work: the next task starts after it, not at the request
+  let r = twoTurns([use('w'), result('w')])
+  let h = harness(reg({ lastClosed: { name: 'A', after: mark(r, 3), end: mark(r, 6), turn: 1, kind: 'task' } }), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'B' }])).toContain('Task "B" opened; its block starts at #7.')
+  // the same for a block that ends at the request
+  r = twoTurns()
+  h = harness(reg({ lastClosed: { name: 'A', after: mark(r, 3), end: mark(r, 4), turn: 1, kind: 'task' } }), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'B' }])).toContain('Task "B" opened; its block starts at #5.')
+  // an inner stage closed first runs to the call: its task never ends before it, in one call or two
+  const chain = (rr: SessionMessage[]): Partial<TagRegistry> => ({ outer: [{ name: 'T', after: mark(rr, 0), openedTurn: 0, kind: 'task' }], stage: { name: 'S', after: mark(rr, 1), openedTurn: 0 } })
+  h = harness(reg(chain(r)), r)
+  await tagCall(h.io, [{ op: 'close' }, { op: 'close', task: true }])
+  expect(h.log.tags.lastClosed).toEqual(expect.objectContaining({ name: 'T', end: mark(r, 4) }))
+  h = harness(reg(chain(r)), r)
+  await tagCall(h.io, [{ op: 'close' }])
+  await tagCall(h.io, [{ op: 'close', task: true }])
+  expect(h.log.tags.lastClosed).toEqual(expect.objectContaining({ name: 'T', end: mark(r, 4) }))
+  // the person's request carried WaitingAdvice; the agent compressed, the apply added the mod's rows and its resume prompt
+  r = [
+    prompt('old'), use('a'), result('a'), reply('A done'),
+    prompt('now do B'), reply('compressed'),
+    prompt('<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args>context-editor: apply queued edits (run automatically by the mod for context edits the agent queued, not by the person)</command-args>'),
+    prompt('<local-command-stdout>Compacted </local-command-stdout>'),
+    prompt('The context-editor plugin sent a message:\nContinue the task from where you stopped.'),
+    use('tc', TAG_TOOL),
+  ]
+  h = harness(reg({ stage: { name: 'A', after: mark(r, 0), openedTurn: 0, kind: 'task' } }), r)
+  const text = await tagCall(h.io, [{ op: 'open', task: 'B' }])
+  expect(text).toContain('Task "A" closed: rows #1..#3')
+  expect(text).toContain('Task "B" opened; its block starts at #4.')
+  // no request of the person before the call (a task notification only): the task starts at the call
+  r = [prompt('<task-notification>\n<status>completed</status>\n</task-notification>'), reply('noted'), use('tc', TAG_TOOL)]
+  h = harness(reg(), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'U' }])).toContain('Task "U" opened; its block starts at #2.')
+  // a request of media alone at #0: no distinctive row before #1, so not the head (HEAD_ROW): the call
+  r = [prompt('', 'h0'), use('a'), result('a'), use('tc', TAG_TOOL)]
+  h = harness(reg(), r)
+  expect(await tagCall(h.io, [{ op: 'open', task: 'U' }])).toContain('Task "U" opened; its block starts at #3.')
 })
 
 test('Області — вкладення: open stage + nested: the chain grows by one; on an empty chain it is one region', async () => {

@@ -51,6 +51,8 @@ import {
   reportFailed,
   startOf,
   survivors,
+  turnPrompt,
+  turnWorked,
   type ClosedBlock,
   type Replaced,
   type RowMark,
@@ -488,6 +490,12 @@ export function applyTagRequests(
   // another region than the one the agent meant (the open + close of a block
   // it did not open), e.g. the task around it
   let openRefused = false
+  // [SP_FOLD_02_05] a task's bounds follow the person's request: the request,
+  // whether the agent worked since it, and the first row after the last
+  // closed block (of this call or before), which no new bound goes behind
+  const prompt = turnPrompt(rows, carrier)
+  const idle = prompt > 0 && !turnWorked(rows, prompt, carrier)
+  let closedFloor = stages.lastClosed ? startOf(rows, stages.lastClosed.end) : 0
   raws.forEach((raw, n) => {
     const reject = (code: TagError, why: string) => {
       if (r.op === 'open') openRefused = true
@@ -518,8 +526,16 @@ export function applyTagRequests(
         return reject('NO_STAGE', 'no stage or task is open; to close a block you did not open, give {"op":"open","stage":"<name>","index":<its first row>} and {"op":"close"} in one call')
       if (r.task === true && !isTask(chain[0])) return reject('NO_TASK', 'no task is open; close the deepest open stage with a plain {"op":"close"}')
       moveOn()
-      const closed = closeStage(stages, rows, carrier, r.task === true ? 0 : chain.length - 1)!
+      const keep = r.task === true ? 0 : chain.length - 1
+      // [SP_FOLD_02_05] a task opened before the request, closed before the
+      // agent worked on it (no call but the mod's own), ends before the
+      // request, which belongs to what comes next; never before a block
+      // closed already
+      const outer = chain[keep]!
+      const late = isTask(outer) && idle && startOf(rows, outer.after) < prompt && closedFloor <= prompt
+      const closed = closeStage(stages, rows, late ? prompt : carrier, keep)!
       stages = closed.registry
+      closedFloor = startOf(rows, closed.block.end)
       out.events.push({ close: closed.block, depth: closed.depth })
       out.changed = true
       return
@@ -538,22 +554,39 @@ export function applyTagRequests(
       const deepest = chain.at(-1)
       const keep = task ? 0 : r.nested === true || !deepest || isTask(deepest) ? chain.length : chain.length - 1
       if (keep >= MAX_DEPTH) return reject('DEPTH_FULL', `${MAX_DEPTH} regions are open already; close one first`)
-      let after: RowMark | null
+      let after: RowMark | null = markBefore(rows, carrier)
+      // the row before which the regions this open closes end
+      let end = carrier
       if (r.index !== undefined) {
         if (staleIndexes) return reject('INDEXES_STALE', STALE_INDEXES)
         if (!Number.isInteger(r.index) || !rows[r.index as number]) return reject('TARGET_NOT_FOUND', `index out of range (0..${rows.length - 1}); refresh context_list`)
         after = markBefore(rows, r.index as number)
-      } else after = markBefore(rows, carrier)
+      } else if (task && prompt >= 0 && (idle || !chain.length)) {
+        // [SP_FOLD_02_05] a task starts at the request (after it when that is
+        // row #0: HEAD_ROW) when nothing is open or the agent has not worked
+        // on it yet; the chain it closes ends before the request when it
+        // began earlier; else (the agent worked: that work is the open
+        // region's) the task starts at the carrier
+        const first = Math.max(prompt, 1)
+        const closing = chain[0]
+        const at = markBefore(rows, first)
+        if (first < carrier && first >= closedFloor && startOf(rows, at) > 0 && (!closing || startOf(rows, closing.after) < prompt)) {
+          after = at
+          if (closing) end = prompt
+        }
+      }
       // [SP_FOLD_01_04] bounds nest: a region starts no earlier than the one around it
       const parent = keep > 0 ? chain[keep - 1] : undefined
       const floor = parent ? startOf(rows, parent.after) : 0
       if (parent && startOf(rows, after) < floor)
         return reject('REGION_BOUNDS', `a region inside ${regionWord(parent)} "${parent.name}" starts at #${floor} or later`)
       moveOn()
-      // the regions that close end before the row of this call
-      const closed = keep < chain.length ? closeStage(stages, rows, carrier, keep) : undefined
+      // the regions that close end before the row of this call, or before
+      // the turn's prompt when a task takes it
+      const closed = keep < chain.length ? closeStage(stages, rows, end, keep) : undefined
       if (closed) {
         stages = closed.registry
+        closedFloor = startOf(rows, closed.block.end)
         out.events.push({ close: closed.block, depth: closed.depth })
       }
       openRefused = false
