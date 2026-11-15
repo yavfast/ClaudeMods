@@ -44,7 +44,7 @@ Processing logic (pseudocode):
         IF reg: t.ratio = Calibrate(t.chars, t, reg)                     # SP_CTX_02_34: оновлює TagRegistry.charsPerToken за API-поданням; без нього — збережене
         IF rows not empty AND cache: k = LookbackStart(rows, form); t.cache = { start: k, tokens: TailTokens(rows, k, t.ratio or PLAIN_RATIO, Whole(t)), approx: t.ratio absent }   # SP_CTX_02_38, фаза 23; і без реєстру
         IF reg absent: RETURN t
-        IF reg.stage: first = StartOf(rows, reg.stage.after); t.stage = { name, first, chars = Σ size(rows[first ..]), turnsAgo = reg.turn − openedTurn, lost = MarkIndex is lost }
+        t.regions = for each s in Chain(reg) (outer, then stage; PL_FOLD фаза 5): first = ChainStarts(rows, chain) — StartOf, a lost start → the first row of the region around it (the head for the outermost); { name, kind, first, chars = Σ size(rows[first ..]), turnsAgo = reg.turn − s.openedTurn, lost = MarkIndex is lost }
         IF reg.lastClosed: s0 = StartOf(rows, after); e = MarkIndex(rows, end)
             t.lastClosed = { name, start = s0, end = (e is an index ? e : absent), chars = (e is an index AND s0 ≤ e ? Σ size(rows[s0..e]) : absent), lost = e is lost, startLost = MarkIndex(rows, after) is lost }
         t.reviews = active review tags whose target resolves on rows, by reason (absent → none: a tag written before phase 15, SP_CTX_01_09), with the first row of each target
@@ -66,8 +66,8 @@ Processing logic (pseudocode):
         unavailable: "Context: size unavailable (<error>)"
         cache:       right after the size line, without rows omitted: (start = len(rows)) "Cache: an apply rewrites the whole conversation once; even the last response is beyond the API's ~20-position cache lookback, so \"keep_cache\" would not help" | (start = 0) "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true only the rows from its earliest edit (the whole conversation is within the API's ~20-position cache lookback)" | "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true, an earliest edit from #<start> on (within the API's ~20-position cache lookback) rewrites only the rows from it (at most ~<tokensText(cache.tokens)> tokens" + (cache.approx ? " (approx.)" : "") + ") if your turn ends soon: edits apply at its end, and each call until then pushes them deeper"
         hostAttach:  right after the cache line, also without a readable registry, only when t.hostAttach.copies > 0 (context_list only): "Host attachments: <copies> stale cop(y|ies) of instruction files and skill listings left out of each request (<Estimate(chars, t.ratio)>)"   # фаза 24, SP_CTX_02_40: HostAttachState.left через кеш
-        stage:       "Stage \"<name>\" open from #<first> (opened <turnsAgo> turn(s) ago), <Estimate(chars, t.ratio)>" + (lost ? "; its start row is gone, so it runs from #0" : "") | "No open stage"
-        lastClosed:  "Last block \"<name>\" | (no stage) #<start>..#<end> (<Estimate(chars, t.ratio)>)" | (end null or start > end) "...: it is empty" | (end lost) "Last block \"<name>\" | (no stage) from #<start>: its end row is gone"; + (startLost ? "; its start row is gone, so it runs from #0" : "") — line omitted without lastClosed; a lost end is never shown as an empty block
+        regions:     Region(s) = "<Stage|Task> \"<name>\" open from #<first> (opened <turnsAgo> turn(s) ago), <Estimate(chars, t.ratio)>" + (lost ? "; its start row is gone, so it runs from #<first>" : ""); no region → "No open stage"; one → Region; a chain (PL_FOLD фаза 5, SP_FOLD_02_07) → "Open regions, outer to inner: " + Region of each, the word in lower case, joined with " ▸ "
+        lastClosed:  "Last block \"<name>\"" + (kind task ? " (task)" : "") + " | (no stage) #<start>..#<end> (<Estimate(chars, t.ratio)>)" | (end null or start > end) "...: it is empty" | (end lost) "Last block \"<name>\" | (no stage) from #<start>: its end row is gone"; + (startLost ? "; its start row is gone, so it runs from #0" : "") — line omitted without lastClosed; a lost end is never shown as an empty block
         candidates:  "Candidates: review <total> (<reason> <n>: #<i>, …; reasons with 0 omitted; the group none is named \"no reason\"; ≤ MAX_BLOCK_INDEXES rows per reason, then +<n> more); disposable <n>"
         journal:     "Effect: <applications> application(s); <rereads> reread(s) of compressed content (<archiveRereads> of archives)" | "Effect: journal unreadable (<reason>)" — line omitted when the journal is readable and applications + rereads = 0
         state:       "State slot: #<row>" | "State slot: its row is no longer in the conversation" — line omitted when there is no state tag
@@ -226,7 +226,7 @@ Processing logic (pseudocode):
         gain  = "~<freed> of the ~<conversation> conversation"
         not-yet (both): "not worth it yet: to <what> would free <gain> but <cache>; <pays>. Batch more, or compress at the end of a stage."
         size:           "<what> in one context_edit: frees <gain>; <cache>; <pays> → <verdict>."
-        turn:           "before you go on: " + (stage ? "close stage \"<stage>\" with context_tag and " : "") + "<what> in one context_edit? It frees <gain>; <cache>; <pays> → <verdict>. Your call: nothing runs unless you do it."
+        turn:           "before you go on: " + (stage ? "close <stage|task> \"<stage>\" with context_tag and " : "") + "<what> in one context_edit? It frees <gain>; <cache>; <pays> → <verdict>. Your call: nothing runs unless you do it."
         verdict: worth → "worth it now"; borderline → "borderline: worth it only if the work goes on that long"
       numbers of tokens in thousands as TelemetryText ("~12k")
 
@@ -283,4 +283,5 @@ Errors: відмов немає (чисті функції).
 
 | Date | Change |
 |------|--------|
+| 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_02_07](./context_folds.sp.md#SP_FOLD_02_07)): 02_28 — `t.regions` замість `t.stage`, ланцюжок областей у рядку відкритої області (`Open regions, outer to inner: …`), `(task)` у рядку закритого завдання; загублений початок внутрішньої області — початок охопної; 02_37 — підказка ходу називає завдання `close task "…"` |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.stages.sp.md](./context_editor.stages.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |

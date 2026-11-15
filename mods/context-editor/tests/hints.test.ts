@@ -410,6 +410,9 @@ test('TurnSuggestion — межа ходу: after a run of HINT_RUN outputs the 
   expect(out.line!.endsWith('→ worth it now. Your call: nothing runs unless you do it.')).toBe(true)
   expect(log.reg.hint).toEqual({ tokens: 240_000, marks: 6, proposed: 37_500 })
   expect((await turnSuggestion(io, newHintMemo())).outcome).toBe('short-run')
+  // [SP_FOLD_01_04] the deepest open region is a task: the line names it so
+  const t = harness(setup({ ...WORTH, chatter: 250 }, {}, { stage: { name: 'fix', after: null, openedTurn: 0, kind: 'task' } }))
+  expect((await turnSuggestion(t.io, newHintMemo())).line).toContain('before you go on: close task "fix" with context_tag and summarize')
 })
 
 test('TurnSuggestion — коротка серія: fewer than HINT_RUN marked outputs since the last suggestion: nothing is read', async () => {

@@ -35,7 +35,12 @@ import { isTitleState, titleOp, type TitleError, type TitleState } from './title
 import {
   blockName,
   carrierRow,
+  chainOf,
   closeStage,
+  isTask,
+  MAX_DEPTH,
+  regionWord,
+  withChain,
   endWaiting,
   markBefore,
   CALIB_MAX,
@@ -78,7 +83,7 @@ export function isRange(target: TagTarget): target is RangeTarget {
   return 'toAnchor' in target
 }
 
-// [SP_CTX_01_10] [SP_CTX_01_18] `stage`: the open stage, one at most;
+// [SP_CTX_01_10] [SP_CTX_01_18] `stage`: the deepest open region ([SP_FOLD_01_04]);
 // `lastClosed`: the last closed block; `introduced`: the session intro was
 // delivered in this session ([SP_CTX_02_27]); `reintroduce`: another
 // compaction that stands took the guide, the next prompt carries INTRO_TEXT
@@ -88,6 +93,8 @@ export type TagRegistry = {
   turn: number
   firstPromptPinned: boolean
   stage?: Stage
+  // [SP_FOLD_01_04] the regions around `stage`, outer to inner; absent when none
+  outer?: Stage[]
   lastClosed?: ClosedBlock
   // [SP_CTX_01_10] [SP_CTX_DEC_37] `lastClosed` waits for compression; only with `lastClosed`
   waiting?: Waiting
@@ -170,16 +177,41 @@ function isStageName(v: unknown): v is string {
   return typeof v === 'string' && v.trim().length >= 1 && v.trim().length <= MAX_STAGE_NAME
 }
 
+// [SP_FOLD_01_04] `kind` of a region or a closed block: absent is a stage
+function isKind(v: unknown): boolean {
+  return v === undefined || v === 'task' || v === 'stage'
+}
+
 function isStage(v: unknown): v is Stage {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
   const s = v as Record<string, unknown>
-  return isStageName(s.name) && 'after' in s && isMark(s.after) && isCount(s.openedTurn, 0)
+  return isStageName(s.name) && 'after' in s && isMark(s.after) && isCount(s.openedTurn, 0) && isKind(s.kind)
 }
 
 function isClosed(v: unknown): v is ClosedBlock {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false
   const b = v as Record<string, unknown>
-  return (b.name === undefined || isStageName(b.name)) && 'after' in b && isMark(b.after) && 'end' in b && isMark(b.end) && isCount(b.turn, 0)
+  return (b.name === undefined || isStageName(b.name)) && 'after' in b && isMark(b.after) && 'end' in b && isMark(b.end) && isCount(b.turn, 0) && isKind(b.kind)
+}
+
+// [SP_FOLD_01_04] The regions around the open one: at most MAX_DEPTH − 1.
+function isOuter(v: unknown): v is Stage[] {
+  return Array.isArray(v) && v.length <= MAX_DEPTH - 1 && v.every(isStage)
+}
+
+// [SP_FOLD_01_04] Normalization on read: `outer` without `stage` goes (a mod
+// before phase 5 of PL_FOLD closes a stage and leaves the field it does not
+// know); a task is only the outermost region, deeper it reads as a stage;
+// `kind: 'stage'` reads as absent. Pure.
+function normalizeChain(reg: TagRegistry): TagRegistry {
+  const chain = chainOf(reg).map((s, i) => {
+    const { kind, ...rest } = s
+    return kind === 'task' && i === 0 ? s : rest
+  })
+  const b = reg.lastClosed
+  const lastClosed = b && b.kind === 'stage' ? (({ kind: _k, ...rest }) => rest)(b) : b
+  const next = withChain(reg, chain)
+  return lastClosed === b ? next : { ...next, lastClosed: lastClosed! }
 }
 
 // [SP_CTX_01_10] The registry without lastApply: a handoff or a compaction
@@ -207,6 +239,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     !isCount(reg.turn, 0) && 'turn',
     typeof reg.firstPromptPinned !== 'boolean' && 'firstPromptPinned',
     reg.stage !== undefined && !isStage(reg.stage) && 'stage',
+    reg.stage !== undefined && reg.outer !== undefined && !isOuter(reg.outer) && 'outer',
     reg.lastClosed !== undefined && !isClosed(reg.lastClosed) && 'lastClosed',
     reg.waiting !== undefined && ((reg.waiting !== 'marked' && reg.waiting !== 'advised') || reg.lastClosed === undefined) && 'waiting',
     typeof reg.introduced !== 'boolean' && 'introduced',
@@ -221,7 +254,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badTag = reg.tags.findIndex(t => !isTag(t))
-  return badTag >= 0 ? { state: 'unreadable', reason: `bad tag ${badTag + 1}` } : { state: 'ok', value: reg }
+  return badTag >= 0 ? { state: 'unreadable', reason: `bad tag ${badTag + 1}` } : { state: 'ok', value: normalizeChain(reg) }
 }
 
 // [SP_CTX_01_09] A row target and a range target are one target by the
@@ -394,12 +427,17 @@ export type TagError =
   | 'STAGE_NAME_REQUIRED'
   | 'STAGE_FIELDS'
   | 'NO_STAGE'
+  | 'NO_TASK'
+  | 'DEPTH_FULL'
+  | 'REGION_BOUNDS'
+  | 'OPEN_REFUSED'
   | 'PERSON_TAG'
   | TitleError
 
 // [SP_CTX_02_11] A stage event of the batch, in request order: an open with
-// its text, or a close with its block.
-export type StageEvent = { open: string } | { close: ClosedBlock }
+// its text, or a close with its block and the length of the chain it left
+// open ([SP_FOLD_02_03] MarkDue).
+export type StageEvent = { open: string } | { close: ClosedBlock; depth: number }
 
 export type TagOutcome = {
   registry: TagRegistry
@@ -417,7 +455,7 @@ export type TagOutcome = {
   waited?: ClosedBlock
 }
 
-const OPEN_FIELDS = ['op', 'stage', 'index']
+const OPEN_FIELDS = ['op', 'stage', 'task', 'nested', 'index']
 
 // [SP_CTX_02_11] Applies the requests in order to the registry on the rows as
 // they are now; a rejected request leaves the rest of the batch going. A `ref`
@@ -446,8 +484,15 @@ export function applyTagRequests(
     out.waited = ended.block
     out.changed = true
   }
+  // [SP_CTX_02_11] a close after a refused open of the same call would end
+  // another region than the one the agent meant (the open + close of a block
+  // it did not open), e.g. the task around it
+  let openRefused = false
   raws.forEach((raw, n) => {
-    const reject = (code: TagError, why: string) => void out.rejected.push({ code, reason: `tag ${n + 1}: ${why} (${code})` })
+    const reject = (code: TagError, why: string) => {
+      if (r.op === 'open') openRefused = true
+      out.rejected.push({ code, reason: `tag ${n + 1}: ${why} (${code})` })
+    }
     const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
     if (r.op !== 'add' && r.op !== 'remove' && r.op !== 'open' && r.op !== 'close' && r.op !== 'title')
       return reject('BAD_OP', `op must be "add", "remove", "open", "close" or "title"`)
@@ -462,36 +507,66 @@ export function applyTagRequests(
       if (t.error) reject(t.error.code, t.error.why)
       return
     }
+    // [SP_FOLD_02_05] close: the deepest open region; with "task": true the whole chain with its task
     if (r.op === 'close') {
-      if (Object.keys(r).some(k => k !== 'op')) return reject('STAGE_FIELDS', 'close takes no field but "op"')
-      if (!stages.stage)
-        return reject('NO_STAGE', 'no stage is open; to close a block you did not open, give {"op":"open","stage":"<name>","index":<its first row>} and {"op":"close"} in one call')
+      if (openRefused)
+        return reject('OPEN_REFUSED', 'skipped: the open before it in this call was refused, so this close would end another region; fix the open and send both again')
+      if (Object.keys(r).some(k => k !== 'op' && k !== 'task') || (r.task !== undefined && typeof r.task !== 'boolean'))
+        return reject('STAGE_FIELDS', 'close takes only "op" and "task": true')
+      const chain = chainOf(stages)
+      if (!chain.length)
+        return reject('NO_STAGE', 'no stage or task is open; to close a block you did not open, give {"op":"open","stage":"<name>","index":<its first row>} and {"op":"close"} in one call')
+      if (r.task === true && !isTask(chain[0])) return reject('NO_TASK', 'no task is open; close the deepest open stage with a plain {"op":"close"}')
       moveOn()
-      const closed = closeStage(stages, rows, carrier)!
+      const closed = closeStage(stages, rows, carrier, r.task === true ? 0 : chain.length - 1)!
       stages = closed.registry
-      out.events.push({ close: closed.block })
+      out.events.push({ close: closed.block, depth: closed.depth })
       out.changed = true
       return
     }
     if (r.op === 'open') {
-      if (Object.keys(r).some(k => !OPEN_FIELDS.includes(k))) return reject('STAGE_FIELDS', 'open takes only "stage" and "index"')
-      if (!isStageName(r.stage)) return reject('STAGE_NAME_REQUIRED', `open needs "stage", a name of 1..${MAX_STAGE_NAME} chars`)
+      if (Object.keys(r).some(k => !OPEN_FIELDS.includes(k))) return reject('STAGE_FIELDS', 'open takes only "stage" or "task", "nested" and "index"')
+      if (r.stage !== undefined && r.task !== undefined) return reject('STAGE_FIELDS', 'one name per request: "stage" or "task", not both')
+      if (r.nested !== undefined && (r.stage === undefined || typeof r.nested !== 'boolean')) return reject('STAGE_FIELDS', '"nested": true goes only with "stage"')
+      const task = r.task !== undefined
+      const named = task ? r.task : r.stage
+      if (!isStageName(named)) return reject('STAGE_NAME_REQUIRED', `open needs "stage" or "task", a name of 1..${MAX_STAGE_NAME} chars`)
+      // [SP_FOLD_02_05] the regions that stay open: a task closes the whole
+      // chain; a stage closes the deepest region when that is a stage (a
+      // stage on the same level), none when nested or inside a task
+      const chain = chainOf(stages)
+      const deepest = chain.at(-1)
+      const keep = task ? 0 : r.nested === true || !deepest || isTask(deepest) ? chain.length : chain.length - 1
+      if (keep >= MAX_DEPTH) return reject('DEPTH_FULL', `${MAX_DEPTH} regions are open already; close one first`)
       let after: RowMark | null
       if (r.index !== undefined) {
         if (staleIndexes) return reject('INDEXES_STALE', STALE_INDEXES)
         if (!Number.isInteger(r.index) || !rows[r.index as number]) return reject('TARGET_NOT_FOUND', `index out of range (0..${rows.length - 1}); refresh context_list`)
         after = markBefore(rows, r.index as number)
       } else after = markBefore(rows, carrier)
+      // [SP_FOLD_01_04] bounds nest: a region starts no earlier than the one around it
+      const parent = keep > 0 ? chain[keep - 1] : undefined
+      const floor = parent ? startOf(rows, parent.after) : 0
+      if (parent && startOf(rows, after) < floor)
+        return reject('REGION_BOUNDS', `a region inside ${regionWord(parent)} "${parent.name}" starts at #${floor} or later`)
       moveOn()
-      // an open stage closes first: its block ends before the row of this call
-      const closed = closeStage(stages, rows, carrier)
+      // the regions that close end before the row of this call
+      const closed = keep < chain.length ? closeStage(stages, rows, carrier, keep) : undefined
       if (closed) {
         stages = closed.registry
-        out.events.push({ close: closed.block })
+        out.events.push({ close: closed.block, depth: closed.depth })
       }
-      const name = (r.stage as string).trim()
-      stages = { ...stages, stage: { name, after, openedTurn: reg.turn } }
-      out.events.push({ open: `Stage "${name}" opened; its block starts at #${startOf(rows, after)}.` })
+      openRefused = false
+      const name = (named as string).trim()
+      stages = withChain(stages, [...chainOf(stages), { name, after, openedTurn: reg.turn, ...(task ? { kind: 'task' as const } : {}) }])
+      const at = startOf(rows, after)
+      out.events.push({
+        open: task
+          ? `Task "${name}" opened; its block starts at #${at}.`
+          : parent
+            ? `Stage "${name}" opened inside "${parent.name}"; its block starts at #${at}.`
+            : `Stage "${name}" opened; its block starts at #${at}.`,
+      })
       out.changed = true
       return
     }
@@ -642,11 +717,11 @@ export async function contextTag(
     return out
   })
   if ('deny' in step) return step
-  const closes = step.events.flatMap(e => ('close' in e ? [e.close] : []))
-  // [SP_FOLD_02_03] MarkDue of each close, before the replacements are queued
-  // (the port logs its own failure). Regions do not nest in this phase: none
-  // is open after a close
-  if (closes.length) await io.markDue?.(0).catch(() => undefined)
+  const closes = step.events.flatMap(e => ('close' in e ? [e] : []))
+  // [SP_FOLD_02_03] MarkDue of the closes, before the replacements are queued
+  // (the port logs its own failure): the shortest chain any close left marks
+  // every recall the others would
+  if (closes.length) await io.markDue?.(Math.min(...closes.map(e => e.depth))).catch(() => undefined)
   let replaced: Replaced | undefined
   // [SP_CTX_02_13] a close by the tool, or the end of the waiting block
   if (closes.length || step.waited) replaced = await (io.replace ?? (() => queueTagReplacements(io)))().catch(() => undefined)
@@ -671,7 +746,7 @@ export async function contextTag(
     n++
     const last = n === closes.length
     if (!io.report) {
-      texts.push(`${e.close.name !== undefined ? `Stage "${e.close.name}"` : 'The block'} closed.`)
+      texts.push(`${e.close.name !== undefined ? `${regionWord(e.close, true)} "${e.close.name}"` : 'The block'} closed.`)
       continue
     }
     try {

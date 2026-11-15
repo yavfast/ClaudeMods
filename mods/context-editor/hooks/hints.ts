@@ -16,7 +16,7 @@ import { indexRows, REPRODUCIBLE_TOOLS, touchedBy, type QueuedEdit } from './edi
 import { isReplacementText, PLAIN_RATIO, resultsOf, rowChars, totalChars } from './rows'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
-import { telemetry, tokensText, wholeOf, type RegistryUpdate, type UsageInfo } from './stages'
+import { isTask, telemetry, tokensText, wholeOf, type RegistryUpdate, type UsageInfo } from './stages'
 import { dropLastApply, isActive, resolveTarget, type HintState, type TagRegistry } from './tags'
 
 // ---- [SP_CTX_01_12] constants
@@ -128,8 +128,10 @@ export function candidates(rows: readonly SessionMessage[], reg: TagRegistry, qu
 // [SP_CTX_02_37] Proposal: the batch of all candidates as one apply.
 export type Proposal = {
   channel: 'size' | 'turn'
-  // the open stage, which the turn channel proposes to close
+  // the deepest open region, which the turn channel proposes to close
   stage?: string
+  // [SP_FOLD_01_04] that region is a task
+  task?: true
   named: string[]
   more: number
   freed: number
@@ -160,6 +162,7 @@ export type ProposeContext = {
   request?: number
   channel: Proposal['channel']
   stage?: string
+  task?: true
   ratios?: CostRatios
   api?: readonly unknown[]
 }
@@ -203,6 +206,7 @@ export function propose(rows: readonly SessionMessage[], found: readonly Candida
   return {
     channel: ctx.channel,
     ...(ctx.stage !== undefined ? { stage: ctx.stage } : {}),
+    ...(ctx.task ? { task: true as const } : {}),
     named,
     more: found.length - named.length,
     freed: Math.round(freed),
@@ -243,7 +247,7 @@ export function suggestionText(p: Proposal): string {
     return `${SUGGESTION} not worth it yet: to ${what} would free ${gain} but ${cache}; ${pays(p.rStar)}. Batch more, or compress at the end of a stage.`
   const body = `frees ${gain}; ${cache}; ${pays(p.rStar)} → ${said(p.verdict)}`
   if (p.channel === 'size') return `${SUGGESTION} ${what} in one context_edit: ${body}.`
-  const close = p.stage !== undefined ? `close stage "${p.stage}" with context_tag and ` : ''
+  const close = p.stage !== undefined ? `close ${p.task ? 'task' : 'stage'} "${p.stage}" with context_tag and ` : ''
   return `${SUGGESTION} before you go on: ${close}${what} in one context_edit? It ${body}. Your call: nothing runs unless you do it.`
 }
 
@@ -440,7 +444,7 @@ async function turnCheck(io: HintIO, memo: HintMemo, d: Deadline): Promise<Outco
   if (roughFreed(found, reg.charsPerToken ?? PLAIN_RATIO) < HINT_CANDIDATES) return settle('few-candidates')
   const { conversation, whole, ratio } = await measure(io, rows, reg)
   const req = await io.request()
-  const ctx = { ratio, conversation, whole, ...(req.tokens !== undefined ? { request: req.tokens } : {}), channel: 'turn' as const, ...(reg.stage ? { stage: reg.stage.name } : {}) }
+  const ctx = { ratio, conversation, whole, ...(req.tokens !== undefined ? { request: req.tokens } : {}), channel: 'turn' as const, ...(reg.stage ? { stage: reg.stage.name, ...(isTask(reg.stage) ? { task: true as const } : {}) } : {}) }
   const p = propose(rows, found, { ...ctx, ...(await costContext(io)) })
   if (p.freed < Math.max(HINT_CANDIDATES, HINT_BATCH * conversation)) return settle('small-batch')
   // the batch the agent was offered and left: again only once it grew by a

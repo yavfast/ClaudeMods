@@ -23,7 +23,7 @@ export const NOTE = 'context_note'
 export const RECALL = RECALL_TOOL
 
 // [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
-export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
+export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] or [task ▶ name] the first row of each open region; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
 
 The header gives one size, the conversation in tokens from the telemetry (else a calibrated estimate), then context telemetry: the size without the fixed part (system prompt, tools, skills, memory), the window, the open stage and the last closed block ("Last block #a..#b") with their sizes, the cleanup candidates by reason with their rows, and, when there is something to show, the effect of applications and your state slot. Row sizes stay in chars. "count":0 gives that header alone, without rows; it does not renew the indexes. {"index":12,"full":true} shows row #12 whole (e.g. to check a summary before reading the archive). Only the latest ${ROW_WINDOW} rows are visible. {"rules":true} gives the curation rules; {"folds":true} lists the folds (fold records with their ids), newest first.`
 
@@ -144,19 +144,19 @@ const EDIT_SCHEMA = {
 }
 
 // [SP_CTX_02_11] At most MAX_DESCRIPTION chars, by the priorities of the spec.
-export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation and mark the stages of your work, at no token cost: tags and stages live outside the conversation and show in ${LIST}. Call it with {"tags":[...]}; the requests apply in order.
+export const TAG_DESCRIPTION = `Tag rows and tool calls of this conversation and mark the stages of your work, at no token cost: tags and stages live outside it and show in ${LIST}. Call it with {"tags":[...]}, applied in order.
 
-Targets of add and remove: exactly one of "tool_use_id" (a tool call with its result), "ref" (a call alias "cN" or "last") or "index" (a row in ${LIST}); a disposable range: "index" and "to", its last row.
+Targets of add and remove: exactly one of "tool_use_id" (a call with its result), "ref" (a call alias "cN" or "last") or "index" (a row in ${LIST}); a disposable range: "index" and "to", its last row.
 
-Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index" if given. {"op":"close"} when the stage is done: the result names the block's rows #a..#b, its size, candidates, telemetry and advice; then compress what is processed there with ONE ${EDIT}. Opening a stage closes the open one first. To close a block you did not open, give open with the "index" of its first row and close in one call.
+Stages: {"op":"open","stage":"<name>"} at the start of a logical stage; its block starts with the response that opens it, or at "index". Opening a stage closes an open stage, unless "nested": true opens it inside. {"op":"open","task":"<name>"} starts a task, the outermost region, closing every open one. {"op":"close"} closes the deepest region, with "task": true the task and all inside it: its result names the block's rows #a..#b, size, candidates and advice; then compress what is processed with ONE ${EDIT} (a task into a task card). A block you did not open: open with the "index" of its first row, then close, in one call.
 
-Title: {"op":"title","text":"<topic>"} when the task's topic changes; the session is renamed after the turn unless the person named it.
+Title: {"op":"title","text":"<topic>"} renames the session after the turn when the topic changes, unless the person named it.
 
 Kinds (op "add"):
 - "pin": nothing may edit the target, not even a disposable tag's replacement. Pins are yours to set and remove.
-- "disposable" + "note": once you close a stage or move on from a block you marked, your note replaces the target (a result summarized, your text row rewritten, a range collapsed); the original is archived. Write in the note every fact you still need. By index alone only your own assistant text rows.
-- "review" (optional "ttl_turns"): a marker for yourself, shown after ttl_turns completed turns. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
-- "state": your one state slot, an assistant text row by "index"; change it by a rewrite of that row, or by the state op of ${EDIT} once it has items, never append a new one. A new state tag moves the slot.
+- "disposable" + "note": once you close a region or move on from a block you marked, your note replaces the target; the original is archived. Write in it every fact you still need. By index alone only your own assistant text rows.
+- "review" (optional "ttl_turns"): your marker, shown after ttl_turns turns. Automatic ones carry a reason: big, search, stale (you changed the file since), superseded (a later read showed changed content), duplicate.
+- "state": your one state slot, an assistant text row by "index"; change it by a rewrite of that row, or by the state op of ${EDIT} once it has items; a new state tag moves it.
 
 A new tag on a target replaces the old one; "remove" drops it. Guide: skill ${PLUGIN}:${SKILL}.`
 
@@ -199,11 +199,21 @@ const TAG_SCHEMA = {
             properties: {
               op: { const: 'open' },
               stage: { type: 'string', maxLength: MAX_STAGE_NAME, description: 'The name of the stage.' },
+              nested: { type: 'boolean', description: 'With "stage": open it inside the open region instead of closing that one.' },
               index: { type: 'integer', description: `The first row of its block, from ${LIST}; default: the response that opens it.` },
             },
             required: ['op', 'stage'],
           },
-          { type: 'object', properties: { op: { const: 'close' } }, required: ['op'] },
+          {
+            type: 'object',
+            properties: {
+              op: { const: 'open' },
+              task: { type: 'string', maxLength: MAX_STAGE_NAME, description: 'The name of the task: the outermost region; every open region closes first.' },
+              index: { type: 'integer', description: `The first row of its block, from ${LIST}; default: the response that opens it.` },
+            },
+            required: ['op', 'task'],
+          },
+          { type: 'object', properties: { op: { const: 'close' }, task: { type: 'boolean', description: 'true: close the task and every region inside it.' } }, required: ['op'] },
           {
             type: 'object',
             properties: { op: { const: 'title' }, text: { type: 'string', maxLength: MAX_TITLE, description: 'The session title: the topic of the task, one line.' } },

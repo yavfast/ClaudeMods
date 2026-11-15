@@ -45,20 +45,20 @@ export function isReturnEdit(e: QueuedEdit): e is Extract<QueuedEdit, { op: 'sum
 export type FoldRegion = { name: string; kind: 'task' | 'stage' }
 
 // [SP_FOLD_01_01] The block of the last closed region that has a name, by
-// row indexes (ClosedSpan of folds.ts finds it).
-export type ClosedSpan = { name: string; from: number; to: number }
+// row indexes, with its kind (closedSpan of stages.ts finds it).
+export type ClosedSpan = { name: string; from: number; to: number; kind: FoldRegion['kind'] }
 
-// [SP_FOLD_01_01] The region of a collapse being queued: its span is the
-// whole closed block, from its first row to its last. In this phase a region
-// is always a stage.
 // [SP_FOLD_01_01] The shape of a stored region (the queue file, the ledger).
 export function isFoldRegion(v: unknown): v is FoldRegion {
   if (typeof v !== 'object' || v === null) return false
   const r = v as Record<string, unknown>
   return typeof r.name === 'string' && r.name !== '' && (r.kind === 'task' || r.kind === 'stage')
 }
+// [SP_FOLD_01_01] The region of a collapse being queued: its span is the
+// whole closed block, from its first row to its last; a task's block makes
+// the fold a task card.
 export function regionOf(e: Edit, span: ClosedSpan | undefined): FoldRegion | undefined {
-  return span && e.op === 'collapse' && e.from_index === span.from && e.to_index === span.to ? { name: span.name, kind: 'stage' } : undefined
+  return span && e.op === 'collapse' && e.from_index === span.from && e.to_index === span.to ? { name: span.name, kind: span.kind } : undefined
 }
 
 // [SP_FOLD_02_01] What an applied fold edit (summarize, collapse, describe)
@@ -593,7 +593,7 @@ function rowMedia(row: SessionMessage, index: number, media: MediaSizes) {
 
 // [SP_CTX_02_01] The legend of the listing's header.
 export const LIST_LEGEND =
-  `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media; ${REPRO_FLAG} after tool_use/tool_result: reproducible (Read, Grep, Glob). Marks: [stage ▶ name] the first row of the open stage; [block ▶ name] .. [block end] the last closed block. ` +
+  `Flags: * already edited, ! large (>= ${BIG_ROW} chars), @ has media; ${REPRO_FLAG} after tool_use/tool_result: reproducible (Read, Grep, Glob). Marks: [stage ▶ name] or [task ▶ name] the first row of each open region; [block ▶ name] .. [block end] the last closed block. ` +
   `Tags: [pin] no edit may touch it, [state] your state slot (rewrite, or the state op once it has items), [disposable: note] (a range: [disposable #a..#b: note]) replaced by its note when you close a stage or move on from a block you marked, [review: reason] worth a look (superseded: a later read of the file showed changed content). ` +
   `[nN] your note (full text under the page).`
 
@@ -976,8 +976,13 @@ export function traceText(calls: readonly ToolUseSummary[]): string {
     if (tool === 'context_edit') item.edits += list('edits').length
     for (const t of tool === 'context_tag' ? list('tags') : []) {
       const part =
-        t.op === 'open' ? (typeof t.stage === 'string' ? `open stage ${JSON.stringify(oneLine(t.stage, MAX_TRACE))}` : 'open a stage')
-        : t.op === 'close' ? 'close the stage'
+        t.op === 'open'
+          ? typeof t.task === 'string'
+            ? `open task ${JSON.stringify(oneLine(t.task, MAX_TRACE))}`
+            : typeof t.stage === 'string'
+              ? `open stage ${JSON.stringify(oneLine(t.stage, MAX_TRACE))}`
+              : 'open a stage'
+        : t.op === 'close' ? (t.task === true ? 'close the task' : 'close the stage')
         : t.op === 'add' ? `add:${typeof t.kind === 'string' ? oneLine(t.kind, MAX_TRACE) : '?'}`
         : t.op === 'remove' ? 'remove'
         : undefined

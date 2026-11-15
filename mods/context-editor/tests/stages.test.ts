@@ -13,6 +13,10 @@ import {
   readyReplacements,
   calibrate,
   calibrateBeforeApply,
+  chainOf,
+  MAX_DEPTH,
+  recallScope,
+  TASK_CARD,
   CALIB_MAX,
   CALIB_MIN,
   CALIB_TOKENS,
@@ -374,6 +378,214 @@ test('no more than one open stage after any request (05_02)', async () => {
   expect(log.tags.lastClosed!.name).toBe('B')
 })
 
+// ---- [SP_FOLD_02_05] [SP_FOLD_01_04] regions: tasks and nested stages
+
+const names = (r: TagRegistry) => chainOf(r).map(s => `${s.kind === 'task' ? 'task' : 'stage'}:${s.name}`)
+
+test('Області — завдання й етапи: open task, open stage twice: the second stage closes the first; the task stays open', async () => {
+  const { io, log } = harness(reg())
+  const text = await tagCall(io, [{ op: 'open', task: 'T' }, { op: 'open', stage: 'A' }, { op: 'open', stage: 'B' }])
+  expect(names(log.tags)).toEqual(['task:T', 'stage:B'])
+  expect(log.tags.outer).toEqual([{ name: 'T', after: mark(rows(), 11), openedTurn: 0, kind: 'task' }])
+  expect(log.tags.lastClosed!.name).toBe('A')
+  expect(log.tags.lastClosed!.kind).toBeUndefined()
+  expect(text).toContain('Task "T" opened; its block starts at #12.')
+  expect(text).toContain('Stage "A" opened inside "T"; its block starts at #12.')
+  expect(text).toContain('Stage "B" opened inside "T"')
+  // a task opened over a chain closes the whole chain: one block, the outermost
+  await tagCall(io, [{ op: 'open', task: 'U' }])
+  expect(names(log.tags)).toEqual(['task:U'])
+  expect(log.tags.outer).toBeUndefined()
+  expect(log.tags.lastClosed).toEqual(expect.objectContaining({ name: 'T', kind: 'task' }))
+})
+
+test('Області — вкладення: open stage + nested: the chain grows by one; on an empty chain it is one region', async () => {
+  const empty = harness(reg())
+  await tagCall(empty.io, [{ op: 'open', stage: 'A', nested: true }])
+  expect(names(empty.log.tags)).toEqual(['stage:A'])
+  const { io, log } = harness(reg())
+  const text = await tagCall(io, [{ op: 'open', stage: 'A' }, { op: 'open', stage: 'B', nested: true }, { op: 'open', stage: 'C', nested: true, index: 12 }])
+  expect(names(log.tags)).toEqual(['stage:A', 'stage:B', 'stage:C'])
+  expect(log.tags.lastClosed).toBeUndefined()
+  expect(text).toContain('Stage "C" opened inside "B"; its block starts at #12.')
+  // close: the deepest region only
+  await tagCall(io, [{ op: 'close' }])
+  expect(names(log.tags)).toEqual(['stage:A', 'stage:B'])
+  expect(log.tags.lastClosed!.name).toBe('C')
+  // a plain stage replaces the deepest stage on its level
+  await tagCall(io, [{ op: 'open', stage: 'D' }])
+  expect(names(log.tags)).toEqual(['stage:A', 'stage:D'])
+  expect(log.tags.lastClosed!.name).toBe('B')
+})
+
+test('Області — закриття завдання: close + task with two open stages: the chain is empty, lastClosed is the task, its report with TASK_CARD', async () => {
+  const r = rows()
+  const { io, log } = harness(
+    reg({ outer: [{ name: 'T', after: mark(r, 0), openedTurn: 0, kind: 'task' }, { name: 'A', after: mark(r, 3), openedTurn: 0 }], stage: { name: 'B', after: mark(r, 6), openedTurn: 0 } }),
+    r,
+  )
+  const text = await tagCall(io, [{ op: 'close', task: true }])
+  expect(chainOf(log.tags)).toEqual([])
+  expect(log.tags.outer).toBeUndefined()
+  expect(log.tags.lastClosed).toEqual({ name: 'T', after: mark(r, 0), end: mark(r, 11), turn: 0, kind: 'task' })
+  expect(text).toContain('Task "T" closed: rows #1..#11')
+  expect(text).toContain(TASK_CARD)
+  expect(text).toContain('Last block "T" (task) #1..#11')
+  // one block per request: a single report
+  expect(text.split(' closed: ').length).toBe(2)
+  // a stage's close report has no card advice
+  const stage = harness(reg({ stage: { name: 'S', after: mark(r, 3), openedTurn: 0 } }), r)
+  expect(await tagCall(stage.io, [{ op: 'close' }])).not.toContain(TASK_CARD)
+})
+
+test('Області — відмови: the ninth region DEPTH_FULL; close task without a task NO_TASK; stage and task together, nested without stage STAGE_FIELDS; a start before the region around it REGION_BOUNDS', async () => {
+  const r = rows()
+  const deep = Array.from({ length: MAX_DEPTH }, (_, i) => ({ name: `S${i}`, after: mark(r, 3), openedTurn: 0 }))
+  const full = harness(reg({ outer: deep.slice(0, -1), stage: deep.at(-1)! }), r)
+  expect(await tagCall(full.io, [{ op: 'open', stage: 'X', nested: true }])).toContain('(DEPTH_FULL)')
+  expect(chainOf(full.log.tags).length).toBe(MAX_DEPTH)
+  // on the same level the deepest stage is replaced: no refusal
+  expect(await tagCall(full.io, [{ op: 'open', stage: 'Y' }])).not.toContain('DEPTH_FULL')
+  const cases: [Partial<TagRegistry>, unknown, string][] = [
+    [{ stage: { name: 'A', after: null, openedTurn: 0 } }, { op: 'close', task: true }, 'NO_TASK'],
+    [{}, { op: 'open', stage: 'A', task: 'T' }, 'STAGE_FIELDS'],
+    [{}, { op: 'open', task: 'T', nested: true }, 'STAGE_FIELDS'],
+    [{}, { op: 'open', stage: 'A', nested: 'yes' }, 'STAGE_FIELDS'],
+    [{ stage: { name: 'A', after: null, openedTurn: 0 } }, { op: 'close', task: 'yes' }, 'STAGE_FIELDS'],
+    [{}, { op: 'open', task: '' }, 'STAGE_NAME_REQUIRED'],
+    [{ stage: { name: 'A', after: mark(r, 6), openedTurn: 0 } }, { op: 'open', stage: 'B', nested: true, index: 4 }, 'REGION_BOUNDS'],
+    [{ outer: [{ name: 'T', after: mark(r, 6), openedTurn: 0, kind: 'task' }], stage: { name: 'A', after: mark(r, 8), openedTurn: 0 } }, { op: 'open', stage: 'B', index: 2 }, 'REGION_BOUNDS'],
+  ]
+  for (const [start, request, code] of cases) {
+    const { io, log } = harness(reg(start), r)
+    const text = await tagCall(io, [request])
+    expect(text).toContain(`(${code})`)
+    expect(log.writes).toBe(0)
+  }
+  // the block the agent did not open starts before the task: the open is
+  // refused, and the close after it is skipped rather than closing the task
+  const task = { name: 'T', after: mark(r, 6), openedTurn: 0, kind: 'task' as const }
+  const old = harness(reg({ stage: task }), r)
+  const both = await tagCall(old.io, [{ op: 'open', stage: 'X', index: 3 }, { op: 'close' }])
+  expect(both).toContain('(REGION_BOUNDS)')
+  expect(both).toContain('(OPEN_REFUSED)')
+  expect(old.log.writes).toBe(0)
+  // an accepted open clears it: the close after it closes that open
+  const fine = harness(reg({ stage: task }), r)
+  const ok = await tagCall(fine.io, [{ op: 'open', stage: 'X', index: 3 }, { op: 'open', stage: 'Y', index: 8 }, { op: 'close' }])
+  expect(ok).not.toContain('(OPEN_REFUSED)')
+  expect(fine.log.tags.lastClosed!.name).toBe('Y')
+  expect(fine.log.tags.stage).toEqual(task)
+})
+
+test('Завдання лише зовнішнє (05_02): after any sequence of opens and closes only the first region may be a task; the chain stays within MAX_DEPTH', async () => {
+  const ops: unknown[] = [
+    { op: 'open', stage: 'A' },
+    { op: 'open', task: 'T' },
+    { op: 'open', stage: 'B', nested: true },
+    { op: 'open', task: 'U' },
+    { op: 'open', stage: 'C' },
+    { op: 'open', stage: 'D', nested: true },
+    { op: 'close' },
+    { op: 'open', stage: 'E', nested: true },
+    { op: 'close', task: true },
+    { op: 'open', stage: 'F', nested: true },
+    { op: 'open', task: 'V' },
+  ]
+  const { io, log } = harness(reg())
+  for (const op of ops) {
+    await tagCall(io, [op])
+    const chain = chainOf(log.tags)
+    expect(chain.slice(1).every(s => s.kind === undefined)).toBe(true)
+    expect(chain.length <= MAX_DEPTH).toBe(true)
+    expect(log.tags.outer === undefined || log.tags.outer.length > 0).toBe(true)
+  }
+  expect(names(log.tags)).toEqual(['task:V'])
+})
+
+test('MarkDue — глибина: closing the depth-2 region marks a depth-2 recall at once (after = 1); close + task with open inner regions passes 0 (05_04)', async () => {
+  const r = rows()
+  const seen: number[] = []
+  const two = reg({ outer: [{ name: 'T', after: mark(r, 0), openedTurn: 0, kind: 'task' }], stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } })
+  const h = harness(two, r, { markDue: async after => void seen.push(after) })
+  await tagCall(h.io, [{ op: 'close' }])
+  await tagCall(h.io, [{ op: 'close' }])
+  expect(seen).toEqual([1, 0])
+  const all = harness(two, r, { markDue: async after => void seen.push(after) })
+  seen.length = 0
+  // a batch: a nested open, then the task with all inside it closes: the shortest chain left
+  await tagCall(all.io, [{ op: 'open', stage: 'B', nested: true }, { op: 'close' }, { op: 'close', task: true }])
+  expect(seen).toEqual([0])
+  // an open over a stage on the same level closes it: after = the length left
+  const same = harness(two, r, { markDue: async after => void seen.push(after) })
+  seen.length = 0
+  await tagCall(same.io, [{ op: 'open', stage: 'C' }])
+  expect(seen).toEqual([1])
+  // a nested open closes nothing: no MarkDue
+  seen.length = 0
+  await tagCall(same.io, [{ op: 'open', stage: 'D', nested: true }])
+  expect(seen).toEqual([])
+})
+
+test('recallScope: the depth and the deepest name of the chain; none: 0 and ""; unreadable: turn 0', async () => {
+  expect(recallScope(okRead(reg({ turn: 4 })))).toEqual({ depth: 0, scope: '', turn: 4 })
+  expect(recallScope(okRead(reg({ turn: 4, outer: [{ name: 'T', after: null, openedTurn: 0, kind: 'task' }], stage: { name: 'A', after: null, openedTurn: 1 } })))).toEqual({ depth: 2, scope: 'A', turn: 4 })
+  expect(recallScope(unreadableRead())).toEqual({ depth: 0, scope: '', turn: 0 })
+})
+
+test('Реєстр чинного мода читається (05_02): without outer and kind, with one stage or none; outer without stage goes; a task deeper than the first reads as a stage; a bad outer is unreadable', async () => {
+  const stage = { name: 'A', after: null, openedTurn: 0 }
+  const read = (v: object) => parseRegistry(JSON.stringify({ ...EMPTY_REGISTRY, ...v }))
+  const one = read({ stage })
+  expect(one.state === 'ok' && one.value.stage).toEqual(stage)
+  expect(one.state === 'ok' && one.value.outer).toBeUndefined()
+  const none = read({})
+  expect(none.state === 'ok' && chainOf(none.value)).toEqual([])
+  // a mod before phase 5 closed the stage and left outer
+  const left = read({ outer: [{ name: 'T', after: null, openedTurn: 0, kind: 'task' }] })
+  expect(left.state).toBe('ok')
+  expect(left.state === 'ok' && 'outer' in left.value).toBe(false)
+  const garbage = read({ outer: 'x' })
+  expect(garbage.state).toBe('ok')
+  const deeper = read({ outer: [{ ...stage, name: 'S' }, { name: 'T', after: null, openedTurn: 0, kind: 'task' }], stage: { ...stage, kind: 'task' } })
+  expect(deeper.state === 'ok' && chainOf(deeper.value).map(s => s.kind)).toEqual([undefined, undefined, undefined])
+  const plain = read({ stage: { ...stage, kind: 'stage' }, lastClosed: { name: 'B', after: null, end: null, turn: 0, kind: 'stage' } })
+  expect(plain.state === 'ok' && plain.value.stage).toEqual(stage)
+  expect(plain.state === 'ok' && plain.value.lastClosed).toEqual({ name: 'B', after: null, end: null, turn: 0 })
+  for (const bad of [
+    { stage, outer: 'x' },
+    { stage, outer: Array.from({ length: MAX_DEPTH }, () => stage) },
+    { stage, outer: [{ name: '' }] },
+    { stage: { ...stage, kind: 'phase' } },
+    { lastClosed: { name: 'B', after: null, end: null, turn: 0, kind: 'phase' } },
+  ])
+    expect(read(bad).state).toBe('unreadable')
+})
+
+test('Ланцюжок у переліку: marks [task ▶ T] and [stage ▶ S]; the header names the chain outer to inner, one region as before', async () => {
+  const r = rows()
+  const chain = reg({ turn: 3, outer: [{ name: 'T', after: mark(r, 0), openedTurn: 1, kind: 'task' }], stage: { name: 'S', after: mark(r, 6), openedTurn: 2 } })
+  const labels = markLabels(r, chain)
+  expect(labels.get(1)).toEqual(['[task ▶ T]'])
+  expect(labels.get(7)).toEqual(['[stage ▶ S]'])
+  const head = telemetryText(await telemetry(r, chain, async () => USAGE))
+  expect(head).toContain('Open regions, outer to inner: task "T" open from #1 (opened 2 turn(s) ago), ')
+  expect(head).toContain(' ▸ stage "S" open from #7 (opened 1 turn(s) ago), ')
+  const task = telemetryText(await telemetry(r, reg({ turn: 3, stage: { name: 'T', after: mark(r, 0), openedTurn: 1, kind: 'task' } }), async () => USAGE))
+  expect(task).toContain('Task "T" open from #1 (opened 2 turn(s) ago)')
+  const one = telemetryText(await telemetry(r, reg({ turn: 3, stage: { name: 'S', after: mark(r, 6), openedTurn: 2 } }), async () => USAGE))
+  expect(one).toContain('Stage "S" open from #7 (opened 1 turn(s) ago)')
+})
+
+test('RelocateStageMarks — ланцюжок: the start of every open region moves after an apply', async () => {
+  const before = rows()
+  const chain = reg({ outer: [{ name: 'T', after: mark(before, 3), openedTurn: 0, kind: 'task' }], stage: { name: 'S', after: mark(before, 9), openedTurn: 0 } })
+  const after = [...before.slice(0, 1), ...before.slice(3)]
+  const out = relocateStageMarks(chain, before, after, [{ op: 'drop', tool_use_id: 'a' }], [])
+  expect(out.outer).toEqual([{ name: 'T', after: mark(after, 1), openedTurn: 0, kind: 'task' }])
+  expect(out.stage!.after).toEqual(mark(after, 7))
+})
+
 // ---- [SP_CTX_02_11] [SP_CTX_DEC_37] the block that waited for compression
 
 test('context_tag — блок, що чекав: the first open reports it with indexes and WAIT_MOVED before the open; waiting ends; the replacements queued once', async () => {
@@ -729,6 +941,30 @@ test('DetectOptimize — мітка з відкритим етапом: the stag
   expect(h.log.order).toEqual(['tags'])
 })
 
+test('DetectOptimize — мітка в ланцюжку: only the deepest region closes and waits; the task around it stays open; MarkDue with the length left', async () => {
+  const seen: number[] = []
+  const start = reg({ turn: 6, outer: [{ name: 'T', after: null, openedTurn: 1, kind: 'task' }], stage: { name: 'S', after: null, openedTurn: 2 } })
+  const h = detectHarness(okRead(start), undefined, { markDue: async after => void seen.push(after) })
+  expect(await detectOptimize(h.io, { aborted: false, answer })).toBe('waiting')
+  expect(regOf(h)!.lastClosed).toEqual({ name: 'S', after: null, end: mark(h.list, 20), turn: 6 })
+  expect(regOf(h)!.stage).toEqual({ name: 'T', after: null, openedTurn: 1, kind: 'task' })
+  expect(regOf(h)!.outer).toBeUndefined()
+  expect(seen).toEqual([1])
+  // the task alone: it closes as a task block
+  const t = detectHarness(okRead(reg({ turn: 7, stage: { name: 'T', after: null, openedTurn: 1, kind: 'task' } })), undefined, { markDue: async after => void seen.push(after) })
+  await detectOptimize(t.io, { aborted: false, answer })
+  expect(regOf(t)!.lastClosed).toEqual({ name: 'T', after: null, end: mark(t.list, 20), turn: 7, kind: 'task' })
+  expect(seen).toEqual([1, 0])
+  // a second mark while the stage's block waits: the task around it holds the
+  // block, so the block grows and the task stays open
+  const list = longRows()
+  const waited = { name: 'S', after: mark(list, 4), end: mark(list, 8), turn: 6 }
+  const again = detectHarness(okRead(reg({ turn: 7, lastClosed: waited, waiting: 'advised', stage: { name: 'T', after: mark(list, 2), openedTurn: 1, kind: 'task' } })))
+  expect(await detectOptimize(again.io, { aborted: false, answer })).toBe('waiting')
+  expect(regOf(again)!.lastClosed).toEqual({ name: 'S', after: mark(list, 4), end: mark(list, 20), turn: 7 })
+  expect(regOf(again)!.stage).toEqual({ name: 'T', after: mark(list, 2), openedTurn: 1, kind: 'task' })
+})
+
 test('DetectOptimize — друга мітка зливає блоки: the waiting start, the new end; its name without a stage, unnamed over a stage', async () => {
   const list = longRows()
   const waited = { name: 'A', after: mark(list, 4), end: mark(list, 8), turn: 2 }
@@ -834,6 +1070,16 @@ test('markClose: a lost stage start becomes null; a lost lastClosed.end stays as
   expect(out.lastClosed).toEqual({ after: gone, end: mark(list, 20), turn: 1 })
   const staged = markClose(reg({ turn: 1, stage: { name: 'S', after: gone, openedTurn: 0 } }), list)
   expect(staged.lastClosed).toEqual({ name: 'S', after: null, end: mark(list, 20), turn: 1 })
+  // [SP_FOLD_01_04] an inner region whose start is lost starts with the region
+  // around it, never at the head before it: the block, the marks, the header
+  const task = { name: 'T', after: mark(list, 5), openedTurn: 0, kind: 'task' as const }
+  const chained = reg({ turn: 1, outer: [task], stage: { name: 'S', after: gone, openedTurn: 0 } })
+  expect(markClose(chained, list).lastClosed).toEqual({ name: 'S', after: mark(list, 5), end: mark(list, 20), turn: 1 })
+  expect(markLabels(list, chained).get(6)).toEqual(['[task ▶ T]', '[stage ▶ S]'])
+  expect(markLabels(list, chained).get(0)).toBeUndefined()
+  const head = telemetryText(await telemetry(list, chained, async () => USAGE))
+  expect(head).toContain('stage "S" open from #6 (opened 1 turn(s) ago)')
+  expect(head).toContain('its start row is gone, so it runs from #6')
 })
 
 // ---- [SP_CTX_02_14] RelocateMark (RebindTags of the stage marks)

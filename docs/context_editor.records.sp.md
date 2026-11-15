@@ -116,7 +116,7 @@ Invariants:
 
 ### 01_18. Stage, ClosedBlock and RowMark  {#SP_CTX_01_18}
 
-Етап — логічний блок рядків, який агент позначає сам ([C_CTX_03_02](./context_editor.methods.concept.md#C_CTX_03_02), [C_CTX_DEC_16](./context_editor.methods.concept.md#C_CTX_DEC_16)). Живе в TagRegistry, поза повідомленнями. Етапи пласкі: відкритий не більше одного.
+Етап — логічний блок рядків, який агент позначає сам ([C_CTX_03_02](./context_editor.methods.concept.md#C_CTX_03_02), [C_CTX_DEC_16](./context_editor.methods.concept.md#C_CTX_DEC_16)). Живе в TagRegistry, поза повідомленнями. З PL_FOLD фази 5 відкриті області утворюють ланцюжок (`TagRegistry.outer` + `stage`, від зовнішньої до внутрішньої, ≤ MAX_DEPTH): завдання (`kind: 'task'`) — лише зовнішня область, етапи вкладаються прапорцем `nested` ([SP_FOLD_01_04](./context_folds.sp.md#SP_FOLD_01_04), [SP_FOLD_02_05](./context_folds.sp.md#SP_FOLD_02_05)). Без вкладення етапи пласкі, як раніше.
 
 RowMark — межа «блок починається після цього рядка» або «блок закінчується цим рядком»; `null` на місці RowMark означає голову розмови (перед рядком 0).
 
@@ -131,6 +131,7 @@ Stage:
 | name | string | yes | — | 1..MAX_STAGE_NAME символів після обрізання пробілів | Назва етапу від агента |
 | after | RowMark? | yes | — | `null` — блок від голови | Блок починається з рядка після цього |
 | openedTurn | int | yes | — | ≥ 0 | `TagRegistry.turn` у момент відкриття; телеметрія називає, скільки ходів тому етап відкрито |
+| kind | `'task'`? | no | — (етап) | `'task'` лише в першої області ланцюжка | PL_FOLD фаза 5: завдання — одне прохання людини; мод пише поле лише для завдання, `'stage'` при читанні нормалізується до відсутнього |
 
 ClosedBlock:
 | Field | Type | Required | Default | Constraints | Description |
@@ -139,6 +140,7 @@ ClosedBlock:
 | after | RowMark? | yes | — | — | Початок блоку, як у Stage |
 | end | RowMark? | yes | — | `null` — блок порожній (перед ним немає жодного рядка з ідентифікатором чи текстом) | Останній рядок блоку |
 | turn | int | yes | — | ≥ 0 | `TagRegistry.turn` у момент закриття; `turn = TagRegistry.turn` на кінці ходу означає «закрито в цьому ході» ([SP_CTX_02_30](./context_editor.stages.sp.md#SP_CTX_02_30)) |
+| kind | `'task'`? | no | — | як `Stage.kind` | Закрите завдання: звіт закриття радить картку завдання, запис згортки блоку — картка (`region.kind`, [SP_FOLD_01_01](./context_folds.sp.md#SP_FOLD_01_01)) |
 
 Функції над поточною розмовою `rows`:
 
@@ -150,9 +152,9 @@ ClosedBlock:
 Межа, рядок якої вже не знаходиться (`lost`: вбудована компактизація хоста, межа вийшла за вікно ROW_WINDOW), діє як голова для `after`; загублений `end` — кінець блоку невідомий, і його ніколи не показують як порожній блок (`null`). Перегляд, телеметрія і звіт закриття про це кажуть ([SP_CTX_02_01](./context_editor.edits.sp.md#SP_CTX_02_01), [SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28), [SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)). context_tag і DetectOptimize, які читають поточну розмову, записують `null` на місце загубленого `stage.after` і `lastClosed.after` (для них `null` і `lost` означають те саме — голову); загублений `lastClosed.end` лишається як є, щоб не стати «порожнім блоком», а як `after` наступного блоку без етапу він діє як голова. Застосування правок і засів переносять межу за правилами [SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14).
 
 Invariants:
-- Відкриття етапу при відкритому етапі спершу закриває поточний ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)); реєстр ніколи не має двох відкритих.
+- Відкриття етапу без `nested` при відкритому етапі спершу закриває найглибший ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)); відкриття завдання закриває весь ланцюжок; на одному рівні ланцюжка ніколи немає двох відкритих областей. Межі вкладеної області лежать усередині охопної: її блок не починається раніше за блок охопної (відмова REGION_BOUNDS); загублений початок внутрішньої області діє як початок охопної, а не голова (ChainStarts у перегляді й телеметрії; context_tag і DetectOptimize пишуть на його місце межу охопної).
 - `waiting` є лише при `lastClosed`; закриття чи відкриття етапу інструментом знімає `waiting` до того, як замінить `lastClosed` (звіт блоку, що чекав, — у результаті виклику), а мітка при `waiting` зливає блоки ([SP_CTX_02_30](./context_editor.stages.sp.md#SP_CTX_02_30)).
-- `lastClosed` змінюють лише закриття етапу (інструментом або міткою) і мітка без відкритого етапу; RebindTags лише переносить його межі, а context_tag і DetectOptimize лише заміняють загублений `after` на `null`.
+- `lastClosed` змінюють лише закриття етапу чи завдання (інструментом або міткою; мітка закриває найглибшу область) і мітка без відкритої області; RebindTags лише переносить його межі, а context_tag і DetectOptimize лише заміняють загублений `after` на `null`.
 
 ### 01_19. Journal  {#SP_CTX_01_19}
 
@@ -328,5 +330,6 @@ CapEntry: `compact` і `attachments` — `reached` \| `passed` (кожне не�
 
 | Date | Change |
 |------|--------|
+| 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_01_04](./context_folds.sp.md#SP_FOLD_01_04)): 01_18 — поле `kind` у Stage і ClosedBlock, ланцюжок областей, вкладення меж (REGION_BOUNDS), мітка закриває найглибшу область |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.structures.sp.md](./context_editor.structures.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |
 | 2026-10-17 | Аудит коду (SPEC-7, SPEC-13): 01_23 — рішення пише й VerifyPredictions на першому кінці ходу після застосування (знімає прогноз, якого хост не справдив), `predicted` перевіряється й там; 01_25 — поля `probeDone` і `settle` (очікування зонда) |

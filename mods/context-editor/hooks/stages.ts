@@ -58,6 +58,8 @@ export const MESSAGES_ROW = 'Messages'
 // Messages row's (probe on 2.1.296, 2026-10-12)
 export const FIXED_IN_MESSAGES: readonly string[] = ['Memory files', 'Skills', 'MCP server instructions', 'Custom agents']
 export const MAX_STAGE_NAME = 80
+// [SP_FOLD_01_06] [SP_FOLD_DEC_05] the longest chain of open regions (a task and seven stages)
+export const MAX_DEPTH = 8
 export const SKILL = 'context-stages'
 // [SP_CTX_02_34] the bounds of chars per token, and the least conversation
 // size in tokens a calibration is trusted at ([SP_CTX_DEC_30] A after the
@@ -84,6 +86,12 @@ export const GUIDE_FRAME = modText(
 export const STAGE_ADVICE =
   "Review the block as a whole and compress, in ONE context_edit, what in it is processed or excess: tool outputs you have used, repeated and stale reads, dead ends, media already seen (by a description if the task allows). Write a stage record: goal; decisions with the reason, the person's verbatim words behind them and why other options were rejected; verified facts with sources (paths, lines, versions); changed artifacts; open questions. A collapse may cover the person's messages and answers (AskUserQuestion): they go into the archive, so the record quotes what is still in force; list in \"keep\" the rows that must stay verbatim. Reproducible pairs (~: Read, Grep, Glob) can shrink to a pointer (what, where, what was found; re-read if needed); others need a careful summary. Compress failed attempts into a lesson: tried X ×N → failed because Y → do Z. Usually keep verbatim the rules and skills still in force, and the conclusions you need next. Originals stay in the archive: context_recall unfolds a record. If nothing needs compressing, queue nothing."
 
+// [SP_FOLD_02_05] [C_FOLD_DEC_14] The advice a task's close adds: its record
+// is a task card. A fact others may change is a snapshot with its source, as
+// the comparative run showed (Entry 15: one stale answer came from a card).
+export const TASK_CARD =
+  'This closes a task: make its record a task card in one collapse of the whole block: goal; what was done (commits, changed files); facts and know-how for later tasks, each with its source, and a value others may change (a setting, a version, a figure in a file) as a snapshot: "as read in <file> at turn N; check before use"; instructions: standing ones, and the ones for this task only, marked so; open questions.'
+
 export { distinctive, estimate }
 
 // ---- [SP_CTX_01_18] Stage, ClosedBlock and RowMark
@@ -91,17 +99,44 @@ export { distinctive, estimate }
 // "The block starts after this row" or "the block ends with this row"; null
 // in a RowMark's place is the head of the conversation (before row 0).
 export type RowMark = { anchor: string; hint: number }
-export type Stage = { name: string; after: RowMark | null; openedTurn: number }
+// [SP_FOLD_01_04] OpenRegion: `kind` absent is a stage; the mod writes it only for a task
+export type RegionKind = 'task' | 'stage'
+export type Stage = { name: string; after: RowMark | null; openedTurn: number; kind?: RegionKind }
 // `name` absent: a block without a stage, closed by the mark ([SP_CTX_DEC_14])
-// or two blocks merged by a second mark ([SP_CTX_DEC_37])
-export type ClosedBlock = { name?: string; after: RowMark | null; end: RowMark | null; turn: number }
+// or two blocks merged by a second mark ([SP_CTX_DEC_37]); `kind` as the region's
+export type ClosedBlock = { name?: string; after: RowMark | null; end: RowMark | null; turn: number; kind?: RegionKind }
 // [SP_CTX_01_10] [SP_CTX_DEC_37] TagRegistry.waiting: the mark closed
 // `lastClosed` and it waits for compression; `advised` once its advice went
 // with the first prompt of the next turn
 export type Waiting = 'marked' | 'advised'
 
-// The registry fields stages live in ([SP_CTX_01_10]).
-export type StageFields = { stage?: Stage; lastClosed?: ClosedBlock; turn: number }
+// The registry fields stages live in ([SP_CTX_01_10]). [SP_FOLD_01_04]
+// `stage` is the deepest open region, `outer` the regions around it, outer
+// to inner; `outer` is absent when empty and never stands without `stage`.
+export type StageFields = { stage?: Stage; outer?: Stage[]; lastClosed?: ClosedBlock; turn: number }
+
+// [SP_FOLD_01_04] The chain of open regions, outer to inner.
+export function chainOf(reg: Pick<StageFields, 'stage' | 'outer'>): Stage[] {
+  return reg.stage ? [...(reg.outer ?? []), reg.stage] : []
+}
+
+// [SP_FOLD_01_04] The registry with this chain: its last region in `stage`,
+// the rest in `outer`; an empty chain leaves neither field. Pure.
+export function withChain<R extends StageFields>(reg: R, chain: readonly Stage[]): R {
+  const { stage: _s, outer: _o, ...rest } = reg
+  if (!chain.length) return rest as R
+  return { ...rest, ...(chain.length > 1 ? { outer: chain.slice(0, -1) } : {}), stage: chain.at(-1)! } as R
+}
+
+export function isTask(s: { kind?: RegionKind } | undefined): boolean {
+  return s?.kind === 'task'
+}
+
+// [SP_FOLD_02_05] "Stage" or "Task" with the region's name, capitalized or not.
+export function regionWord(s: { kind?: RegionKind }, capital = false): string {
+  const w = isTask(s) ? 'task' : 'stage'
+  return capital ? w[0]!.toUpperCase() + w.slice(1) : w
+}
 
 // MarkBefore(rows, i): the last distinctive row before `i`, or null.
 export function markBefore(rows: readonly SessionMessage[], i: number): RowMark | null {
@@ -122,23 +157,52 @@ export function startOf(rows: readonly SessionMessage[], after: RowMark | null):
   return at === 'lost' ? 0 : at + 1
 }
 
-// [SP_CTX_02_29] CloseStage: the open stage becomes the last closed block,
-// ending with the last row before the carrier row of the call. Undefined
-// without an open stage (NO_STAGE). The caller writes the registry. Pure.
-export function closeStage<R extends StageFields>(reg: R, rows: readonly SessionMessage[], carrier: number): { registry: R; block: ClosedBlock } | undefined {
-  if (!reg.stage) return undefined
-  const block: ClosedBlock = { name: reg.stage.name, after: reg.stage.after, end: markBefore(rows, carrier), turn: reg.turn }
-  const { stage: _s, ...rest } = reg
-  return { registry: { ...rest, lastClosed: block } as R, block }
+// [SP_FOLD_01_04] The first row of each open region, outer to inner. A lost
+// start counts as the start of the region around it (the head for the
+// outermost), so an inner region never starts before the one that holds it.
+export function chainStarts(rows: readonly SessionMessage[], chain: readonly Stage[]): { first: number; lost: boolean }[] {
+  const out: { first: number; lost: boolean }[] = []
+  for (const s of chain) {
+    const lost = markIndex(rows, s.after) === 'lost'
+    out.push({ first: lost ? (out.at(-1)?.first ?? 0) : startOf(rows, s.after), lost })
+  }
+  return out
+}
+
+// [SP_CTX_02_29] [SP_FOLD_02_05] CloseRegions: the regions of the chain from
+// `keep` on close; the outermost of them becomes the last closed block, with
+// its name and kind, ending with the last row before the carrier row of the
+// call. `keep` defaults to the deepest region alone. Undefined when nothing
+// closes (NO_STAGE). `depth`: the length of the chain left. The caller
+// writes the registry. Pure.
+export function closeStage<R extends StageFields>(
+  reg: R,
+  rows: readonly SessionMessage[],
+  carrier: number,
+  keep = chainOf(reg).length - 1,
+): { registry: R; block: ClosedBlock; depth: number } | undefined {
+  const chain = chainOf(reg)
+  const at = Math.max(0, keep)
+  const outermost = chain[at]
+  if (!outermost) return undefined
+  const block: ClosedBlock = { name: outermost.name, after: outermost.after, end: markBefore(rows, carrier), turn: reg.turn, ...(isTask(outermost) ? { kind: 'task' as const } : {}) }
+  return { registry: { ...withChain(reg, chain.slice(0, at)), lastClosed: block }, block, depth: at }
 }
 
 // [SP_CTX_01_18] context_tag and DetectOptimize write null in the place of a
-// lost `stage.after` and `lastClosed.after` (both mean the head); a lost
+// lost start of the outermost open region and of `lastClosed.after` (both
+// mean the head), and the start of the region around it in the place of a
+// lost start of an inner region ([SP_FOLD_01_04]: bounds nest); a lost
 // `lastClosed.end` stays, so it never becomes an empty block. The same
 // registry when nothing is lost.
 export function normalizeLost<R extends StageFields>(reg: R, rows: readonly SessionMessage[]): R {
   let next = reg
-  if (reg.stage && markIndex(rows, reg.stage.after) === 'lost') next = { ...next, stage: { ...reg.stage, after: null } }
+  const chain = chainOf(reg)
+  if (chain.some(s => markIndex(rows, s.after) === 'lost')) {
+    const fixed: Stage[] = []
+    for (const s of chain) fixed.push(markIndex(rows, s.after) === 'lost' ? { ...s, after: fixed.at(-1)?.after ?? null } : s)
+    next = withChain(next, fixed)
+  }
   if (reg.lastClosed && markIndex(rows, reg.lastClosed.after) === 'lost') next = { ...next, lastClosed: { ...reg.lastClosed, after: null } }
   return next
 }
@@ -193,8 +257,9 @@ export function relocateMark(
   return null
 }
 
-// [SP_CTX_02_14] The stage marks after an apply or a seed: `stage.after`,
-// `lastClosed.after` and `lastClosed.end` are moved, never dropped. `carried`:
+// [SP_CTX_02_14] The stage marks after an apply or a seed: the start of every
+// open region of the chain ([SP_FOLD_01_04]), `lastClosed.after` and
+// `lastClosed.end` are moved, never dropped. `carried`:
 // the results a seed's CarryNote changed ([SP_CTX_01_17]). Pure.
 export function relocateStageMarks<R extends StageFields>(
   reg: R,
@@ -213,17 +278,14 @@ export function relocateStageMarks<R extends StageFields>(
   })
   const move = (m: RowMark | null) => relocateMark(m, before, after, applied, produced, changed)
   let next = reg
-  if (reg.stage) next = { ...next, stage: { ...reg.stage, after: move(reg.stage.after) } }
+  const chain = chainOf(reg)
+  if (chain.length) next = withChain(next, chain.map(s => ({ ...s, after: move(s.after) })))
   if (reg.lastClosed) next = { ...next, lastClosed: { ...reg.lastClosed, after: move(reg.lastClosed.after), end: move(reg.lastClosed.end) } }
   return next
 }
 
 // ---- [SP_CTX_02_01] marks in the listing
 
-// The stage marks by row index: `[stage ▶ <name>]` on the first row of the
-// open stage, `[block ▶ <name>]` (`[block ▶]` without a name) on the first
-// row of the last closed block and `[block end]` on its last. A lost start
-// counts as the head; a lost end gives no `[block end]`; an empty block no marks.
 // [SP_FOLD_01_01] The rows of the last closed block when it has a name and
 // both its ends are found, for the `region` of a queued collapse; undefined
 // otherwise (a block closed by the mark has no name; an unreadable registry).
@@ -233,25 +295,30 @@ export function closedSpan(rows: readonly SessionMessage[], read: Read<Pick<Stag
   if (markIndex(rows, b.after) === 'lost') return undefined
   const to = markIndex(rows, b.end)
   const from = startOf(rows, b.after)
-  return to === 'lost' || to < from ? undefined : { name: b.name, from, to }
+  return to === 'lost' || to < from ? undefined : { name: b.name, from, to, kind: isTask(b) ? 'task' : 'stage' }
 }
 
-// [SP_FOLD_01_03] Where a recall is made: the depth of the chain of open
-// regions and the name of the deepest (in this phase the open stage: 1 and
-// its name; none: 0 and ''), with the registry's turn counter. An unreadable
-// registry gives no region and turn 0.
-export function recallScope(read: Read<Pick<StageFields, 'stage'> & { turn: number }>): { depth: number; scope: string; turn: number } {
+// [SP_FOLD_01_03] Where a recall is made: the length of the chain of open
+// regions and the name of the deepest (none: 0 and ''), with the registry's
+// turn counter. An unreadable registry gives no region and turn 0.
+export function recallScope(read: Read<Pick<StageFields, 'stage' | 'outer'> & { turn: number }>): { depth: number; scope: string; turn: number } {
   if (read.state === 'unreadable') return { depth: 0, scope: '', turn: 0 }
-  const { stage, turn } = read.value
-  return stage ? { depth: 1, scope: stage.name, turn } : { depth: 0, scope: '', turn }
+  const chain = chainOf(read.value)
+  return { depth: chain.length, scope: chain.at(-1)?.name ?? '', turn: read.value.turn }
 }
 
+// The stage marks by row index: `[task ▶ <name>]` or `[stage ▶ <name>]` on
+// the first row of each open region, outer to inner ([SP_FOLD_02_07]),
+// `[block ▶ <name>]` (`[block ▶]` without a name) on the first row of the
+// last closed block and `[block end]` on its last. A lost start counts as the
+// head; a lost end gives no `[block end]`; an empty block no marks.
 export function markLabels(rows: readonly SessionMessage[], reg: StageFields): Map<number, string[]> {
   const labels = new Map<number, string[]>()
   const put = (i: number, label: string) => {
     if (i >= 0 && i < rows.length) labels.set(i, [...(labels.get(i) ?? []), label])
   }
-  if (reg.stage) put(startOf(rows, reg.stage.after), `[stage ▶ ${reg.stage.name}]`)
+  const chain = chainOf(reg)
+  chainStarts(rows, chain).forEach(({ first }, i) => put(first, `[${regionWord(chain[i]!)} ▶ ${chain[i]!.name}]`))
   const b = reg.lastClosed
   if (b) {
     const s0 = startOf(rows, b.after)
@@ -299,8 +366,9 @@ export type Telemetry = {
   error?: string
   // without a readable registry the stage, block and candidate parts are absent
   registry: boolean
-  stage?: { name: string; first: number; chars: number; turnsAgo: number; lost: boolean }
-  lastClosed?: { name?: string; start: number; end?: number; chars?: number; lost: boolean; startLost: boolean }
+  // [SP_FOLD_02_07] the chain of open regions, outer to inner; empty: none open
+  regions: { name: string; kind: RegionKind; first: number; chars: number; turnsAgo: number; lost: boolean }[]
+  lastClosed?: { name?: string; kind?: RegionKind; start: number; end?: number; chars?: number; lost: boolean; startLost: boolean }
   // [SP_CTX_01_20] active reviews whose target is in the conversation, by
   // reason (`none`: a tag written before phase 15), with the first row of
   // each target; and disposables
@@ -461,6 +529,7 @@ export async function telemetry(
     measure: 'unavailable',
     autoCompactOff: false,
     registry: reg !== undefined,
+    regions: [],
     reviews: new Map(),
     disposable: 0,
     state: 'none',
@@ -495,16 +564,18 @@ export async function telemetry(
     if (last.tokensBefore > tokensNow) t.measuredFreed = last.tokensBefore - tokensNow
     if (update) await update(r => (r.lastApply?.at === last.at ? dropLastApply(r) : r)).catch(() => undefined)
   }
-  if (reg.stage) {
-    const first = startOf(rows, reg.stage.after)
-    t.stage = {
-      name: reg.stage.name,
+  const chain = chainOf(reg)
+  t.regions = chainStarts(rows, chain).map(({ first, lost }, i) => {
+    const s = chain[i]!
+    return {
+      name: s.name,
+      kind: (isTask(s) ? 'task' : 'stage') as RegionKind,
       first,
       chars: charsOf(rows, first, rows.length - 1),
-      turnsAgo: Math.max(0, reg.turn - reg.stage.openedTurn),
-      lost: markIndex(rows, reg.stage.after) === 'lost',
+      turnsAgo: Math.max(0, reg.turn - s.openedTurn),
+      lost,
     }
-  }
+  })
   if (reg.lastClosed) {
     const b = reg.lastClosed
     const s0 = startOf(rows, b.after)
@@ -512,6 +583,7 @@ export async function telemetry(
     const end = typeof e === 'number' && e >= 0 ? e : undefined
     t.lastClosed = {
       ...(b.name !== undefined ? { name: b.name } : {}),
+      ...(isTask(b) ? { kind: 'task' as const } : {}),
       start: s0,
       ...(end !== undefined ? { end } : {}),
       ...(end !== undefined && s0 <= end ? { chars: charsOf(rows, s0, end) } : {}),
@@ -548,8 +620,8 @@ function shortList(at: readonly number[]): string {
   return at.length > MAX_BLOCK_INDEXES ? `${shown}, +${at.length - MAX_BLOCK_INDEXES} more` : shown
 }
 
-function blockLabel(name: string | undefined): string {
-  return name !== undefined ? `Last block "${name}"` : 'Last block (no stage)'
+function blockLabel(name: string | undefined, kind?: RegionKind): string {
+  return name !== undefined ? `Last block "${name}"${kind === 'task' ? ' (task)' : ''}` : 'Last block (no stage)'
 }
 
 // [SP_CTX_02_28] [SP_CTX_02_38] The cache line: by default an apply rewrites
@@ -596,14 +668,19 @@ export function telemetryText(t: Telemetry): string {
     lines.push(`Host attachments: ${t.hostAttach.copies} stale cop${t.hostAttach.copies === 1 ? 'y' : 'ies'} of instruction files and skill listings left out of each request (${estimate(t.hostAttach.chars, t.ratio)})`)
   if (!t.registry) return lines.join('\n')
   const startGone = '; its start row is gone, so it runs from #0'
+  // [SP_FOLD_02_07] one region: its line as before; a chain: outer to inner
+  const region = (s: Telemetry['regions'][number], capital: boolean) =>
+    `${regionWord(s, capital)} "${s.name}" open from #${s.first} (opened ${s.turnsAgo} turn(s) ago), ${estimate(s.chars, t.ratio)}${s.lost ? `; its start row is gone, so it runs from #${s.first}` : ''}`
   lines.push(
-    t.stage
-      ? `Stage "${t.stage.name}" open from #${t.stage.first} (opened ${t.stage.turnsAgo} turn(s) ago), ${estimate(t.stage.chars, t.ratio)}${t.stage.lost ? startGone : ''}`
-      : 'No open stage',
+    t.regions.length === 0
+      ? 'No open stage'
+      : t.regions.length === 1
+        ? region(t.regions[0]!, true)
+        : `Open regions, outer to inner: ${t.regions.map(s => region(s, false)).join(' ▸ ')}`,
   )
   const b = t.lastClosed
   if (b) {
-    const head = blockLabel(b.name)
+    const head = blockLabel(b.name, b.kind)
     const body = b.lost
       ? `${head} from #${b.start}: its end row is gone`
       : b.end === undefined || b.start > b.end
@@ -922,7 +999,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   let head = waiting
     ? `You marked ${blockName(block)} with ${OPTIMIZE_MARK}; it waited for compression until this call: `
     : block.name !== undefined
-      ? `Stage "${block.name}" closed: `
+      ? `${regionWord(block, true)} "${block.name}" closed: `
       : 'Block (no stage): '
   if (e === 'lost') head += 'its end row is gone; call context_list.'
   else if (!hasRows) head += 'no rows in it.'
@@ -985,7 +1062,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
   for (const line of replaced?.dropped ?? []) text += `\n${line}.`
   text += '\n' + telemetryText(t)
   if (hasRows) {
-    text += '\n' + (io.passed?.() ? PASSED_ADVICE : (waiting ? WAIT_MOVED + ' ' : '') + STAGE_ADVICE)
+    text += '\n' + (io.passed?.() ? PASSED_ADVICE : (waiting ? WAIT_MOVED + ' ' : '') + STAGE_ADVICE + (isTask(block) ? ' ' + TASK_CARD : ''))
     io.setListed(key)
   }
   return text
@@ -993,7 +1070,7 @@ export async function blockReport(io: BlockIO, block: ClosedBlock, replaced?: Re
 
 // [SP_CTX_02_29] REPORT_FAILED: the stage is closed and written already.
 export function reportFailed(block: ClosedBlock, err: unknown): string {
-  const what = block.name !== undefined ? `Stage "${block.name}"` : 'The block'
+  const what = block.name !== undefined ? `${regionWord(block, true)} "${block.name}"` : 'The block'
   return `${what} closed; its report failed: ${errorText(err)}; call context_list`
 }
 
@@ -1001,7 +1078,7 @@ export function reportFailed(block: ClosedBlock, err: unknown): string {
 export const WAIT_MOVED = 'You are moving on from it: compress it now unless the next stage still needs its details; it no longer waits.'
 
 export function blockName(block: ClosedBlock): string {
-  return block.name !== undefined ? `stage "${block.name}"` : 'the last block (no stage)'
+  return block.name !== undefined ? `${regionWord(block)} "${block.name}"` : 'the last block (no stage)'
 }
 
 export const LIST_HINT =
@@ -1107,22 +1184,33 @@ export function hasOptimizeMark(answer: string | undefined): boolean {
   return lines.at(-1) === OPTIMIZE_MARK
 }
 
-// [SP_CTX_02_30] [SP_CTX_DEC_14] The block of the mark: a stage closed by the
-// tool in this turn stays the block (its stage opened after it stays open);
-// else the open stage closes at the end of the turn; without one, a block
+// [SP_CTX_02_30] [SP_CTX_DEC_14] The block of the mark: a region closed by
+// the tool in this turn stays the block (a region opened after it stays
+// open); else the deepest open region closes at the end of the turn
+// ([SP_FOLD_01_05]: the regions around it stay open); without one, a block
 // without a stage from the previous block's end (or the head) to the end of
 // the turn. [SP_CTX_DEC_37] A block still waiting merges with the new one:
-// its start, the new end, its name unless a stage closed now. The block then
-// waits (`marked`). Lost starts become null. Pure.
+// its start, the new end, its name and kind unless a region closed now. The
+// block then waits (`marked`). Lost starts become null. Pure.
 export function markClose(reg: TagRegistry, rows: readonly SessionMessage[]): TagRegistry {
   const r = normalizeLost(reg, rows)
   if (r.lastClosed && r.lastClosed.turn === r.turn) return { ...r, waiting: 'marked' }
   const end = markBefore(rows, rows.length)
   const waited = r.waiting && r.lastClosed ? r.lastClosed : undefined
-  const { stage, ...rest } = r
+  const chain = chainOf(r)
+  // [SP_FOLD_02_05] a region that starts no later than the waiting block
+  // holds it (the task or stage around the stage the last mark closed): the
+  // second mark extends the waiting block and leaves that region open
+  const holds = (s: Stage) => !!waited && startOf(rows, s.after) <= startOf(rows, waited.after)
+  const deepest = chain.at(-1)
+  const closes = deepest && !holds(deepest) ? deepest : undefined
+  const rest = closes ? withChain(r, chain.slice(0, -1)) : r
   let block: ClosedBlock
-  if (stage) block = waited ? { after: waited.after, end, turn: r.turn } : { name: stage.name, after: stage.after, end, turn: r.turn }
-  else if (waited) block = { ...(waited.name !== undefined ? { name: waited.name } : {}), after: waited.after, end, turn: r.turn }
+  if (closes)
+    block = waited
+      ? { after: waited.after, end, turn: r.turn }
+      : { name: closes.name, after: closes.after, end, turn: r.turn, ...(isTask(closes) ? { kind: 'task' as const } : {}) }
+  else if (waited) block = { ...(waited.name !== undefined ? { name: waited.name } : {}), ...(isTask(waited) ? { kind: 'task' as const } : {}), after: waited.after, end, turn: r.turn }
   else block = { after: r.lastClosed ? r.lastClosed.end : null, end, turn: r.turn }
   return { ...rest, lastClosed: block, waiting: 'marked' }
 }
@@ -1191,21 +1279,24 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   if (q.value.handoff) return ignored('a handoff is pending'), 'handoff'
   const rows = await io.rows()
   let regWhy: string | undefined
+  // [SP_FOLD_02_03] the length of the chain the mark left open
+  let depth = 0
   try {
     await io.changeTags(read => {
       if (read.state === 'unreadable') {
         regWhy = 'the tag registry is unreadable'
         return undefined
       }
-      return markClose(read.value, rows)
+      const next = markClose(read.value, rows)
+      depth = chainOf(next).length
+      return next
     })
   } catch (err) {
     regWhy = errorText(err)
   }
   if (regWhy) return ignored(regWhy), 'registry-unreadable'
-  // [SP_FOLD_02_03] the recalls of the closed block are due
-  // (the port logs its own failure); no region is open once the mark closed the block
-  await io.markDue?.(0).catch(() => undefined)
+  // [SP_FOLD_02_03] the recalls of the closed block are due (the port logs its own failure)
+  await io.markDue?.(depth).catch(() => undefined)
   // [SP_CTX_DEC_37] nothing queued: the block waits for the agent's move to the next stage
   return 'waiting'
 }

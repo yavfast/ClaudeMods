@@ -429,7 +429,7 @@ test('ClearAttachments — інша компактизація: a compaction tha
 // ---- [SP_CTX_02_28] the telemetry line, [SP_CTX_01_05] the report's sentence
 
 test('Telemetry — вкладення: one line when copies are left out; none otherwise', async () => {
-  const t: Telemetry = { measure: 'unknown', autoCompactOff: false, registry: false, reviews: new Map(), disposable: 0, state: 'none', notes: { count: 0, reminders: 0 }, ratio: 4 }
+  const t: Telemetry = { measure: 'unknown', autoCompactOff: false, registry: false, regions: [], reviews: new Map(), disposable: 0, state: 'none', notes: { count: 0, reminders: 0 }, ratio: 4 }
   expect(telemetryText({ ...t, hostAttach: { copies: 3, chars: 4000 } })).toContain('Host attachments: 3 stale copies of instruction files and skill listings left out of each request (~1000 tokens)')
   expect(telemetryText({ ...t, hostAttach: { copies: 0, chars: 0 } })).not.toContain('Host attachments')
   expect(attachText({ copies: 0, chars: 0 })).toBe('')

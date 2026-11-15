@@ -185,7 +185,7 @@ test('region — згортка всього закритого блоку з н
   const rows = conversation()
   const closed = { name: 'reading', after: markBefore(rows, 3), end: markBefore(rows, 7), turn: 1 }
   const span = closedSpan(rows, okRead({ lastClosed: closed }))
-  expect(span).toEqual({ name: 'reading', from: 3, to: 6 })
+  expect(span).toEqual({ name: 'reading', from: 3, to: 6, kind: 'stage' })
   expect(closedSpan(rows, okRead({ lastClosed: { ...closed, name: undefined } }))).toBeUndefined()
   expect(closedSpan(rows, okRead({}))).toBeUndefined()
   expect(closedSpan(rows, unreadableRead())).toBeUndefined()
@@ -203,6 +203,20 @@ test('region — згортка всього закритого блоку з н
   expect(parseQueue(JSON.stringify({ ...EMPTY_QUEUE, edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'S', region: { name: 'x', kind: 'stage' } }] })).state).toBe('unreadable')
   const ledger = recordFolds(emptyFolds(), [{ id: 'f1', entry: 0, edit: whole, what: 'a list' }], [{ edit: 'collapse', rows: rows.slice(3, 7) }], 2, '/s/1.json', 3, 1e6)
   expect(ledger.folds[0]).toEqual(expect.objectContaining({ what: 'stage "reading"', region: { name: 'reading', kind: 'stage' }, kind: 'range', rows: 4, turn: 3 }))
+})
+
+// [SP_FOLD_05_01] RecordFolds: a task card — a collapse of the whole block of a closed task
+test('RecordFolds — картка завдання: a collapse of the whole block of a closed task is a card: region kind task, what task "<name>"', () => {
+  const rows = conversation()
+  const closed = { name: 'fix the total', after: markBefore(rows, 3), end: markBefore(rows, 7), turn: 1, kind: 'task' as const }
+  const span = closedSpan(rows, okRead({ lastClosed: closed }))
+  expect(span).toEqual({ name: 'fix the total', from: 3, to: 6, kind: 'task' })
+  const out = queueEdits({ ...EMPTY_QUEUE }, rows, { edits: [{ op: 'collapse', from_index: 3, to_index: 6, summary: 'card' }] }, undefined, undefined, false, undefined, [], [], span)
+  if ('deny' in out) throw new Error(out.deny)
+  const card = out.queue.edits[0]!
+  expect(card.region).toEqual({ name: 'fix the total', kind: 'task' })
+  const ledger = recordFolds(emptyFolds(), [{ id: 'f1', entry: 0, edit: card, what: 'a list' }], [{ edit: 'collapse', rows: rows.slice(3, 7) }], 2, '/s/1.json', 3, 1e6)
+  expect(ledger.folds[0]).toEqual(expect.objectContaining({ what: 'task "fix the total"', region: { name: 'fix the total', kind: 'task' }, kind: 'range' }))
 })
 
 // [SP_FOLD_01_02] [SP_FOLD_05_02] the ledger file
