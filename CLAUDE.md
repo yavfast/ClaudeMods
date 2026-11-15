@@ -24,7 +24,7 @@ On a Team or Enterprise account (or any machine with managed settings), host 2.1
 
 `claude plugin test` takes only a directory and has no filter. To run one test file, point it at a temporary folder that holds just that file plus the `hooks/` it imports.
 
-`mods/*/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`. Claude Code generates that folder each time it loads the mod, and git ignores it. In a fresh clone, the types and `tsc` only work after the mod has been loaded once with `--plugin-dir`.
+`mods/*/tsconfig.json` extends `.claude-plugin/types/tsconfig.json`. Claude Code generates that folder each time it loads the mod, and git ignores it. In a fresh clone, the types and `tsc` only work after the mod has been loaded once with `--plugin-dir`. When the mod runs as a managed plugin (this machine), the host writes no types folder and refuses `--plugin-dir`: type-check with a temporary tsconfig whose `files` is the host's bundled `plugin-authoring/types/claude-code.d.ts` (under `/tmp/claude-<uid>/bundled-skills/<version>/`), `lib: ["es2022"]`, and `include` of the mod's `hooks/` and `tests/` (plugin-hooks 48).
 
 ## Architecture
 
