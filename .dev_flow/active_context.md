@@ -6,7 +6,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 - `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog PL_CTX (фази 1–48 закомічені; фаза 48 — заголовок сесії) — branch `main` — 2026-10-21
 - `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: практика — реальна довга задача з модом (≥150k, opus), потім розбір сесії → P26+ — branch `main` (= `feat/context-editor`) — 2026-10-11
-- `/dev-flow resume task_C_FOLD` — `implement` — next: фаза 4 PL_FOLD «Порівняльний прогін» чекає погодження розробника (кількість прогонів, вартість) — branch `main`, фази 1–3 закомічені, 5 комітів не запушено — 2026-11-14 23:55
+- `/dev-flow resume task_C_FOLD` — `implement` — next: стенд v3 фази 4 PL_FOLD (довга сесія: 15–20 задач, контекст до 100–150 тис.; `.dev_flow/proto/compare/`), прогін sonnet A/B/C, звіт Entry 15 спайку, питання про C_FOLD_DEC_14 — branch `main`, фази 1–3 закомічені й запушені — 2026-11-15 10:53
 
 ## Active Tasks
 
@@ -14,7 +14,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 |------|-------|--------|--------------|---------|
 | [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan (backlog PL_CTX; фази 1–47 закомічені) | in-progress | bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6, a477d71d | 2026-10-21 |
 | [task_20261010_083402_stage-cleanup](tasks/task_20261010_083402_stage-cleanup.md) — Динамічна оптимізація частини контексту за етапами | verify (практика) | in-progress | decd4bc6, d5614704, 355660b2 | 2026-10-17 |
-| [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | implement (фази 1–3 PL_FOLD закомічені; фаза 4 чекає погодження) | in-progress | 90e21609 | 2026-11-14 |
+| [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | implement (фази 1–3 PL_FOLD закомічені; фаза 4 — матриця v2 без різниці рукавів, далі прогін v3 на довгій сесії) | in-progress | 90e21609, 85408971 | 2026-11-15 |
 
 ## Recently Completed
 

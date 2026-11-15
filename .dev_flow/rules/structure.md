@@ -75,3 +75,28 @@ const cwd = await $.session.cwd().catch(() => undefined)   // moves with the age
 ```
 
 **Provenance:** [context_editor.p47.plan.md](../../docs/context_editor.p47.plan.md) (PL_CTX_P47), [SP_CTX_DEC_45](../../docs/context_editor.decisions-21.sp.md#SP_CTX_DEC_45); live probe `.dev_flow/cache/live-test/root-probe/results.md`; [task_C_CTX](../tasks/task_C_CTX.md) block «фаза 47» (claude-session-a477d71d).
+
+## STRUCT-04 — Give the handoff seed every input and output a change adds to the apply (should)  {#STRUCT-04}
+
+**Applies to:** `mods/*/hooks/**` — a change of `applyEdits`, of what `handleCompaction` passes to it or hands on after it.
+
+`buildSeed` and `carryRegistries` in `handoff.ts` run the same apply as `handleCompaction`. An option the compaction starts passing to `applyEdits`, or a result it starts handing to the registry step (tags, notes, aliases, the journal), goes into the seed path in the same change, with a test on the carried registry.
+
+### Why
+PL_FOLD phase 3 stamped an applied collapse with `kept` only in `compaction.ts`; in a handoff the pin and the state slot a collapse went around were lost in the new session (pre-commit review, round 1, `must`). Phase 2 needed the same second step for the fold ledger.
+
+### Examples
+
+**Correct:**
+```ts
+// handoff.ts — buildSeed
+batch: batch.map(e => (applied.kept.has(e) ? { ...e, kept: applied.kept.get(e)! } : e)),
+```
+
+**Incorrect:**
+```ts
+// compaction.ts only; carryRegistries still reads s.edits without the stamp
+const done = edits.filter(...).map(e => (applied.kept.has(e) ? { ...e, kept: applied.kept.get(e)! } : e))
+```
+
+**Provenance:** [context_folds.plan.md](../../docs/context_folds.plan.md) (PL_FOLD_P3), [SP_FOLD_02_04](../../docs/context_folds.sp.md#SP_FOLD_02_04) note (g); [task_C_FOLD](../tasks/task_C_FOLD.md) (claude-session-90e21609), 2026-11-14.
