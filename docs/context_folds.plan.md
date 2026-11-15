@@ -49,7 +49,7 @@
 - [x] [Phase 1 — Облік згорток](#PL_FOLD_P1)
 - [x] [Phase 2 — Розгортання й повернення згаданого](#PL_FOLD_P2)
 - [x] [Phase 3 — Згортка зі словами людини й обхід закріплених рядків](#PL_FOLD_P3)
-- [ ] [Phase 4 — Порівняльний прогін](#PL_FOLD_P4)
+- [x] [Phase 4 — Порівняльний прогін](#PL_FOLD_P4)
 - [ ] [Phase 5 — Вкладені області й завдання](#PL_FOLD_P5)
 - [ ] [Phase 6 — Службові вставки](#PL_FOLD_P6)
 
@@ -109,7 +109,7 @@ What to implement:
 
 Docs: [SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02), [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58), [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11); у C_CTX — усі місця, названі в [C_FOLD_04_01](./context_folds.concept.md#C_FOLD_04_01): [C_CTX_DEC_38](./context_editor.curation.concept.md#C_CTX_DEC_38), [C_CTX_DEC_34](./context_editor.curation.concept.md#C_CTX_DEC_34), [C_CTX_DEC_23](./context_editor.methods.concept.md#C_CTX_DEC_23), [C_CTX_DEC_17](./context_editor.methods.concept.md#C_CTX_DEC_17), [C_CTX_DEC_04](./context_editor.methods.concept.md#C_CTX_DEC_04), [C_CTX_06_02](./context_editor.curation.concept.md#C_CTX_06_02), [C_CTX_06_03](./context_editor.curation.concept.md#C_CTX_06_03), [C_CTX_06_09](./context_editor.curation.concept.md#C_CTX_06_09), [C_CTX_06_10](./context_editor.curation.concept.md#C_CTX_06_10), [C_CTX_01_01](./context_editor.concept.md#C_CTX_01_01), [C_CTX_03_02](./context_editor.methods.concept.md#C_CTX_03_02), [C_CTX_03_03](./context_editor.core.concept.md#C_CTX_03_03), [C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04), [C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11).
 
-### Phase 4 — Порівняльний прогін [TODO]  {#PL_FOLD_P4}
+### Phase 4 — Порівняльний прогін [DONE]  {#PL_FOLD_P4}
 
 **Depends on:** Phases 2, 3
 **Implements:** тригер [C_FOLD_DEC_14](./context_folds.concept.md#C_FOLD_DEC_14)
@@ -120,6 +120,12 @@ What to do:
 - Три рукави: сира історія; завдання згорнуті в картки; картки з розгортанням. Моделі — sonnet і opus; число прогонів на клітинку й межу сесій розробник погоджує перед запуском (ворота вартості фази дослідження).
 - Міри: чи спрацювала пастка; чи використано минулий досвід; чи агент перечитував джерела; розмір контексту.
 - Коду мода фаза не змінює. Наступні фази чекають висновку.
+
+Result (2026-11-15; спайк [context_service_info](./context_service_info.spike.md), Entry 14–15; стенд `.dev_flow/proto/compare/`, поза git):
+- Матриця v2: шість задач, sonnet і opus × три рукави × два прогони — жодного спрацювання пастки. Згортки дорожчі в 1.7–2.3 раза.
+- Прогін v3: 18 задач, sonnet, по прогону на рукав, сира історія до 106 тис. Картки дали −22 % контексту за ×2.35 вартості й удвічі більше викликів. Єдина застаріла відповідь — у рукаві з картками.
+- `context_recall` — 0 викликів у 7 сесіях. Разом з пілотами ≈ $24.7.
+- [C_FOLD_DEC_14](./context_folds.concept.md#C_FOLD_DEC_14) розробник закрив: фази 5–6 ідуть далі попри результат.
 
 ### Phase 5 — Вкладені області й завдання (`hooks/tags.ts`, `hooks/stages.ts`) [TODO]  {#PL_FOLD_P5}
 
@@ -211,3 +217,4 @@ Docs: [SP_CTX_02_30](./context_editor.stages.sp.md#SP_CTX_02_30); у C_CTX — [
 |------|--------|
 | 2026-11-14 | Initial version |
 | 2026-11-14 | Рев'ю (раунд 1) і рішення розробника: фазу примітки про схожі рядки й відбиток архіву прибрано в backlog; фаз шість; фаза 3 залежить і від фази 2; позначка `recalled` і число згадувань — у фазі 2 |
+| 2026-11-15 | Фаза 4 виконана: порівняльний прогін (матриця v2 і прогін v3) перевагу карток не виміряв; DEC_14 закрито рішенням розробника йти до фаз 5–6 |

@@ -12,7 +12,7 @@ skills:
     promotion: candidate
   - file: service-info-evidence.md
     skill: ServiceInfoEvidence
-    topics: [service-info, folds, recall, trailers, annotations, tags, notes, metrics, budget-awareness, telemetry, sidecar, archives, markers, in-band-signalling, delimiter-forgery, prompt-injection, memory-poisoning, prompt-cache, task-cards, comparative-run]
+    topics: [service-info, folds, recall, trailers, annotations, tags, notes, metrics, budget-awareness, telemetry, sidecar, archives, markers, in-band-signalling, delimiter-forgery, prompt-injection, memory-poisoning, prompt-cache, task-cards, comparative-run, long-session]
     source: research
     updated: 2026-11-15
     written_against: 'література й документація вендорів, відкриті 2026-11-14; документація Claude API 2026-11; канали хоста — з навички plugin-hooks (Claude Code 2.1.296, stale); живі зонди — Claude Code 2.1.325, stream-json'
