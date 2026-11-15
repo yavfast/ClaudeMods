@@ -6,7 +6,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 - `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog PL_CTX (фази 1–48 закомічені; фаза 48 — заголовок сесії) — branch `main` — 2026-10-21
 - `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: практика — реальна довга задача з модом (≥150k, opus), потім розбір сесії → P26+ — branch `main` (= `feat/context-editor`) — 2026-10-11
-- `/dev-flow resume task_C_FOLD` — `verify` — next: push PL_FOLD (розробник: «Після виправлення»), потім рішення про закриття задачі чи backlog — branch `main`, межі завдання від запиту закомічено — 2026-11-15 16:37
+- `/dev-flow resume task_C_FOLD` — `verify` — next: рішення розробника — закрити задачу чи backlog; PL_FOLD (фази 1–6, verify, межі завдання від запиту) запушено до 0068a2b — branch `main` — 2026-11-15 16:38
 
 ## Active Tasks
 
