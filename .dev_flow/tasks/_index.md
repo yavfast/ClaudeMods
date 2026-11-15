@@ -25,10 +25,10 @@ The parent file [`../active_context.md`](../active_context.md) is a thin dashboa
 
 - [task_C_CTX](task_C_CTX.md) — `bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6` — `plan` — Редактор контексту агента: фази PL_CTX 1–46 закомічені, відкрите — backlog PL_CTX
 - [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md) — `decd4bc6, d5614704, 355660b2` — `verify` — Динамічна оптимізація частини контексту за етапами; практика на реальних задачах (P1–P25)
-- [task_C_FOLD](task_C_FOLD.md) — `90e21609` — `plan` — Згортки й пам'ять завдань: концепт, специфікація й план (draft)
 
 ## Recently Completed
 
+- [task_C_FOLD](task_C_FOLD.md) — `90e21609, 85408971` — `done` 2026-11-15 — Згортки й пам'ять завдань: PL_FOLD фази 1–6 (облік згорток, розгортання з поверненням, згортка зі словами людини, вкладені області й завдання, вставки)
 - [task_20261114_135602_service-info](task_20261114_135602_service-info.md) — `90e21609` — `done` 2026-11-14 — Спайк: службова інформація в контексті чату (`docs/context_service_info.spike.md`, навичка `service-info-evidence`)
 - [task_20261110_093704_fix-autocontinue](task_20261110_093704_fix-autocontinue.md) — `23a7a081` — `done` 2026-11-10 — Автоматичне продовження після застосування на початку етапу
 - [task_20261031_211349_adopt-token-economizer](task_20261031_211349_adopt-token-economizer.md) — `d4fbce3a` — `done` — Аналіз запозичень з TokenEconomizer (advisory, `docs/ext_adoption/`)

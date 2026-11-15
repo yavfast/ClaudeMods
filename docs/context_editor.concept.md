@@ -10,7 +10,7 @@
 > **Criticality:** core
 >
 > **Depends on:** none
-> **Used by:** [C_FOLD](./context_folds.concept.md) — згортки й пам'ять завдань (draft; правила C_CTX, які він змінить після реалізації, перелічено в його §4.1)
+> **Used by:** [C_FOLD](./context_folds.concept.md) — згортки й пам'ять завдань (active; правила C_CTX, які він змінив, перелічено в його §4.1)
 > **Spike:** [context_editor_session](./context_editor_session.spike.md) — нова сесія з очищеним контекстом (DEC_11); [context_editor_handoff_long](./context_editor_handoff_long.spike.md) — неінтерактивний хост, довгі сесії, засів очищеної сесії (DEC_02, DEC_11–DEC_14); [context_editor_media](./context_editor_media.spike.md) — медіа в промптах людини і межі вікон (фази 4–5); [context_editor_attachments](./context_editor_attachments.spike.md) — доставки хоста посеред ходу (фаза 20); [context_editor_efficiency](./context_editor_efficiency.spike.md) — модель ефективності стиснення (фази 22–23); [context_editor_cache](./context_editor_cache.spike.md) — кеш промпту при застосуванні (фаза 23)
 > **Spike (фаза 24):** [context_editor_host_attachments](./context_editor_host_attachments.spike.md) — застарілі вкладення хоста після застосувань (DEC_22)
 > **Spike (курування):** [context_editor_uses](./context_editor_uses.spike.md) — інші застосування вільного редагування попередніх повідомлень ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), DEC_33–DEC_40)

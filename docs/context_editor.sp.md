@@ -7,7 +7,7 @@
 >
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Depends on:** none
-> **Used by:** [SP_FOLD](./context_folds.sp.md) — згортки й пам'ять завдань (draft; змінені розділи — у його §03_03)
+> **Used by:** [SP_FOLD](./context_folds.sp.md) — згортки й пам'ять завдань (active; змінені розділи — у його §03_03)
 > **Plan:** [PL_CTX](./context_editor.plan.md)
 > **Children:** 33 дочірні файли за модулями (з них п'ять файлів рядків §05_01 — у [expectations](./context_editor.expectations.sp.md#SP_CTX_05_01), чотири файли курування — у [curation](./context_editor.curation.sp.md)) — таблиця «Дочірні файли набору» в [§02](#SP_CTX_02); покажчик рішень — у [§07](#SP_CTX_DEC); ID-префікс → файл — у [docs/_index.md](./_index.md)
 >

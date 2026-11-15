@@ -8,7 +8,7 @@
 > **Concept:** [C_CTX](./context_editor.concept.md)
 > **Specification:** [SP_CTX](./context_editor.sp.md)
 > **Depends on:** none
-> **Used by:** [PL_FOLD](./context_folds.plan.md) — план згорток у тому самому моді (draft)
+> **Used by:** [PL_FOLD](./context_folds.plan.md) — план згорток у тому самому моді (completed)
 >
 > План реалізації мода-редактора контексту. Фази 1–47 виконано, фаза 48 — заголовок сесії за темою задачі ([PL_CTX_P48](./context_editor.p48.plan.md#PL_CTX_P48)) — в роботі; фаза 47 — тека архівів від кореня проєкту сесії ([PL_CTX_P47](./context_editor.p47.plan.md#PL_CTX_P47)); фаза 38 — можливості хоста, фази 39–46 — курування історії ([C_CTX_06](./context_editor.curation.concept.md#C_CTX_06), [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58)–[SP_CTX_02_69](./context_editor.curation.edits.sp.md#SP_CTX_02_69)): спершу живі ворота, далі дрібні фази ([PL_CTX_DEC_06](#PL_CTX_DEC_06)). Кожна фаза лежить у своєму дочірньому файлі `context_editor.p<NN>.plan.md`; тут — мета, технологічні рішення, потрібні знання, прогрес, таблиця фаз, backlog, рішення і журнал змін. Читати перед вибором наступної роботи з backlog або перед новою фазою.
 

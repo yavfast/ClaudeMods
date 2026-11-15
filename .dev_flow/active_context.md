@@ -6,7 +6,6 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 - `/dev-flow resume task_C_CTX` — `plan` — next: вибір роботи з backlog PL_CTX (фази 1–48 закомічені; фаза 48 — заголовок сесії) — branch `main` — 2026-10-21
 - `/dev-flow resume task_20261010_083402_stage-cleanup` — `verify` — next: практика — реальна довга задача з модом (≥150k, opus), потім розбір сесії → P26+ — branch `main` (= `feat/context-editor`) — 2026-10-11
-- `/dev-flow resume task_C_FOLD` — `verify` — next: рішення розробника — закрити задачу чи backlog; PL_FOLD (фази 1–6, verify, межі завдання від запиту) запушено до 0068a2b — branch `main` — 2026-11-15 16:38
 
 ## Active Tasks
 
@@ -14,18 +13,16 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 |------|-------|--------|--------------|---------|
 | [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan (backlog PL_CTX; фази 1–47 закомічені) | in-progress | bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6, a477d71d | 2026-10-21 |
 | [task_20261010_083402_stage-cleanup](tasks/task_20261010_083402_stage-cleanup.md) — Динамічна оптимізація частини контексту за етапами | verify (практика) | in-progress | decd4bc6, d5614704, 355660b2 | 2026-10-17 |
-| [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | verify (PL_FOLD фази 1–6, verify і межі завдання від запиту закомічені; push) | in-progress | 90e21609, 85408971 | 2026-11-15 |
 
 ## Recently Completed
 
 | Task | Phase | Completed | Contributors | Result |
 |------|-------|-----------|--------------|--------|
+| [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | done | 2026-11-15 | 90e21609, 85408971 | PL_FOLD фази 1–6: облік згорток, `context_recall` з поверненням, згортка зі словами людини, вкладені області й завдання з карткою, вставки `optimize`/`close`/`note`; фаза 4 переваги карток не виміряла (спайк, Entry 14–15) |
 | [task_20261114_135602_service-info](tasks/task_20261114_135602_service-info.md) — Службова інформація в контексті чату (спайк) | done | 2026-11-14 | 90e21609 | спайк `context_service_info` concluded: 29 варіантів (10 варті концепту, 13 потребують даних, 6 відхилено); навичка `service-info-evidence` |
 | [task_20261110_093704_fix-autocontinue](tasks/task_20261110_093704_fix-autocontinue.md) — Автоматичне продовження після застосування на початку етапу | done | 2026-11-10 | 23a7a081 | останній явний вибір пакета перемагає; ResumesAfter для звіту й результатів; вибори ходу без правок скидаються; TAGS_STOP; 1018 тестів, живий прогін A–D |
 | [task_20261031_211349_adopt-token-economizer](tasks/task_20261031_211349_adopt-token-economizer.md) — Аналіз запозичень з TokenEconomizer | done | 2026-10-31 | d4fbce3a | high 0, medium 4 (defer), похідних ідей 2; `docs/ext_adoption/token-economizer*.md` |
 | [task_20261029_073500_session-title](tasks/task_20261029_073500_session-title.md) — Заголовок сесії за темою задачі | done | 2026-10-29 | 72a009d8 | фаза 48: операція `title`, `/rename` після ходу, рядки прибирає застосування; живий прогін у stream-json і терміналі |
-| [task_20261019_155837_adopt-context-mode](tasks/task_20261019_155837_adopt-context-mode.md) — Аналіз запозичень з context-mode | done | 2026-10-19 | 9841457b | high 0, medium 4 (defer), похідних ідей 3; `docs/ext_adoption/context-mode*.md` |
-| [task_PL_AUD_CTX](tasks/task_PL_AUD_CTX.md) — Рефакторинг context-editor за аудитом коду | done | 2026-10-11 | d5614704 | 12 фаз (+Ф6a), 528 → 677 тестів, кожна фаза з рев'ю й живим прогоном |
 
 ## Deferred (todos)
 
