@@ -4,13 +4,18 @@
 
 | Мод | Що робить | Документи |
 |-----|-----------|-----------|
-| `mods/context-editor` | Інструменти агента `context_list` / `context_edit` / `context_tag` / `context_note` / `context_handoff` і команда `/handoff`: агент замінює опрацьовані виводи, медіа і хибні кроки у своєму контексті стислими нотатками, а після ходу мод сам застосовує правки вбудованою командою `/compact`; етапи завдання і мітка оптимізації — чищення за рішенням агента, телеметрія контексту на запит, службові нотатки з нагадуваннями, навичка `context-editor:context-stages`; передача розмови в нову сесію. Працює в інтерактивному терміналі і в неінтерактивному хості з потоковим входом (розширення VS Code, SDK); Claude Code ≥ 2.1.295 | [C_CTX](docs/context_editor.concept.md), [SP_CTX](docs/context_editor.sp.md) |
+| `mods/context-editor` | Інструменти агента `context_list` / `context_edit` / `context_tag` / `context_note` / `context_recall` / `context_handoff` і команда `/handoff`: агент замінює опрацьовані виводи, медіа і хибні кроки у своєму контексті стислими нотатками, а після ходу мод сам застосовує правки вбудованою командою `/compact`; області (етапи) завдання — чищення за рішенням агента, телеметрія контексту на запит, службові нотатки з нагадуваннями; згортки: замінене лягає в архів, агент розгортає його по рівню (`context_recall`), а після закриття області мод сам повертає згадане коротким слідом; вкладені області й завдання з карткою; службові вставки `[context-editor: optimize]`, `close` і `note` в кінці відповіді; навичка `context-editor:context-stages`; передача розмови в нову сесію. Працює в інтерактивному терміналі і в неінтерактивному хості з потоковим входом (розширення VS Code, SDK); Claude Code ≥ 2.1.295 | [C_CTX](docs/context_editor.concept.md), [SP_CTX](docs/context_editor.sp.md), [C_FOLD](docs/context_folds.concept.md), [SP_FOLD](docs/context_folds.sp.md) |
+| `mods/ui-probe` | Тестовий мод, не для роботи: показує пронумероване повідомлення через кожен канал сповіщень плагіна (`$.ui.log`, toast, status, notify, notice), щоб побачити, які з них малює поверхня (розширення VS Code малює лише `$.ui.notify`) | [backlog PL_CTX](docs/context_editor.plan.md#PL_CTX_BACKLOG) |
+
+Заплановано для `context-editor`: помічник мода — питання агента до архівів згорток з цитатами, які мод перевіряє в архіві, доручення з умовою і відкладені пакети правок ([C_HELP](docs/context_helper.concept.md); специфікація [SP_HELP](docs/context_helper.sp.md) — чернетка, коду ще немає).
 
 ## Запуск
 
 ```sh
 claude --plugin-dir ~/Projects/ClaudeMods/mods/context-editor
 ```
+
+Там, де мод увімкнено як керований плагін (розділ нижче), кожна нова сесія вже завантажує його з клону, а копію з `--plugin-dir` хост відхиляє («plugin is locked by managed settings»).
 
 ## Встановлення на іншій машині
 
@@ -35,7 +40,7 @@ cd ~/Projects/ClaudeMods
 
 ## Керований плагін (Managed plugin)
 
-На хості 2.1.299+ з обліковим записом Team чи Enterprise (або з керованими налаштуваннями на машині) вбудований `cc-plugin-sec-default` стає найзовнішнім і пропускає хуки `session.compact` і `prompt.attachment` кожного плагіна, встановленого людиною, зокрема через `--plugin-dir`. Тоді `/compact` мода став би справжнім підсумком хоста, тож мод це перевіряє (окремий процес-зонд раз на версію хоста і живі ознаки) і вимикає те, що пропущено: `context_edit`, `context_handoff` і `/handoff` відмовляють, а `/compact` іде до хоста з брифом мода. Людина бачить про це один рядок у чаті.
+На хості 2.1.299+ з обліковим записом Team чи Enterprise (або з керованими налаштуваннями на машині) вбудований `cc-plugin-sec-default` стає найзовнішнім і пропускає хуки `session.compact` і `prompt.attachment` кожного плагіна, встановленого людиною, зокрема через `--plugin-dir`. Тоді `/compact` мода став би справжнім підсумком хоста, тож мод це перевіряє (окремий процес-зонд раз на версію хоста і живі ознаки) і вимикає те, що пропущено: `context_edit`, `context_recall`, `context_handoff` і `/handoff` відмовляють, а `/compact` іде до хоста з брифом мода. Людина бачить про це один рядок у чаті.
 
 Щоб мод працював повністю, його запускають як керований плагін. `.claude-plugin/marketplace.json` у корені репозиторію — marketplace `claudemods` (мод завантажується на місці з `mods/context-editor`). Файл `/etc/claude-code/managed-settings.json` (потрібні права root):
 
@@ -49,13 +54,15 @@ cd ~/Projects/ClaudeMods
 }
 ```
 
-`./install.sh --managed` записує ці ключі з шляхом клону, не чіпаючи інших. `sec-default@builtin` лишається першим у `prependPlugins`, щоб зберегти його захист. Кожна нова сесія на машині тоді завантажує робоче дерево мода; копію з `--plugin-dir` керований мод ігнорує. Перевірено на 2.1.299 (спайк у `.dev_flow/cache/live-test/host-2.1.299-bypass.md`, `managed-spike/`). Розширення VS Code запускає власний вбудований хост, не встановлений.
+`./install.sh --managed` записує ці ключі з шляхом клону, не чіпаючи інших. `sec-default@builtin` лишається першим у `prependPlugins`, щоб зберегти його захист. Кожна нова сесія на машині тоді завантажує робоче дерево мода; копію з `--plugin-dir` хост відхиляє («plugin is locked by managed settings»). Перевірено на 2.1.299 ([PL_CTX_P38](docs/context_editor.p38.plan.md)) і на 2.1.325 (зонд DEC_10: компактизація мода з таймера в простої й до першого промпту нового процесу, [SP_HELP §02_11–02_12](docs/context_helper.batches.sp.md#SP_HELP_02_11)). Розширення VS Code запускає власний вбудований хост, не встановлений.
 
 ## Перевірки
 
 ```sh
 claude plugin validate mods/context-editor
 claude plugin test mods/context-editor
+sh mods/context-editor/tests/skill-limits.sh        # межі SKILL.md і curation.md
+npx -p typescript@5.6.3 tsc -p mods/context-editor/tsconfig.json --noEmit   # перевірка типів
 ```
 
-`mods/*/tsconfig.json` розширює `.claude-plugin/types/tsconfig.json`. Цей каталог генерує Claude Code при кожному завантаженні мода, і він не зберігається в git; у свіжому клоні типи з'являються після першого запуску мода через `--plugin-dir`.
+`mods/*/tsconfig.json` розширює `.claude-plugin/types/tsconfig.json`. Цей каталог генерує Claude Code при кожному завантаженні мода, і він не зберігається в git; у свіжому клоні типи з'являються після першого запуску мода через `--plugin-dir`. Коли мод працює як керований плагін, хост теки типів не пише й `--plugin-dir` відхиляє: типи перевіряють тимчасовим tsconfig, чий `files` — вбудований у хост `plugin-authoring/types/claude-code.d.ts` (у `/tmp/claude-<uid>/bundled-skills/<version>/`), з `lib: ["es2022"]` і `include` тек `hooks/` і `tests/` мода.

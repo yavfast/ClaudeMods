@@ -51,7 +51,7 @@ state: stale
 
 - Застосування правок контексту через `session.compact`: `mods/context-editor/hooks/compaction.ts`, зв'язування — `mods/context-editor/hooks/register.ts`.
 - Запуск компактизації командою `$.command.run({ command: 'compact', args: MARKER })` з відкладеної дії після `turn.complete` у тому самому плагіні: `mods/context-editor/hooks/flush.ts`; засів очищеної сесії (`/clear`, потім `/compact` з HANDOFF_MARKER): `mods/context-editor/hooks/handoff.ts`.
-- Живий прогін: окремий `claude --plugin-dir …` у tmux (скрипт-драйвер у scratchpad сесії), журнал — `claude --debug`, `~/.claude/debug/<session>.txt`.
+- Живий прогін: окремий `claude --debug` під GNU screen (tmux на цій машині немає) і в stream-json. Мод тут — керований плагін, тож `--plugin-dir mods/context-editor` хост відмовляє: поведінку хоста перевіряти окремим малим плагіном-зондом через `--plugin-dir` (пункти 89, 90); драйвери — `.dev_flow/cache/live-test/*-probe/`; журнал — `~/.claude/debug/<session>.txt` або `--debug-file <path>`.
 
 ## Pitfalls
 

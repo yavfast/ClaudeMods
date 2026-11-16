@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_20261116_141010_helper-concept`
 > **Created:** 2026-11-16 14:10
-> **Last updated:** 2026-11-16 17:11
+> **Last updated:** 2026-11-16 17:41
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-9a12e9ac`
 > **Autonomy:** `checkpoints`
@@ -11,10 +11,10 @@
 
 | Field | Value |
 |-------|-------|
-| **Document** | `concept` — Помічник мода, `docs/context_helper.concept.md` (draft) |
-| **Pipeline phase** | `concept` |
+| **Document** | `spec` — Помічник мода: концепт `docs/context_helper.concept.md` (active), специфікація `docs/context_helper.sp.md` + `ask`, `errands`, `batches` (draft) |
+| **Pipeline phase** | `spec` (далі `plan`) |
 | **Role style** | `n/a` |
-| **Traceable ID** | `C_HELP` |
+| **Traceable ID** | `C_HELP`, `SP_HELP` |
 
 ## Intent
 
@@ -25,7 +25,7 @@
 ## Subtasks
 
 ### Subtask: concept — помічник
-> Author: `claude-session-9a12e9ac` — Created: 14:10 — Last updated: 17:11 — Status: `in-progress`
+> Author: `claude-session-9a12e9ac` — Created: 14:10 — Last updated: 17:41 — Status: `in-progress`
 
 **Goal:** написати концепт за трьома механізмами зі спайку помічника.
 
@@ -48,10 +48,11 @@
 - [x] Рецензія раунд 3 (16:43–16:53): pass with advisories, 0 must, 8 should, 4 prefer — усі виправлено (16:55); DEC_09 переведено в `proposed`: рішення розробника (змінює видиме після `--resume`, залишковий ризик застарілого вердикту).
 - [x] Рішення розробника щодо DEC_09 SP_HELP: «A: StartRun (Recommended)» (17:10).
 - [x] Рішення розробника (17:10): «Коміт + active (Recommended)» — C_HELP `active`, «Used by» у C_CTX і C_FOLD, коміт специфікації; push — «Ні»; CLAUDE.md, розділ живого тестування — «Так, окремо».
-- [ ] Окрема дрібна зміна CLAUDE.md (живе тестування: GNU screen, драйвери зондів) — підписання розробником.
+- [x] Розділ «Live testing» у CLAUDE.md переписано (GNU screen, керований мод, драйвери зондів); рецензія чистим контекстом — pass with advisories, поради враховано, застарілий рядок про tmux у `plugin-hooks.md` виправлено.
+- [x] Документацію й інструкції оновлено до поточного стану (17:36, запит розробника «Онови документацію та інструкції згідно актуального стану»): README (інструменти, згортки, документи, `--plugin-dir` під керованим модом, перевірки), CLAUDE.md (рядок 13, версія хоста VS Code, межі версій пасток, набори FOLD і HELP), дашборди. Коміт — підписання розробником.
 - [ ] План PL_HELP.
 
-**Next:** окрема дрібна зміна CLAUDE.md (розділ Live testing) з підписанням коміту; далі `/dev-flow plan` для PL_HELP — phases/plan.md
+**Next:** `/dev-flow plan` для PL_HELP за SP_HELP (draft) — phases/plan.md
 
 ## Activity
 
@@ -62,3 +63,6 @@
 - 16:41 — Зонд DEC_10 перевірено першоджерелами (`out/R1.debug.txt` l.583–606: керований обробник 89,7 мс; таймер R1 запізнення 288 мс, R2 8 мс; перший запит після простою `cr=0 cc=16565`; R3a–R3c: команда до промпту, запас 157–342 мс; відмова після переривання в smoke/smoke3/tsmoke3). Звіт зонда позначено за процитований рядок `<local-command-stdout>` — нешкідливо. Наслідки для специфікації: таймер простою лише після завершеного ходу; StartRun лише при вердикті `reached` (unknown — ні, як і для ремонту); застосування StartRun прибирає дублікати завантажувача до першого запиту.
 - 16:55 — Рецензія раунд 3 SP_HELP: pass with advisories. Перевірено першоджерелами: Esc у терміналі в простої (`R1`) сесії не зупинив — у `R1.debug.txt` жодного `session was stopped`; `tsmoke3` — Esc посеред ходу; `smoke` — `interrupt` у простої після завершеного ходу; запас порядку R3a ~11 с. DEC_09 за тестом власника — рішення розробника: `proposed`.
 - 17:11 — Розробник: DEC_09 — A; C_HELP — active; коміт специфікації так, push — ні; CLAUDE.md — окремою зміною.
+- 17:14 — Рецензія зміни CLAUDE.md: pass with advisories. Перевірено: tmux немає, `/usr/bin/screen` є; `helper-probe/drive.py` знімає змінні `CLAUDE*` лише з `CLEAN=1`, `supervisor-probe/drive.py` — ніколи; `term.py` шле `screen -S <name> -p 0 -X …`. Рядок 13 CLAUDE.md (`claude --plugin-dir …` у «Commands») лежить поза погодженим розділом — винесено на рішення розробника.
+- 17:36 — Запит «Онови документацію та інструкції згідно актуального стану»: рядок 13 CLAUDE.md отримав застереження (запит розробника охоплює інструкції); README і CLAUDE.md звірено з кодом і документами; знайдено застарілі: README без `context_recall` і згорток, «копію з `--plugin-dir` керований мод ігнорує» (насправді хост відхиляє, `plugin-hooks.md`, Key Concepts «Типи без глобального `tsc`»), версія хоста VS Code 2.1.301 (зараз 2.1.325).
+- 17:41 — Рецензія оновлення документації чистим контекстом: pass with advisories (0 must, 5 should, 4 prefer), усе виправлено: «plugin-hooks 48» вказувало на рядок, а не на пункт; посилання на неіснуючі `host-2.1.299-bypass.md` і `managed-spike/` замінено на PL_CTX_P38; `context_recall` додано до інструментів, що відмовляють, коли компактизацію пропущено (`folds.ts` FOLD_PASSED_OVER); згадане повертає мод, не агент; лічильники фаз task_C_CTX на дашбордах 1–48; рядок `mods/ui-probe` у README; версія хоста VS Code у CLAUDE.md без дати. Коміт — на «так» розробника (`/dev-flow commit`), даний до рецензії.
