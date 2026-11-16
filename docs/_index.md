@@ -14,6 +14,7 @@
 | [context_folds.plan.md](context_folds.plan.md) | PL_FOLD | completed | План: шість фаз у моді context-editor, усі виконано; фаза 4 — порівняльний прогін (перевагу карток не виміряв), далі вкладені області й вставки |
 | [context_helper.concept.md](context_helper.concept.md) | C_HELP | active | Концепт помічника мода: питання агента до архівів згорток з цитатами, які мод перевіряє в архіві (помічник — один виклик sonnet поза розмовою); доручення з умовою про стан контексту з доставкою в безпечний момент; відкладені пакети правок без власного переписування кешу; спирається на C_CTX і C_FOLD і змінює сім їхніх правил; DEC_10 закрито зондом |
 | [context_helper.sp.md](context_helper.sp.md) | SP_HELP | draft | Специфікація помічника мода: інструмент `context_helper` (питання до архіву згорток з перевіреними цитатами, доручення з умовою), поле `defer` у `context_edit`, годинник кешу й простій, доставка в безпечний момент і пробудження; таблиця змінених розділів SP_CTX і SP_FOLD; парасолька й три дочірні файли (ask, errands, batches) |
+| [context_helper.plan.md](context_helper.plan.md) | PL_HELP | draft | План реалізації помічника мода: дев'ять фаз — помічник і питання до архіву, годинник кешу, відкладені пакети в обробнику, поле `defer`, простій, новий процес, доручення й доставка, пробудження, живий прогін; порядок фаз — рішення розробника (DEC_01) |
 
 ## Maps
 
@@ -90,6 +91,7 @@
 | `SP_HELP_01_01`–`01_04`, `SP_HELP_02_01`–`02_05` | [context_helper.ask.sp.md](context_helper.ask.sp.md) |
 | `SP_HELP_01_05`, `SP_HELP_02_06`–`02_08` | [context_helper.errands.sp.md](context_helper.errands.sp.md) |
 | `SP_HELP_01_06`–`01_07`, `SP_HELP_02_09`–`02_12` | [context_helper.batches.sp.md](context_helper.batches.sp.md) |
+| `PL_HELP`, `PL_HELP_P1`–`P9`, `PL_HELP_DEC_01`–`04` | [context_helper.plan.md](context_helper.plan.md) |
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
 Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` і `context_editor.{edits,structures}.sp.log.md` (поза перевірками цілісності).

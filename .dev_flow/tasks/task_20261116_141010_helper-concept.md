@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_20261116_141010_helper-concept`
 > **Created:** 2026-11-16 14:10
-> **Last updated:** 2026-11-16 17:41
+> **Last updated:** 2026-11-16 18:34
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-9a12e9ac`
 > **Autonomy:** `checkpoints`
@@ -12,9 +12,9 @@
 | Field | Value |
 |-------|-------|
 | **Document** | `spec` — Помічник мода: концепт `docs/context_helper.concept.md` (active), специфікація `docs/context_helper.sp.md` + `ask`, `errands`, `batches` (draft) |
-| **Pipeline phase** | `spec` (далі `plan`) |
+| **Pipeline phase** | `plan` |
 | **Role style** | `n/a` |
-| **Traceable ID** | `C_HELP`, `SP_HELP` |
+| **Traceable ID** | `C_HELP`, `SP_HELP`, `PL_HELP` |
 
 ## Intent
 
@@ -25,7 +25,7 @@
 ## Subtasks
 
 ### Subtask: concept — помічник
-> Author: `claude-session-9a12e9ac` — Created: 14:10 — Last updated: 17:41 — Status: `in-progress`
+> Author: `claude-session-9a12e9ac` — Created: 14:10 — Last updated: 18:34 — Status: `in-progress`
 
 **Goal:** написати концепт за трьома механізмами зі спайку помічника.
 
@@ -50,9 +50,12 @@
 - [x] Рішення розробника (17:10): «Коміт + active (Recommended)» — C_HELP `active`, «Used by» у C_CTX і C_FOLD, коміт специфікації; push — «Ні»; CLAUDE.md, розділ живого тестування — «Так, окремо».
 - [x] Розділ «Live testing» у CLAUDE.md переписано (GNU screen, керований мод, драйвери зондів); рецензія чистим контекстом — pass with advisories, поради враховано, застарілий рядок про tmux у `plugin-hooks.md` виправлено.
 - [x] Документацію й інструкції оновлено до поточного стану (17:36, запит розробника «Онови документацію та інструкції згідно актуального стану»): README (інструменти, згортки, документи, `--plugin-dir` під керованим модом, перевірки), CLAUDE.md (рядок 13, версія хоста VS Code, межі версій пасток, набори FOLD і HELP), дашборди. Коміт — підписання розробником.
-- [ ] План PL_HELP.
+- [x] План PL_HELP (`/dev-flow plan`, 17:44): порядок фаз — розробник «Питання першими (Recommended)»; чернетка `docs/context_helper.plan.md` (9 фаз, DEC_01–04, беклог); покриття перевірено скриптом — 41 якір SP_HELP і всі розділи таблиці §03_03 у фазах; рядки в `docs/_index.md`, «Plan» у C_HELP і SP_HELP.
+- [x] Рецензія плану чистим контекстом: pass with advisories (0 must, 7 should, 6 prefer) — усе виправлено, перевірено скриптом (якорі, посилання, місця перенесених рядків).
+- [x] Коміт плану PL_HELP у стані draft (`/dev-flow commit`, 18:34).
+- [ ] Підписання дизайну (Plan → Code): затвердження плану й DEC_02–04, статус `active`.
 
-**Next:** `/dev-flow plan` для PL_HELP за SP_HELP (draft) — phases/plan.md
+**Next:** відповідь розробника на підписання дизайну PL_HELP (статус `active`), потім фаза 1 — phases/implement.md
 
 ## Activity
 
@@ -66,3 +69,6 @@
 - 17:14 — Рецензія зміни CLAUDE.md: pass with advisories. Перевірено: tmux немає, `/usr/bin/screen` є; `helper-probe/drive.py` знімає змінні `CLAUDE*` лише з `CLEAN=1`, `supervisor-probe/drive.py` — ніколи; `term.py` шле `screen -S <name> -p 0 -X …`. Рядок 13 CLAUDE.md (`claude --plugin-dir …` у «Commands») лежить поза погодженим розділом — винесено на рішення розробника.
 - 17:36 — Запит «Онови документацію та інструкції згідно актуального стану»: рядок 13 CLAUDE.md отримав застереження (запит розробника охоплює інструкції); README і CLAUDE.md звірено з кодом і документами; знайдено застарілі: README без `context_recall` і згорток, «копію з `--plugin-dir` керований мод ігнорує» (насправді хост відхиляє, `plugin-hooks.md`, Key Concepts «Типи без глобального `tsc`»), версія хоста VS Code 2.1.301 (зараз 2.1.325).
 - 17:41 — Рецензія оновлення документації чистим контекстом: pass with advisories (0 must, 5 should, 4 prefer), усе виправлено: «plugin-hooks 48» вказувало на рядок, а не на пункт; посилання на неіснуючі `host-2.1.299-bypass.md` і `managed-spike/` замінено на PL_CTX_P38; `context_recall` додано до інструментів, що відмовляють, коли компактизацію пропущено (`folds.ts` FOLD_PASSED_OVER); згадане повертає мод, не агент; лічильники фаз task_C_CTX на дашбордах 1–48; рядок `mods/ui-probe` у README; версія хоста VS Code у CLAUDE.md без дати. Коміт — на «так» розробника (`/dev-flow commit`), даний до рецензії.
+- 17:55 — План PL_HELP: розробник обрав порядок «Питання першими (Recommended)» (DEC_01). Хост 2.1.325 має потокову подію `turn.step` з `usage` (типи `TurnStepInput`, `TurnStepResult`), мод на неї ще не підписаний — годинник кешу додає перший хук-генератор мода. Навичка `SKILL.md` — 9028 байт при межі 9000 символів, тож тексти про помічника йдуть в описи інструментів, у навичку — щонайбільше рядок. L7 і край «мод на рівні user» на цій машині не відтворити (керовані налаштування) — у беклог.
+- 18:06 — Рецензія PL_HELP: три рядки перевірки стояли у фазі раніше за свій контракт; фаза 4 обіцяла агенту застосування в простої, яке дає лише фаза 5 (частину тексту перенесено); `journal.ts` відкидає невідомий вид запису, тож вид `cache` — у фазі 2; SKILL.md 8994 з 9000 символів (не байтів) — навичка не змінюється.
+- 18:34 — `/dev-flow commit` — «так» лише коміту плану; план лишається `draft` до підписання дизайну. За оновленим правилом 6 навички push пропонується лише після коміту, що завершує роботу (фази плану `[TODO]`), тож питання про push не ставиться.
