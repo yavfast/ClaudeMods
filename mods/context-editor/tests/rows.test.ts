@@ -34,6 +34,7 @@ import {
   REPLACED,
   REPLACEMENT_OPENERS,
   RETURNED_HEAD,
+  ASK_RETURNED_HEAD,
   TAG_COLLAPSED_OPENER,
   TAG_REWRITTEN,
   TAG_SUMMARIZED,
@@ -173,12 +174,12 @@ test('ReplacementText — тексти фази 28 і старі: the new opener
   expect(collapsedWords(5, 'Read cfg.txt; Bash ls')).toBe('Later, your context_edit collapse call replaced these 5 rows you had read (Read cfg.txt; Bash ls) with your own note')
   // [SP_CTX_02_13] a disposable tag's replacement names context_tag
   expect(collapsedWords(3, '', 'tag')).toBe('Later, your context_tag disposable tag replaced these 3 rows you had read with your own note')
-  // [SP_FOLD_01_06] RETURNED_HEAD: the one opener that does not start with REPLACED
-  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF, TRACE_OPENER, STATE_REBUILT, RETURNED_HEAD])
+  // [SP_FOLD_01_06] RETURNED_HEAD and [SP_HELP_02_05] ASK_RETURNED_HEAD: the openers that do not start with REPLACED
+  expect(REPLACEMENT_OPENERS).toEqual([SUMMARIZED, REWRITTEN, DESCRIBED_HEAD, COLLAPSED_OPENER, TAG_SUMMARIZED, TAG_REWRITTEN, TAG_COLLAPSED_OPENER, SUMMARIZED_OF, TAG_SUMMARIZED_OF, TRACE_OPENER, STATE_REBUILT, RETURNED_HEAD, ASK_RETURNED_HEAD])
   // [SP_CTX_02_64] the trace row is a replacement text: no person's words, the `*` flag
   expect(isReplacementText(`${TRACE_OPENER}; you had called context_list.`)).toBe(true)
   expect(personText(`${TRACE_OPENER}; you had called context_list.`)).toBe('')
-  for (const t of REPLACEMENT_OPENERS) expect((t === RETURNED_HEAD || t.startsWith(REPLACED)) && !t.includes(MARK)).toBe(true)
+  for (const t of REPLACEMENT_OPENERS) expect((t === RETURNED_HEAD || t === ASK_RETURNED_HEAD || t.startsWith(REPLACED)) && !t.includes(MARK)).toBe(true)
   const now = [`${SUMMARIZED}: s`, `${REWRITTEN}: s`, `${DESCRIBED}: d\n\nwhat is it?`, `${collapsedWords(2)}: s`, `${TAG_SUMMARIZED}: s`, `${TAG_REWRITTEN}: s`, `${collapsedWords(2, 'Read a', 'tag')}: s`]
   const legacy = [
     '[context-editor] you read the full output here, then replaced it with your summary: s',

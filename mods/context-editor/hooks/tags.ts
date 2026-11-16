@@ -28,7 +28,7 @@ import {
   type StateInput,
 } from './edits'
 import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, resumesAfter, type Queue } from './queue'
-import { addReturns, isOwnReturn, type Recall } from './folds'
+import { addReturns, isOwnReturn, type Returnable } from './folds'
 import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
 import { isTitleState, titleOp, type TitleError, type TitleState } from './title'
@@ -408,7 +408,7 @@ export type TagIO = {
   markDue?: (after: number) => Promise<void>
   // [SP_FOLD_02_03] the recalls not yet returned, of the fold ledger as it is
   // now; none when absent or unreadable
-  recalls?: () => Promise<readonly Recall[]>
+  recalls?: () => Promise<readonly Returnable[]>
 }
 
 // [SP_CTX_02_11]

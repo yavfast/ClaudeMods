@@ -901,7 +901,8 @@ export async function carryRegistries(
 export const FOLDS_NOT_CARRIED = ' The fold ledger was not carried over: context_recall will not know the earlier folds; their originals are at the paths in the fold records.'
 
 // [SP_FOLD_02_08] The fold ledger into the new session: the old session's
-// folds and `nextFold`, no recall (no recalled level is seeded), and the
+// folds and `nextFold`, no recall (no recalled level is seeded) and no
+// question ([SP_HELP_02_14]: the seed takes no question pair), and the
 // entries of the folds the seed's edits made, with the seed's archive. An old
 // ledger that cannot be read gives the sentence, and the seed's own folds
 // still get their entries; a failed write gives the sentence too. Nothing is
@@ -917,7 +918,7 @@ export async function carryFolds(
   try {
     const read = await io.readFolds(oldDir).catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) }))
     if (read.state === 'unreadable') error = new Error(`the fold ledger of the old session cannot be read (${read.reason})`)
-    const base: FoldLedger = read.state === 'unreadable' ? emptyFolds() : { folds: read.value.folds, nextFold: read.value.nextFold, recalls: [] }
+    const base: FoldLedger = read.state === 'unreadable' ? emptyFolds() : { folds: read.value.folds, nextFold: read.value.nextFold, recalls: [], questions: [] }
     const next = s.folds ? recordFolds(base, s.folds.folded, s.report.originals, s.folds.next, s.archive, s.folds.turn, MAX_QUEUE_BYTES) : base
     if (next.folds.length || next.nextFold > 1) await io.writeFolds(newDir, next)
   } catch (err) {

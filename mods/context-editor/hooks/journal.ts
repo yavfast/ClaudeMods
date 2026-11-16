@@ -7,6 +7,9 @@ import type { SessionMessage } from 'claude-code'
 import { describeEdit, isReturnEdit, MAX_QUEUE_EDITS, touchedBy, type ApplyReport, type QueuedEdit } from './edits'
 import { MAX_QUEUE_BYTES } from './queue'
 import { isCount, jsonObject, trimOldest, type Read } from './store'
+import type { AskEntry } from './ask'
+
+const ASK_STATUSES: readonly unknown[] = ['answered', 'not_found', 'refused', 'failed']
 
 // [SP_CTX_01_12]
 export const MAX_JOURNAL = 1000
@@ -16,6 +19,8 @@ export type JournalEntry =
   | { kind: 'apply'; at: number; edits: number; archive: string; compressed: string[] }
   | { kind: 'changed'; at: number; path: string }
   | { kind: 'reread'; at: number; path: string; tool_use_id: string; archive: boolean }
+  // [SP_HELP_01_08] a question to the archive, of the agent or of an errand
+  | AskEntry
 
 export type Journal = { entries: JournalEntry[] }
 
@@ -38,6 +43,19 @@ function isEntry(raw: unknown): raw is JournalEntry {
       return typeof e.path === 'string'
     case 'reread':
       return typeof e.path === 'string' && typeof e.tool_use_id === 'string' && typeof e.archive === 'boolean'
+    case 'ask':
+      return (
+        Array.isArray(e.folds) &&
+        e.folds.every(f => typeof f === 'string') &&
+        isCount(e.parts) &&
+        isCount(e.calls) &&
+        isCount(e.in) &&
+        isCount(e.out) &&
+        isCount(e.verified) &&
+        isCount(e.rejected) &&
+        ASK_STATUSES.includes(e.status) &&
+        (e.errand === undefined || typeof e.errand === 'string')
+      )
     default:
       return false
   }
@@ -113,15 +131,20 @@ export function withChanged(j: Journal, path: string, now: number): Journal | un
 }
 
 // [SP_CTX_01_20] The journal's part of the telemetry.
-export type JournalSummary = { applications: number; rereads: number; archiveRereads: number } | { unreadable: string }
+// [SP_HELP_02_13] `helper`: the sums of the `ask` entries, absent without one.
+export type HelperSummary = { questions: number; calls: number; in: number; out: number; verified: number; rejected: number }
+export type JournalSummary = { applications: number; rereads: number; archiveRereads: number; helper?: HelperSummary } | { unreadable: string }
 
 export function journalSummary(read: Read<Journal>): JournalSummary {
   if (read.state === 'unreadable') return { unreadable: read.reason }
   const rereads = read.value.entries.filter(e => e.kind === 'reread')
+  const asks = read.value.entries.filter((e): e is AskEntry => e.kind === 'ask')
+  const sum = (k: 'calls' | 'in' | 'out' | 'verified' | 'rejected') => asks.reduce((n, e) => n + e[k], 0)
   return {
     applications: read.value.entries.filter(e => e.kind === 'apply').length,
     rereads: rereads.length,
     archiveRereads: rereads.filter(e => e.kind === 'reread' && e.archive).length,
+    ...(asks.length ? { helper: { questions: asks.length, calls: sum('calls'), in: sum('in'), out: sum('out'), verified: sum('verified'), rejected: sum('rejected') } } : {}),
   }
 }
 
@@ -150,6 +173,11 @@ export function journalApply(io: JournalIO, entry: JournalEntry): Promise<void> 
 // [SP_CTX_02_31] JournalReread, in the background of the call hook after a Read without error.
 export function journalReread(io: JournalIO, path: string, toolUseId: string, now: number): Promise<void> {
   return change(io, false, j => withReread(j, path, toolUseId, now))
+}
+
+// [SP_HELP_01_08] JournalAsk, in the background of the helper's call hook.
+export function journalAsk(io: JournalIO, entry: AskEntry): Promise<void> {
+  return change(io, true, j => withEntry(j, entry))
 }
 
 // [SP_CTX_02_31] JournalChanged, in the background of the call hook after a write tool without error.

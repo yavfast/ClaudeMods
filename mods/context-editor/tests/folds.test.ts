@@ -6,6 +6,7 @@ import { assignFoldIds, BAD_FOLDS, emptyFolds, foldFloor, foldPort, FOLDS_UNSAVE
 import { EMPTY_QUEUE, parseQueue, queueEdits, type Queue } from '../hooks/queue'
 import { foldNote, foldNumbers, foldOfRecord, REWRITTEN, SUMMARIZED_OF } from '../hooks/rows'
 import { closedSpan, contextList, markBefore, type ListIO } from '../hooks/stages'
+import { carryFolds } from '../hooks/handoff'
 import type { Read } from '../hooks/store'
 import { harness } from './compaction-fixtures'
 import { apiOf, memStore, okRead, prompt, reg, reply, result, unreadableRead, use } from './row-fixtures'
@@ -148,7 +149,7 @@ test('RecordFolds — облік не записався або застосув
   expect(debug).toEqual(['context-editor: RecordFolds failed: disk full'])
 
   // the ids were assigned without the ledger (its first read failed), and the ledger read at the commit already gave them out
-  const taken: FoldLedger = { folds: [entry('f1'), entry('f2')], nextFold: 3, recalls: [] }
+  const taken: FoldLedger = { folds: [entry('f1'), entry('f2')], nextFold: 3, recalls: [], questions: [] }
   const held = ledgerStore(okRead(taken))
   const port = foldPort(held.store)
   const clash = await apply(rows, queue, { ...port, read: async () => unreadableRead('EIO') })
@@ -158,7 +159,7 @@ test('RecordFolds — облік не записався або застосув
   expect(held.log.writes).toBe(0)
 
   // abandoned once the ledger is written: nothing stays
-  const before: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [] }
+  const before: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [], questions: [] }
   const { store, log } = ledgerStore(okRead(before))
   let aborted = false
   const writing = foldPort(store)
@@ -221,7 +222,7 @@ test('RecordFolds — картка завдання: a collapse of the whole blo
 
 // [SP_FOLD_01_02] [SP_FOLD_05_02] the ledger file
 test('FoldLedger — розбір і межа: a broken invariant makes the file unreadable; above MAX_FOLDS the oldest entry goes with its recalls', () => {
-  const ok: FoldLedger = { folds: [entry('f1', { parent: 'f2' }), entry('f2')], nextFold: 3, recalls: [] }
+  const ok: FoldLedger = { folds: [entry('f1', { parent: 'f2' }), entry('f2')], nextFold: 3, recalls: [], questions: [] }
   expect(parseFolds(JSON.stringify(ok))).toEqual(okRead(ok))
   for (const bad of [
     { ...ok, nextFold: 2 },
@@ -239,6 +240,7 @@ test('FoldLedger — розбір і межа: a broken invariant makes the file
     folds: Array.from({ length: MAX_FOLDS }, (_, i) => entry(`f${i + 1}`)),
     nextFold: MAX_FOLDS + 1,
     recalls: [{ fold: 'f1', from: 0, count: 1, tool_use_id: 't', depth: 0, scope: '', turn: 1, due: false }],
+    questions: [],
   }
   const edit: QueuedEdit = { op: 'summarize', tool_use_id: 'a', summary: 'S' }
   const next = recordFolds(full, [{ id: `f${MAX_FOLDS + 1}`, entry: 0, edit, what: 'Read a.md' }], [{ edit: 'summarize a', rows: conversation().slice(1, 3) }], MAX_FOLDS + 2, '/s/2.json', 9, 1e9)
@@ -255,6 +257,7 @@ test('Перелік — folds: newest first with the parent and the card mark; 
     folds: [entry('f1', { parent: 'f3' }), entry('f2', { kind: 'media', what: 'media of a user row', rows: 1 }), entry('f3', { kind: 'range', what: 'task "T"', region: { name: 'T', kind: 'task' }, rows: 12, chars: 23_400, turn: 4 })],
     nextFold: 4,
     recalls: [],
+    questions: [],
   }
   expect(foldsList(okRead(ledger), undefined, undefined).split('\n')).toEqual([
     'Folds: 3, newest first; showing 1..3. Each line: id, kind, what was folded, the turn it was applied after, its level\'s rows and chars.',
@@ -283,4 +286,18 @@ test('FoldEntry — заміна з тегу і опис медіа: a tag\'s re
   const describe: QueuedEdit = { op: 'describe', index: 0, description: 'D', anchors: ['x'] }
   const made = recordFolds(emptyFolds(), [{ id: 'f1', entry: 0, edit: describe, what: 'pasted text' }], [{ edit: 'describe #0', rows: rows.slice(0, 1) }], 2, '/s/1.json', 1, 1e6)
   expect(made.folds[0]).toEqual(expect.objectContaining({ kind: 'media', call: 'context_edit describe call', what: 'pasted text of a user row', rows: 1 }))
+})
+
+// [SP_HELP_01_04] [SP_HELP_02_14] [STRUCT-04] the question records in the ledger and in a handoff
+test('Записи питань — облік: a ledger written before PL_HELP reads with none; a bad record is unreadable; a handoff carries none', async () => {
+  const old = { folds: [entry('f1')], nextFold: 2, recalls: [] }
+  expect(parseFolds(JSON.stringify(old))).toEqual(okRead({ ...old, questions: [] }))
+  const q = { tool_use_id: 'k1', folds: ['f1'], question: 'q', verified: 1, rejected: 0, depth: 1, scope: '', turn: 2, due: false }
+  expect(parseFolds(JSON.stringify({ ...old, questions: [q] })).state).toBe('ok')
+  expect(parseFolds(JSON.stringify({ ...old, questions: [{ ...q, folds: [] }] })).state).toBe('unreadable')
+  expect(parseFolds(JSON.stringify({ ...old, questions: [q, q] })).state).toBe('unreadable')
+  let carried: FoldLedger | undefined
+  const io = { readFolds: async () => okRead<FoldLedger>({ ...old, questions: [q] }), writeFolds: async (_: string, l: FoldLedger) => void (carried = l) }
+  await carryFolds(io, { report: { applied: [], failed: [], originals: [], mediaFiles: [], charsBefore: 0, charsAfter: 0 }, archive: '/s/seed.json' } as never, '/old', '/new')
+  expect(carried).toEqual({ folds: [entry('f1')], nextFold: 2, recalls: [], questions: [] })
 })

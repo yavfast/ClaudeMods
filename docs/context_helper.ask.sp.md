@@ -133,7 +133,7 @@ Output:
 |-------|------|-------------|
 | status | `'answered' \| 'not_found' \| 'refused' \| 'failed'` | Статус відповіді чи збій |
 | reply | HelperReply \| null | Розібрана відповідь для перших трьох статусів |
-| reason | string | Для `failed`: `format`, `api-error <status>`, `timeout`, `aborted` чи текст відмови хоста; для `refused` — причина помічника |
+| reason | string | Для `failed`: `format`, `api-error <status>` (`api-error without a response`, коли відповіді не було), `empty-reply`, `timeout`, `aborted` чи текст відмови хоста; для `refused` — причина помічника |
 | calls | int | 1 чи 2 |
 | in, out | int | Токени входу (некешований, записаний і прочитаний разом) і виходу всіх викликів |
 
@@ -146,16 +146,18 @@ Processing logic (pseudocode):
                     prompt: ["Question: " + question, part.text],
                     maxTokens: HELP_MAX_TOKENS, timeoutMs: HELP_TIMEOUT_MS }
         r = Complete(request)                  // виклик моделі хоста поза розмовою
-        calls = 1; ADD usage of r TO (in, out) when r answered
-        IF r not answered: RETURN failed(r.reason)
+        calls = 1; ADD usage of r TO (in, out)  // usage є в кожній гілці результату хоста
+        IF r not answered: RETURN failed(FailureReason(r))
         reply = ParseReply(r.text)             // §01_01
         IF reply is a format failure AND HELP_RETRIES ≥ 1:
             r = Complete(request with HELP_RETRY_TEXT appended as the last prompt block)
             calls = 2; ADD usage
-            IF r not answered: RETURN failed(r.reason)
+            IF r not answered: RETURN failed(FailureReason(r))
             reply = ParseReply(r.text)
         IF reply is a format failure: RETURN failed("format")
         RETURN { status: reply.status, reply, reason: reply.reason, calls, in, out }
+
+FailureReason: `api-error` — `api-error <status>`, без статусу — `api-error without a response`; `empty-reply` — так само; `aborted` — `timeout`, коли від початку виклику минуло щонайменше `timeoutMs`, інакше `aborted`; виняток виклику — його текст.
 
 Частини одного питання мод викликає одночасно; кожна має власний повтор.
 
@@ -228,11 +230,15 @@ Processing logic (pseudocode):
         replies = HelperCall(question, p) FOR p IN parts, all at once   // §02_01
         quotes = VerifyQuotes(reply, p, fragments of p) FOR each answered reply   // §02_04
         text = AskText(folds, parts, replies, quotes)
-        ON the folds chain: append Question { tool_use_id, folds, question[0..QUESTION_HEAD],
+        IF the call was cut (Esc, interrupt): no record, the pair is not live, no sentence
+        ELSE ON the folds chain: append Question { tool_use_id, folds, question[0..QUESTION_HEAD],
             verified, rejected, depth, scope, turn, due: false }; on a write failure
+            a debug line "ask record not written: <error>", and
             append to text: " The question was not recorded: its pair goes with your next apply."
         journal: ask { at, folds, parts: |parts|, calls, in, out, verified, rejected, status }
         RETURN text
+
+Перерваний виклик (сигнал хука `tool.call` скасовано: Esc у терміналі, `interrupt` у stream-json) хост закінчує власною відмовою, і агент відповіді не бачить (живий прогін L1, S2): запис не пишеться, пара не позначається живою, а запис журналу лишається — виклики коштували токенів. `$.model.complete` сигналу не приймає; хост сам обриває виклик із причиною `aborted`.
 
 `scope` і `depth` беруться так само, як для запису розгортання ([SP_FOLD_02_02](./context_folds.sp.md#SP_FOLD_02_02)). Перевірка QUESTIONS_FULL повторюється на ланцюжку перед дописом; повна межа в цю мить — відповідь повертається, запис не пишеться, з тим самим реченням про запис.
 
@@ -261,18 +267,25 @@ Processing logic (pseudocode):
 
     FUNCTION Normalize(s):
         RETURN NFC(s) with every run of whitespace (space, tab, line break, no-break space) as one space, trimmed
+    FUNCTION StripLabels(s):
+        RETURN s without leading whitespace and without a leading "#<n> <role>:" (with the whitespace after it),
+            then without one leading "call: ", "result: " or "result (error): "
     FUNCTION VerifyQuotes(quotes, part, fragments):
         verified = []; rejected = 0
         FOR q IN quotes[0..MAX_QUOTES): 
             IF q.text empty OR |q.text| > MAX_QUOTE: rejected += 1; CONTINUE
-            nq = Normalize(q.text)
+            text = StripLabels(q.text)
+            nq = Normalize(text)
+            IF nq empty: rejected += 1; CONTINUE
             order = fragments of row q.row (when part.from ≤ q.row ≤ part.to), then all fragments in row order
             s = first fragment in order whose Normalize(s.text) contains nq
             IF s is none: rejected += 1; CONTINUE
             IF verified has (s.row, nq): CONTINUE           // повтор не лічиться ні тут, ні там
-            verified += { fold: part.fold, row: s.row, text: q.text, origin: s.origin, source: s.source }
+            verified += { fold: part.fold, row: s.row, text, origin: s.origin, source: s.source }
         rejected += max(0, |quotes| − MAX_QUOTES)
         RETURN verified, rejected
+
+Мітки LevelRowText ([SP_FOLD_02_02](./context_folds.sp.md#SP_FOLD_02_02)) обрамлюють матеріал, а не належать йому; HELP_SYSTEM просить їх не цитувати, але помічник інколи цитує рядок разом із міткою (живий прогін L1: 1 з 3 відповідей на тому самому матеріалі). Цитата перевіряється й показується без мітки; лишок усе одно мусить стояти у фрагменті дослівно.
 
 Цитата шукається лише всередині одного фрагмента: цитата, що перетинає межу фрагментів чи рядків, відкидається. Регістр літер не нормалізується.
 
@@ -284,10 +297,10 @@ Purpose: пара питання — відповідь живе як згада
 
 - **Позначка.** `markDue(ledger, after)` ставить `due` записам `questions` за тим самим правилом глибини, що й записам `recalls`.
 - **Правки повернення.** `addReturns` після записів `recalls` додає для кожного запису з `due` правку `{ op: 'summarize', tool_use_id, summary: '', via: 'return' }`, від найстарішого; пропуски (закріплена пара, пари немає, пара вже ціль чи покрита пакетом) і зупинка на MAX_QUEUE_EDITS — ті самі. Виклик `context_edit` з `defer: true` повернень не додає ні для `questions`, ні для `recalls`: повернення — звичайні правки й запланували б застосування; вони чекають наступного прийнятого виклику без `defer` чи замін тегів.
-- **Власна правка агента.** `summarize` чи тег `disposable` на парі питання — її повернення словами агента: текст агента стає результатом пари замість ASK_RETURNED, як для пари розгортання ([SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03)), а запис видаляється при фіксації; `drop` прибирає пару разом із записом.
+- **Власна правка агента.** `summarize` чи тег `disposable` на парі питання — її повернення словами агента: результатом пари стає ASK_RETURNED з `<when>` = ` by your own edit` і текстом агента після `: `, як для пари розгортання ([SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03)), а запис видаляється при фіксації; `drop` прибирає пару разом із записом.
 - **Слід.** Застосування замінює результат повернутої пари текстом ASK_RETURNED: `Later, your context_helper question to fold(s) <ids> here was returned< when "<scope>" closed| when the block closed| by your own edit>: "<question>"; verified quotes: <verified>; the folds stay, and context_helper can ask again.` Нічого не архівується.
 - **Звіт застосування** додає речення `Returned <n> question pair(s).`
-- **Власні виклики** ([SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09)): пара `context_helper` лишається, якщо має запис питання чи її результат починається з ASK_RETURNED_HEAD; кожна інша пара `context_helper` (операції доручень, відмови) — власний виклик, який прибирає застосування.
+- **Власні виклики** ([SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09)): пара `context_helper` лишається, якщо має запис питання чи її результат починається з ASK_RETURNED_HEAD; кожна інша пара `context_helper` (операції доручень, відмови) — власний виклик, який прибирає застосування. Перевірка залежностей ([SP_CTX_02_63](./context_editor.curation.edits.sp.md#SP_CTX_02_63)) пар `context_helper` не враховує, як і пар розгортання: перевірені цитати лежать в архівах згорток, тож пара питання — не інше джерело фрагмента.
 - **Облік у точці фіксації.** Записи `questions`, чиєї пари немає серед повернутих рядків, видаляються разом із `pruneRecalls`.
 
 ## Changelog
@@ -295,3 +308,4 @@ Purpose: пара питання — відповідь живе як згада
 | Date | Change |
 |------|--------|
 | 2026-11-16 | Розділи перенесено дослівно з [context_helper.sp.md](./context_helper.sp.md): поділ файлу за модулями (11 739 слів, перед виправленнями рев'ю 2 і §02_12 — понад `hard_split`), якорі ті самі (structural-event) |
+| 2026-11-16 | PL_HELP фаза 1, рев'ю коду й живий прогін L1: FailureReason (`empty-reply`, `api-error without a response`), токени кожного виклику; перерваний виклик не пише запису; рядок налагодження при невдалому записі; StripLabels у VerifyQuotes; слід власної правки на парі питання; перевірка залежностей пар питань не враховує |

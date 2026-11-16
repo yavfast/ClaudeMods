@@ -6,9 +6,11 @@
 import { LIST_COUNT, MAX_FULL_ROW, MAX_KEEP, MAX_LIST_COUNT, MAX_QUEUE_EDITS, MAX_TEXT, ROW_WINDOW } from './edits'
 import { MAX_NOTE, MAX_NOTES, MAX_REMIND } from './notes'
 import { DEFAULT_RESUME, MAX_DOCUMENT } from './queue'
-import { MARK, RECALL_TOOL } from './rows'
+import { HELPER_TOOL, MARK, RECALL_TOOL } from './rows'
 import { MAX_STAGE_NAME, SKILL } from './stages'
-import { MAX_RECALL_CHARS } from './folds'
+import { MAX_ASK_FOLDS, MAX_RECALL_CHARS } from './folds'
+import { HELP_MAX_PARTS, HELP_PART_CHARS } from './ask'
+import { HELP_MODEL, MAX_QUESTION } from './helper'
 import { MAX_STATE_ITEM, MAX_STATE_ITEMS, STATE_KINDS } from './state'
 import { MAX_TAGS } from './tags'
 import { MAX_TITLE } from './title'
@@ -21,6 +23,8 @@ export const HANDOFF = 'context_handoff'
 export const NOTE = 'context_note'
 // [SP_FOLD_01_06] RECALL_TOOL
 export const RECALL = RECALL_TOOL
+// [SP_HELP_02_02] the seventh tool
+export const HELPER = HELPER_TOOL
 
 // [SP_CTX_02_01] At most MAX_DESCRIPTION chars (the host cuts the rest).
 export const LIST_DESCRIPTION = `List this conversation's rows OLDEST FIRST, a page at a time: indexes, sizes, tool_use ids (with their call alias, e.g. (c3)), media, flags (* already edited, ! large, @ has media; ~ after tool_use/tool_result: a reproducible Read, Grep or Glob pair), stage marks ([stage ▶ name] or [task ▶ name] the first row of each open region; [block ▶ name] .. [block end] the last closed block), tags ([pin], [state], [disposable: note], [disposable #a..#b: note] on a range's first row, [review: reason]; a bare [review] is from an older version) and your notes ([n3]; a range [n3 #a..#b]), whose full text comes in a "Notes:" block below the page ("Notes elsewhere" names those on other rows). Indexes are positions in this listing: call it right before ${EDIT}, ${TAG} or ${NOTE} by index.
@@ -299,6 +303,21 @@ const RECALL_SCHEMA = {
   required: ['fold'],
 }
 
+// [SP_HELP_02_02] At most MAX_DESCRIPTION chars; [PL_HELP_DEC_03] only the
+// operations that work: phase 1 opens "ask".
+export const HELPER_DESCRIPTION = `Ask the mod's helper about your folds.
+op "ask": a helper model (${HELP_MODEL}, outside this conversation: no turn, no row) reads the levels of the folds you name (ids from their fold records; up to ${MAX_ASK_FOLDS} folds and ~${(HELP_MAX_PARTS * HELP_PART_CHARS) / 1000}k chars in all) and answers your question. Only quotes the mod finds verbatim in the archive reach you, each marked whose it is; the helper's reading is not your own text, so weigh it as external. It takes seconds and a few cents per ~${HELP_PART_CHARS / 1000}k chars. The pair stays until the region you asked in closes; then the mod returns it. Use ${RECALL} when you need the whole level.`
+
+const HELPER_SCHEMA = {
+  type: 'object',
+  properties: {
+    op: { type: 'string', enum: ['ask'], description: 'The operation: "ask".' },
+    folds: { type: 'array', items: { type: 'string' }, description: `The fold ids to ask about, from their fold records, e.g. ["f3"]; 1..${MAX_ASK_FOLDS}.` },
+    question: { type: 'string', description: `Your question about what those folds hold; up to ${MAX_QUESTION} chars.` },
+  },
+  required: ['op', 'folds', 'question'],
+}
+
 export const TOOLS: readonly ToolSpec[] = [
   { name: LIST, description: LIST_DESCRIPTION, inputSchema: LIST_SCHEMA, isDeferred: false },
   { name: EDIT, description: EDIT_DESCRIPTION, inputSchema: EDIT_SCHEMA, isDeferred: false },
@@ -306,6 +325,7 @@ export const TOOLS: readonly ToolSpec[] = [
   { name: HANDOFF, description: HANDOFF_DESCRIPTION, inputSchema: HANDOFF_SCHEMA, isDeferred: false },
   { name: NOTE, description: NOTE_DESCRIPTION, inputSchema: NOTE_SCHEMA, isDeferred: false },
   { name: RECALL, description: RECALL_DESCRIPTION, inputSchema: RECALL_SCHEMA, isDeferred: false },
+  { name: HELPER, description: HELPER_DESCRIPTION, inputSchema: HELPER_SCHEMA, isDeferred: false },
 ]
 
 // [SP_CTX_02_20] The person's command.

@@ -264,11 +264,16 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // [SP_FOLD_02_03] [SP_FOLD_02_09] the recalls not yet returned: the trace
   // of a return edit names their fold and scope, and their pairs stay
   const recalls = foldsRead && foldsRead.state !== 'unreadable' ? foldsRead.value.recalls : []
-  const keepRecalls = new Set(recalls.map(r => r.tool_use_id))
+  // [SP_HELP_02_05] the questions not yet returned, likewise
+  const questions = foldsRead && foldsRead.state !== 'unreadable' ? foldsRead.value.questions : []
+  const keepRecalls = new Set([...recalls, ...questions].map(r => r.tool_use_id))
   const applied = applyEdits(messages, edits, archive, media, mediaOwners, {
     ...options,
     ...(numbered ? { foldIds: numbered.ids } : {}),
     ...(recalls.length ? { recalls: new Map(recalls.map(r => [r.tool_use_id, { fold: r.fold, scope: r.scope }])) } : {}),
+    ...(questions.length
+      ? { questions: new Map(questions.map(q => [q.tool_use_id, { folds: q.folds, question: q.question, verified: q.verified, scope: q.scope }])) }
+      : {}),
   })
   const frozen = new Set(messages.slice(0, applied.prefix))
   applied.report.failed.unshift(...refused)
@@ -386,7 +391,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     let foldsBefore: FoldLedger | undefined
     let foldsUnsaved = ''
     const folding = !!numbered && applied.folded.length > 0
-    if (io.folds && (folding || (recalls.length > 0 && done.length > 0)) && !io.isAborted()) {
+    if (io.folds && (folding || (keepRecalls.size > 0 && done.length > 0)) && !io.isAborted()) {
       const turn = tagsNow.state === 'unreadable' ? 0 : tagsNow.value.turn
       let unchanged = false
       try {

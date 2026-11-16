@@ -1,7 +1,7 @@
 # Implementation Plan: Помічник мода  {#PL_HELP}
 
 > **Code:** PL_HELP
-> **Status:** draft
+> **Status:** active
 > **Created:** 2026-11-16
 > **Updated:** 2026-11-16
 >
@@ -53,7 +53,7 @@
 
 ## Progress
 
-- [ ] [Phase 1 — Помічник і питання до архіву](#PL_HELP_P1)
+- [x] [Phase 1 — Помічник і питання до архіву](#PL_HELP_P1)
 - [ ] [Phase 2 — Годинник кешу](#PL_HELP_P2)
 - [ ] [Phase 3 — Відкладені пакети в обробнику й черзі](#PL_HELP_P3)
 - [ ] [Phase 4 — Поле `defer` і видимі відкладені пакети](#PL_HELP_P4)
@@ -67,7 +67,7 @@
 
 Кожна фаза з кодом проходить повний цикл: тести, рев'ю з чистим контекстом, живий прогін з коротким сценарієм фази, коміт. Мод на цій машині — керований плагін, і кожна нова сесія завантажує робоче дерево, тож фаза лишає мод робочим і відкриває агенту лише те, що вже працює ([DEC_03](#PL_HELP_DEC_03)). Поле **Змінює** називає розділи SP_CTX, SP_FOLD, C_CTX і C_FOLD з таблиць [SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03) і [C_HELP_04_01](./context_helper.concept.md#C_HELP_04_01), які фаза оновлює разом з кодом. Перевірки входів [SP_HELP_03_01](./context_helper.sp.md#SP_HELP_03_01) та інваріанти [SP_HELP_03_02](./context_helper.sp.md#SP_HELP_03_02) реалізує фаза, що вводить відповідний контракт; константи [SP_HELP_01_09](./context_helper.sp.md#SP_HELP_01_09) — фаза, що їх уперше використовує.
 
-### Phase 1 — Помічник і питання до архіву (`hooks/helper.ts`, `hooks/ask.ts`) [TODO]  {#PL_HELP_P1}
+### Phase 1 — Помічник і питання до архіву (`hooks/helper.ts`, `hooks/ask.ts`) [DONE]  {#PL_HELP_P1}
 
 **Depends on:** none
 **Implements:** [SP_HELP_01_01](./context_helper.ask.sp.md#SP_HELP_01_01), [SP_HELP_01_02](./context_helper.ask.sp.md#SP_HELP_01_02), [SP_HELP_01_03](./context_helper.ask.sp.md#SP_HELP_01_03), [SP_HELP_01_04](./context_helper.ask.sp.md#SP_HELP_01_04), [SP_HELP_02_01](./context_helper.ask.sp.md#SP_HELP_02_01), [SP_HELP_02_02](./context_helper.ask.sp.md#SP_HELP_02_02) (лише операція `ask`), [SP_HELP_02_03](./context_helper.ask.sp.md#SP_HELP_02_03), [SP_HELP_02_04](./context_helper.ask.sp.md#SP_HELP_02_04), [SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05), [SP_HELP_04_03](./context_helper.sp.md#SP_HELP_04_03); запис журналу `ask` з [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08) (без поля `errand`); рядок «Помічник» з [SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13); рядок «Записи питань» з [SP_HELP_02_14](./context_helper.sp.md#SP_HELP_02_14); рядки `context_helper`, `op`, `folds`, `question`, матеріал і обхід з [SP_HELP_03_01](./context_helper.sp.md#SP_HELP_03_01); інваріанти I1–I3; константи HELP_*, MAX_QUOTE, MAX_QUOTES, MAX_QUESTION, MAX_ASK_FOLDS, MAX_ASK_RESULT, MAX_QUESTIONS, QUESTION_HEAD, ASKED_HEAD, ASK_RETURNED_HEAD, HELP_SYSTEM, HELP_RETRY_TEXT
@@ -270,7 +270,7 @@ Items deferred from the current implementation cycle (each with a return trigger
 
 ### DEC_02 — Нові модулі замість розширення наявних  {#PL_HELP_DEC_02}
 
-> **Status:** resolved (agent)
+> **Status:** resolved (agent; developer approved at the design sign-off)
 > **Date:** 2026-11-16
 
 **Question:** Де живе логіка помічника, годинника, пакетів, простою й доручень?
@@ -288,7 +288,7 @@ Items deferred from the current implementation cycle (each with a return trigger
 
 ### DEC_03 — Поступове відкриття механізмів агенту  {#PL_HELP_DEC_03}
 
-> **Status:** resolved (agent)
+> **Status:** resolved (agent; developer approved at the design sign-off)
 > **Date:** 2026-11-16
 
 **Question:** Коли агент бачить нові операції й поля?
@@ -306,7 +306,7 @@ Items deferred from the current implementation cycle (each with a return trigger
 
 ### DEC_04 — Довгі живі сценарії одним прогоном  {#PL_HELP_DEC_04}
 
-> **Status:** resolved (agent)
+> **Status:** resolved (agent; developer approved at the design sign-off)
 > **Date:** 2026-11-16
 
 **Question:** Як перевіряти сценарії, що вимагають простою понад годину (L3, L4, L8)?
@@ -327,4 +327,6 @@ Items deferred from the current implementation cycle (each with a return trigger
 | Date | Change |
 |------|--------|
 | 2026-11-16 | План створено за SP_HELP (draft); порядок фаз — DEC_01 (розробник) |
+| 2026-11-16 | Підписання дизайну: розробник запустив `/dev-flow implement` після питання про затвердження плану з DEC_02–04 — план `active`, DEC_02–04 прийнято; фаза 1 `[IN PROGRESS]` |
 | 2026-11-16 | Рев'ю 1 (pass with advisories): рядки перевірки перенесено у фази, де є їхній контракт (KeepOtherSteps `b2` → 4, «таймер StartRun» → 6 і 8, «Гаряче перезавантаження» → 7, I2 → 1 і 7); фаза 2 — вид `cache` у журналі й `carryRegistries`; запис `apply` (SP_CTX_02_31, `journal.ts`) у фазах 3 і 5, SP_CTX_02_04 і 02_07 у фазі 1; частина `defer` про простій — у фазі 5, правила C_CTX_03_02 і C_CTX_DEC_03 (простій) — у фазі 5; SKILL.md і EDIT_DESCRIPTION без змін; модулі AreaClosed і умови `cold` у фазі 7; RewriteStart над `cacheShape`/`cacheCost`; холодна гілка StartRun живо у фазі 6 |
+| 2026-11-16 | Фаза 1 `[DONE]`: код, тести (1106), рев'ю з чистим контекстом (pass with advisories, усе виправлено), живий L1 у stream-json і терміналі; перерваний виклик не пише запису питання; мітки матеріалу в цитатах помічника знімаються перевіркою |

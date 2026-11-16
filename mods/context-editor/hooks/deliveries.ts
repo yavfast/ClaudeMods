@@ -10,7 +10,7 @@
 // (InsertDeliveries, [SP_CTX_02_36]). Pure logic behind a small port;
 // register.ts binds it to `$` on the deliveries' own serial chain.
 import type { SessionMessage } from 'claude-code'
-import { commandOf, hostFrame, isPlainUserRow, isReplacementText, markerKind, PLUGIN_FRAME, PREFIX, resultsOf, rowChars } from './rows'
+import { commandOf, hostFrame, isModText, isPlainUserRow, markerKind, PLUGIN_FRAME, resultsOf, rowChars } from './rows'
 import { REMINDER_CLOSE, REMINDER_PREFIX } from './media'
 import { isCount, jsonObject, trimOldest, type Read, type Renew, type Update } from './store'
 
@@ -111,7 +111,7 @@ export function personText(raw: string): string {
     return cmd.name === '/rename' ? '' : cmd.args
   }
   // a replacement (of now or marked with MARK before phase 28) and the mod's own words
-  if (isReplacementText(t) || t.startsWith(PREFIX) || t.startsWith(SUMMARY_OPENER)) return ''
+  if (isModText(t) || t.startsWith(SUMMARY_OPENER)) return ''
   // [SP_CTX_02_58] the text of an expanded skill or a subagent's report is no person's words
   if (hostFrame(t)) return ''
   if (PLUGIN_FRAME.test(t) || HOST_ROWS.some(tag => t.startsWith(tag))) return ''

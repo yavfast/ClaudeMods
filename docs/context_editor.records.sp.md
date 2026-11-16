@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-17
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §01_13–01_26 специфікації [SP_CTX](./context_editor.sp.md): AliasRegistry, Boundary, HandoffRequest, HandoffSeed, Stage, Journal, Telemetry, Note, QueuedDelivery, HostAttachState, ApplyLedger, Capabilities, CapabilityCache. Читати, коли змінюєте файли стану сесії.
@@ -170,6 +170,7 @@ JournalEntry — варіант за полем `kind`:
 | `apply` | `at: int` (мс від епохи, `reportId` застосування), `edits: int` (≥ 1, застосовані правки), `archive: string` (шлях архіву або `""`), `compressed: list<string>` (≤ MAX_QUEUE_EDITS, без повторів) | Застосування пакета компактизацією ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); `compressed` — `input.file_path` викликів `Read` у парах, які застосовані правки стиснули, прибрали або згорнули |
 | `changed` | `at: int`, `path: string` | Агент змінив інструментом з WRITE_TOOLS файл, названий у `compressed` якогось запису `apply` ([SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)); пізніше читання цього шляху — не повторне читання стиснутого, а читання нового вмісту |
 | `reread` | `at: int`, `path: string`, `tool_use_id: string`, `archive: bool` | Агент знову прочитав `Read` шлях, названий у `compressed` запису `apply`, після якого не було запису `changed` з тим самим шляхом (`archive = false`), або файл архіву чи медіа застосування — шлях `archive` або шлях усередині `<storage>/<at>/` (`archive = true`) ([SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)) |
+| `ask` | поля [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08): `at`, `folds`, `parts`, `calls`, `in`, `out`, `verified`, `rejected`, `status`, `errand?` | Питання агента до архіву згорток через `context_helper` ([SP_HELP_02_03](./context_helper.ask.sp.md#SP_HELP_02_03)), після кожного питання, що дійшло до помічника (PL_HELP, фаза 1; `errand` — лише питання з доручення, фаза 1 його не пише); суми записів — рядок `Helper` телеметрії ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) |
 
 Стани читання — як у Queue (`missing`, `ok`, `unreadable`). Журнал `unreadable` не перезаписується: записи пропускаються, телеметрія каже «journal unreadable» з причиною; щоб відновити журнал, людина видаляє файл. Збій запису журналу не впливає ні на застосування, ні на результат інструменту.
 
@@ -194,7 +195,7 @@ JournalEntry — варіант за полем `kind`:
 | ratio | number? | no | — | CALIB_MIN..CALIB_MAX | Відношення символів на токен, яким пораховано оцінки цієї телеметрії ([SP_CTX_02_34](./context_editor.telemetry.sp.md#SP_CTX_02_34)); відсутнє — `approx.` |
 | chars | int? | no | — | ≥ 0 | ApiChars API-подання ([SP_CTX_02_34](./context_editor.telemetry.sp.md#SP_CTX_02_34)); відсутнє без подання (немає, збій читання, порожнє) і коли воно сягнуло свого вікна ROW_WINDOW |
 | disposable | int | yes | 0 | ≥ 0 | Теги `disposable`, ціль яких є в розмові |
-| journal | `{ applications: int, rereads: int, archiveRereads: int }` \| `{ unreadable: string }` | yes | — | `archiveRereads` ≤ `rereads` | Підсумок журналу ефекту: записи `apply`, записи `reread` і з них `archive = true`; файлу немає — усі нулі. Рядок тексту — лише коли журнал `unreadable` або `applications + rereads > 0` |
+| journal | `{ applications: int, rereads: int, archiveRereads: int, helper?: HelperSummary }` \| `{ unreadable: string }` | yes | — | `archiveRereads` ≤ `rereads` | Підсумок журналу ефекту: записи `apply`, записи `reread` і з них `archive = true`; `helper` — суми записів `ask`, відсутній без них ([SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13); PL_HELP, фаза 1); файлу немає — усі нулі. Рядок тексту — лише коли журнал `unreadable` або `applications + rereads > 0` |
 | state | `{ row: int }` \| `none` \| `lost` | yes | — | — | Слот стану: рядок тегу `state`, тегу немає, або рядка тегу вже немає в розмові. Рядок тексту — лише для `{ row }` і `lost` |
 | measuredFreed | int? | no | — | — | Виміряна зміна запиту від останнього застосування: `lastApply.tokensBefore − context.tokens` після першої відповіді моделі після нього; один раз ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) |
 | notes | `{ count: int, reminders: int }` | yes | — | `reminders` — нотатки з `remindAt`, порахованi після доставки нагадувань цього виклику | Нотатки реєстру і скільки з них чекають нагадування |
@@ -330,6 +331,7 @@ CapEntry: `compact` і `attachments` — `reached` \| `passed` (кожне не�
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 1: 01_19 — вид запису журналу `ask` (поля [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)) |
 | 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_01_04](./context_folds.sp.md#SP_FOLD_01_04)): 01_18 — поле `kind` у Stage і ClosedBlock, ланцюжок областей, вкладення меж (REGION_BOUNDS), мітка закриває найглибшу область |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.structures.sp.md](./context_editor.structures.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |
 | 2026-10-17 | Аудит коду (SPEC-7, SPEC-13): 01_23 — рішення пише й VerifyPredictions на першому кінці ходу після застосування (знімає прогноз, якого хост не справдив), `predicted` перевіряється й там; 01_25 — поля `probeDone` і `settle` (очікування зонда) |

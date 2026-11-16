@@ -1,10 +1,11 @@
 import type { SessionMessage } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction, screenPinned } from '../hooks/compaction'
-import { dropOwnCalls, editLabel, fingerprint, RECALL_CALL, type QueuedEdit } from '../hooks/edits'
-import { addReturns, contextRecall, emptyFolds, foldPort, ledgerWork, levelOf, markDue, parseFolds, pruneRecalls, returnEdit, type FoldEntry, type FoldLedger, type Recall, type RecallIO } from '../hooks/folds'
+import { applyLine, dropOwnCalls, editLabel, fingerprint, formatReport, HELPER_CALL, RECALL_CALL, type QueuedEdit } from '../hooks/edits'
+import { addReturns, contextRecall, emptyFolds, foldPort, ledgerWork, levelOf, markDue, parseFolds, pruneRecalls, returnables, returnEdit, type FoldEntry, type FoldLedger, type Question, type Recall, type RecallIO } from '../hooks/folds'
+import { askedLine } from '../hooks/ask'
 import { EMPTY_QUEUE, queuedText, queueEdits, type Queue } from '../hooks/queue'
-import { foldNote, recalledText, returnedText, SUMMARIZED_OF, TRACE_OPENER } from '../hooks/rows'
+import { askReturnedText, foldNote, recalledText, returnedText, SUMMARIZED_OF, TRACE_OPENER } from '../hooks/rows'
 import type { Read } from '../hooks/store'
 import { contextTag, EMPTY_REGISTRY, queueTagReplacements, type Tag, type TagIO, type TagRegistry } from '../hooks/tags'
 import { harness } from './compaction-fixtures'
@@ -57,7 +58,7 @@ function recallResult(rows: readonly SessionMessage[]): string | undefined {
   return rows.flatMap(r => r.toolResults ?? []).find(t => t.tool_use_id === id)?.text
 }
 
-function queue(q: Queue, rows: readonly SessionMessage[], edits: unknown[], recalls: readonly Recall[]): Queue {
+function queue(q: Queue, rows: readonly SessionMessage[], edits: unknown[], recalls: readonly Pick<Recall, 'tool_use_id' | 'due'>[]): Queue {
   const out = queueEdits(q, rows, { edits }, undefined, undefined, false, undefined, [], [], undefined, recalls)
   if ('deny' in out) throw new Error(out.deny)
   if (out.errors.length) throw new Error(out.errors.join('; '))
@@ -68,7 +69,7 @@ function queue(q: Queue, rows: readonly SessionMessage[], edits: unknown[], reca
 test('Recall — перетин частин: a part that overlaps one not yet returned is refused; a part beside it gets its own record', async () => {
   const level = [reply('row 0'), reply('row 1'), reply('row 2'), reply('row 3')]
   const archive = JSON.stringify([{ edit: 'collapse #3..#6', rows: level }])
-  let ledger: FoldLedger = { folds: [entry('f1', { kind: 'range', rows: 4 })], nextFold: 2, recalls: [] }
+  let ledger: FoldLedger = { folds: [entry('f1', { kind: 'range', rows: 4 })], nextFold: 2, recalls: [], questions: [] }
   const live = new Set<string>()
   const io: RecallIO = {
     passedOver: () => false,
@@ -104,7 +105,7 @@ test('Recall — перетин частин: a part that overlaps one not yet r
 
 // [SP_FOLD_05_01] MarkDue: the depth of the region a recall was made in
 test('MarkDue — глибина: a recall made at depth 2 is due once the region of depth 2 closed; one made at depth 1 only after that region closed too', () => {
-  const ledger: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [recall('deep', { depth: 2 }), recall('outer', { depth: 1 })] }
+  const ledger: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [recall('deep', { depth: 2 }), recall('outer', { depth: 1 })], questions: [] }
   const inner = markDue(ledger, 1)
   expect(inner.recalls.map(r => r.due)).toEqual([true, false])
   const outer = markDue(inner, 0)
@@ -121,8 +122,8 @@ test('AddReturns — агент згортає: after the close an accepted edit
   expect(q.edits).toEqual([expect.objectContaining({ op: 'summarize', tool_use_id: 'b' }), returnEdit('r1')])
   const text = queuedText(q, 1, [])
   expect(text).toContain('Queued 1 edit(s); 1 pending in total.')
-  expect(text).toContain('1 recalled level(s) of closed stages return with this batch')
-  const out = await apply(rows, q.edits, { folds: [entry('f1')], nextFold: 2, recalls })
+  expect(text).toContain('1 recalled level(s) or question pair(s) of closed stages return with this batch')
+  const out = await apply(rows, q.edits, { folds: [entry('f1')], nextFold: 2, recalls, questions: [] })
   expect(recallResult(out.rows)).toBe(returnedText('f1', { scope: 'reading' }))
   // the call stays, under a new id
   expect(out.rows.flatMap(r => r.toolUses).some(u => u.tool === RECALL_CALL && u.tool_use_id !== 'r1')).toBe(true)
@@ -140,7 +141,7 @@ test('AddReturns — агент згортає: after the close an accepted edit
 // [SP_FOLD_05_01] [SP_FOLD_05_02] AddReturns: a close without an edit or a tag
 test('AddReturns — пакета немає / правка повернення не стає в чергу сама: a close without edits or tags marks the recall due and queues nothing', async () => {
   const rows = conversation()
-  let ledger: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [recall('r1')] }
+  let ledger: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [recall('r1')], questions: [] }
   const log: { tags?: TagRegistry; queue?: Queue } = {}
   const io: TagIO = {
     rows: async () => rows,
@@ -179,7 +180,7 @@ test('AddReturns — правка агента охопила пару: a collap
   expect(first.edits.some(e => e.via === 'return')).toBe(true)
   const second = queue(first, rows, [collapse], recalls)
   expect(second.edits.map(e => [e.op, e.via])).toEqual([['summarize', undefined], ['collapse', undefined]])
-  const out = await apply(rows, second.edits, { folds: [entry('f1')], nextFold: 2, recalls })
+  const out = await apply(rows, second.edits, { folds: [entry('f1')], nextFold: 2, recalls, questions: [] })
   const archive = JSON.parse(out.written.archiveText!) as { edit: string; rows: SessionMessage[] }[]
   const span = archive.find(e => e.edit.startsWith('collapse'))!
   expect(recallResult(span.rows)).toBe(returnedText('f1', 'edit'))
@@ -250,7 +251,7 @@ test('Recall — облік не читається: an unreadable ledger is mov
   await ledgerWork(stuck.store)(async () => undefined).catch(err => void (failed = String(err)))
   expect(failed).toContain('nor moved aside')
   // PruneRecalls: a record stays while its pair is a row or its call is live
-  const l: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [recall('r1'), recall('gone'), recall('now')] }
+  const l: FoldLedger = { folds: [entry('f1')], nextFold: 2, recalls: [recall('r1'), recall('gone'), recall('now')], questions: [] }
   expect(pruneRecalls(l, conversation(), new Set(['now'])).recalls.map(r => r.tool_use_id)).toEqual(['r1', 'now'])
   expect(pruneRecalls({ ...l, recalls: [recall('r1')] }, conversation())).toEqual({ ...l, recalls: [recall('r1')] })
 })
@@ -278,4 +279,74 @@ test('Повернення — мітка й пін: a failed return edit is nam
   const more = queueEdits(full, rows, { edits: [{ op: 'drop', tool_use_id: 'b' }] }, undefined, undefined, false, undefined, [], [], undefined, [recall('r1', { due: true })])
   expect('queue' in more && more.queue.edits.length).toBe(200)
   expect('queue' in more && more.queue.edits.some(e => e.via === 'return')).toBe(false)
+})
+
+// ---- [SP_HELP_02_05] question pairs of the helper live and return as recalls do
+
+const ASKED = `${askedLine(['f1'])}\nReading: 40k.\nVerified quotes:\nf1 #0 [your own]: "S"`
+
+function question(id: string, extra: Partial<Question> = {}): Question {
+  return { tool_use_id: id, folds: ['f1'], question: 'budget?', verified: 1, rejected: 0, depth: 1, scope: 'reading', turn: 3, due: false, ...extra }
+}
+
+// The conversation with a question pair (#10, #11) after the recall.
+function asked(): SessionMessage[] {
+  return [...conversation(), use('k1', HELPER_CALL, 'h10', { op: 'ask', folds: ['f1'], question: 'budget?' }), result('k1', ASKED, 'h11'), reply('ok', 'h12')]
+}
+
+function pairResult(rows: readonly SessionMessage[], tool: string): string | undefined {
+  const id = rows.flatMap(r => r.toolUses).find(u => u.tool === tool)?.tool_use_id
+  return rows.flatMap(r => r.toolResults ?? []).find(t => t.tool_use_id === id)?.text
+}
+
+// [SP_HELP_05_01] Повернення пар: the close of a region
+test('Повернення пар — закриття області: a question of depth 1 is due once the stage closed; the next batch brings its return edit; the pair holds ASK_RETURNED and its record goes', async () => {
+  const rows = asked()
+  const due = markDue({ ...emptyFolds(), folds: [entry('f1')], nextFold: 2, questions: [question('k1')] }, 0)
+  expect(due.questions[0]!.due).toBe(true)
+  const q = queue({ ...EMPTY_QUEUE }, rows, [{ op: 'summarize', tool_use_id: 'b', summary: 'listing' }], returnables(due))
+  expect(q.edits).toEqual([expect.objectContaining({ op: 'summarize', tool_use_id: 'b' }), returnEdit('k1')])
+  const out = await apply(rows, q.edits, due)
+  expect(pairResult(out.rows, HELPER_CALL)).toBe(askReturnedText({ folds: ['f1'], question: 'budget?', verified: 1 }, { scope: 'reading' }))
+  expect(out.ledger.questions).toEqual([])
+  // the return archived nothing: the archive holds the summarized pair alone
+  expect((JSON.parse(out.written.archiveText!) as { edit: string }[]).map(e => e.edit)).toEqual(['summarize b'])
+})
+
+// [SP_HELP_05_01] Повернення пар: the agent's own edit
+test('Повернення пар — власна правка: a summarize of a question pair returns it with the agent\'s words; a drop takes the pair and its record', async () => {
+  const rows = asked()
+  const ledger: FoldLedger = { ...emptyFolds(), folds: [entry('f1')], nextFold: 2, questions: [question('k1')] }
+  const q = queue({ ...EMPTY_QUEUE }, rows, [{ op: 'summarize', tool_use_id: 'k1', summary: 'the budget is 40k' }], returnables(ledger))
+  expect(q.edits).toEqual([{ op: 'summarize', tool_use_id: 'k1', summary: 'the budget is 40k', via: 'return' }])
+  const out = await apply(rows, q.edits, ledger)
+  expect(pairResult(out.rows, HELPER_CALL)).toBe(askReturnedText({ folds: ['f1'], question: 'budget?', verified: 1 }, 'edit', 'the budget is 40k'))
+  expect(out.ledger.questions).toEqual([])
+  const dropped = await apply(rows, [{ op: 'drop', tool_use_id: 'k1' }], ledger)
+  expect(dropped.rows.flatMap(r => r.toolUses).some(u => u.tool === HELPER_CALL)).toBe(false)
+  expect(dropped.ledger.questions).toEqual([])
+})
+
+// [SP_HELP_02_05] [SP_FOLD_02_09] own calls: question pairs with a record or ASK_RETURNED stay
+test('DropOwnCalls — пари питань: a question pair with a record and one with ASK_RETURNED stay; a refused question goes; a seed takes none', () => {
+  const rows = [
+    prompt('task'),
+    use('k1', HELPER_CALL, undefined, { op: 'ask' }),
+    result('k1', ASKED),
+    use('k2', HELPER_CALL, undefined, { op: 'ask' }),
+    result('k2', askReturnedText({ folds: ['f1'], question: 'q', verified: 0 }, { scope: '' })),
+    use('k3', HELPER_CALL, undefined, { op: 'ask' }),
+    result('k3', 'no fold f9 in the fold ledger (FOLD_UNKNOWN)', undefined, true),
+    reply('done'),
+  ]
+  expect(dropOwnCalls(rows, new Set(), undefined, undefined, new Set(['k1'])).flatMap(r => r.toolUses.map(u => u.tool_use_id))).toEqual(['k1', 'k2'])
+  expect(dropOwnCalls(rows).flatMap(r => r.toolUses)).toEqual([])
+})
+
+// [SP_HELP_02_05] the report's sentence and the label of a failed return
+test('Повернення пар — звіт: "Returned 1 question pair(s)."; a failed return is named by its folds; the person\'s line counts it', () => {
+  const report = { applied: ['summarize k1'], failed: [], originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [], charsBefore: 1000, charsAfter: 900, returned: [{ edit: 'summarize k1', fold: 'f1', question: true as const }] }
+  expect(formatReport(report, '', 'compaction')).toContain('Returned 1 question pair(s).')
+  expect(applyLine(report)).toContain('returned 1 question pair(s)')
+  expect(editLabel(asked(), returnEdit('k1'))).toBe('return of the question to fold(s) f1')
 })

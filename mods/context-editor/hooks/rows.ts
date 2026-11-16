@@ -132,6 +132,9 @@ export function rewrittenWords(via: Via = 'edit'): string {
 // [SP_FOLD_01_06] RETURNED_HEAD: the trace of a returned recall, the one
 // opener that does not start with REPLACED (ReturnedText below).
 export const RETURNED_HEAD = 'Later, your recall of fold '
+// [SP_HELP_01_09] [SP_HELP_02_05] ASK_RETURNED_HEAD: the trace of a returned
+// question pair of the mod's helper (AskReturnedText below).
+export const ASK_RETURNED_HEAD = 'Later, your context_helper question'
 export const REPLACEMENT_OPENERS: readonly string[] = [
   SUMMARIZED,
   REWRITTEN,
@@ -145,6 +148,7 @@ export const REPLACEMENT_OPENERS: readonly string[] = [
   TRACE_OPENER,
   STATE_REBUILT,
   RETURNED_HEAD,
+  ASK_RETURNED_HEAD,
 ]
 // [SP_CTX_01_12] The openers of phases 19–27 (A′): sessions applied before
 // phase 28 still carry them.
@@ -157,6 +161,14 @@ export const LEGACY_COLLAPSED_OPENER = `${MARK} you read these `
 // (the `*` flag, R5 (a), the hint's candidates, PersonText; rule STRUCT-01).
 export function isReplacementText(text: string): boolean {
   return REPLACEMENT_OPENERS.some(o => text.startsWith(o)) || text.startsWith(MARK)
+}
+
+// The mod's own text: a replacement (of now or marked with MARK before phase
+// 28) or one of the mod's words under PREFIX. PersonText and the helper's
+// rule of origin ([SP_HELP_01_02]) read it.
+export function isModText(text: string): boolean {
+  const t = text.trimStart()
+  return isReplacementText(t) || t.startsWith(PREFIX)
 }
 
 // [SP_CTX_02_04] The text of a collapse note, by context_edit or a tag, of
@@ -234,6 +246,26 @@ export function returnedText(id: string, when: ReturnedWhen): string {
 // [SP_FOLD_02_09] The result of a recall pair that was returned.
 export function isReturnedText(text: string): boolean {
   return text.startsWith(RETURNED_HEAD)
+}
+
+// [SP_HELP_02_02] The tool of the mod's helper; [SP_HELP_01_09] ASKED_HEAD:
+// the start of a question's result, by which the mod knows the pair.
+export const HELPER_TOOL = 'context_helper'
+export const ASKED_HEAD = 'Asked: '
+// [SP_HELP_01_09] The longest question a record or a trace keeps.
+export const QUESTION_HEAD = 200
+// [SP_HELP_02_05] ASK_RETURNED: the trace a returned question pair leaves in
+// the place of its answer; `when` as in ReturnedText. The agent's own words
+// (its summarize or disposable tag) follow it after ": ", as on RETURNED.
+export type AskReturned = { folds: readonly string[]; question: string; verified: number }
+export function askReturnedText(q: AskReturned, when: ReturnedWhen, words = ''): string {
+  const how = when === 'edit' ? ' by your own edit' : when.scope ? ` when "${when.scope}" closed` : ' when the block closed'
+  const trace = `${ASK_RETURNED_HEAD} to fold(s) ${q.folds.join(', ')} here was returned${how}: "${q.question}"; verified quotes: ${q.verified}; the folds stay, and ${HELPER_TOOL} can ask again`
+  return words ? `${trace}: ${words}` : `${trace}.`
+}
+// [SP_FOLD_02_09] [SP_HELP_02_05] The result of a question pair that was returned.
+export function isAskReturnedText(text: string): boolean {
+  return text.startsWith(ASK_RETURNED_HEAD)
 }
 
 // [SP_CTX_01_32] [SP_CTX_02_58] The frames of the text the host adds as a

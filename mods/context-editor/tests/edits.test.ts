@@ -48,8 +48,8 @@ import {
   MAX_COLLAPSED_ARG,
   MAX_COLLAPSED_LIST,
 } from '../hooks/edits'
-import { findToolResult, findToolUse, isReplacementText, MARK, pulledWords, toolRefWords } from '../hooks/rows'
-import { checkPairs, DEP_MAX, dependencyHits, dependencyNote, fragments, MAX_DEP_FRAGMENTS, MAX_TRACE, toolRefText, TRACE_OPENER, traceText } from '../hooks/edits'
+import { ASKED_HEAD, findToolResult, findToolUse, isReplacementText, MARK, pulledWords, toolRefWords } from '../hooks/rows'
+import { checkPairs, DEP_MAX, dependencyHits, dependencyNote, fragments, HELPER_CALL, MAX_DEP_FRAGMENTS, MAX_TRACE, toolRefText, TRACE_OPENER, traceText } from '../hooks/edits'
 import { emptyRowBetweenCalls, prompt, reply as replyRow, result, use as useRow } from './row-fixtures'
 
 const BIG = 'x'.repeat(5000)
@@ -1689,6 +1689,20 @@ test('DependencyCheck — §05_05: an identifier of the original only in a later
     { role: 'assistant', text: '**KEY_7781:** `secret-value-9f3a2b` (from cfg.txt, line 173).', toolUses: [] },
   ]
   expect(dependencyHits(big, { op: 'summarize', tool_use_id: 'a', summary: 'config file' })).toEqual({ rows: [3], examples: ['secret-value-9f3a2b'] })
+})
+
+// [SP_HELP_02_05] a question pair quotes from the folds' archives, as a
+// recall pair holds a level: it is no other source of a fragment
+test('DependencyCheck — пара питання: a verified quote in a helper pair is no other source; the later text of the agent is still a hit', () => {
+  const asked: SessionMessage[] = [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'h', tool: HELPER_CALL, input: { op: 'ask', folds: ['f1'], question: 'which key?' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'h', text: `${ASKED_HEAD}fold(s) f1 — …\nVerified quotes:\nf1 #2 [external: Read cfg]: "KEY_0042 = 2c5f"`, isError: false }] },
+  ]
+  const rows = [...quotedLater(), ...asked]
+  expect(dependencyHits(rows, { op: 'summarize', tool_use_id: 'a', summary: 's' })).toEqual({ rows: [5], examples: ['KEY_0042'] })
+  // the same text in a result of another tool is another source
+  const bash = rows.map(r => ({ ...r, toolUses: r.toolUses.map(u => (u.tool_use_id === 'h' ? { ...u, tool: 'Bash' } : u)) }))
+  expect(dependencyHits(bash, { op: 'summarize', tool_use_id: 'a', summary: 's' }).examples).toEqual([])
 })
 
 test('DependencyCheck — ціль за операцією: summarize keeps the call input as a source, drop takes it with the result; a collapse takes texts, inputs and results of its span', async () => {

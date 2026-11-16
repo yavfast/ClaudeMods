@@ -24,7 +24,7 @@ import {
   type Pinned,
   type QueuedEdit,
 } from './edits'
-import { errorText, findToolUse, FOLD_NUMBER, FOLD_PREFIX, foldNumbers, foldOfRecord, RECALL_TOOL, recalledText, resultsOf, totalChars } from './rows'
+import { errorText, findToolUse, FOLD_NUMBER, FOLD_PREFIX, foldNumbers, foldOfRecord, QUESTION_HEAD, RECALL_TOOL, recalledText, resultsOf, totalChars } from './rows'
 import { isCount, jsonObject, renewOf, trimOldest, type Held, type Read, type Store } from './store'
 
 // [SP_FOLD_01_06]
@@ -61,11 +61,34 @@ export type FoldEntry = {
 // [SP_FOLD_01_03] A recall not yet returned.
 export type Recall = { fold: string; from: number; count: number; tool_use_id: string; depth: number; scope: string; turn: number; due: boolean }
 
-// [SP_FOLD_01_02]
-export type FoldLedger = { folds: FoldEntry[]; nextFold: number; recalls: Recall[] }
+// [SP_HELP_01_04] A question to the archive whose pair is not returned yet:
+// it lives by the rules of a recall record.
+export type Question = {
+  tool_use_id: string
+  folds: string[]
+  question: string
+  verified: number
+  rejected: number
+  depth: number
+  scope: string
+  turn: number
+  due: boolean
+}
+
+// [SP_FOLD_02_03] [SP_HELP_02_05] What a return edit needs of a record: a
+// recall's or a question's.
+export type Returnable = Pick<Recall, 'tool_use_id' | 'due'>
+
+// [SP_FOLD_01_02] `questions` ([SP_HELP_01_04]): absent in a ledger written
+// before PL_HELP, read as none.
+export type FoldLedger = { folds: FoldEntry[]; nextFold: number; recalls: Recall[]; questions: Question[] }
+
+// [SP_HELP_01_09]
+export const MAX_QUESTIONS = 50
+export const MAX_ASK_FOLDS = 4
 
 export function emptyFolds(): FoldLedger {
-  return { folds: [], nextFold: 1, recalls: [] }
+  return { folds: [], nextFold: 1, recalls: [], questions: [] }
 }
 
 function foldNumber(id: string): number {
@@ -110,12 +133,36 @@ function isRecall(v: unknown): v is Recall {
   )
 }
 
+function isQuestion(v: unknown): v is Question {
+  if (typeof v !== 'object' || v === null) return false
+  const q = v as Record<string, unknown>
+  return (
+    typeof q.tool_use_id === 'string' &&
+    q.tool_use_id !== '' &&
+    Array.isArray(q.folds) &&
+    q.folds.length >= 1 &&
+    q.folds.length <= MAX_ASK_FOLDS &&
+    q.folds.every(f => typeof f === 'string' && FOLD_ID.test(f)) &&
+    new Set(q.folds).size === q.folds.length &&
+    typeof q.question === 'string' &&
+    q.question.length <= QUESTION_HEAD &&
+    isCount(q.verified) &&
+    isCount(q.rejected) &&
+    isCount(q.depth) &&
+    typeof q.scope === 'string' &&
+    isCount(q.turn) &&
+    typeof q.due === 'boolean'
+  )
+}
+
 // [SP_FOLD_01_02] Read states as the other storage files: a bad record or a
 // broken invariant makes the file unreadable, never silently empty.
 export function parseFolds(text: string): Read<FoldLedger> {
   const raw = jsonObject(text)
   if (raw.state === 'unreadable') return raw
   const { folds, nextFold, recalls } = raw.value
+  // [SP_HELP_01_04] a ledger written before PL_HELP has no questions
+  const questions = raw.value.questions ?? []
   if (!Array.isArray(folds) || folds.length > MAX_FOLDS) return { state: 'unreadable', reason: 'bad field(s): folds' }
   if (!isCount(nextFold, 1)) return { state: 'unreadable', reason: 'bad field(s): nextFold' }
   if (!Array.isArray(recalls) || recalls.length > MAX_RECALLS) return { state: 'unreadable', reason: 'bad field(s): recalls' }
@@ -129,7 +176,12 @@ export function parseFolds(text: string): Read<FoldLedger> {
   // [SP_FOLD_03_02] every recall names a fold of the ledger
   const badRecall = recalls.findIndex(r => !isRecall(r) || !ids.has(r.fold))
   if (badRecall >= 0) return { state: 'unreadable', reason: `bad recall ${badRecall + 1}` }
-  return { state: 'ok', value: { folds: folds as FoldEntry[], nextFold, recalls: recalls as Recall[] } }
+  // [SP_HELP_01_04] at most MAX_QUESTIONS, one per pair
+  if (!Array.isArray(questions) || questions.length > MAX_QUESTIONS) return { state: 'unreadable', reason: 'bad field(s): questions' }
+  const badQuestion = questions.findIndex(q => !isQuestion(q))
+  if (badQuestion >= 0) return { state: 'unreadable', reason: `bad question ${badQuestion + 1}` }
+  if (new Set((questions as Question[]).map(q => q.tool_use_id)).size !== questions.length) return { state: 'unreadable', reason: 'bad field(s): questions' }
+  return { state: 'ok', value: { folds: folds as FoldEntry[], nextFold, recalls: recalls as Recall[], questions: questions as Question[] } }
 }
 
 // ---- [SP_FOLD_02_01] RecordFolds
@@ -240,9 +292,10 @@ export function recordFolds(
     folds.push(made)
   }
   const nextFold = Math.max(ledger.nextFold, next)
-  const kept = trimOldest(folds, MAX_FOLDS, maxBytes, list => ({ folds: list, nextFold, recalls: ledger.recalls }))
+  const kept = trimOldest(folds, MAX_FOLDS, maxBytes, list => ({ folds: list, nextFold, recalls: ledger.recalls, questions: ledger.questions }))
   const ids = kept.length === folds.length ? undefined : new Set(kept.map(f => f.id))
-  return { folds: kept, nextFold, recalls: ids ? ledger.recalls.filter(r => ids.has(r.fold)) : ledger.recalls }
+  // [SP_HELP_01_04] a question keeps its record when a fold it named goes: its pair still holds the answer
+  return { folds: kept, nextFold, recalls: ids ? ledger.recalls.filter(r => ids.has(r.fold)) : ledger.recalls, questions: ledger.questions }
 }
 
 // [SP_FOLD_02_01] The ledger's port of an apply; register.ts binds it to the
@@ -283,12 +336,15 @@ export const FOLD_PASSED_OVER =
   "this host passes over the mod's compaction hook: a recalled level could never be returned; open the original with Read at the path in the fold record."
 
 // [SP_FOLD_02_02] PruneRecalls: the records whose pair is no longer in the
-// conversation go (another compaction, a handoff, a resumed session). A
-// record of a call in `live` stays: the recalls of the running turn, whose
-// rows may not be written yet.
+// conversation go (another compaction, a handoff, a resumed session), the
+// question records too ([SP_HELP_02_05]). A record of a call in `live`
+// stays: the recalls and questions of the running turn, whose rows may not
+// be written yet.
 export function pruneRecalls(ledger: FoldLedger, rows: readonly SessionMessage[], live?: ReadonlySet<string>): FoldLedger {
-  const recalls = ledger.recalls.filter(r => live?.has(r.tool_use_id) || findToolUse(rows, r.tool_use_id) >= 0)
-  return recalls.length === ledger.recalls.length ? ledger : { ...ledger, recalls }
+  const alive = (id: string) => live?.has(id) || findToolUse(rows, id) >= 0
+  const recalls = ledger.recalls.filter(r => alive(r.tool_use_id))
+  const questions = ledger.questions.filter(q => alive(q.tool_use_id))
+  return recalls.length === ledger.recalls.length && questions.length === ledger.questions.length ? ledger : { ...ledger, recalls, questions }
 }
 
 // One row of a level as the archive holds it: a SessionMessage of the apply.
@@ -490,9 +546,21 @@ export async function contextRecall(io: RecallIO, args: RecallArgs, callId: stri
 // once one closed. A recall made deeper than that is due; one made outside
 // any region is due at every close (and when the optimization mark closes a
 // block without a region).
+// [SP_HELP_02_05] The question records by the same rule.
 export function markDue(ledger: FoldLedger, after: number): FoldLedger {
-  if (!ledger.recalls.some(r => !r.due && (r.depth === 0 || r.depth > after))) return ledger
-  return { ...ledger, recalls: ledger.recalls.map(r => (!r.due && (r.depth === 0 || r.depth > after) ? { ...r, due: true } : r)) }
+  const due = (r: { due: boolean; depth: number }) => !r.due && (r.depth === 0 || r.depth > after)
+  if (!ledger.recalls.some(due) && !ledger.questions.some(due)) return ledger
+  return {
+    ...ledger,
+    recalls: ledger.recalls.map(r => (due(r) ? { ...r, due: true } : r)),
+    questions: ledger.questions.map(q => (due(q) ? { ...q, due: true } : q)),
+  }
+}
+
+// [SP_FOLD_02_03] [SP_HELP_02_05] The records a return edit may name: the
+// recalls first, then the questions, each oldest first.
+export function returnables(ledger: Pick<FoldLedger, 'recalls' | 'questions'>): Returnable[] {
+  return [...ledger.recalls, ...ledger.questions]
 }
 
 // [SP_FOLD_02_03] The mod's own return edit of a recall pair.
@@ -510,7 +578,7 @@ export function isOwnReturn(e: QueuedEdit): boolean {
 // lies in the span of one (so a return edit queued earlier leaves when such
 // an edit comes); the batch never grows over MAX_QUEUE_EDITS. A batch
 // without an edit of the agent gets none.
-export function addReturns(edits: readonly QueuedEdit[], rows: readonly SessionMessage[], recalls: readonly Recall[], pinned: Pick<Pinned, 'ids'>): QueuedEdit[] {
+export function addReturns(edits: readonly QueuedEdit[], rows: readonly SessionMessage[], recalls: readonly Returnable[], pinned: Pick<Pinned, 'ids'>): QueuedEdit[] {
   const mine = edits.filter(e => !isOwnReturn(e))
   if (!mine.length) return mine
   const taken = new Set<string>()

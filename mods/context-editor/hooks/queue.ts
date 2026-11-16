@@ -5,7 +5,7 @@ import { modText, PREFIX } from './rows'
 import { bytes, jsonObject, type Read } from './store'
 import type { Replaced } from './stages'
 import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
-import { addReturns, isOwnReturn, type Recall } from './folds'
+import { addReturns, isOwnReturn, type Returnable } from './folds'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -366,7 +366,7 @@ export function queueEdits(
   closed?: ClosedSpan,
   // [SP_FOLD_02_03] the recalls not yet returned: a summarize of a recall
   // pair returns it with the agent's words, and the due ones join the batch
-  recalls: readonly Recall[] = [],
+  recalls: readonly Returnable[] = [],
 ): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[] } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
@@ -439,7 +439,8 @@ export function queuedText(q: Queue, queued: number, errors: readonly string[], 
   const returns = q.edits.filter(isOwnReturn).length
   return [
     `Queued ${queued} edit(s); ${q.edits.length - returns} pending in total.`,
-    returns ? `${returns} recalled level(s) of closed stages return with this batch: each becomes a one-line trace, and its fold record stays.` : '',
+    // [SP_HELP_02_05] the question pairs return the same way
+    returns ? `${returns} recalled level(s) or question pair(s) of closed stages return with this batch: each becomes a one-line trace, and the fold records stay.` : '',
     ...refLines,
     errors.length ? `Rejected: ${errors.join('; ')}.` : '',
     ...warnings,
@@ -485,7 +486,7 @@ export type QueueIO = {
   hostRows?: () => Promise<readonly HostRowRecord[]>
   // [SP_FOLD_02_03] the recalls not yet returned, of the fold ledger as it is
   // now; an unreadable or missing ledger gives none
-  recalls?: () => Promise<readonly Recall[]>
+  recalls?: () => Promise<readonly Returnable[]>
 }
 
 // [SP_CTX_02_02]

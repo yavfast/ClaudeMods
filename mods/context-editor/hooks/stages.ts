@@ -43,7 +43,8 @@ import { CACHE_LOOKBACK, cacheShape, lookbackStart, tailTokens } from './cache'
 import { BAD_FOLDS, foldsList, recallsHeader, type FoldLedger } from './folds'
 import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './hostrows'
 import { apiChars, charsOf, errorText, findToolUse, isPromptRow, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
-import type { JournalSummary } from './journal'
+import type { HelperSummary, JournalSummary } from './journal'
+import { helperCost } from './helper'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
@@ -688,6 +689,9 @@ export function telemetryText(t: Telemetry): string {
   }
   const cache = cacheLine(t)
   if (cache) lines.push(cache)
+  // [SP_HELP_02_13] the helper's line, after the Cache line, when it was asked
+  const asked = t.journal && !('unreadable' in t.journal) ? t.journal.helper : undefined
+  if (asked) lines.push(helperLine(asked))
   // [SP_CTX_02_28] only when something is left out
   if (t.hostAttach?.copies)
     lines.push(`Host attachments: ${t.hostAttach.copies} stale cop${t.hostAttach.copies === 1 ? 'y' : 'ies'} of instruction files and skill listings left out of each request (${estimate(t.hostAttach.chars, t.ratio)})`)
@@ -735,6 +739,14 @@ export function telemetryText(t: Telemetry): string {
   if (t.measuredFreed !== undefined)
     lines.push(`Last apply: ~${tokensText(t.measuredFreed)} tokens freed (measured: request before it − request now; net of the rows added since)`)
   return lines.join('\n')
+}
+
+// [SP_HELP_02_13] Helper: the sums of the journal's `ask` entries and their
+// cost at the helper's list prices (an upper estimate).
+export function helperLine(h: HelperSummary): string {
+  const k = (n: number) => `~${(n / 1000).toFixed(1).replace(/\.0$/, '')}k`
+  const cost = helperCost(h.in, h.out).toFixed(2)
+  return `Helper: ${h.questions} question(s), ${h.calls} call(s), ${k(h.in)} in / ${k(h.out)} out tokens (~$${cost}); quotes verified ${h.verified}, rejected ${h.rejected}.`
 }
 
 // ---- [SP_CTX_02_01] context_list

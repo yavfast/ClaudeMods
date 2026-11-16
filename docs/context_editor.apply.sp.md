@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-11-14
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_04](#SP_CTX_02_04), [SP_CTX_02_07](#SP_CTX_02_07)
 >
@@ -207,6 +207,8 @@ Processing logic (pseudocode):
 
 Повернення згаданого (PL_FOLD, фаза 2; [SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03)). Опція `recalls: map<tool_use_id, {fold, scope}>` — записи згадувань обліку. Правка з `via: "return"` замінює текст результату пари на RETURNED: з порожнім `summary` — із назвою закритої області, з текстом агента — ` by your own edit` і `: <summary>`. Виклик лишається, пара отримує новий ідентифікатор; в `originals` нічого не йде, FoldEntry не створюється; правка входить у `report.returned`. Якщо пари в розмові немає або вона не тримає розгортання, правка мовчки не застосовується. Невдала правка повернення має мітку `return of fold <id>` у кожній гілці невдачі (EditLabel); правку повернення мода над парою під піном ScreenPinned пропускає без запису в невдалих, і згадування лишається належним. `drop` пари розгортання нічого не архівує. `collapse`, що охопив пару, кладе в елемент архіву RETURNED з ` by your own edit` на місці рівня. FormatReport не рахує правки повернення в `applied N edit(s)` і додає речення `Returned <n> recall(s): <ids>.`. RETURNED_HEAD входить до REPLACEMENT_OPENERS.
 
+Повернення пар питань (PL_HELP, фаза 1; [SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)). Опція `questions: map<tool_use_id, {folds, question, verified, scope}>` — записи питань обліку ([SP_HELP_01_04](./context_helper.ask.sp.md#SP_HELP_01_04)). Правка з `via: "return"` над парою `context_helper`, що не тримає розгортання, замінює текст результату на ASK_RETURNED: з порожнім `summary` — із назвою закритої області, з текстом агента — ` by your own edit` і `: <summary>`. Запису немає — питання читається з самої пари: згортки — з рядка `Asked: fold(s) <ids> — …` результату, питання — з входу виклику (перші QUESTION_HEAD символів), `verified` — число рядків цитат, область невідома; без запису й без цього рядка правка мовчки не застосовується. Як і повернення згаданого, правка нічого не архівує (цитати лежать в архівах згорток), FoldEntry не створює, дає парі новий ідентифікатор і входить у `report.returned` з позначкою питання; невдала має мітку `return of the question to fold(s) <ids>`. `drop` пари питання архівує її, як будь-яку пару. FormatReport додає речення `Returned <n> question pair(s).` окремо, після речення про згадування; рядок людини пакета лише з повернень — `returned <n> recall(s) and <m> question pair(s)` (кожна частина — лише ненульова). ASK_RETURNED_HEAD входить до REPLACEMENT_OPENERS після RETURNED_HEAD.
+
 ### 02_07. HandleCompaction  {#SP_CTX_02_07}
 
 > **Курування:** ScreenPerson поряд із ScreenPinned — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58) (з PL_FOLD, фази 3 — лише для слів, що зникли б без сліду); запис рядків хоста в кроці фіксації — [SP_CTX_02_60](./context_editor.curation.hostrows.sp.md#SP_CTX_02_60).
@@ -314,6 +316,8 @@ Errors:
 
 Згадування (PL_FOLD, фаза 2; [SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03), [SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09)). Записи згадувань першого читання обліку обробник передає в ApplyEdits (`recalls`) і в правило власних пар (DropOwnCalls, InsertDeliveries). У точці фіксації облік пишеться один раз: RecordFolds, коли пакет мав згортки, і PruneRecalls за рядками, які повертає обробник, — так зникають записи повернутих, охоплених і прибраних пар. FOLDS_UNSAVED додається лише тоді, коли не записались згортки. Журнал ефекту правок повернення не рахує ([SP_FOLD_DEC_08](./context_folds.sp.md#SP_FOLD_DEC_08)).
 
+Питання (PL_HELP, фаза 1; [SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)). Записи питань (`questions`) того самого читання обліку йдуть разом із записами згадувань: в ApplyEdits — опцією `questions`, у правило власних пар — тим самим набором пар, що лишаються. Облік у точці фіксації пишеться, коли пакет мав згортки або коли є записи згадувань чи питань і хоч одна правка застосувалась; PruneRecalls прибирає й записи питань, чиїх пар немає серед повернених рядків.
+
 ### 02_10. CollectMedia  {#SP_CTX_02_10}
 
 Purpose: знайти медіа-ресурси розмови, яких немає в Row.
@@ -376,6 +380,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)): 02_04 — опція `questions`, слід ASK_RETURNED правки повернення пари питання (з записом чи з самої пари), мітка `return of the question to fold(s) <ids>`, речення звіту `Returned <n> question pair(s).`, `drop` пари питання архівує; 02_07 — записи питань ідуть в ApplyEdits і в правило власних пар, облік пишеться й за самих записів питань, PruneRecalls прибирає й їх |
 | 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 02_04 — вхід `pinned`, вихід `kept`, FoldSpan на рядках застосування, запис без носія — завжди рядок асистента, крок на обійденому рядку йде перед згортанням, перевірки медіа й архів — лише над згорнутими рядками, текст невдачі медіа промпту називає `keep`; 02_07 — ScreenPinned не відхиляє `collapse` і повертає піни, застосовані правки несуть `kept` |
 | 2026-10-16 | Фаза 41: `run summarize` пише SummarizedWords(SourceOf(call), via, quoted) — відкривач з джерелом ([SP_CTX_02_62](./context_editor.curation.edits.sp.md#SP_CTX_02_62)); REPLACEMENT_OPENERS з головами SUMMARIZED_OF і TAG_SUMMARIZED_OF |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.edits.sp.md](./context_editor.edits.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |

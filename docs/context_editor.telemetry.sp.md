@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-10-15
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_28, 02_31, 02_34, 02_37, 02_38 специфікації [SP_CTX](./context_editor.sp.md): Telemetry, Journal, Estimate, SoftHint, CacheCost. Читати, коли змінюєте телеметрію, оцінки розміру чи нагадування.
@@ -49,7 +49,8 @@ Processing logic (pseudocode):
             t.lastClosed = { name, start = s0, end = (e is an index ? e : absent), chars = (e is an index AND s0 ≤ e ? Σ size(rows[s0..e]) : absent), lost = e is lost, startLost = MarkIndex(rows, after) is lost }
         t.reviews = active review tags whose target resolves on rows, by reason (absent → none: a tag written before phase 15, SP_CTX_01_09), with the first row of each target
         t.disposable = disposable tags whose target resolves on rows
-        t.journal = journal unreadable ? { unreadable: reason } : { applications: count of apply, rereads: count of reread, archiveRereads: count of reread with archive }   # missing → zeros
+        t.journal = journal unreadable ? { unreadable: reason } : { applications: count of apply, rereads: count of reread, archiveRereads: count of reread with archive, helper? }   # missing → zeros
+            # helper (PL_HELP фаза 1, SP_HELP_02_13): { questions: count of ask, calls, in, out, verified, rejected: sums over the ask entries } — only when there is an ask entry
         t.state = the state tag ? (Locate finds its row ? { row } : lost) : none
         t.notes = { count: len(reg.notes), reminders: count of reg.notes with remindAt }   # після доставки нагадувань цього виклику
         IF RegistryFull(reg): t.tagsFull = { tags: len(reg.tags), kb: ceil(bytes(reg) / 1024) }   # фаза 30, CF-34: RegistryFull = len(tags) ≥ MAX_TAGS OR bytes(reg) > MAX_REGISTRY_BYTES − TAG_ROOM
@@ -65,7 +66,8 @@ Processing logic (pseudocode):
         unknown:     "Context: size unknown yet (no model response since the session start or the last compaction); window <window>"
         unavailable: "Context: size unavailable (<error>)"
         cache:       right after the size line, without rows omitted: (start = len(rows)) "Cache: an apply rewrites the whole conversation once; even the last response is beyond the API's ~20-position cache lookback, so \"keep_cache\" would not help" | (start = 0) "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true only the rows from its earliest edit (the whole conversation is within the API's ~20-position cache lookback)" | "Cache: an apply rewrites the whole conversation once; with \"keep_cache\": true, an earliest edit from #<start> on (within the API's ~20-position cache lookback) rewrites only the rows from it (at most ~<tokensText(cache.tokens)> tokens" + (cache.approx ? " (approx.)" : "") + ") if your turn ends soon: edits apply at its end, and each call until then pushes them deeper"
-        hostAttach:  right after the cache line, also without a readable registry, only when t.hostAttach.copies > 0 (context_list only): "Host attachments: <copies> stale cop(y|ies) of instruction files and skill listings left out of each request (<Estimate(chars, t.ratio)>)"   # фаза 24, SP_CTX_02_40: HostAttachState.left через кеш
+        helper:      right after the cache line, only when t.journal.helper is present: "Helper: <questions> question(s), <calls> call(s), ~<in>k in / ~<out>k out tokens (~$<cost>); quotes verified <verified>, rejected <rejected>." — cost = (in × HELP_PRICE_IN + out × HELP_PRICE_OUT) / 10⁶ to two decimals, tokens in thousands to one decimal   # PL_HELP фаза 1, SP_HELP_02_13
+        hostAttach:  after the cache line (and the helper line), also without a readable registry, only when t.hostAttach.copies > 0 (context_list only): "Host attachments: <copies> stale cop(y|ies) of instruction files and skill listings left out of each request (<Estimate(chars, t.ratio)>)"   # фаза 24, SP_CTX_02_40: HostAttachState.left через кеш
         regions:     Region(s) = "<Stage|Task> \"<name>\" open from #<first> (opened <turnsAgo> turn(s) ago), <Estimate(chars, t.ratio)>" + (lost ? "; its start row is gone, so it runs from #<first>" : ""); no region → "No open stage"; one → Region; a chain (PL_FOLD фаза 5, SP_FOLD_02_07) → "Open regions, outer to inner: " + Region of each, the word in lower case, joined with " ▸ "
         lastClosed:  "Last block \"<name>\"" + (kind task ? " (task)" : "") + " | (no stage) #<start>..#<end> (<Estimate(chars, t.ratio)>)" | (end null or start > end) "...: it is empty" | (end lost) "Last block \"<name>\" | (no stage) from #<start>: its end row is gone"; + (startLost ? "; its start row is gone, so it runs from #0" : "") — line omitted without lastClosed; a lost end is never shown as an empty block
         candidates:  "Candidates: review <total> (<reason> <n>: #<i>, …; reasons with 0 omitted; the group none is named \"no reason\"; ≤ MAX_BLOCK_INDEXES rows per reason, then +<n> more); disposable <n>"
@@ -102,6 +104,11 @@ Processing logic (pseudocode):
     FUNCTION JournalChanged(path):                                         # хук викликів, після WRITE_TOOLS без помилки; у фоні
         j = read Journal; IF unreadable OR missing: RETURN
         IF some apply entry e has path IN e.compressed: j.entries += { kind: changed, at: now, path }; Trim(j); write Journal
+
+    FUNCTION JournalAsk(entry):                                            # Ask (SP_HELP_02_03), після кожного питання, що дійшло до помічника; у фоні (PL_HELP фаза 1)
+        j = read Journal; IF unreadable: RETURN                            # відсутній — порожній, як у JournalApply
+        j.entries += entry                                                 # kind ask, поля SP_HELP_01_08
+        Trim(j); write Journal
 
     Trim(j): drop the oldest entries while len(j.entries) > MAX_JOURNAL or the serialized file > MAX_QUEUE_BYTES
 
@@ -283,5 +290,6 @@ Errors: відмов немає (чисті функції).
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 1: 02_28 — поле `helper` підсумку журналу й рядок `Helper` після рядка `Cache` ([SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13)); 02_31 — JournalAsk, запис `ask` після кожного питання ([SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)) |
 | 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_02_07](./context_folds.sp.md#SP_FOLD_02_07)): 02_28 — `t.regions` замість `t.stage`, ланцюжок областей у рядку відкритої області (`Open regions, outer to inner: …`), `(task)` у рядку закритого завдання; загублений початок внутрішньої області — початок охопної; 02_37 — підказка ходу називає завдання `close task "…"` |
 | 2026-10-15 | Розділи перенесено дослівно з [context_editor.stages.sp.md](./context_editor.stages.sp.md): поділ файлу за модулями, якорі ті самі (structural-event) |

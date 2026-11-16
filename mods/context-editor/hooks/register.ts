@@ -128,9 +128,12 @@ import {
   STORAGE_BASE,
 } from './store'
 import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
-import { contextRecall, emptyFolds, foldPort, ledgerWork, markDue, parseFolds, type FoldLedger, type Recall, type RecallArgs, type RecallIO } from './folds'
+import { contextRecall, emptyFolds, foldPort, ledgerWork, markDue, parseFolds, returnables, type FoldLedger, type RecallArgs, type RecallIO, type Returnable } from './folds'
+import { contextAsk, type AskIO, type HelperArgs } from './ask'
+import { failureReason } from './helper'
+import type { CompleteRequest, CompleteResult } from './helper'
 import { closeWindow, emptyHostRows, keepHostRows, newHostMemory, observeHostRow, openWindow, parseHostRows, recordHostRow, type HostRowRecord, type HostRows } from './hostrows'
-import { EMPTY_JOURNAL, journalApply, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
+import { EMPTY_JOURNAL, journalApply, journalAsk, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
 import {
   appendRow,
   autoTag,
@@ -306,16 +309,16 @@ async function hostRowsNow($: EngineInterface, dir: string, within?: Held): Prom
 }
 
 // [SP_FOLD_02_03] The recalls not yet returned, of the fold ledger in `dir`
-// as it is now: none when the file is missing or unreadable. `within`: the
-// chains the caller holds.
-async function recallsNow($: EngineInterface, dir: string, within?: Held): Promise<readonly Recall[]> {
+// as it is now, and the questions ([SP_HELP_02_05]): none when the file is
+// missing or unreadable. `within`: the chains the caller holds.
+async function recallsNow($: EngineInterface, dir: string, within?: Held): Promise<readonly Returnable[]> {
   const f = stores($, dir).folds
   const read = await f
     .onChain(() => f.read(), within)
     .catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) }))
   // [ERR-01] without the records a summarize of a recall pair is an ordinary edit
   if (read.state === 'unreadable') $.ui.log(modText(`recalls not read: ${read.reason}`), { to: 'debug' })
-  return read.state === 'unreadable' ? [] : read.value.recalls
+  return read.state === 'unreadable' ? [] : returnables(read.value)
 }
 
 // [SP_FOLD_02_03] MarkDue on the ledger's chain once a region closed; `after`:
@@ -330,20 +333,21 @@ async function markDueNow($: EngineInterface, dir: string, after: number): Promi
 
 // [SP_FOLD_02_02] Recall bound to the host: the ledger's read-modify-write on
 // its chain, the archive read through a process ($.fs.read is capped).
-function recallIO($: EngineInterface, snap: Snapshot, cwd: string | undefined): RecallIO {
-  let dir: string | undefined
+// `at`: where the folder the call took is kept ([CONC-01]: once per call),
+// for a caller that binds more ports to it.
+function recallIO($: EngineInterface, snap: Snapshot, cwd: string | undefined, at: { dir?: string } = {}): RecallIO {
   return {
     passedOver: () => isPassed(caps),
     storageDown: async () => {
       const st = await ensureStorage($)
       if ('reason' in st) return st.reason
-      dir = st.dir
+      at.dir = st.dir
       return undefined
     },
     storageRefusal,
     rows: snap.rows,
     region: async () => {
-      const tags = await stores($, need(dir)).tags.read().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: errorText(err) }))
+      const tags = await stores($, need(at.dir)).tags.read().catch((err): Read<TagRegistry> => ({ state: 'unreadable', reason: errorText(err) }))
       // [ERR-01] the recall then counts as made outside any stage
       if (tags.state === 'unreadable') $.ui.log(modText(`recall: tag registry not read: ${tags.reason}`), { to: 'debug' })
       return recallScope(tags)
@@ -352,10 +356,42 @@ function recallIO($: EngineInterface, snap: Snapshot, cwd: string | undefined): 
       const ran = await $.process.run(['cat', '--', path]).catch(() => undefined)
       return ran && ran.exitCode === 0 ? ran.stdout : undefined
     },
-    onLedger: work => ledgerWork(stores($, need(dir)).folds)(work),
+    onLedger: work => ledgerWork(stores($, need(at.dir)).folds)(work),
     live: () => recallLive,
     note: id => void recallLive.add(id),
     ...(cwd ? { cwd } : {}),
+  }
+}
+
+// [SP_HELP_02_01] One completion of the helper's model, outside the
+// conversation. Never rejects: a refusal of the host is `failed` with its
+// text; `timeoutMs` elapsed is `timeout`, any other cut `aborted`.
+async function completeOn($: EngineInterface, req: CompleteRequest): Promise<CompleteResult> {
+  const started = Date.now()
+  try {
+    const r = await $.model.complete({ model: req.model, system: req.system, prompt: req.prompt.map(text => ({ text })), maxTokens: req.maxTokens, timeoutMs: req.timeoutMs })
+    const u = r.usage
+    const tin = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
+    if (r.isAnswered) return { text: r.text, in: tin, out: u.output_tokens }
+    return { failed: failureReason(r, Date.now() - started, req.timeoutMs), in: tin, out: u.output_tokens }
+  } catch (err) {
+    return { failed: errorText(err), in: 0, out: 0 }
+  }
+}
+
+// [SP_HELP_02_03] Ask bound to the host: Recall's ports, the ledger read
+// once outside every chain, the helper's model and the journal's entry in
+// the background.
+function askIO($: EngineInterface, snap: Snapshot, cwd: string | undefined, aborted: () => boolean): AskIO {
+  const at: { dir?: string } = {}
+  return {
+    ...recallIO($, snap, cwd, at),
+    readLedger: () => stores($, need(at.dir)).folds.read(),
+    helper: { complete: req => completeOn($, req) },
+    journal: entry => onJournal($, io => journalAsk(io, entry), need(at.dir)),
+    now: () => Date.now(),
+    aborted,
+    debug: text => $.ui.log(text, { to: 'debug' }),
   }
 }
 
@@ -1514,6 +1550,15 @@ export const register: Register = on => {
     const out = await contextRecall(recallIO($, snapshot($), cwd), { ...(e as unknown as RecallArgs), agentId: e.agentId }, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
     return 'deny' in out ? deny(out.deny) : { result: out.result }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`recall failed: ${next.error.kind}`)))
+
+  // [SP_HELP_02_02] [SP_HELP_02_03] The helper's tool: a question to the
+  // archive of the named folds. A regex, as for context_recall. No reminder
+  // goes with it: the result is the helper's reading.
+  on('tool.call', { tool: /^mcp__context-editor__context_helper$/ }, async ($, e, next) => {
+    const cwd = e.agentId ? undefined : await projectRoot($).catch(() => undefined)
+    const out = await contextAsk(askIO($, snapshot($), cwd, () => next.signal.aborted), { ...(e as unknown as HelperArgs), agentId: e.agentId }, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
+    return 'deny' in out ? deny(out.deny) : { result: out.result }
+  }).catch(($, e, next) => (next.called ? next(e) : deny(`helper failed: ${next.error.kind}`)))
 
   // [SP_CTX_02] The turn counter: every turn of the main conversation counts;
   // the mod's own commands raise no turn events.

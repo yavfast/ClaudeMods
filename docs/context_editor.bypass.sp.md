@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-14
-> **Updated:** 2026-10-21
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_53–02_57 специфікації [SP_CTX](./context_editor.sp.md): можливості хоста, від яких залежить мод, їх перевірка процесом-зондом раз на версію хоста і живими ознаками, і що мод вимикає, коли хост пропускає його хуки ([C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38); спайк [context_editor_probe](./context_editor_probe.spike.md)). Читати перед зміною `hooks/capabilities.ts`, хуків `prompt.attachment`, `session.start`, `turn.complete`, `command.run`, `session.compact` чи перевірок перед компактизацією мода.
@@ -26,7 +26,7 @@ Purpose: для кожної можливості хоста, від якої з
 
 | Можливість | Що перевіряє | Від неї залежать |
 |------------|--------------|------------------|
-| `compact` | хук `session.compact` мода отримує власну компактизацію мода (`$.command.run` з міткою) | застосування черги (Flush), передача, ремонт, хід стискання `/compact` людини |
+| `compact` | хук `session.compact` мода отримує власну компактизацію мода (`$.command.run` з міткою) | застосування черги (Flush), передача, ремонт, хід стискання `/compact` людини; повернення пар `context_recall` і питань `context_helper` (лише застосування їх повертає) |
 | `attachments` | хук `prompt.attachment` мода викликається | відповіді про застарілі копії інструкцій і переліки навичок ([SP_CTX_02_39](./context_editor.hostattach.sp.md#SP_CTX_02_39)) |
 
 Логіка — чисті функції `hooks/capabilities.ts` (Verdict, Merge, NoteAttachment, NoteTurn, NoteOwnCompaction, NoteCommandUnseen, PassedText) за портом CapabilityIO; стан — пам'ять модуля `Capabilities` ([SP_CTX_01_25](./context_editor.records.sp.md#SP_CTX_01_25)), один на процес хоста (хуки пропускає процес, а не сесія), і файл кешу `capabilities.json` ([SP_CTX_01_26](./context_editor.records.sp.md#SP_CTX_01_26)). Зв'язування в `register.ts`: хук `prompt.attachment` без матчера (один на модуль; лише рахує і передає `next(e)` без змін, відповіді за типами не змінюються), крок NoteTurn першим у AfterTurn ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)), версія хоста — `$.session.version()` один раз на екземпляр (валідатор вимагає виклику на місці).
@@ -74,6 +74,7 @@ Purpose: при `Verdict(compact) = passed` мод не запускає жод�
 |-------|------------------|-------|
 | `context_edit` ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)) | відмова до читання черги; нічого не пишеться | DENIED_PASSED_OVER: `this host passes over the mod's compaction hook, so queued edits would become the host's real summary; nothing was queued. Keep working; the person can run the mod as a managed plugin, or run /compact for the host's summary with the mod's brief.` |
 | `context_handoff` ([SP_CTX_02_19](./context_editor.handoff.sp.md#SP_CTX_02_19)) | відмова; запиту немає | DENIED_PASSED_OVER: `this host passes over the mod's compaction hook, so the handoff cannot seed a new session; nothing was queued.` |
+| `context_helper`, операція `ask` ([SP_HELP_02_03](./context_helper.ask.sp.md#SP_HELP_02_03); PL_HELP, фаза 1) | відмова після DENIED_SUBAGENT і BAD_OP, до читання обліку й виклику помічника; запису питання й журналу немає — як FOLD_PASSED_OVER `context_recall` ([SP_FOLD_02_02](./context_folds.sp.md#SP_FOLD_02_02)): пару, яку повертає лише застосування, повернути не було б чим | HELPER_PASSED_OVER: `this host passes over the mod's compaction hook: the question's pair could never be returned; open the original with Read at the path in the fold record.` |
 | `/handoff` ([SP_CTX_02_20](./context_editor.handoff.sp.md#SP_CTX_02_20)) | відмова; `cancel` працює як завжди | `handoff is off: this host passes over the mod's compaction hook (see the ClaudeMods README, section "Managed plugin")` |
 | RunHandoff ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)) | запит, поставлений до вердикту, не запускається: його знято з черги, у черзі — звіт HANDOFF_PASSED_OVER | `context-editor: handoff not run: this host passes over the mod's compaction hook.` |
 | Flush ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)) | не планується; запланований раніше — команди немає (FLUSH_PASSED_OVER), правки лишаються; запит ходу стискання, записаний до вердикту, знімається (його хід зустрів би лише відмови) | рядка немає: людина вже бачила PassedText |
@@ -88,6 +89,7 @@ Errors:
 | Code | Condition | Guidance |
 |------|-----------|----------|
 | DENIED_PASSED_OVER | `context_edit`, `context_handoff` чи `/handoff` при `compact = passed` | текст з таблиці; нічого не пишеться |
+| HELPER_PASSED_OVER | `context_helper` `ask` при `compact = passed` | текст з таблиці; помічника не викликано, нічого не пишеться |
 | HANDOFF_PASSED_OVER | запит передачі з черги при `compact = passed` на запуску | запит знято зі звітом; команди немає |
 | FLUSH_PASSED_OVER | запланований Flush при `compact = passed` | команди немає; `scheduled = false`; черга як є |
 
@@ -211,7 +213,7 @@ Purpose: мод у процесі-зонді (`$.env.get('CONTEXT_EDITOR_PROBE')
         session.compact, other instructions: next(e) unchanged   # без спостерігача: межі не пише
         tool.call (any tool): the result unchanged   # без псевдонімів, тегів, сховища
         command.run compact, handoff: next(e) unchanged   # нічого не ставить у чергу: сховища немає; /handoff іншого плагіна з тим самим іменем іде далі
-        tools context_*: not registered (the probe makes no model request, so no tool call comes)
+        tools context_* (context_helper included, PL_HELP фаза 1): not registered (the probe makes no model request, so no tool call comes)
 
 Errors: запис PROBE_FILE не вдався — ParseProbe бере лічильники з відповіді `skip` у `result` (PROBE_PREFIX + JSON), а без них — лише вердикт `compact`; інші хуки — як без ProbeMode.
 
@@ -228,3 +230,4 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лічи
 | 2026-10-16 | 02_55 за рев'ю: OBSERVE_LATER спершу на промпті людини (до звіту, щоб вступ після компактизації не запізнився), інакше на початку ходу; новий `/compact` з брифом забуває попереднє очікування; «хост зробив підсумок» — `next` розв'язався (тип результату `command.run` не має skip/error) |
 | 2026-10-17 | Аудит коду (SPEC-14): 02_54 — запит передачі при `passed` знято з черги зі звітом HANDOFF_PASSED_OVER (стану `done` немає); 02_56 — ParseProbe бере лічильники й з відповіді `skip`, PROBE_OTHER_HOST — лише коли обидві версії відомі; 02_57 — запис PROBE_FILE не вдався |
 | 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): 02_57 — ProbeMode пише PROBE_FILE у корінь проєкту процесу-зонда (`$.session.root()`, тека `tmp`, де він стартував), не в поточну теку оболонки |
+| 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_53 — від `compact` залежить повернення пар розгортання й питань; 02_54 — `context_helper` `ask` відмовляє HELPER_PASSED_OVER, як `context_recall`; 02_57 — ProbeMode не реєструє й `context_helper` |

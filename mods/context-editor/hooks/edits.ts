@@ -4,7 +4,7 @@ import { isMediaBlock, matchPrompts } from './media'
 import { applyChanges, checkChanges, draftChanges, MAX_STATE_ITEMS, NO_ITEM_NOW, TOO_MANY_ITEMS, NO_STATE_SLOT, SLOT_TOO_LONG, STATE_CONFLICT, STATE_GONE, STATE_ITEMS, stateText, type DraftItem, type StateChange, type StateItem } from './state'
 import { detachNote, HOST_EXCLUSIVE, HOST_ID, HOST_MEDIA, HOST_TWICE, HOST_UNKNOWN, hostRecord, type HostRowRecord } from './hostrows'
 import { isRenameRow, type TitleRun } from './title'
-import { apiBlocks, BIG_ROW, collapsedWords, describedWhat, describedWords, errorText, foldNote, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isReplacementText, isReturnedText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, RECALL_TOOL, recalledFold, resultsOf, returnedText, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
+import { apiBlocks, ASKED_HEAD, askReturnedText, BIG_ROW, collapsedWords, describedWhat, describedWords, errorText, foldNote, findToolResult, findToolUse, isBig, isBlankRow, isCollapseText, isDescribedText, isEmptyRow, isPlainUserRow, isPromptRow, isAskReturnedText, isReplacementText, isReturnedText, MARK, modText, pasteBlocks, PLAIN_RATIO, pulledWords, QUESTION_HEAD, RECALL_TOOL, recalledFold, HELPER_TOOL, resultsOf, returnedText, rewrittenWords, rowChars, squash, summarizedWords, toolRefWords, totalChars, TRACE_OPENER, withPasteMarks, type Via } from './rows'
 
 // [SP_CTX_01_02] One edit as the model asks for it through context_edit.
 export type Edit =
@@ -110,7 +110,8 @@ export type ApplyReport = {
   // [SP_FOLD_02_03] the applied return edits: their names in `applied` (how
   // callers match the batch) and the folds whose recalls they returned; the
   // report names them in a sentence of their own, the person's line not at all
-  returned?: { edit: string; fold: string }[]
+  // [SP_HELP_02_05] `question`: the return of a question pair; `fold` names its folds
+  returned?: { edit: string; fold: string; question?: true }[]
 }
 
 // [SP_CTX_01_05] One entry of ApplyReport.produced.
@@ -143,6 +144,8 @@ export const MAX_TRACE = 400
 export const OWN_TOOLS = 'mcp__context-editor__'
 // [SP_FOLD_01_06] The recall tool as a call names it.
 export const RECALL_CALL = `${OWN_TOOLS}${RECALL_TOOL}`
+// [SP_HELP_02_02] the call name of the helper's tool
+export const HELPER_CALL = `${OWN_TOOLS}${HELPER_TOOL}`
 export const LIST_COUNT = 60
 export const MAX_LIST_COUNT = 200
 export const MAX_TEXT = 8000
@@ -760,18 +763,24 @@ export function dropOwnCalls(
 // out of `rows`. `keepRecalls`: the recall pairs with a recall record; with
 // it, such a pair and a recall pair whose result is a returned trace stay.
 // Absent (a seed): every own pair goes, the recall pairs too.
+// [SP_HELP_02_05] The question pairs of the helper's tool live by the same
+// rule: with a question record, or with ASK_RETURNED as their result.
 export function ownPairs(rows: readonly SessionMessage[], keepRecalls?: ReadonlySet<string>): Set<string> {
   const own = new Set<string>()
   const recalls = new Set<string>()
+  const questions = new Set<string>()
   for (const r of rows)
     for (const u of r.toolUses) {
       if (!u.tool.startsWith(OWN_TOOLS)) continue
       own.add(u.tool_use_id)
       if (u.tool === RECALL_CALL) recalls.add(u.tool_use_id)
+      if (u.tool === HELPER_CALL) questions.add(u.tool_use_id)
     }
-  if (!keepRecalls || !recalls.size) return own
-  for (const id of recalls) if (keepRecalls.has(id)) own.delete(id)
-  for (const r of rows) for (const t of resultsOf(r)) if (recalls.has(t.tool_use_id) && isReturnedText(t.text)) own.delete(t.tool_use_id)
+  if (!keepRecalls || (!recalls.size && !questions.size)) return own
+  for (const id of [...recalls, ...questions]) if (keepRecalls.has(id)) own.delete(id)
+  for (const r of rows)
+    for (const t of resultsOf(r))
+      if ((recalls.has(t.tool_use_id) && isReturnedText(t.text)) || (questions.has(t.tool_use_id) && isAskReturnedText(t.text))) own.delete(t.tool_use_id)
   return own
 }
 
@@ -880,7 +889,7 @@ export function fragments(text: string): string[] {
 // The values of a call's input as the agent reads and quotes them: its
 // strings and numbers, not the JSON text (which escapes quotes, backslashes
 // and line breaks).
-function inputText(v: unknown): string {
+export function inputText(v: unknown): string {
   if (typeof v === 'string') return v
   if (typeof v === 'number' || typeof v === 'boolean') return String(v)
   if (Array.isArray(v)) return v.map(inputText).join('\n')
@@ -898,8 +907,9 @@ export function dependencyHits(rows: readonly SessionMessage[], edit: QueuedEdit
   // [SP_CTX_02_61] a host row is no row of the view: nothing quoted from it is checked
   if (isHostDrop(edit)) return none
   // [SP_FOLD_02_09] a recall pair holds a level that lies in its fold's
-  // archive: it is neither an original nor one more source of a fragment
-  const recalls = new Set(rows.flatMap(r => r.toolUses.filter(u => u.tool === RECALL_CALL).map(u => u.tool_use_id)))
+  // archive, [SP_HELP_02_05] a question pair quotes from the folds'
+  // archives: neither is an original nor one more source of a fragment
+  const recalls = new Set(rows.flatMap(r => r.toolUses.filter(u => u.tool === RECALL_CALL || u.tool === HELPER_CALL).map(u => u.tool_use_id)))
   if (isPairEdit(edit)) {
     if (recalls.has(edit.tool_use_id)) return none
     const useAt = ix ? ix.useAt(edit.tool_use_id) : findToolUse(rows, edit.tool_use_id)
@@ -1913,6 +1923,9 @@ export type ApplyOptions = {
   // of the trace a return edit leaves; a pair without one is read by the
   // first line of its result
   recalls?: ReadonlyMap<string, { fold: string; scope: string }>
+  // [SP_HELP_02_05] the question records by their pair: what the trace of a
+  // returned question says; a pair without one is read from the pair itself
+  questions?: ReadonlyMap<string, AskBack>
   // [SP_FOLD_02_04] the pins and the state slot on the apply's rows: a
   // collapse goes around them (FoldSpan); absent: none
   pinned?: Pinned
@@ -1931,15 +1944,41 @@ function recallOf(use: SessionMessage, res: SessionMessage, id: string): { fold:
   return fold ? { fold, scope: '' } : undefined
 }
 
+// [SP_HELP_02_05] What the trace of a returned question pair says.
+export type AskBack = { folds: string[]; question: string; verified: number; scope: string }
+
+const ASKED_FOLDS = new RegExp(`^${ASKED_HEAD}fold\\(s\\) ([^ ,]+(?:, [^ ,]+)*) — `)
+// a source may hold `]`: the mark runs to the last `]: "` of the line
+const QUOTE_LINE = /^f\d+ #\d+ \[.*\]: "/
+
+// [SP_HELP_02_05] The question a pair holds, read from the pair itself: a
+// call of the helper's tool whose result opens with ASKED_HEAD. The question
+// is the call's input (at most QUESTION_HEAD chars), the count of verified
+// quotes the result's quote lines; no scope is known.
+function questionOf(use: SessionMessage, res: SessionMessage, id: string): AskBack | undefined {
+  const call = use.toolUses.find(u => u.tool_use_id === id && u.tool === HELPER_CALL)
+  if (!call) return undefined
+  const text = resultsOf(res).find(t => t.tool_use_id === id)?.text ?? ''
+  const folds = ASKED_FOLDS.exec(text)?.[1]?.split(', ')
+  if (!folds) return undefined
+  const asked = (call.input as { question?: unknown } | undefined)?.question
+  const question = typeof asked === 'string' ? asked.trim().slice(0, QUESTION_HEAD) : ''
+  const verified = text.split('\n').filter(l => QUOTE_LINE.test(l)).length
+  return { folds, question, verified, scope: '' }
+}
+
 // [SP_FOLD_02_03] The name of an edit in a report's failures: a return edit
 // is `return of fold <id>` (the agent never queued a summarize of that
-// pair); any other edit, and a return whose pair holds no recall, DescribeEdit.
+// pair), `return of the question to fold(s) <ids>` for a question pair; any
+// other edit, and a return whose pair holds neither, DescribeEdit.
 export function editLabel(rows: readonly SessionMessage[], edit: QueuedEdit): string {
   if (!isReturnEdit(edit)) return describeEdit(edit)
   const useAt = findToolUse(rows, edit.tool_use_id)
   const resAt = findToolResult(rows, edit.tool_use_id)
   const back = useAt < 0 || resAt < 0 ? undefined : recallOf(rows[useAt]!, rows[resAt]!, edit.tool_use_id)
-  return back ? `return of fold ${back.fold}` : describeEdit(edit)
+  if (back) return `return of fold ${back.fold}`
+  const asked = useAt < 0 || resAt < 0 ? undefined : questionOf(rows[useAt]!, rows[resAt]!, edit.tool_use_id)
+  return asked ? `return of the question to fold(s) ${asked.folds.join(', ')}` : describeEdit(edit)
 }
 
 // [SP_FOLD_02_03] The rows of a collapsed span as the archive keeps them: the
@@ -2065,9 +2104,14 @@ export function applyEdits(
             ? undefined
             : (options.recalls?.get(edit.tool_use_id) ?? recallOf(rows[useAt]!, rows[resAt]!, edit.tool_use_id))
           : undefined
-        if (isReturnEdit(edit) && !back) continue
-        const label = back ? `return of fold ${back.fold}` : name
-        if (back) labels.set(name, label)
+        // [SP_HELP_02_05] the return of a question pair
+        const asked =
+          isReturnEdit(edit) && !back && useAt >= 0 && resAt >= 0
+            ? (options.questions?.get(edit.tool_use_id) ?? questionOf(rows[useAt]!, rows[resAt]!, edit.tool_use_id))
+            : undefined
+        if (isReturnEdit(edit) && !back && !asked) continue
+        const label = back ? `return of fold ${back.fold}` : asked ? `return of the question to fold(s) ${asked.folds.join(', ')}` : name
+        if (back || asked) labels.set(name, label)
         if (useAt < 0 || resAt < 0) {
           report.failed.push(`${name}: call or result not found`)
           continue
@@ -2105,6 +2149,23 @@ export function applyEdits(
               renamed.set(edit.tool_use_id, id)
               ;(report.returned ??= []).push({ edit: name, fold: back.fold })
             }
+          : asked
+            ? // [SP_HELP_02_05] nothing is archived: the quotes lie in the
+              // folds' archives; the result becomes ASK_RETURNED
+              () => {
+                const id = newId(edit.tool_use_id)
+                const use = rows[useAt]!
+                const res = rows[resAt]!
+                const words = edit.op === 'summarize' ? edit.summary : ''
+                const text = askReturnedText(asked, words ? 'edit' : { scope: asked.scope }, words)
+                rows[useAt] = plain(use, { toolUses: use.toolUses.map(u => (u.tool_use_id === edit.tool_use_id ? editedUse(u, id) : stripUse(u))) })
+                rows[resAt] = plain(res, {
+                  toolResults: resultsOf(res).map(r => (r.tool_use_id === edit.tool_use_id ? { tool_use_id: id, isError: false, text } : stripResult(r))),
+                })
+                made.push({ edit: name, resultId: id })
+                renamed.set(edit.tool_use_id, id)
+                ;(report.returned ??= []).push({ edit: name, fold: asked.folds.join(', '), question: true })
+              }
           : edit.op === 'summarize'
             ? () => {
                 const id = newId(edit.tool_use_id)
@@ -2769,9 +2830,17 @@ export function applyLine(r: Pick<ApplyReport, 'applied' | 'failed' | 'charsBefo
   const before = apiChars ?? r.charsBefore
   const after = before - (r.charsBefore - r.charsAfter)
   const approx = ratio ? '' : 'approx.'
-  const head = `${edits > 0 ? `applied ${edits} edit(s)` : `returned ${returned} recall(s)`}${r.failed.length ? `, ${r.failed.length} not applied` : ''}`
+  const head = `${edits > 0 ? `applied ${edits} edit(s)` : `returned ${returnedWords(r.returned ?? [])}`}${r.failed.length ? `, ${r.failed.length} not applied` : ''}`
   const notes = [approx, freed > 0 ? `freed ~${kilo(freed)}` : ''].filter(Boolean).join('; ')
   return `${head}: conversation ~${kilo(tokens(before))} → ~${kilo(tokens(after))} tokens${notes ? ` (${notes})` : ''}`
+}
+
+// [SP_FOLD_02_03] [SP_HELP_02_05] What the returns of an apply returned, for
+// the person's line: `2 recall(s)`, `1 question pair(s)`, or both.
+function returnedWords(returned: NonNullable<ApplyReport['returned']>): string {
+  const questions = returned.filter(x => x.question).length
+  const recalls = returned.length - questions
+  return [recalls ? `${recalls} recall(s)` : '', questions ? `${questions} question pair(s)` : ''].filter(Boolean).join(' and ')
 }
 
 // A token count for the person's line: 950, 4.2k, 41k.
@@ -2809,9 +2878,13 @@ function baseReport(r: ApplyReport, archive: string, kind: ReportKind, ratio?: n
   // [SP_FOLD_02_03] the return edits: a sentence of their own, not among the applied edits
   const back = new Set((r.returned ?? []).map(x => x.edit))
   const shown = nowIndexes(r).filter((_, i) => !back.has(r.applied[i]!))
+  const recallsBack = (r.returned ?? []).filter(x => !x.question)
+  const questionsBack = (r.returned ?? []).length - recallsBack.length
   return [
     modText(shown.length ? `applied ${shown.length} edit(s): ${shown.join('; ')}.` : 'applied 0 edit(s).'),
-    r.returned?.length ? `Returned ${r.returned.length} recall(s): ${r.returned.map(x => x.fold).join(', ')}.` : '',
+    recallsBack.length ? `Returned ${recallsBack.length} recall(s): ${recallsBack.map(x => x.fold).join(', ')}.` : '',
+    // [SP_HELP_02_05]
+    questionsBack ? `Returned ${questionsBack} question pair(s).` : '',
     notApplied,
     // [SP_CTX_02_34] "freed" by the registry's calibrated ratio; no telemetry here
     // the measured change comes with the telemetry after the next response ([SP_CTX_02_28])
