@@ -4,7 +4,7 @@ updated: 2026-11-16
 
 skills:
   - file: plugin-hooks.md
-    skill: ClaudeCodePluginHooks      # вхід: межі, поняття, покажчик пунктів 1–90 → тематичні файли нижче (поділ 2026-10-17, номери й якорі #p<N> збережено)
+    skill: ClaudeCodePluginHooks      # вхід: межі, поняття, покажчик пунктів 1–92 → тематичні файли нижче (поділ 2026-10-17, номери й якорі #p<N> збережено)
     topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript, headless, stream-json, vscode, prompt-cache, install, prompt.attachment, thinking, auto-mode]
     source: implementation
     updated: 2026-11-16
@@ -27,12 +27,12 @@ skills:
     promotion: candidate
     applies_to: { paths: ["mods/**"] }
   - file: plugin-hooks-commands.md
-    skill: ClaudeCodePluginHooksCommands      # пункти 3, 8, 16, 18, 22, 23, 25, 27, 38, 51, 57, 60, 62, 71, 77, 78, 79, 85, 89
-    topics: [command.run, clear, resume, headless, stream-json, vscode, turn.complete, turn.step, session.append, prompt.submit, ui.log, ui.notify, rename, clock, idle]
+    skill: ClaudeCodePluginHooksCommands      # пункти 3, 8, 16, 18, 22, 23, 25, 27, 38, 51, 57, 60, 62, 71, 77, 78, 79, 85, 89, 91, 92
+    topics: [command.run, clear, resume, headless, stream-json, vscode, turn.complete, turn.step, session.append, prompt.submit, ui.log, ui.notify, rename, clock, idle, interrupt, session.start]
     source: implementation
     updated: 2026-11-16
     written_against: Claude Code 2.1.296
-    state: stale        # пункти 85 і 89 — наживо на 2.1.325 (2026-11-16, спайки context_supervisor і context_helper); як у plugin-hooks.md: на 2.1.299/2.1.301 не перезвірено
+    state: stale        # пункти 85, 89, 91, 92 — наживо на 2.1.325 (2026-11-16, спайки context_supervisor і context_helper, зонд DEC_10 керованого мода); як у plugin-hooks.md: на 2.1.299/2.1.301 не перезвірено
     promotion: candidate
     applies_to: { paths: ["mods/**"] }
   - file: plugin-hooks-compaction.md

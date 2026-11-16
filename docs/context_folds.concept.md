@@ -10,7 +10,7 @@
 > **Criticality:** core
 >
 > **Depends on:** [C_CTX](./context_editor.concept.md) — редактор контексту агента: розмова, якорі, черга й застосування правок між ходами, архів, реєстр, теги, нотатки, слот стану
-> **Used by:** —
+> **Used by:** [C_HELP](./context_helper.concept.md) — помічник мода (active; змінені правила C_FOLD — у його §4.1)
 > **Spike:** [context_service_info](./context_service_info.spike.md) — службова інформація в контексті, думковий експеримент нескінченної сесії, рамка розробника, два живі зонди (Entry 9–12)
 > **Specification:** [SP_FOLD](./context_folds.sp.md)
 > **Plan:** [PL_FOLD](./context_folds.plan.md)

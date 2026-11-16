@@ -12,7 +12,8 @@
 | [context_folds.concept.md](context_folds.concept.md) | C_FOLD | active | Концепт згорток і пам'яті завдань: згортка як єдина дія, вкладені області, покрокове розгортання в кінець контексту з поверненням, картки завдань, вставки після ходу, довіра за авторством; спирається на C_CTX і змінює шість його правил; відкрите рішення DEC_14 з тригером; безпекові механізми відкладено (DEC_15) |
 | [context_folds.sp.md](context_folds.sp.md) | SP_FOLD | active | Специфікація згорток: облік згорток, інструмент розгортання `context_recall`, повернення згаданого, згортка зі словами людини й обходом пінів, ланцюжок областей, службові вставки; таблиця змінених розділів SP_CTX |
 | [context_folds.plan.md](context_folds.plan.md) | PL_FOLD | completed | План: шість фаз у моді context-editor, усі виконано; фаза 4 — порівняльний прогін (перевагу карток не виміряв), далі вкладені області й вставки |
-| [context_helper.concept.md](context_helper.concept.md) | C_HELP | draft | Концепт помічника мода: питання агента до архівів згорток з цитатами, які мод перевіряє в архіві (помічник — один виклик sonnet поза розмовою); доручення з умовою про стан контексту з доставкою в безпечний момент; відкладені пакети правок без власного переписування кешу; спирається на C_CTX і C_FOLD і змінює сім їхніх правил; відкрите рішення DEC_10 з тригером |
+| [context_helper.concept.md](context_helper.concept.md) | C_HELP | active | Концепт помічника мода: питання агента до архівів згорток з цитатами, які мод перевіряє в архіві (помічник — один виклик sonnet поза розмовою); доручення з умовою про стан контексту з доставкою в безпечний момент; відкладені пакети правок без власного переписування кешу; спирається на C_CTX і C_FOLD і змінює сім їхніх правил; DEC_10 закрито зондом |
+| [context_helper.sp.md](context_helper.sp.md) | SP_HELP | draft | Специфікація помічника мода: інструмент `context_helper` (питання до архіву згорток з перевіреними цитатами, доручення з умовою), поле `defer` у `context_edit`, годинник кешу й простій, доставка в безпечний момент і пробудження; таблиця змінених розділів SP_CTX і SP_FOLD; парасолька й три дочірні файли (ask, errands, batches) |
 
 ## Maps
 
@@ -85,6 +86,10 @@
 | `SP_FOLD`, `SP_FOLD_01`–`SP_FOLD_06`, `SP_FOLD_DEC_01`–`08` | [context_folds.sp.md](context_folds.sp.md) |
 | `PL_FOLD`, `PL_FOLD_P1`–`P6`, `PL_FOLD_DEC_01`–`02` | [context_folds.plan.md](context_folds.plan.md) |
 | `C_HELP`, `C_HELP_01`–`C_HELP_04`, `C_HELP_DEC_01`–`10` | [context_helper.concept.md](context_helper.concept.md) |
+| `SP_HELP`, `SP_HELP_01`, `SP_HELP_01_08`–`01_09`, `SP_HELP_02`, `SP_HELP_02_13`–`02_14`, `SP_HELP_03`–`SP_HELP_06`, `SP_HELP_DEC_01`–`09` | [context_helper.sp.md](context_helper.sp.md) (парасолька) |
+| `SP_HELP_01_01`–`01_04`, `SP_HELP_02_01`–`02_05` | [context_helper.ask.sp.md](context_helper.ask.sp.md) |
+| `SP_HELP_01_05`, `SP_HELP_02_06`–`02_08` | [context_helper.errands.sp.md](context_helper.errands.sp.md) |
+| `SP_HELP_01_06`–`01_07`, `SP_HELP_02_09`–`02_12` | [context_helper.batches.sp.md](context_helper.batches.sp.md) |
 | `PL_CTX_P<N>` | `context_editor.p<NN>.plan.md` (N двома цифрами, напр. `PL_CTX_P7` → [context_editor.p07.plan.md](context_editor.p07.plan.md)) |
 
 Старіші рядки Changelog документів — у `context_editor.{concept,sp,plan}.log.md` і `context_editor.{edits,structures}.sp.log.md` (поза перевірками цілісності).
