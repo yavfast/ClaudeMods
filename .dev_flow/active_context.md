@@ -11,6 +11,7 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 | Task | Phase | Status | Contributors | Updated |
 |------|-------|--------|--------------|---------|
+| [task_20261116_141010_helper-concept](tasks/task_20261116_141010_helper-concept.md) — Концепт помічника мода (C_HELP) | concept | in-progress | 9a12e9ac | 2026-11-16 |
 | [task_C_CTX](tasks/task_C_CTX.md) — Редактор контексту агента | plan (backlog PL_CTX; фази 1–47 закомічені) | in-progress | bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6, a477d71d | 2026-10-21 |
 | [task_20261010_083402_stage-cleanup](tasks/task_20261010_083402_stage-cleanup.md) — Динамічна оптимізація частини контексту за етапами | verify (практика) | in-progress | decd4bc6, d5614704, 355660b2 | 2026-10-17 |
 
