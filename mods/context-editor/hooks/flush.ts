@@ -167,6 +167,9 @@ export type TurnEndIO = {
   detect: (dir: string | undefined, e: { aborted: boolean; answer: string }) => Promise<unknown>
   // [SP_CTX_02_12] TagRegistry.turn += 1 on the registry's chain in `dir`
   countTurn: (dir: string) => Promise<unknown>
+  // [SP_HELP_02_09] the cache clock's memory into the registry in `dir`, an
+  // aborted turn too; absent: none
+  clock?: (dir: string) => Promise<unknown>
   // [SP_CTX_02_46] the repair after a switch in the process (/resume): its
   // timer, from the turn end; absent: none
   repair?: () => Promise<unknown>
@@ -178,7 +181,8 @@ export type TurnEndIO = {
 
 // [SP_CTX_02] AfterTurn: in this order, one after the other, DetectOptimize,
 // the registry's turn count (the mark compares with the count not yet
-// raised; an aborted turn does not count), the repair's timer after a
+// raised; an aborted turn does not count), the cache clock's write (an
+// aborted turn too, [SP_HELP_02_09]), the repair's timer after a
 // switch in the process ([SP_CTX_02_46]) and Flush (once the mark's block
 // waits, so its resume prompt carries WaitingAdvice); the handoff besides. The deferred
 // actions these plan come from the turn.complete hook, an origin the host
@@ -192,6 +196,7 @@ export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: u
     const dir = await at
     await step(() => io.detect(dir, { aborted: e.aborted, answer }))
     if (!e.aborted && dir) await step(() => io.countTurn(dir))
+    if (io.clock && dir) await step(() => io.clock!(dir))
     if (io.repair) await step(io.repair)
     await step(() => io.flush(e.aborted))
   })()

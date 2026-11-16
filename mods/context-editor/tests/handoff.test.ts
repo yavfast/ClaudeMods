@@ -964,6 +964,20 @@ test('RunHandoff — хід почався: before the claim / after the build /
   expect(doc.oldQueue().handoff!.state).toBe('queued')
 })
 
+// [SP_HELP_02_09] the document's fork is a request on the conversation's prefix: the clock ticks; a failed fork does not
+test('RunHandoff — годинник кешу: the fork of the document calls forked once, before /clear; a failed fork does not', async () => {
+  const doc = host({ h: { mode: 'document' } })
+  doc.io.forked = async dir => void doc.s.log.push(`forked ${dir}`)
+  expect(await runHandoff(doc.io, doc.s.mem, 0)).toBe('document')
+  expect(doc.s.log.filter(l => l.startsWith('forked'))).toEqual(['forked /s/old'])
+  expect(doc.s.log.indexOf('forked /s/old')).toBeLessThan(doc.s.log.indexOf('clear'))
+  const failed = host({ h: { mode: 'document' } })
+  failed.io.fork = async () => Promise.reject(new Error('no reply: api-error'))
+  failed.io.forked = async () => void failed.s.log.push('forked')
+  await runHandoff(failed.io, failed.s.mem, 0)
+  expect(failed.s.log).not.toContain('forked')
+})
+
 test('RunHandoff — хід перед /clear: /clear waited for a turn; AfterClear without a second clear (seed not taken); the document, or the notice', async () => {
   const withDoc = host({ h: { document: 'my handoff' }, edits: [{ op: 'drop', tool_use_id: 'c' }] })
   const clear = withDoc.io.runCommand
@@ -2339,4 +2353,17 @@ test('CarryRegistries — заголовок: the new session gets want ?? set a
   }
   await carryRegistries(io, { visible: [], rows: [], edits: [], report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }, carried: new Set() } as never, '/old', '/new')
   expect(carried!.title).toEqual({ want: 'B', person: true })
+})
+
+// [SP_HELP_02_14] STRUCT-04: the cache clock is not carried; the new session starts unknown
+test('CarryRegistries — годинник кешу: the new session gets no cache field', async () => {
+  let carried: TagRegistry | undefined
+  const old: TagRegistry = { ...EMPTY_REGISTRY, tags: [], notes: [], cache: { lastRequestAt: 5, coldAt: 4, check: true } }
+  const io = {
+    carryTags: async (_f: string, _t: string, change: (reg: TagRegistry) => TagRegistry) => ((carried = change(old)), 'carried' as const),
+    carryAliases: async () => 'missing' as const,
+  }
+  await carryRegistries(io, { visible: [], rows: [], edits: [], report: { applied: [], failed: [], charsBefore: 0, charsAfter: 0, originals: [], produced: [], notesDropped: [], ownCallsRemoved: 0, mediaFiles: [] }, carried: new Set() } as never, '/old', '/new')
+  expect(carried).toBeDefined()
+  expect('cache' in carried!).toBe(false)
 })

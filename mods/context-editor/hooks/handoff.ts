@@ -608,6 +608,9 @@ export type HandoffIO = {
   runCommand: (command: 'clear' | 'compact', args?: string) => Promise<void>
   // a model request over the session without tools; undefined when unanswered
   fork: (prompt: string) => Promise<string | undefined>
+  // [SP_HELP_02_09] the fork made a request on the conversation's prefix:
+  // the cache clock's memory, then the registry in `dir` (the old storage); absent: none
+  forked?: (dir: string) => Promise<unknown>
   // a refused prompt (an exception or a result with `drop`) rejects
   submit: (text: string) => Promise<void>
   toast: (text: string) => void
@@ -876,8 +879,9 @@ export async function carryRegistries(
         const marks = relocateStageMarks(rebindTags(reg, s.visible, s.rows, done, s.edits, s.report.produced), s.visible, s.rows, done, s.report.produced, s.carried)
         const out = rebindNotes(marks, s.visible, s.rows, done, s.report.produced)
         dropped = out.dropped
-        // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one
-        const { reintroduce: _, ...copy } = dropLastApply(out.registry)
+        // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one;
+        // [SP_HELP_02_14] the new session's cache clock starts unknown
+        const { reintroduce: _, cache: _c, ...copy } = dropLastApply(out.registry)
         // [SP_CTX_02_67] the registry's copy carries the items the seed's state edits made
         // [SP_CTX_02_74] CarryTitle: the title to show and whether the person chose it
         return withTitle({ ...copy, introduced: false, ...(s.items ? { items: s.items.items, nextItem: s.items.nextItem } : {}) }, carryTitle(copy.title))
@@ -1118,6 +1122,8 @@ async function documentWay(run: Run): Promise<HandoffOutcome> {
   if (!doc) {
     try {
       doc = await io.fork(HANDOFF_PROMPT)
+      // [ERR-01] the binding leaves a debug line of its own failure
+      await io.forked?.(run.oldDir).catch(() => undefined)
     } catch (err) {
       run.reasons.push(`document: model fork failed: ${errorText(err)}`)
     }

@@ -32,6 +32,7 @@ import { addReturns, isOwnReturn, type Returnable } from './folds'
 import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
 import { isTitleState, titleOp, type TitleError, type TitleState } from './title'
+import { isCacheClock, type CacheClock } from './cacheclock'
 import {
   blockName,
   carrierRow,
@@ -120,6 +121,8 @@ export type TagRegistry = {
   hint?: HintState
   // [SP_CTX_01_33] the session title (phase 48)
   title?: TitleState
+  // [SP_HELP_01_07] the main conversation's cache clock; absent: never written
+  cache?: CacheClock
 }
 
 // [SP_CTX_01_10] TagRegistry.hint: `marks` — AliasRegistry.next at the last
@@ -252,6 +255,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     reg.lastApply !== undefined && !isLastApply(reg.lastApply) && 'lastApply',
     reg.hint !== undefined && !isHintState(reg.hint) && 'hint',
     reg.title !== undefined && !isTitleState(reg.title) && 'title',
+    reg.cache !== undefined && !isCacheClock(reg.cache) && 'cache',
     reg.charsPerToken !== undefined && !(typeof reg.charsPerToken === 'number' && reg.charsPerToken >= CALIB_MIN && reg.charsPerToken <= CALIB_MAX) && 'charsPerToken',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }

@@ -205,10 +205,11 @@ Purpose: мод у процесі-зонді (`$.env.get('CONTEXT_EDITOR_PROBE')
 
     IF ProbeMode:
         session.start: no PrepareStorage, no repair, no sweep, no probe, no tools or /handoff registered
-        prompt.submit: no guide, no advice, no hint (next(e) unchanged)
+        prompt.submit: no guide, no advice, no hint, no cold verdict of the cache clock (next(e) unchanged)
         prompt.attachment (any type): counts.attachments + 1; next(e) unchanged
         session.append (any door): counts.doors[door] + 1; next(e) unchanged
-        turn.complete: write PROBE_FILE in $.session.root() (= tmp) = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано
+        turn.complete: write PROBE_FILE in $.session.root() (= tmp) = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано; без AfterTurn — і без запису годинника кешу
+        turn.step: the stream passes unchanged; the cache clock's memory may take the step's end, but no check and no storage write   # PL_HELP фаза 2, SP_HELP_02_09: перевірка вердикту виходить одразу в ProbeMode; зонд запитів до моделі не робить, тож кроків і не буває
         session.compact with instructions = PROBE_MARKER: write PROBE_FILE; RETURN { skip: PROBE_PREFIX + " " + JSON(counts) }
         session.compact, other instructions: next(e) unchanged   # без спостерігача: межі не пише
         tool.call (any tool): the result unchanged   # без псевдонімів, тегів, сховища
@@ -231,3 +232,4 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лічи
 | 2026-10-17 | Аудит коду (SPEC-14): 02_54 — запит передачі при `passed` знято з черги зі звітом HANDOFF_PASSED_OVER (стану `done` немає); 02_56 — ParseProbe бере лічильники й з відповіді `skip`, PROBE_OTHER_HOST — лише коли обидві версії відомі; 02_57 — запис PROBE_FILE не вдався |
 | 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): 02_57 — ProbeMode пише PROBE_FILE у корінь проєкту процесу-зонда (`$.session.root()`, тека `tmp`, де він стартував), не в поточну теку оболонки |
 | 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_53 — від `compact` залежить повернення пар розгортання й питань; 02_54 — `context_helper` `ask` відмовляє HELPER_PASSED_OVER, як `context_recall`; 02_57 — ProbeMode не реєструє й `context_helper` |
+| 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_57 — у ProbeMode годинника кешу немає: `prompt.submit` не бере вердикту, `turn.complete` не пише кінця ходу, `turn.step` лише пропускає потік без перевірки й запису сховища |

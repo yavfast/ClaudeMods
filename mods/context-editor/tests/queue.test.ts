@@ -367,6 +367,21 @@ test('deliverReport removes the report only once the prompt entered', async () =
   expect(none.log.seen).toEqual([[]])
 })
 
+// [SP_HELP_02_09] ColdVerdict on the prompt: between turns only, before the prompt enters; a failure holds nothing back
+test('DeliverReport — годинник кешу: the cold verdict is asked between turns before the prompt enters; not mid-turn; a failure lets the prompt go', async () => {
+  const order: string[] = []
+  const between = deliverHarness({ ...EMPTY_QUEUE }, introduced(), { cold: async () => void order.push('cold'), enter: async () => (order.push('enter'), {}) })
+  await deliverReport(between.io)
+  expect(order).toEqual(['cold', 'enter'])
+  order.length = 0
+  const mid = deliverHarness({ ...EMPTY_QUEUE }, introduced(), { cold: async () => void order.push('cold'), enter: async () => (order.push('enter'), {}) })
+  mid.log.inTurn = true
+  await deliverReport(mid.io)
+  expect(order).toEqual(['enter'])
+  const failing = deliverHarness({ ...EMPTY_QUEUE }, introduced(), { cold: async () => Promise.reject(new Error('down')) })
+  expect(await deliverReport(failing.io)).toEqual({})
+})
+
 test('DeliverReport — один раз: a report in the queue, two prompts in a row; only the first carries it', async () => {
   const h = deliverHarness({ ...EMPTY_QUEUE, report: 'R', reportId: 3, reportResume: true }, introduced())
   for (let i = 0; i < 2; i++) await deliverReport(h.io)

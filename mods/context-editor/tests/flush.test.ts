@@ -542,6 +542,18 @@ test('AfterTurn — перерваний хід: no turn count; DetectOptimize a
   expect(calls).toContain('handoff true')
 })
 
+// [SP_HELP_02_09] the cache clock's write at the end of every turn, an aborted one too
+test('AfterTurn — годинник кешу: the clock is written after the turn count, an aborted turn too; none without storage', async () => {
+  for (const aborted of [false, true]) {
+    const { io, calls } = turnEnd({ clock: async dir => void calls.push(`clock ${dir}`) })
+    await afterTurn(io, { aborted, answer: '' })
+    expect(steps(calls)).toEqual(aborted ? ['storage', 'detect /s true ""', 'clock /s', 'flush true'] : ['storage', 'detect /s false ""', 'count /s', 'clock /s', 'flush false'])
+  }
+  const none = turnEnd({ storage: async () => undefined, clock: async dir => void none.calls.push(`clock ${dir}`) })
+  await afterTurn(none.io, { aborted: false, answer: '' })
+  expect(none.calls.some(c => c.startsWith('clock'))).toBe(false)
+})
+
 test('AfterTurn — без сховища: DetectOptimize gets no folder, nothing is counted, Flush still runs', async () => {
   for (const storage of [async () => undefined, async () => Promise.reject(new Error('down'))]) {
     const { io, calls } = turnEnd({ storage })

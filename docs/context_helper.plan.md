@@ -54,7 +54,7 @@
 ## Progress
 
 - [x] [Phase 1 — Помічник і питання до архіву](#PL_HELP_P1)
-- [ ] [Phase 2 — Годинник кешу](#PL_HELP_P2)
+- [x] [Phase 2 — Годинник кешу](#PL_HELP_P2)
 - [ ] [Phase 3 — Відкладені пакети в обробнику й черзі](#PL_HELP_P3)
 - [ ] [Phase 4 — Поле `defer` і видимі відкладені пакети](#PL_HELP_P4)
 - [ ] [Phase 5 — Простій](#PL_HELP_P5)
@@ -98,7 +98,7 @@ Pseudocode sketch:
         text = Ask(folds, question, scope, depth)       // ask.ts: checks, Split, HelperCall ×parts, VerifyQuotes, AskText
         RETURN text
 
-### Phase 2 — Годинник кешу (`hooks/cacheclock.ts`) [TODO]  {#PL_HELP_P2}
+### Phase 2 — Годинник кешу (`hooks/cacheclock.ts`) [DONE]  {#PL_HELP_P2}
 
 **Depends on:** none (порядок після фази 1 — [DEC_01](#PL_HELP_DEC_01))
 **Implements:** [SP_HELP_01_07](./context_helper.batches.sp.md#SP_HELP_01_07), [SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09), [SP_HELP_04_04](./context_helper.sp.md#SP_HELP_04_04); запис журналу `cache` з [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08); рядки «Годинник кешу» й «Перевірки годинника» з [SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13); рядок «Годинник кешу» з [SP_HELP_02_14](./context_helper.sp.md#SP_HELP_02_14); інваріанти I8, I9; константи CACHE_TTL_MS, COLD_MISMATCH. Вердикт «холодний» у цій фазі лише записує `coldAt` і `check`: доручення з умовою `cold` перевіряє фаза 7
@@ -330,3 +330,4 @@ Items deferred from the current implementation cycle (each with a return trigger
 | 2026-11-16 | Підписання дизайну: розробник запустив `/dev-flow implement` після питання про затвердження плану з DEC_02–04 — план `active`, DEC_02–04 прийнято; фаза 1 `[IN PROGRESS]` |
 | 2026-11-16 | Рев'ю 1 (pass with advisories): рядки перевірки перенесено у фази, де є їхній контракт (KeepOtherSteps `b2` → 4, «таймер StartRun» → 6 і 8, «Гаряче перезавантаження» → 7, I2 → 1 і 7); фаза 2 — вид `cache` у журналі й `carryRegistries`; запис `apply` (SP_CTX_02_31, `journal.ts`) у фазах 3 і 5, SP_CTX_02_04 і 02_07 у фазі 1; частина `defer` про простій — у фазі 5, правила C_CTX_03_02 і C_CTX_DEC_03 (простій) — у фазі 5; SKILL.md і EDIT_DESCRIPTION без змін; модулі AreaClosed і умови `cold` у фазі 7; RewriteStart над `cacheShape`/`cacheCost`; холодна гілка StartRun живо у фазі 6 |
 | 2026-11-16 | Фаза 1 `[DONE]`: код, тести (1106), рев'ю з чистим контекстом (pass with advisories, усе виправлено), живий L1 у stream-json і терміналі; перерваний виклик не пише запису питання; мітки матеріалу в цитатах помічника знімаються перевіркою |
+| 2026-11-16 | Фаза 2 `[DONE]`: годинник кешу (`hooks/cacheclock.ts`, хук `turn.step`, вердикт на промпті, перевірка першим кроком, рядки телеметрії, форк і передача), тести (1123), рев'ю з чистим контекстом (pass with advisories, усе виправлено: ConfirmCheck у чистому модулі зі StartCheck, `prev` з початку кроку, `mismatch` лише за межею CACHE_TTL_MS), живі прогони stream-json на sonnet і термінал на opus; попутно сигнал хука в `$.model.complete` (фаза 1) |

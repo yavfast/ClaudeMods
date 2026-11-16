@@ -45,6 +45,7 @@ import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './ho
 import { apiChars, charsOf, errorText, findToolUse, isPromptRow, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { HelperSummary, JournalSummary } from './journal'
 import { helperCost } from './helper'
+import { checksLine, clockLine, lastRequest } from './cacheclock'
 import type { Queue } from './queue'
 import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
@@ -425,6 +426,9 @@ export type Telemetry = {
   hostAttach?: { copies: number; chars: number }
   // [SP_CTX_01_20] RegistryFull of the tag registry: its tags and KB (phase 30)
   tagsFull?: { tags: number; kb: number }
+  // [SP_HELP_02_13] the cache clock: the last request (null: none seen) and
+  // the time of the listing; absent: not read (no line)
+  clock?: { last: number | null; now: number }
 }
 
 // [SP_CTX_02_28] Whole(t): the tokens the request's messages hold, the
@@ -689,9 +693,11 @@ export function telemetryText(t: Telemetry): string {
   }
   const cache = cacheLine(t)
   if (cache) lines.push(cache)
-  // [SP_HELP_02_13] the helper's line, after the Cache line, when it was asked
-  const asked = t.journal && !('unreadable' in t.journal) ? t.journal.helper : undefined
-  if (asked) lines.push(helperLine(asked))
+  // [SP_HELP_02_13] after the Cache line: the clock, the helper, the clock's checks
+  if (t.clock) lines.push(clockLine(t.clock.last, t.clock.now))
+  const summary = t.journal && !('unreadable' in t.journal) ? t.journal : undefined
+  if (summary?.helper) lines.push(helperLine(summary.helper))
+  if (summary?.checks) lines.push(checksLine(summary.checks))
   // [SP_CTX_02_28] only when something is left out
   if (t.hostAttach?.copies)
     lines.push(`Host attachments: ${t.hostAttach.copies} stale cop${t.hostAttach.copies === 1 ? 'y' : 'ies'} of instruction files and skill listings left out of each request (${estimate(t.hostAttach.chars, t.ratio)})`)
@@ -780,6 +786,9 @@ export type ListIO = {
   rules?: () => Promise<string>
   // [SP_FOLD_02_07] the fold ledger in `dir`, a view; absent: none
   folds?: (dir: string) => Promise<Read<FoldLedger>>
+  // [SP_HELP_02_13] the cache clock's memory time of this session and the
+  // time now; absent: no Cache clock line
+  clock?: () => Promise<{ memory?: number; now: number }>
 }
 
 export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown; rules?: unknown; folds?: unknown }
@@ -871,6 +880,9 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
     const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), io.usage, update, dir ? await io.journal(dir) : undefined, io.api)
     const left = dir && io.hostAttach ? await io.hostAttach(dir).catch(() => undefined) : undefined
     if (left) t.hostAttach = left
+    // [SP_HELP_02_09] the later of the registry's time and the memory's
+    const clock = io.clock ? await io.clock().catch(() => undefined) : undefined
+    if (clock) t.clock = { last: lastRequest(tagged.reg?.cache, clock.memory), now: clock.now }
     tele = telemetryText(t)
     size = headerSize(t, t.chars ?? totalChars(rows))
   } catch (err) {

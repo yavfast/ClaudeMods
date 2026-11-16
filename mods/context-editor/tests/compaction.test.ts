@@ -72,6 +72,18 @@ test('HandleCompaction — reportResume за ResumesAfter: a tags-only batch res
   }
 })
 
+// [SP_HELP_05_02] I8: the mod's own compaction leaves the cache clock as it was
+test('HandleCompaction — годинник кешу (I8): an apply writes the registry with its cache field unchanged', async () => {
+  const cache = { lastRequestAt: 500, coldAt: null, check: false }
+  // a review tag on the summarized pair: the apply rewrites the registry
+  const reg: TagRegistry = { ...EMPTY_REGISTRY, tags: [{ kind: 'review', target: { tool_use_id: 'a' }, created_turn: 0 }], cache }
+  const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }]), {}, { state: 'ok', value: reg })
+  const out = await handleCompaction(io, conversation())
+  if (!('messages' in out)) throw new Error(out.skip)
+  expect(written.tags).toBeDefined()
+  expect(written.tags!.cache).toEqual(cache)
+})
+
 test('applies the batch: media archived, own calls dropped, charsAfter after the drop, report queued', async () => {
   const { io, written } = harness(queued([{ op: 'summarize', tool_use_id: 'a', summary: 'a screenshot of X' }], { resume: false, resumePrompt: 'p' }))
   const out = await handleCompaction(io, conversation())

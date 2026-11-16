@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-11-14
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_11](#SP_CTX_02_11), [SP_CTX_02_12](#SP_CTX_02_12), [SP_CTX_02_16](#SP_CTX_02_16), [SP_CTX_02_18](#SP_CTX_02_18)
 >
@@ -157,6 +157,7 @@ Processing logic (pseudocode):
             write TagRegistry if changed
         RETURN stored
     ON turn completed (main loop, not aborted): TagRegistry.turn += 1     # після DetectOptimize (преамбула 02); команди мода подій ходу не дають
+    ON turn completed (main loop, aborted too), after the counter: on the registry chain: c = ClockAfter(reg.cache, ClockMemory of this session); IF c: TagRegistry.cache = c   # PL_HELP фаза 2, SP_HELP_02_09: крок clock AfterTurn; c — lastRequestAt = час пам'яті, коли той новіший за реєстр, інакше запису немає; без теки — нічого
 
     AutoTagNeeded(row) = (door = prompt AND origin.kind IN (composer, bridge, sdk, unclassified))          # R1 (чи перший промпт уже закріплено — з реєстру)
                          OR (door = tool-result AND tool present AND tool not OWN_TOOLS AND ids not empty
@@ -171,6 +172,8 @@ R5 ([C_CTX_03_04](./context_editor.core.concept.md#C_CTX_03_04), «Дублік�
 Фаза 15 (виконано 2026-10-10). Перед R4 і R5 з'ясовано, чому на копії реальної сесії R2 поставив `review` на старий великий вивід у першому ході (`.dev_flow/cache/live-test/fork-test-results.md`, розділ «Host, resumed or forked process»): копія рядка результату пройшла фільтр походження плагіна, бо приходить з походженням свого інструмента; її тепер відсікає `Copied` (вище) — інакше R5 (а), що читає поточну розмову на кожен великий результат, позначав би ранішу копію самої себе. Проба «Дублікат вставки навички» ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)) показала, що вставка навички — не рядок поточної розмови, тож R5 (б) перейшов у backlog плану, а хук мода (`session.append`; з фази 10 аудиту PL_AUD_CTX — чиста функція AppendRow у `hooks/tags.ts`) і далі пропускає до правил лише двері `prompt` і `tool-result`; R5 (а) реалізовано ([SP_CTX_01_11](./context_editor.structures.sp.md#SP_CTX_01_11)).
 
 Той самий хук `session.append` веде й RecordDelivery ([SP_CTX_02_35](./context_editor.deliveries.sp.md#SP_CTX_02_35); фаза 20): двері `tool-result`, `prompt` і `response` основної розмови оновлюють якір у пам'яті модуля, двері `delivery` з вкладенням `queued_command` пишуть запис доставки у фоні. AutoTag від цього не змінюється: доставка — не рядок, правил R1–R5 вона не проходить, а вставлений модом рядок доставки в stream-json приходить дверима `prompt` з походженням плагіна і правила його не бачать.
+
+Запис годинника кешу в кінці ходу (PL_HELP, фаза 2; [SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09)). Пам'ять модуля ClockMemory (преамбула [§02](./context_editor.sp.md#SP_CTX_02)) хук `turn.step` оновлює на кожному кроці основного ходу, а в реєстр (`TagRegistry.cache`, [SP_CTX_01_10](./context_editor.structures.sp.md#SP_CTX_01_10)) її час потрапляє окремим записом — кроком `clock` AfterTurn одразу після лічильника, на ланцюжку реєстру. На відміну від лічильника, цей крок іде й після перерваного ходу: перерваний крок теж був запитом на префіксі розмови, і кеш після нього теплий. Час пам'яті, не новіший за `cache.lastRequestAt` реєстру, нічого не пише; без теки сховища кроку немає.
 
 ### 02_13. QueueTagReplacements  {#SP_CTX_02_13}
 
@@ -415,6 +418,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09)): 02_12 — окремий запис годинника кешу (`TagRegistry.cache`, ClockAfter) кроком `clock` кінця кожного основного ходу, зокрема перерваного, після лічильника; крок лічильника без змін |
 | 2026-11-15 | Verify PL_FOLD, виправлення: 02_11 — межі завдання від запиту (TurnPrompt — запит людини, `idle`, `end`, `floor` від `lastClosed` у псевдокоді; рев'ю: перекриття через виклики, `open` у ході, що працював, промпти мода); TAG_DESCRIPTION 2048 символів |
 | 2026-11-15 | PL_FOLD, фаза 6, рев'ю: TAG_DESCRIPTION — заміни `disposable` ставить закриття цим інструментом (не вставка `close`), 2047 символів; легенда `context_list` так само |
 | 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_02_05](./context_folds.sp.md#SP_FOLD_02_05)): 02_11 — `open` з `task` чи `nested`, `close` з `task`, ланцюжок областей у псевдокоді, відмови NO_TASK, DEPTH_FULL, REGION_BOUNDS, OPEN_REFUSED, рядки відкриття, звіт закриття кількох областей — зовнішньої, TASK_CARD; опис 2043 символи |

@@ -36,7 +36,7 @@
 | kind | Поля | Коли |
 |------|------|------|
 | `ask` | `at`, `folds`: string[], `parts`: int, `calls`: int, `in`: int, `out`: int (токени всіх викликів), `verified`: int, `rejected`: int, `status`: `'answered' \| 'not_found' \| 'refused' \| 'failed'`, `errand?`: string | після кожного питання, зокрема з доручення |
-| `cache` | `at`, `idle`: int (мс простою), `read`: int, `written`: int, `input`: int, `messages`: int \| null, `mismatch`: bool \| null | перший запит після вердикту «холодний» (§02_09) |
+| `cache` | `at` (кінець кроку), `idle`: int (мс від останнього запиту до початку кроку; 0 без нього), `read`: int, `written`: int, `input`: int, `messages`: int \| null, `mismatch`: bool \| null | перший крок основного ходу з `usage` після вердикту «холодний», коли Confirm зняв `check` (§02_09); поле не цієї форми робить журнал `unreadable` |
 
 Запис `apply` ([SP_CTX_01_19](./context_editor.records.sp.md#SP_CTX_01_19)) отримує поля `deferred?`: int — скільки відкладених правок узяло застосування, і `idle?`: true — застосування в простої.
 
@@ -102,15 +102,15 @@ HELP_SYSTEM (англійською, як усі тексти мода для м
 
 ### 02_13. Телеметрія  {#SP_HELP_02_13}
 
-Purpose: агент бачить температуру кешу, відкладені пакети з їхньою ціною, доручення й витрати помічника. Рядки додаються до заголовка `context_list` ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) після рядка Cache, кожен — лише коли є що показати, крім першого.
+Purpose: агент бачить температуру кешу, відкладені пакети з їхньою ціною, доручення й витрати помічника. Рядки додаються до заголовка `context_list` ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) після рядка Cache у порядку таблиці, кожен — лише коли є що показати, крім першого. «Годинник кешу» є лише в `context_list`: годинник (LastRequest на мить переліку, [§01_07](./context_helper.batches.sp.md#SP_HELP_01_07)) читає лише перелік, а звіт закриття етапу `context_tag` ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) його не читає; рядки з підсумку журналу («Помічник», «Перевірки годинника») є й у звіті закриття, бо той будує телеметрію з журналом.
 
 | Рядок | Текст |
 |-------|-------|
-| Годинник кешу | `Cache clock: warm — the last request was <m> min ago; cold in ~<r> min.` · `Cache clock: cold — idle for <h> h <m> min; an apply now rewrites nothing still cached.` · `Cache clock: unknown — no request seen in this session yet.` |
+| Годинник кешу | `Cache clock: warm — the last request was <m> min ago; cold in ~<r> min.` · `Cache clock: cold — idle for <h> h <m> min; an apply now rewrites nothing still cached.` · `Cache clock: unknown — no request seen in this session yet.` — `m` округлено вниз, `r` = ⌈(CACHE_TTL_MS − простій) / хв⌉, не менше 1; лише в `context_list` |
 | Відкладені | `Deferred: <k> batch(es), <n> edit(s), the oldest from turn <t>; ` + на теплому `applying them now would rewrite ~<x> tokens of cache; they wait for an apply that starts no later, a cold cache in idle, or a handoff.` · на холодному `the cache is cold: they apply in this idle.` Ціна `x` — CacheCost ([SP_CTX_02_38](./context_editor.telemetry.sp.md#SP_CTX_02_38)) відкладених правок окремо |
 | Доручення | `Errands: <k> (<open> open, <waiting> waiting for delivery); context_helper errand_list lists them.` |
 | Помічник | `Helper: <q> question(s), <c> call(s), ~<in>k in / ~<out>k out tokens (~$<cost>); quotes verified <v>, rejected <r>.` — суми записів журналу `ask`; `cost = (in × HELP_PRICE_IN + out × HELP_PRICE_OUT) / 10⁶` |
-| Перевірки годинника | `Cache clock checks: <k>, mismatched <m>.` — коли є записи журналу `cache` |
+| Перевірки годинника | `Cache clock checks: <k>, mismatched <m>.` — коли є записи журналу `cache`; `k` — їх число, `m` — з них з `mismatch = true` (поле `checks` підсумку журналу, [SP_CTX_01_20](./context_editor.records.sp.md#SP_CTX_01_20)) |
 
 Умова `size` міряє весь останній запит з незмінною частиною (§02_07); рядок Context у вигляді `messages` показує розмову без неї, тож числа різняться на незмінну частину.
 
@@ -167,19 +167,19 @@ Purpose: агент бачить температуру кешу, відклад
 | Розділ | Зміна |
 |--------|-------|
 | [SP_CTX_01_03](./context_editor.structures.sp.md#SP_CTX_01_03), [SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04) | поля `deferred`, `nextBatch`, `applyDeferred`, `coldSince`, `deferredSince` (§01_06); правило KeepOtherSteps: правки з `deferred`, `deferredSince`, `nextBatch` — поля іншого кроку, `applyDeferred`, `coldSince` — поля пакета |
-| [SP_CTX §02](./context_editor.sp.md#SP_CTX_02) (преамбула) | порядок кінця ходу: … → лічильник ходів → CheckErrands → Flush → взведення таймера простою → WakeCheck; запис `cache.lastRequestAt` у кінці кожного основного ходу; таймери простою й повторної перевірки пробудження — з ланцюжка `turn.complete`; виняток — команда StartRun і таймер простою, який вона взводить на теплому кеші: їхній ланцюжок починається в `session.start` (зонд DEC_10: команда з таймера `session.start` хостом прийнята), і такий таймер пробудження не надсилає |
+| [SP_CTX §02](./context_editor.sp.md#SP_CTX_02) (преамбула) | порядок кінця ходу: … → лічильник ходів → запис годинника кешу (`clock`) → CheckErrands → Flush → взведення таймера простою → WakeCheck; запис `cache.lastRequestAt` у кінці кожного основного ходу, зокрема перерваного; пам'ять модуля ClockMemory і хук `turn.step` основної розмови, що лише пропускає потік і ставить кінець кроку (фаза 2); таймери простою й повторної перевірки пробудження — з ланцюжка `turn.complete`; виняток — команда StartRun і таймер простою, який вона взводить на теплому кеші: їхній ланцюжок починається в `session.start` (зонд DEC_10: команда з таймера `session.start` хостом прийнята), і такий таймер пробудження не надсилає |
 | [SP_CTX_01_10](./context_editor.structures.sp.md#SP_CTX_01_10) | поля реєстру `errands`, `nextErrand`, `cache` (§01_05, §01_07) |
 | [SP_CTX_01_12](./context_editor.constants.sp.md#SP_CTX_01_12) | ASK_RETURNED_HEAD — у REPLACEMENT_OPENERS; сьомий інструмент `context_helper` (HELPER_DESCRIPTION, схема §02_02); решта констант — у §01_09 |
-| [SP_CTX_01_19](./context_editor.records.sp.md#SP_CTX_01_19), [SP_CTX_02_31](./context_editor.telemetry.sp.md#SP_CTX_02_31) | записи журналу `ask`, `cache`; поля `deferred`, `idle` запису `apply` (§01_08) |
+| [SP_CTX_01_19](./context_editor.records.sp.md#SP_CTX_01_19), [SP_CTX_02_31](./context_editor.telemetry.sp.md#SP_CTX_02_31) | записи журналу `ask` (JournalAsk), `cache` (JournalCache); поля `deferred`, `idle` запису `apply` (§01_08) |
 | [SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02) | поле `defer` і речення результату (§02_10); виклик з `defer` не закінчує очікування блоку й не ставить замін тегів; його рядок результату — `Deferred as <batch>…` замість обіцянки звільнення в кінці ходу; прив'язка невибраних правок замінює перевірку `listedKey` для наступних застосувань |
 | [SP_CTX_02_11](./context_editor.tags.sp.md#SP_CTX_02_11) | MarkDue отримує назви закритих областей (`closed`) для умови доручень |
 | [SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06) | Applicable замість `len(q.edits)` (планування, ранній вихід, калібрування, гілка застосування, скидання `resume`), NonDeferred у KeepOtherSteps; CheckErrands і WakeCheck у порядку кінця ходу; WakeCheck у кінці Flush без промпту; блок доставки в тексті промптів Flush; взведення таймера простою після Flush (C_CTX_DEC_03) |
-| [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12) | окремий запис `cache.lastRequestAt` у кінці кожного основного ходу, зокрема перерваного; крок лічильника — без змін |
+| [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12) | окремий запис `cache.lastRequestAt` у кінці кожного основного ходу, зокрема перерваного, після кроку лічильника; крок лічильника — без змін |
 | [SP_CTX_02_13](./context_editor.tags.sp.md#SP_CTX_02_13) | `tagsOnly` — за NonDeferred |
 | [SP_CTX_02_04](./context_editor.apply.sp.md#SP_CTX_02_04), [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07) | SelectEdits до ApplyEdits; порожній вибір — `skip` замість «q.edits empty»; фіксація лишає невибрані відкладені правки, прив'язані до перебудованих рядків, і знімає `applyDeferred`, `coldSince`; `ResumesAfter = false` для вибору лише з відкладених правок; гілка збою — за NonDeferred, лишає невибрані пакети (`selectedBatches`); речення звіту про відкладені правки й повернуті пари питань |
-| [SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08) | звіт застосування в простої несе промпт пробудження, інакше наступний промпт, що проходить хуки мода; промпту продовження немає (C_CTX_03_02); DeliverReport бере вердикт «холодний» годинника кешу (§02_09) і дописує блок доставки (§02_08) у прихований контекст промпту; відкинутий нижчим обробником промпт повертає блок |
-| [SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21), [SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22) | §02_14; форк документа оновлює `lastRequestAt`; число правок черги в результаті передачі — за NonDeferred |
-| [SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28), [SP_CTX_01_20](./context_editor.records.sp.md#SP_CTX_01_20) | рядки заголовка §02_13; поле `helper` підсумку журналу |
+| [SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08) | звіт застосування в простої несе промпт пробудження, інакше наступний промпт, що проходить хуки мода; промпту продовження немає (C_CTX_03_02); DeliverReport між ходами першим кроком, до входу промпту, бере вердикт «холодний» годинника кешу (§02_09) і дописує блок доставки (§02_08) у прихований контекст промпту; відкинутий нижчим обробником промпт повертає блок |
+| [SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21), [SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22) | §02_14 (CarryRegistries не переносить поле `cache`); форк документа, що відповів, оновлює `lastRequestAt`; число правок черги в результаті передачі — за NonDeferred |
+| [SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28), [SP_CTX_01_20](./context_editor.records.sp.md#SP_CTX_01_20) | рядки заголовка §02_13 і їхній порядок після рядка Cache; поля `helper` і `checks` підсумку журналу, поле `clock` телеметрії (лише `context_list`) |
 | [SP_CTX_02_43](./context_editor.stages.sp.md#SP_CTX_02_43) | рядок людини пакета з поверненими парами питань: `returned <n> recall(s) and <m> question pair(s)` |
 | [SP_CTX_02_33](./context_editor.stages.sp.md#SP_CTX_02_33) | нагадування нотаток доставляються й з наступним промптом, одним блоком з результатами доручень (C_CTX_03_07) |
 | [SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37) | після читання звичайної `usage` канал розміру перевіряє умови `size` (BigOutput) до своїх порогів |
@@ -188,13 +188,13 @@ Purpose: агент бачить температуру кешу, відклад
 | [SP_CTX_02_44](./context_editor.resume.sp.md#SP_CTX_02_44), [SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46) | StartRun (§02_12) — компактизація мода з `session.start` при вердикті `reached`; ремонт лишається на кінці першого ходу й після застосування StartRun бачить довірену межу; факт (4) підтверджено для термінала (зонд DEC_10) |
 | [SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42) (маршрут) | хук `command.run` мода бачить власну команду StartRun (повторний вхід з таймера `session.start` хост не пропускає); compactRoute пропускає її за походженням `plugin`, як нині |
 | [SP_CTX_02_55](./context_editor.bypass.sp.md#SP_CTX_02_55) | ObservePassedCompact очищає й відкладені правки; CompactBrief називає їх разом з рештою правок черги |
-| [SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57) | у ProbeMode мод не взводить таймера простою, не пише годинника кешу й не перевіряє доручень |
+| [SP_CTX_02_57](./context_editor.bypass.sp.md#SP_CTX_02_57) | у ProbeMode мод не взводить таймера простою, не пише годинника кешу (ні вердикту, ні перевірки, ні запису кінця ходу) й не перевіряє доручень |
 | [SP_FOLD_01_02](./context_folds.sp.md#SP_FOLD_01_02), [SP_FOLD_03_02](./context_folds.sp.md#SP_FOLD_03_02) | поле `questions` обліку; правило «`Recall.fold` є в `folds`» не діє для питань |
 | [SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03) | повернення пар питань (C_CTX_DEC_08, C_FOLD_DEC_08); виклик з `defer: true` повернень не додає |
 | [SP_FOLD_02_05](./context_folds.sp.md#SP_FOLD_02_05), [SP_FOLD_02_06](./context_folds.sp.md#SP_FOLD_02_06) | порт `markDue` отримує назви закритих областей для умови `closed` — і з `context_tag`, і зі службових вставок `close`, `optimize` |
 | [SP_FOLD_02_08](./context_folds.sp.md#SP_FOLD_02_08) | `questions: []` у переносі обліку |
 | [SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09) | пари `context_helper` із записом лишаються (C_CTX_06_07) |
-| — (нове) | пробудження за дорученням з `wake` (C_CTX_01_01); третій автор — висновок помічника для агента зовнішній (C_FOLD_03_05); підписка на крок основного ходу для годинника кешу і його підтвердження |
+| — (нове) | пробудження за дорученням з `wake` (C_CTX_01_01); третій автор — висновок помічника для агента зовнішній (C_FOLD_03_05); підписку на крок основного ходу для годинника кешу і його підтвердження з фази 2 описує преамбула SP_CTX §02 (рядок вище) |
 
 ## 04. State Transitions  {#SP_HELP_04}
 
@@ -235,9 +235,9 @@ Purpose: агент бачить температуру кешу, відклад
 ### 04_04. Годинник кешу  {#SP_HELP_04_04}
 
     [unknown] --крок ходу--> [warm] --CACHE_TTL_MS без запиту--> [cold, без вердикту]
-    [cold, без вердикту] --таймер простою чи перший промпт--> [cold, вердикт, check] --перший крок ходу--> [warm]
+    [cold, без вердикту] --таймер простою чи перший промпт між ходами--> [cold, вердикт, check] --перший крок ходу з usage--> [warm]
 
-Кожен крок основного ходу, зокрема перерваного, і форк розмови повертають годинник у `warm`.
+Кожен крок основного ходу, зокрема перерваного, і форк розмови, що відповів, повертають годинник у `warm`: пам'ять модуля одразу, реєстр — у кінці ходу чи після форка. Крок без `usage` теж повертає годинник у `warm`, але `check` лишається до першого кроку з `usage`, який записує перевірку. Нова сесія (зокрема після передачі будь-яким способом) починає з `unknown`.
 
 ## 05. Verification Criteria  {#SP_HELP_05}
 
@@ -284,8 +284,9 @@ Purpose: агент бачить температуру кешу, відклад
 | WakeCheck | фонове питання | `ask` з `wake` завершилось у простої | пробудження з повторної перевірки WAKE_RECHECK_MS, не з ланцюжка питання; початий хід знімає перевірку | keep |
 | WakeCheck | кінець ходу | доручення `turns` + `remind` + `wake` спрацювало в кінці ходу; черга порожня / черга з правкою | промпт пробудження / блок у промпті продовження Flush, пробудження немає | keep |
 | CacheClock | вердикт один раз | простій 70 хв, таймер, потім промпт | вердикт таймером; промпт другого не бере | keep |
-| CacheClock | підтвердження | перший крок: read перевищує незмінну частину на 80 % рядків розмови; розбивки немає | `mismatch = true`; `mismatch = null` | — |
-| CacheClock | крок ходу | перерваний хід після простою | `lastRequestAt` оновлено на кроці; телеметрія посеред ходу — `warm`; реєстр — у кінці ходу | — |
+| CacheClock | підтвердження | перший крок з `usage`: read перевищує незмінну частину на 80 % рядків розмови; розбивки немає; `check` не стоїть | `mismatch = true`, `idle` до початку кроку; `mismatch = null`; Confirm нічого не пише | keep |
+| CacheClock | крок ходу | перерваний хід після простою | пам'ять модуля — кінець кроку; телеметрія посеред ходу — `warm`; реєстр — у кінці ходу (ClockAfter), пам'ять не новіша — без запису | keep |
+| CacheClock | захоплення й останній запит | другий крок, поки перевірка першого йде; `prev` невідомий, час реєстру — кінець цього кроку; крок через 1 хв після перерваного кроку без `usage` | другий не перевіряє; `idle = 0`; `mismatch = null` | keep |
 | SelectEdits | вибір | O з початком 100, пакети з початками 120 і 40 | перший вибрано, другий лишився в черзі | keep |
 | SelectEdits | глибокий O | O глибший за вікно | усі пакети | keep |
 | SelectEdits | без `keep_cache` | O неглибокий, `keep_cache` не задано | усі пакети: застосування переписує всю розмову | keep |
@@ -307,7 +308,7 @@ Purpose: агент бачить температуру кешу, відклад
 | IdleRun | таймер StartRun | теплий кеш на старті, таймер `armedBy = start` спрацював на холодному кеші, доручення з `wake` | пакет застосовано; WakeCheck не викликано; доручення чекає кінця першого ходу | keep |
 | IdleRun | гілки | хід почався (MovedSince за `armedTurns`); кеш теплий; годинник невідомий; холодний з пакетом; обхід | нічого; перевзведення; нічого; застосування без промпту продовження; рядок стану | keep |
 | StartRun | гілки | вердикт `unknown` / `passed`; черга без відкладених; запит передачі; годинник невідомий; теплий; холодний; відмова команди | нічого ×5; таймер простою на залишок; `applyDeferred` + команда з `session.start`, без калібрування й без промпту продовження; рядок стану, `applyDeferred` знято | keep |
-| Телеметрія | рядки | теплий, холодний, невідомий годинник; пакети; доручення; помічник | тексти §02_13 | — |
+| Телеметрія | рядки | теплий, холодний, невідомий годинник; пакети; доручення; помічник; записи `cache` у журналі; телеметрія без читання годинника | тексти й порядок §02_13; без годинника рядка `Cache clock` немає | — |
 | Передача | перенесення | «транскрипт» з відкладеним пакетом і дорученням `running` | пакет застосовано в засіві; доручення `fired`; `questions: []`; годинник null | keep |
 | Передача | документ | відкладений пакет і два доручення | пакет і доручення відпадають; два речення в результаті передачі | — |
 
@@ -322,8 +323,8 @@ Purpose: агент бачить температуру кешу, відклад
 | I5 | тести WakeCheck | keep |
 | I6 | тести SelectEdits і фіксації; аудит журналу `apply` у живому прогоні | keep |
 | I7 | тест IdleRun: після застосування промпт не надсилається | keep |
-| I8 | тест: виклик помічника й застосування не змінюють `lastRequestAt` | — |
-| I9 | тест CacheClock | keep |
+| I8 | тест HandleCompaction: застосування пише реєстр з незмінним полем `cache`; виклик помічника годинника не пише (його порт поля `cache` не має); що `$.model.complete` не дає кроку `turn.step` основної розмови — живий прогін фази 2 (`.dev_flow/cache/live-test/help-l1/out/P2I8.*`: шість кроків на шість відповідей моделі, між кроком виклику й наступним — лише `$.model.complete … answered`) | keep |
+| I9 | тест CacheClock «вердикт один раз»: другий вердикт того самого простою не береться, новий простій після Confirm — береться | keep |
 | I10 | тест: `defer` з тегом `disposable` у тому самому ході — заміни тегу без `deferred`; `defer` при згаданому з `due` — без повернень | — |
 | I11 | тести доставки власним промптом мода | keep |
 | I12 | тести KeepOtherSteps і гілки збою | keep |
@@ -548,3 +549,5 @@ Purpose: агент бачить температуру кешу, відклад
 | 2026-11-16 | Рев'ю 3: StartRun без промпту продовження й оптимізації, очікування з межею START_WAIT_MS, таймер StartRun без WakeCheck (I5, преамбула §03_03); точніша перевірка гілки збою (`selectedBatches`); I6, I7, I13 і рядок SP_CTX_02_53/02_54 називають StartRun; рядок країв і наслідки DEC_09 — залишковий ризик застарілого вердикту з кешу та видимі людині рядки; DEC_09 — рішення розробника: A |
 | 2026-11-16 | Зонд DEC_10: §02_12 StartRun і DEC_09 (agent); таймер простою лише після завершеного ходу; відмова команд після переривання; I13; L8; рядки країв (переривання, панель, промпт випереджає StartRun, нова версія хоста); §03_03 — SP_CTX_02_44/02_46, маршрут SP_CTX_02_42 |
 | 2026-11-16 | PL_HELP фаза 1, рев'ю коду: HELP_SYSTEM називає мітки матеріалу; рядки перевірки — причина збою, дві згортки й три частини, понад межу, переривання, запис не вдався, мітки матеріалу, залежності пари питання; власна правка на парі питання — слід ASK_RETURNED з текстом агента |
+| 2026-11-16 | PL_HELP фаза 2 (годинник кешу, за кодом): §01_08 — запис `cache`: `at` — кінець кроку, `idle` — до початку кроку, лише після Confirm; §02_13 — рядок `Cache clock` лише в `context_list`, порядок рядків за таблицею, рядки журналу й у звіті закриття; §03_03 — у рядках преамбули SP_CTX §02, 02_08, 02_12, 02_21, 02_28/01_20, 02_57 — крок `clock`, ClockMemory і `turn.step`, вердикт до входу промпту, CarryRegistries без `cache`, поля `checks` і `clock`; §04_04 — перший крок з `usage`, форк, що відповів; §05_01 — рядки CacheClock і «Телеметрія»; §05_02 — I8, I9 (див. також [batches](./context_helper.batches.sp.md)) |
+| 2026-11-16 | PL_HELP фаза 2, рев'ю коду: рядок §05_01 «захоплення й останній запит» |

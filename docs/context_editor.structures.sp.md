@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-11-14
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §01 Data Structures 01_01–01_11 специфікації [SP_CTX](./context_editor.sp.md): рядок розмови, правка, черга, звіт, архів, сховище, медіа-ресурс, теги та реєстр, автоправила. Константи (01_12) — у [constants](./context_editor.constants.sp.md), реєстри і стан сесії (01_13–01_26) — у [records](./context_editor.records.sp.md). Читати перед зміною цих структур.
@@ -233,6 +233,7 @@ Invariants:
 | notes | list<Note> | yes | `[]` | ≤ MAX_NOTES; разом з тегами — у межі файлу MAX_QUEUE_BYTES | Службові нотатки агента ([SP_CTX_01_21](./context_editor.records.sp.md#SP_CTX_01_21)) |
 | nextNote | int | yes | 1 | ≥ 1, більше за число кожного `id` у `notes` | Номер наступної нотатки |
 | hint | `{ tokens: int?, marks: int, proposed: int? }`? | no | — | `marks` ≥ 1; `tokens`, `proposed` ≥ 0 | Стан м'якого нагадування ([SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37)): `marks` — `AliasRegistry.next` у мить останньої пропозиції будь-яким каналом, останньої перевірки каналу ходу, що спожила серію, або зменшення контексту, яке побачив канал розміру; `tokens` — розмір запиту (`$.session.usage().context.tokens`) у мить останньої пропозиції, відсутній до першої; `proposed` (int?, ≥ 0; фаза 23, рев'ю 54) — скільки токенів звільняв пакет останньої пропозиції. Поле, що не проходить обмежень, робить реєстр `unreadable`. Передача копіює його разом з реєстром; менший запит у новій сесії починає лічбу заново. Формат з фази 22; фаза 23 додала `proposed`, яке версія фази 22 не перевіряє і при записі губить |
+| cache | CacheClock? | no | — | [SP_HELP_01_07](./context_helper.batches.sp.md#SP_HELP_01_07): `lastRequestAt`, `coldAt` — ціле ≥ 0 чи null, `check` — bool | Годинник кешу основної розмови (PL_HELP, фаза 2; [SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09)): кінець останнього запиту на її префіксі, останній вердикт «холодний» і чи чекає він перевірки. Пише крок `clock` кінця кожного основного ходу, зокрема перерваного ([SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12)), відповідь форку документа передачі ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), вердикт на промпті між ходами ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)) і перевірка першим кроком з `usage`; застосування мода поля не змінює. Відсутнє — годинника ще не писали; поле не цієї форми робить реєстр `unreadable` (`bad field(s): cache`). Передача копіює реєстр без нього (CarryRegistries): нова сесія починає з невідомого годинника |
 
 Стани читання — як у Queue (`missing`, `ok`, `unreadable`); `unreadable` не трактується як порожній реєстр. Поле `stage` або `lastClosed`, що не проходить своїх обмежень, робить реєстр `unreadable`, як і погане поле тегу; погане `outer` — лише разом зі `stage` (без `stage` воно відкидається).
 
@@ -254,6 +255,7 @@ Invariants:
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_01_07](./context_helper.batches.sp.md#SP_HELP_01_07)): 01_10 — поле `cache` (CacheClock): хто пише, погане поле робить реєстр `unreadable`, передача його не переносить |
 | 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_01_04](./context_folds.sp.md#SP_FOLD_01_04)): 01_10 — поле `outer`, `stage` — найглибша область ланцюжка, нормалізація при читанні; `lastClosed` після закриття кількох областей — зовнішня |
 | 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 01_02 — необов'язкове поле `keep` правки `collapse`; 01_03 — якорі `keep`, тимчасове поле `kept`; 01_09 — діапазон `disposable` може містити `pin` і слот стану |
 | 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): 01_07 — каталог архівів від кореня проєкту сесії `<project>` (`$.session.root()`), не від робочого каталогу `$.session.cwd()`, який іде за `cd` оболонки |

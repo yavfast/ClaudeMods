@@ -30,7 +30,7 @@ import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
-import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, recallScope, detectOptimize, endWaiting, guideText, introFor, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
+import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, recallScope, detectOptimize, endWaiting, guideText, introFor, measure, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { errorText, modText, REPAIR_MARKER } from './rows'
 import {
@@ -133,7 +133,8 @@ import { contextAsk, type AskIO, type HelperArgs } from './ask'
 import { failureReason } from './helper'
 import type { CompleteRequest, CompleteResult } from './helper'
 import { closeWindow, emptyHostRows, keepHostRows, newHostMemory, observeHostRow, openWindow, parseHostRows, recordHostRow, type HostRowRecord, type HostRows } from './hostrows'
-import { EMPTY_JOURNAL, journalApply, journalAsk, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
+import { EMPTY_JOURNAL, journalApply, journalAsk, journalCache, journalChanged, journalReread, journalSummary, parseJournal, type Journal, type JournalIO, type JournalSummary } from './journal'
+import { clockAfter, coldVerdict, lastRequest, memoryAt, newClockMemory, startCheck, tick, type CacheClock, type ConfirmIO, type StepUsage } from './cacheclock'
 import {
   appendRow,
   autoTag,
@@ -254,6 +255,77 @@ function quietFailure($: EngineInterface, step: string): (err: unknown) => void 
   return err => $.ui.log(modText(`${step} failed: ${errorText(err)}`), { to: 'debug' })
 }
 
+// [SP_HELP_02_09] The cache clock's memory: the last request on the main
+// conversation's prefix in this process (a step, or the mod's fork), by session.
+const clockMem = newClockMemory()
+
+// [SP_HELP_02_09] The session whose storage `dir` is: the folder's name.
+function sessionOfDir(dir: string): string {
+  return dir.slice(dir.lastIndexOf('/') + 1)
+}
+
+// [SP_HELP_02_09] The clock's Update in `dir`, on the registry's chain.
+function updateClock($: EngineInterface, dir: string, change: (clock: CacheClock | undefined) => CacheClock | undefined): Promise<boolean> {
+  return updateOf(stores($, dir).tags)(reg => {
+    const cache = change(reg.cache)
+    return cache ? { ...reg, cache } : undefined
+  })
+}
+
+// [SP_HELP_02_09] The memory's time into the registry in `dir`: the end of a
+// turn, an aborted one too, and after the mod's fork.
+function writeClock($: EngineInterface, dir: string): Promise<boolean> {
+  const at = memoryAt(clockMem, sessionOfDir(dir))
+  return updateClock($, dir, c => clockAfter(c, at))
+}
+
+// [SP_HELP_02_09] The last request before a step, at its start: the memory and
+// the registry's view, no read; undefined when the view is not at hand.
+function clockBefore($: EngineInterface, session: string): number | null | undefined {
+  const dir = storage.sessionId === session ? publishedDir(storage) : undefined
+  const view = dir ? stores($, dir).tags.peek() : undefined
+  return view ? lastRequest(view.value.cache, memoryAt(clockMem, session)) : undefined
+}
+
+// [SP_HELP_02_09] A step of the main conversation is over (an interrupted one
+// too): the memory at once, so the turn's end writes it; then, with the
+// step's usage, the check of a cold verdict, claimed at once (StartCheck).
+function stepDone($: EngineInterface, session: string, prev: number | null | undefined, started: number, usage: StepUsage | null): void {
+  const ended = Date.now()
+  tick(clockMem, session, ended)
+  if (usage) void startCheck(clockMem, confirmIO($), { prev, started, ended, usage })?.catch(quietFailure($, 'cache clock check'))
+}
+
+// [SP_HELP_02_09] ConfirmCheck bound to the host.
+function confirmIO($: EngineInterface): ConfirmIO {
+  return {
+    probe: () => isProbe($),
+    storage: () => storageNow($),
+    read: async dir => {
+      const read = await stores($, dir).tags.cached()
+      return read.state === 'unreadable' ? undefined : read.value.cache
+    },
+    // a failed usage read leaves the entry without the measure: a debug line
+    messages: async () => {
+      const u = await usageInfo($).catch(err => void quietFailure($, 'cache clock check: usage read')(err))
+      const m = u ? measure(u) : undefined
+      return m?.measure === 'messages' && m.conversation !== undefined ? m.conversation : null
+    },
+    update: (dir, change) => updateClock($, dir, change),
+    journal: (dir, entry) => onJournal($, io => journalCache(io, entry), dir),
+  }
+}
+
+// [SP_HELP_02_09] ColdVerdict on the person's prompt in `dir`: a known
+// registry with no verdict due takes no chain (PL_AUD_CTX_P11).
+async function coldOnPrompt($: EngineInterface, dir: string): Promise<boolean> {
+  const at = memoryAt(clockMem, sessionOfDir(dir))
+  const now = Date.now()
+  const view = stores($, dir).tags.peek()
+  if (view && !coldVerdict(view.value.cache, at, now)) return false
+  return updateClock($, dir, c => coldVerdict(c, at, now))
+}
+
 type Stores = {
   queue: Store<Queue>
   tags: Store<TagRegistry>
@@ -366,10 +438,11 @@ function recallIO($: EngineInterface, snap: Snapshot, cwd: string | undefined, a
 // [SP_HELP_02_01] One completion of the helper's model, outside the
 // conversation. Never rejects: a refusal of the host is `failed` with its
 // text; `timeoutMs` elapsed is `timeout`, any other cut `aborted`.
-async function completeOn($: EngineInterface, req: CompleteRequest): Promise<CompleteResult> {
+// `signal`: the calling hook's; an interrupt cuts the call, which resolves `aborted`.
+async function completeOn($: EngineInterface, req: CompleteRequest, signal?: AbortSignal): Promise<CompleteResult> {
   const started = Date.now()
   try {
-    const r = await $.model.complete({ model: req.model, system: req.system, prompt: req.prompt.map(text => ({ text })), maxTokens: req.maxTokens, timeoutMs: req.timeoutMs })
+    const r = await $.model.complete({ model: req.model, system: req.system, prompt: req.prompt.map(text => ({ text })), maxTokens: req.maxTokens, timeoutMs: req.timeoutMs }, signal ? { signal } : undefined)
     const u = r.usage
     const tin = u.input_tokens + u.cache_read_input_tokens + u.cache_creation_input_tokens
     if (r.isAnswered) return { text: r.text, in: tin, out: u.output_tokens }
@@ -382,15 +455,15 @@ async function completeOn($: EngineInterface, req: CompleteRequest): Promise<Com
 // [SP_HELP_02_03] Ask bound to the host: Recall's ports, the ledger read
 // once outside every chain, the helper's model and the journal's entry in
 // the background.
-function askIO($: EngineInterface, snap: Snapshot, cwd: string | undefined, aborted: () => boolean): AskIO {
+function askIO($: EngineInterface, snap: Snapshot, cwd: string | undefined, signal: AbortSignal): AskIO {
   const at: { dir?: string } = {}
   return {
     ...recallIO($, snap, cwd, at),
     readLedger: () => stores($, need(at.dir)).folds.read(),
-    helper: { complete: req => completeOn($, req) },
+    helper: { complete: req => completeOn($, req, signal) },
     journal: entry => onJournal($, io => journalAsk(io, entry), need(at.dir)),
     now: () => Date.now(),
-    aborted,
+    aborted: () => signal.aborted,
     debug: text => $.ui.log(text, { to: 'debug' }),
   }
 }
@@ -1119,6 +1192,11 @@ function handoffIO($: EngineInterface): HandoffIO {
       if (!r.isAnswered) throw new Error(`no reply: ${r.reason}`)
       return r.text
     },
+    // [SP_HELP_02_09] the fork read the conversation's prefix: the clock's memory, then the registry
+    forked: async dir => {
+      tick(clockMem, sessionOfDir(dir), Date.now())
+      await writeClock($, dir).catch(quietFailure($, 'cache clock after the fork'))
+    },
     // A refused prompt resolves with `drop`; the handoff treats it as a failure.
     submit: text => enteredOrThrow($.prompt.submit({ text })),
     toast: text => $.ui.toast(text),
@@ -1212,6 +1290,8 @@ function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
     hostRows: dir => hostRowsNow($, dir),
     // [SP_FOLD_02_07] the fold ledger, a view
     folds: dir => stores($, dir).folds.read(),
+    // [SP_HELP_02_13] the cache clock's memory for this session
+    clock: async () => ({ memory: memoryAt(clockMem, await $.session.id()), now: Date.now() }),
     // [SP_CTX_02_69] the mod reads its own file: no permission asked
     rules: () => $.fs.read(`${$.plugin.root}/skills/${SKILL}/${RULES_FILE}`),
   }
@@ -1556,9 +1636,27 @@ export const register: Register = on => {
   // goes with it: the result is the helper's reading.
   on('tool.call', { tool: /^mcp__context-editor__context_helper$/ }, async ($, e, next) => {
     const cwd = e.agentId ? undefined : await projectRoot($).catch(() => undefined)
-    const out = await contextAsk(askIO($, snapshot($), cwd, () => next.signal.aborted), { ...(e as unknown as HelperArgs), agentId: e.agentId }, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
+    const out = await contextAsk(askIO($, snapshot($), cwd, next.signal), { ...(e as unknown as HelperArgs), agentId: e.agentId }, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
     return 'deny' in out ? deny(out.deny) : { result: out.result }
   }).catch(($, e, next) => (next.called ? next(e) : deny(`helper failed: ${next.error.kind}`)))
+
+  // [SP_HELP_02_09] The cache clock: every step of the main conversation is a
+  // request on its prefix. The hook only passes the stream; its work starts
+  // once the step is over, an interrupted one too (`finally`).
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId) return yield* next(e)
+    const session = await $.session.id().catch(() => undefined)
+    const prev = session ? clockBefore($, session) : undefined
+    const started = Date.now()
+    let usage: StepUsage | null = null
+    try {
+      const r = yield* next(e)
+      usage = r.usage
+      return r
+    } finally {
+      if (session) stepDone($, session, prev, started, usage)
+    }
+  })
 
   // [SP_CTX_02] The turn counter: every turn of the main conversation counts;
   // the mod's own commands raise no turn events.
@@ -1677,8 +1775,8 @@ export const register: Register = on => {
 
   // [SP_CTX_02] [SP_CTX_02_30] [SP_CTX_02_12] [SP_CTX_02_06] [SP_CTX_02_21]
   // The end of a turn of the main conversation: the counter first; then, in
-  // the background, AfterTurn (DetectOptimize, the turn count, Flush; the
-  // handoff besides).
+  // the background, AfterTurn (DetectOptimize, the turn count, the cache
+  // clock [SP_HELP_02_09], Flush; the handoff besides).
   on('turn.complete', async ($, e, next) => {
     // [SP_CTX_02_57] ProbeMode: the counts file, read by RunProbe
     if (await isProbe($)) {
@@ -1695,6 +1793,8 @@ export const register: Register = on => {
         storage: () => storageDir($),
         detect: (dir, end) => detectOptimize(detectIO($, dir), end),
         countTurn: dir => stores($, dir).tags.onChain(() => countTurn(tagIO($, dir))),
+        // [SP_HELP_02_09] the clock's memory into the registry, an aborted turn too
+        clock: dir => writeClock($, dir).catch(quietFailure($, 'cache clock at the turn end')),
         repair: () => repairAtTurnEnd(repairIO($), repairMem),
         flush: aborted => flushAfterTurn(flushIO($), flushState, aborted),
         handoff: aborted => handoffAfterTurn(handoffIO($), handoff, aborted),
@@ -1995,6 +2095,8 @@ export const register: Register = on => {
       settle: async done => void (await updateOf(s.queue)(q => settledQueue(q, done))),
       // [SP_CTX_02_37] the turn channel, between turns only
       suggestion: () => suggestionFor($, dir),
+      // [SP_HELP_02_09] ColdVerdict, between turns only
+      cold: () => coldOnPrompt($, dir),
     })
   }).catch(($, e, next) => next(e))
 }

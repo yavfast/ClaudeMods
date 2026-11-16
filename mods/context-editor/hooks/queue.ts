@@ -578,6 +578,9 @@ export type DeliverIO<R> = {
   // [SP_CTX_02_37] TurnSuggestion, bounded by HINT_WAIT: its line or none;
   // asked only between turns and without an optimization request
   suggestion?: () => Promise<string | undefined>
+  // [SP_HELP_02_09] ColdVerdict of the cache clock on the registry's chain;
+  // asked only between turns; absent: none
+  cold?: () => Promise<unknown>
 }
 
 // [SP_CTX_02_08] [SP_CTX_02_27] The person's prompt (or another plugin's)
@@ -589,6 +592,8 @@ export type DeliverIO<R> = {
 // prompt enters, so a dropped prompt loses it. A failed step never holds the
 // prompt back.
 export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<R>): Promise<R> {
+  // [SP_HELP_02_09] the first prompt after an idle takes the cold verdict, once
+  if (io.cold && !io.inTurn()) await io.cold().catch(() => undefined)
   const context: string[] = []
   const intro = await io.intro().catch(() => undefined)
   if (intro) context.push(intro)
