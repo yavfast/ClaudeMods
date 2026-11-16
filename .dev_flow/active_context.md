@@ -18,15 +18,15 @@ A thin index over the task files in [`tasks/`](tasks/) — active and recently c
 
 | Task | Phase | Completed | Contributors | Result |
 |------|-------|-----------|--------------|--------|
+| [task_20261116_123729_helper](tasks/task_20261116_123729_helper.md) — Субагент-помічник для context-editor (спайк) | done | 2026-11-16 | 9a12e9ac | спайк `context_helper` concluded: мод питає sonnet без агента (`complete`, JSON 35 з 35); перший кандидат — питання до архіву згортки; пастки хоста 88–90; навичка `helper-evidence` |
+| [task_20261116_102446_supervisor](tasks/task_20261116_102446_supervisor.md) — Субагент-наглядач за головним контекстом (спайк) | done | 2026-11-16 | 9a12e9ac | спайк `context_supervisor` concluded: окремий агент — найдорожча форма; дешевше правило → одне судження моделі → прихований контекст у безпечний момент; пастки хоста 84–87; навичка `supervisor-evidence` |
 | [task_C_FOLD](tasks/task_C_FOLD.md) — Згортки й пам'ять завдань | done | 2026-11-15 | 90e21609, 85408971 | PL_FOLD фази 1–6: облік згорток, `context_recall` з поверненням, згортка зі словами людини, вкладені області й завдання з карткою, вставки `optimize`/`close`/`note`; фаза 4 переваги карток не виміряла (спайк, Entry 14–15) |
 | [task_20261114_135602_service-info](tasks/task_20261114_135602_service-info.md) — Службова інформація в контексті чату (спайк) | done | 2026-11-14 | 90e21609 | спайк `context_service_info` concluded: 29 варіантів (10 варті концепту, 13 потребують даних, 6 відхилено); навичка `service-info-evidence` |
 | [task_20261110_093704_fix-autocontinue](tasks/task_20261110_093704_fix-autocontinue.md) — Автоматичне продовження після застосування на початку етапу | done | 2026-11-10 | 23a7a081 | останній явний вибір пакета перемагає; ResumesAfter для звіту й результатів; вибори ходу без правок скидаються; TAGS_STOP; 1018 тестів, живий прогін A–D |
-| [task_20261031_211349_adopt-token-economizer](tasks/task_20261031_211349_adopt-token-economizer.md) — Аналіз запозичень з TokenEconomizer | done | 2026-10-31 | d4fbce3a | high 0, medium 4 (defer), похідних ідей 2; `docs/ext_adoption/token-economizer*.md` |
-| [task_20261029_073500_session-title](tasks/task_20261029_073500_session-title.md) — Заголовок сесії за темою задачі | done | 2026-10-29 | 72a009d8 | фаза 48: операція `title`, `/rename` після ходу, рядки прибирає застосування; живий прогін у stream-json і терміналі |
 
 ## Deferred (todos)
 
-_5 candidate · 1 queued · 0 contested — у [backlog PL_CTX](../docs/context_editor.plan.md#PL_CTX_BACKLOG)_
+_7 candidate · 1 queued · 0 contested — у [backlog PL_CTX](../docs/context_editor.plan.md#PL_CTX_BACKLOG)_
 - ⚠ backlog CF-28…CF-53 ([план PL_AUD_CTX](audit/context-editor_20261011_182951.plan.md#PL_AUD_CTX_BACKLOG), кожен пункт з тригером) прив'язаний до **закритої** task_PL_AUD_CTX — бере `/dev-flow resume task_C_CTX`
 
 ## Notes

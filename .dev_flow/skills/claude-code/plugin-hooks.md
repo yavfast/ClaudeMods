@@ -3,7 +3,7 @@ skill: ClaudeCodePluginHooks
 domain: claude-code
 topics: [hooks, session.compact, session.append, prompt.submit, tool.list, process.run, fs, resume, tests, command.run, transcript, headless, stream-json, vscode, prompt-cache, install, prompt.attachment, thinking, auto-mode]
 source: implementation
-updated: 2026-11-14
+updated: 2026-11-16
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.296
@@ -12,7 +12,7 @@ state: stale
 
 # Моди Claude Code: поведінка хоста, яку треба знати
 
-Вхідний файл навички: межі застосування, ключові поняття і покажчик пасток хоста. Самі пастки (83 пункти) лежать у п'яти тематичних файлах цієї теки з тими самими номерами; посилання «plugin-hooks N» знаходить пункт через таблицю в [Pitfalls](#pitfalls). Перед будь-якою зміною хуків у `mods/` — відкрити тематичний файл за темою зміни.
+Вхідний файл навички: межі застосування, ключові поняття і покажчик пасток хоста. Самі пастки (90 пунктів) лежать у п'яти тематичних файлах цієї теки з тими самими номерами; посилання «plugin-hooks N» знаходить пункт через таблицю в [Pitfalls](#pitfalls). Перед будь-якою зміною хуків у `mods/` — відкрити тематичний файл за темою зміни.
 
 ## Contents
 
@@ -20,7 +20,7 @@ state: stale
 - [Context](#context) — звідки взялися пункти
 - [Key Concepts](#key-concepts) — форма хука, валідатор, `.catch`, тести, типи
 - [Usage in This Project](#usage-in-this-project) — де в `context-editor` застосовано компактизацію, команди і живі прогони
-- [Pitfalls](#pitfalls) — покажчик пунктів 1–83 (поведінка хоста, знайдена наживо; 69–70 — з документації, 75 — з бінарника, наживо не перевірено) → тематичні файли:
+- [Pitfalls](#pitfalls) — покажчик пунктів 1–90 (поведінка хоста, знайдена наживо; 69–70 — з документації, 75 — з бінарника, наживо не перевірено) → тематичні файли:
   - [plugin-hooks-api.md](plugin-hooks-api.md) — Базові API плагіна: модуль, `$.fs`, `$.process`, `$.tool`, `.catch`, ідентичність процесу, перезавантаження, підключення
   - [plugin-hooks-commands.md](plugin-hooks-commands.md) — Команди, ходи й промпти плагіна: `$.command.run`, неінтерактивний хост, події ходу, `$.prompt.submit`, `$.ui.log`
   - [plugin-hooks-compaction.md](plugin-hooks-compaction.md) — Компактизація від обробника, `handle`, злиття за `message.id`, `--resume` і ремонт
@@ -32,7 +32,7 @@ state: stale
 
 - **when_to_use:** пишете або змінюєте мод у `mods/` — хуки подій, виклики `$`, тести, живі сценарії.
 - **when_not:** класичні хуки `settings.json` (команди оболонки) — інший механізм.
-- **version_or_context_scope:** Claude Code ≥ 2.1.295 — старіші версії не підтримуються (рішення розробника 2026-10-09); пункти 1–15 перевірено на 2.1.294, 16–36 — на 2.1.295, інтерактивно й у stream-json; 37–38 — на 2.1.295 лише в stream-json, 39 — у `claude -p`, 40–42 — живі прогони фази 14, 43–45 — спайк вкладень (обидва хости), 46 — проба фази 15 (stream-json); 47–52 — спайк медіа в промптах на 2.1.296 (обидва хости, `docs/context_editor_media.spike.md`); 53–55 — спайк кешу промпту на 2.1.296 (`docs/context_editor_cache.spike.md`, проксі-журнал запитів); 56 — підключення мода до живої сесії у VS Code на 2.1.296 (частина (а) перевірено наживо, (б) — за документацією); 59 — спайк вкладень хоста на 2.1.296 (обидва хости, `docs/context_editor_host_attachments.spike.md`); 60 — живий прогін фази 25 PL_CTX на 2.1.296 (обидва хости); 61 — спайк авторства на 2.1.296 (stream-json і термінал, `docs/context_editor_authorship.spike.md`); 62 — проба `$.ui.log` і живий прогін фази 28 PL_CTX на 2.1.296 (термінал з `--resume`, stream-json; у VS Code — спостереження людини 2026-10-12); 78–83 — зонди й живі прогони на 2.1.325 (2026-11-14, лише stream-json, sonnet і opus; `docs/context_service_info.spike.md`, Entry 11–13, зонди `.dev_flow/proto/trailer/` і `.dev_flow/proto/recall/`; решту пунктів на 2.1.325 не перезвірено, крім 7 і 63 — див. 82); після оновлення хоста факти нижче перевірити заново (типи в `.claude-plugin/types/claude-code/index.d.ts`).
+- **version_or_context_scope:** Claude Code ≥ 2.1.295 — старіші версії не підтримуються (рішення розробника 2026-10-09); пункти 1–15 перевірено на 2.1.294, 16–36 — на 2.1.295, інтерактивно й у stream-json; 37–38 — на 2.1.295 лише в stream-json, 39 — у `claude -p`, 40–42 — живі прогони фази 14, 43–45 — спайк вкладень (обидва хости), 46 — проба фази 15 (stream-json); 47–52 — спайк медіа в промптах на 2.1.296 (обидва хости, `docs/context_editor_media.spike.md`); 53–55 — спайк кешу промпту на 2.1.296 (`docs/context_editor_cache.spike.md`, проксі-журнал запитів); 56 — підключення мода до живої сесії у VS Code на 2.1.296 (частина (а) перевірено наживо, (б) — за документацією); 59 — спайк вкладень хоста на 2.1.296 (обидва хости, `docs/context_editor_host_attachments.spike.md`); 60 — живий прогін фази 25 PL_CTX на 2.1.296 (обидва хости); 61 — спайк авторства на 2.1.296 (stream-json і термінал, `docs/context_editor_authorship.spike.md`); 62 — проба `$.ui.log` і живий прогін фази 28 PL_CTX на 2.1.296 (термінал з `--resume`, stream-json; у VS Code — спостереження людини 2026-10-12); 78–83 — зонди й живі прогони на 2.1.325 (2026-11-14, stream-json, sonnet і opus; `docs/context_service_info.spike.md`, Entry 11–13, зонди `.dev_flow/proto/trailer/` і `.dev_flow/proto/recall/`); 84–87 — зонди спайку наглядача на 2.1.325 (2026-11-16, stream-json; `docs/context_supervisor.spike.md`, Entry 2); 88–90 і доповнення до 31, 80, 83 і 87 — зонди спайку помічника на 2.1.325 (2026-11-16, stream-json і термінал, sonnet, плагін рівня user; `docs/context_helper.spike.md`, Entry 2); решту пунктів на 2.1.325 не перезвірено, крім 7 і 63 (див. 82); після оновлення хоста факти нижче перевірити заново (типи в `.claude-plugin/types/claude-code/index.d.ts`).
 - **promotion scope:** `candidate` — підтверджено одним модом (`context-editor`).
 
 ## Context
@@ -141,7 +141,14 @@ state: stale
 | 80 | Про кожен оминутий хук плагіна хост повідомляє моделі | [plugin-hooks-api.md#p80](plugin-hooks-api.md#p80) |
 | 81 | `--resume` приймає транскрипт, переписаний поза хостом | [plugin-hooks-compaction.md#p81](plugin-hooks-compaction.md#p81) |
 | 82 | Перший хід після `--resume` переписаної сесії бачить рядки двічі | [plugin-hooks-compaction.md#p82](plugin-hooks-compaction.md#p82) |
-| 83 | `tool.call` з відповіддю `{ result }` віддає текст як результат власного інструмента | [plugin-hooks-api.md#p83](plugin-hooks-api.md#p83) |
+| 83 | `tool.call` з відповіддю `{ result }` віддає текст як результат інструмента — власного й вбудованого | [plugin-hooks-api.md#p83](plugin-hooks-api.md#p83) |
+| 84 | Форк `$.model.fork`: ціна, затримка й відставання посеред ходу | [plugin-hooks-api.md#p84](plugin-hooks-api.md#p84) |
+| 85 | `$.session.append` у головній розмові: рядок `isMeta` без рамки | [plugin-hooks-commands.md#p85](plugin-hooks-commands.md#p85) |
+| 86 | Безпечна точка для `$.session.append` посеред ходу | [plugin-hooks-context.md#p86](plugin-hooks-context.md#p86) |
+| 87 | Відповідь `$.agent.spawn` головна модель не бачить у stream-json; у терміналі звіт будить основного агента | [plugin-hooks-api.md#p87](plugin-hooks-api.md#p87) |
+| 88 | `$.model.complete` і `$.model.classify` на sonnet: формат відповіді й ціна | [plugin-hooks-api.md#p88](plugin-hooks-api.md#p88) |
+| 89 | Таймер простою і `$.command.run('compact')` у простої | [plugin-hooks-commands.md#p89](plugin-hooks-commands.md#p89) |
+| 90 | Живий зонд, запущений із сесії агента, успадковує її змінні `CLAUDE_CODE_*` | [plugin-hooks-api.md#p90](plugin-hooks-api.md#p90) |
 
 ## References
 

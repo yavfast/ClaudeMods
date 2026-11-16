@@ -1,6 +1,6 @@
 domain: context-editing
 description: Знання для дизайну мода context-editor — що виміряно про редагування агентом власної історії та про службову інформацію навколо повідомлень (згортки, згадування, вставки), правила й ризики
-updated: 2026-11-15
+updated: 2026-11-16
 
 skills:
   - file: history-editing-evidence.md
@@ -16,4 +16,18 @@ skills:
     source: research
     updated: 2026-11-15
     written_against: 'література й документація вендорів, відкриті 2026-11-14; документація Claude API 2026-11; канали хоста — з навички plugin-hooks (Claude Code 2.1.296, stale); живі зонди — Claude Code 2.1.325, stream-json'
+    promotion: candidate
+  - file: supervisor-evidence.md
+    skill: SupervisorEvidence
+    topics: [supervisor, monitor, critic, watcher, reminders, advice, interventions, loops, drift, model.fork, model.complete, agent.spawn, session.append, safe-point, prompt-cache, prompt-injection, role-framing]
+    source: research
+    updated: 2026-11-16
+    written_against: 'препринти й документація, відкриті 2026-11-16; живі зонди — Claude Code 2.1.325, stream-json'
+    promotion: candidate
+  - file: helper-evidence.md
+    skill: HelperEvidence
+    topics: [helper, delegation, subagents, digests, observation-masking, tool-output, archive-questions, recall, structured-output, model.complete, model.classify, model.fork, agent.spawn, tool.call, clock, idle, conditions, prompt-cache, sonnet]
+    source: research
+    updated: 2026-11-16
+    written_against: 'препринти й документація, відкриті 2026-11-16; живі зонди — Claude Code 2.1.325, stream-json і термінал'
     promotion: candidate

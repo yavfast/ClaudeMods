@@ -28,6 +28,8 @@ The parent file [`../active_context.md`](../active_context.md) is a thin dashboa
 
 ## Recently Completed
 
+- [task_20261116_123729_helper](task_20261116_123729_helper.md) — `9a12e9ac` — `done` 2026-11-16 — Спайк: субагент-помічник для context-editor (`docs/context_helper.spike.md`, навичка `helper-evidence`)
+- [task_20261116_102446_supervisor](task_20261116_102446_supervisor.md) — `9a12e9ac` — `done` 2026-11-16 — Спайк: субагент-наглядач за головним контекстом (`docs/context_supervisor.spike.md`, навичка `supervisor-evidence`)
 - [task_C_FOLD](task_C_FOLD.md) — `90e21609, 85408971` — `done` 2026-11-15 — Згортки й пам'ять завдань: PL_FOLD фази 1–6 (облік згорток, розгортання з поверненням, згортка зі словами людини, вкладені області й завдання, вставки)
 - [task_20261114_135602_service-info](task_20261114_135602_service-info.md) — `90e21609` — `done` 2026-11-14 — Спайк: службова інформація в контексті чату (`docs/context_service_info.spike.md`, навичка `service-info-evidence`)
 - [task_20261110_093704_fix-autocontinue](task_20261110_093704_fix-autocontinue.md) — `23a7a081` — `done` 2026-11-10 — Автоматичне продовження після застосування на початку етапу

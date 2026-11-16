@@ -3,7 +3,7 @@ skill: ClaudeCodePluginHooksContext
 domain: claude-code
 topics: [usage, breakdown, prompt-cache, cache_control, lookback, thinking, subagents, auto-mode, tool-result-clearing]
 source: implementation
-updated: 2026-10-17
+updated: 2026-11-16
 kind: procedural
 promotion: candidate
 written_against: Claude Code 2.1.296
@@ -12,7 +12,7 @@ state: stale
 
 # Моди Claude Code: розмір контексту, кеш промпту, thinking, субагенти й класифікатор авто-режиму
 
-Тематичний файл навички [ClaudeCodePluginHooks](plugin-hooks.md): пункти 33, 37, 41, 53, 54, 55, 67, 69, 70, 74 її списку пасток, дослівно і з тими самими номерами (якір `#p<N>`), тож посилання «plugin-hooks N» / «навичка, пункт N» ведуть сюди через [покажчик](plugin-hooks.md#pitfalls). Посилання «пункт N» у тексті — на номер у тому самому списку, хоч би в якому тематичному файлі він лежав.
+Тематичний файл навички [ClaudeCodePluginHooks](plugin-hooks.md): пункти 33, 37, 41, 53, 54, 55, 67, 69, 70, 74, 86 її списку пасток, дослівно і з тими самими номерами (якір `#p<N>`), тож посилання «plugin-hooks N» / «навичка, пункт N» ведуть сюди через [покажчик](plugin-hooks.md#pitfalls). Посилання «пункт N» у тексті — на номер у тому самому списку, хоч би в якому тематичному файлі він лежав.
 
 ## Applicability Boundary
 
@@ -51,6 +51,9 @@ state: stale
 
 <a id="p74"></a>
 74. **Thinking після правки посередині: недокументована поведінка хоста — лише спостереження, не основа дизайну** (фаза 39, 2.1.299, `.dev_flow/cache/live-test/curation-gate/thinking/`). хост ставить `block_binding` за віддаленим прапором `tengu_polished_dewdrop` або змінною `CLAUDE_CODE_POLISHED_DEWDROP` (`drop` → `drop_block`, `block` → `error`, `off` — без поля); з `block` на старшому акаунті thinking-блок незмінної відповіді після правки дав 400, а хост записав «[thinking] prefix-lock rejection: stripped 1 of 1 thinking block(s) (partial) and retrying» і хід минув (рядок є і в 2.1.295–2.1.296); перебудовані рядки мода thinking і так гублять. У `-p` thinking з'являється лише з `--settings '{"alwaysThinkingEnabled":true}'` (sonnet і на такому — рідко, opus — у кожній текстовій відповіді).
+
+<a id="p86"></a>
+86. **Безпечна точка для `$.session.append` посеред ходу** (2.1.325, stream-json, haiku, n = 1; зонд `.dev_flow/cache/live-test/supervisor-probe/`, спайк `docs/context_supervisor.spike.md`, Entry 2). Рядок, доданий поки йде потокова відповідь головної моделі, транскрипт зберігає перед цією відповіддю. Наступний запит отримує запис `thinking_drop` з `reason: prefix_mismatch` і `messagesHistoryChanged` (два блоки мислення за два ходи), а читання кешу відкочується до межі попереднього ходу. У зонді застаріла порада ще й збила агента: він пропустив крок і хибно переказав запит. Та сама порада, утримана й додана з наступного хука `tool.call` або між кроками, пройшла без втрат. Асинхронний результат (форк, субагент, таймер) ставити в чергу й віддавати лише з `tool.call`, з `turn.complete` або як `context` із `prompt.submit`.
 
 ## Structural events
 
