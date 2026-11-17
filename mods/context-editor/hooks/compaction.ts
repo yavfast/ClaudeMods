@@ -165,6 +165,8 @@ export type CompactionIO = {
   // [SP_HELP_01_08] IdleRun's command runs (module memory); with the idle
   // mark still holding, the apply's entry is `idle`; absent: never
   idle?: () => boolean
+  // [SP_HELP_02_12] StartRun's command runs (module memory); absent: never
+  start?: () => boolean
   // [SP_CTX_01_22] the host's deliveries recorded in this session, read on
   // their serial chain; absent: none
   readDeliveries?: () => Promise<Read<Deliveries>>
@@ -248,14 +250,16 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   }
   let shape: CacheShape | undefined
   const shapeOf = () => (shape ??= cacheShape(messages, api))
-  // [SP_HELP_02_11] IdleRun's command that waited behind a turn: the turn
-  // moved the last request past the mark, and its own Flush serves the
-  // queue with the resume prompt the agent was told of; the mark goes
-  if (io.idle?.() === true && !deferredHolds(q, last)) {
+  // [SP_HELP_02_11] [SP_HELP_02_12] IdleRun's or StartRun's command that
+  // waited behind a turn: the turn moved the last request past the mark, and
+  // its own Flush serves the queue with the resume prompt the agent was told
+  // of; the mark goes
+  const ownRun = io.idle?.() === true ? 'idle' : io.start?.() === true ? 'start' : undefined
+  if (ownRun && !deferredHolds(q, last)) {
     const rest = !io.isAborted() ? withoutApplyDeferred(q) : undefined
     // [ERR-01] a failed write leaves a stale mark the next apply drops
     if (rest) await io.writeQueue(rest).catch(err => io.debug?.(modText(`stale applyDeferred not cleared: ${errorText(err)}`)))
-    return { skip: modText('idle apply overtaken by a turn') }
+    return { skip: modText(`${ownRun} apply overtaken by a turn`) }
   }
   let selection = selectEdits(q, last, shapeOf, firstOf)
   io.selected?.(selection.batches)

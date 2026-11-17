@@ -308,6 +308,24 @@ test('Запис apply — idle: IdleRun’s command with its mark on the last r
   expect(idleOf(other.written.journal)).toBeUndefined()
 })
 
+// [SP_HELP_02_12] [SP_HELP_05_04] «Промпт випередив команду StartRun» in the handler
+test('Запис apply — StartRun: its command with the mark on the last request applies every edit and gives no idle; overtaken by the first turn it skips, the mark goes and the turn’s own edits wait for its Flush', async () => {
+  const rows = rowsWithOwn()
+  const tags: TagRegistry = { ...EMPTY_REGISTRY, cache: { lastRequestAt: 500, coldAt: 900, check: true } }
+  const held = apply(rows, q0([sum('c29'), sum('c30', 'b1')], { applyDeferred: true, coldSince: 500, deferredSince: { b1: 1 } }), tags)
+  held.io.start = () => true
+  await held.run()
+  expect(held.written.journal).toEqual([expect.objectContaining({ kind: 'apply', edits: 2, deferred: 1 })])
+  expect('idle' in (held.written.journal[0] as object)).toBe(false)
+  // the first turn ran before the command and queued c29: the mark no longer holds
+  const moved = apply(rows, q0([sum('c29'), sum('c30', 'b1')], { applyDeferred: true, coldSince: 400, deferredSince: { b1: 1 } }), tags)
+  moved.io.start = () => true
+  expect(await moved.run()).toEqual({ skip: 'context-editor: start apply overtaken by a turn' })
+  expect(moved.written.journal).toEqual([])
+  expect(moved.written.queue?.applyDeferred).toBeUndefined()
+  expect(moved.written.queue?.edits).toEqual([sum('c29'), sum('c30', 'b1')])
+})
+
 // [SP_HELP_05_01] Фіксація — прив'язка in the handler, the shifted case: a
 // multi-edit batch starts deep (unselected), one of its edits lies after sO,
 // and an own pair between sO and it goes (DropOwnCalls after the prefix)

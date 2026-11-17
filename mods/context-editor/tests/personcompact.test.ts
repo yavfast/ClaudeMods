@@ -108,6 +108,8 @@ function detectIO(log: Log): DetectIO {
 
 test('PersonCompact — маршрут: a plugin passes; the person with empty args goes to the agent; "host" any case to the host; other args pass', () => {
   for (const args of ['', '  ', 'host', 'keep notes']) expect(compactRoute({ args, origin: { kind: 'plugin' } })).toBe('pass')
+  // [SP_HELP_02_12] StartRun's own command from the session.start timer: the host runs the mod's command.run hook for it (no re-entry skip there), the route passes it on
+  expect(compactRoute({ args: MARKER, origin: { kind: 'plugin' } })).toBe('pass')
   for (const kind of ['composer', 'sdk', 'unclassified', 'bridge', 'scheduled-trigger']) {
     expect(compactRoute(person('', kind))).toBe('agent')
     expect(compactRoute(person(' \n ', kind))).toBe('agent')

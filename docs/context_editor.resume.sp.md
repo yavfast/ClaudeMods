@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-12
-> **Updated:** 2026-10-17
+> **Updated:** 2026-11-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_44–02_48 специфікації [SP_CTX](./context_editor.sp.md): журнал входу застосувань (RecordInputs), розпізнавання підтягнутих оригіналів (DropPulled), виявлення і запуск ремонту в новому процесі хоста (ScheduleRepair, RunRepair), обробник компактизації ремонту (HandleRepair), результат ToolSearch, перебудований без `handle` (ToolRefText). Читати перед зміною `hooks/repair.ts`, гілки ремонту в `hooks/compaction.ts`, зв'язування `session.start` у `hooks/register.ts` або перебудови результатів у `hooks/edits.ts`.
@@ -42,6 +42,8 @@ Input: `messages` обробника HandleCompaction ([SP_CTX_02_07](./context_
         unreadable → перенести файл убік (карантин, SP_CTX_01_07) і почати новий журнал з цього запису   # старі оригінали тоді розпізнає лише залишкове правило DropPulled
 
 Чому всі рядки асистента і результатів входу, а не лише повернені з `handle`: обидва шляхи хоста тягнуть рядки входу якогось застосування (рядки того самого `message.id` і їхні результати; оригінали до перетину межі), а точний підмножинний облік вимагав би повторити правила KeepResponsesWhole і FrozenPrefix; запис зайвого `handle` нічого не ламає — без двійника рядок однаково лишається (02_45). Засів ([SP_CTX_02_26](./context_editor.handoff.sp.md#SP_CTX_02_26)) і ремонт (02_47) нічого не записують: їхні рядки асистента і результатів не мають `handle`.
+
+Застосування StartRun ([SP_HELP_02_12](./context_helper.batches.sp.md#SP_HELP_02_12); PL_HELP, фаза 6) — власна компактизація мода з таймера `session.start` нового процесу при вердикті `compact` = `reached`, до першого промпту — звичайне застосування HandleCompaction: DropPulled прибирає оригінали, які завантажувач повернув поруч із копіями, і RecordInputs пише його вхід так само.
 
 Errors: збій запису журналу не впливає ні на застосування, ні на звіт; оригінали цього застосування після `--resume` розпізнає лише залишкове правило DropPulled (рядки з ідентифікаторами).
 
@@ -89,7 +91,7 @@ Errors: немає (чиста функція). Порожній журнал і
 Purpose: у новому процесі хоста чи після перемикання сесії в процесі помітити завантажений ланцюжок з оригіналами і один раз запустити компактизацію ремонту.
 
     ON session start (main conversation), after PrepareStorage:                 # новий процес хоста: --resume, перезапуск, VS Code відкриває сесію
-        repairAtTurnEnd = true                                                 # з 2026-10-14 (SP_CTX_02_54): ремонт — з кінця першого ходу, коли вердикт compact відомий
+        repairAtTurnEnd = true                                                 # з 2026-10-14 (SP_CTX_02_54): ремонт — з кінця першого ходу, коли вердикт compact відомий; далі в хуку — StartRun (SP_HELP_02_12)
     ON PrepareStorage publishes another session in this process (a real switch: /resume; /clear теж — нова сесія без журналу, перевірка нічого не знайде):
         repair = { session: new id, state: none }; compactedHere = none; repairAtTurnEnd = true   # таймер звідси не ставиться: перемикання бачать шляхи tool.call / prompt.submit, з таймерів яких команда не йде
     ON turn complete (main loop), in AfterTurn after the turn count, before Flush:
@@ -133,6 +135,8 @@ Purpose: у новому процесі хоста чи після переми�
 Хости (до 2026-10-14, коли ремонт планувався з `session.start`). stream-json: компактизація з `session.start` виконувалася до першого промпту (спайк, cr2); тепер перший хід після відновлення йде з дублікатами в усіх хостах. Термінал з `claude --resume`: `session.start` теж є; якщо людина встигне надіслати промпт за REPAIR_DELAY_MS, команда чекає кінця ходу — перший запит тоді йде з дублікатами (живий сценарій). `/resume` у процесі: `session.start` немає, перемикання бачить PrepareStorage; ремонт іде після першого ходу (хук `command.run` на `resume` як ранній тригер — лише якщо живий прогін покаже, що він спрацьовує і повертається після перемикання; SP_CTX_DEC_32). Разовий `claude -p --resume <id> "<prompt>"`: команда, поставлена посеред єдиного ходу, після нього відхиляється («no session is bound») — рядок стану, сесія як є.
 
 Порядок з Flush не потрібен для правильності: якщо застосування черги прийде раніше за ремонт (ремонт відмовлено чи ще не встиг), HandleCompaction сам прибирає підтягнуті оригінали DropPulled ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)), а після нього межа довірена і NeedsRepair — `false`. Черги ремонт не читає й не пише: правки в ній цілять за `tool_use_id` і відбитками (роль, ідентифікатори, текст), які перебудова без `handle` не змінює (крім результату ToolSearch, 02_48, і злитих рядків викликів — як і в застосуванні).
+
+StartRun ([SP_HELP_02_12](./context_helper.batches.sp.md#SP_HELP_02_12); PL_HELP, фаза 6) ремонту не переносить: хук `session.start` ставить `repairAtTurnEnd = true` до StartRun, і ремонт лишається на кінці першого ходу. Коли StartRun застосував відкладені пакети до першого промпту (кеш холодний, вердикт `reached`), обробник уже прибрав підтягнуті оригінали DropPulled, `compactedHere` дорівнює сесії, а межа довірена (той самий процес), тож ремонт, запланований на кінець першого ходу, бачить NeedsRepair = `false`. StartRun без застосування (вердикт не `reached`, кеш теплий чи невідомий, команду відмовлено, обробник відповів `skip`) ремонту не змінює.
 
 Errors:
 | Code | Condition | Guidance |
@@ -226,3 +230,4 @@ Errors: немає. Поза вікном API (`toolRefs` не знає викл
 | 2026-10-12 | Рев'ю і живий прогін фази 32 (`.dev_flow/cache/live-test/phase32-results.md`): 02_45 — правило (3) за кількістю (копія — двійник одного оригіналу), залишкове правило прибирає рядок лише коли заміна має всі його ідентифікатори, PairsWhole (прибирання не розриває пар); 02_46 — вердикт `ApplyLedger.clean` після «nothing to repair» глушить NeedsRepair до наступного застосування; HandleCompaction не читає журнал, коли `compactedHere` = сесія; 02_47 — записи після фіксації лише без покинутої диспетчеризації (CONC-02); CollectMedia — медіа і `tool_reference` результату один раз за ідентифікатором |
 | 2026-10-17 | Статус draft → active (аудит dev-flow): контракти 02_44–02_48 реалізовано у фазі 32 (`hooks/repair.ts`) |
 | 2026-10-17 | Аудит коду (SPEC-11): 02_45 — залишкове правило порівнює й тексти результатів; 02_47 — HandleRepair лишає рядок з `handle` і без тексту |
+| 2026-11-17 | PL_HELP фаза 6 ([SP_HELP_02_12](./context_helper.batches.sp.md#SP_HELP_02_12)): 02_44 — застосування StartRun з таймера `session.start` — звичайне застосування HandleCompaction (DropPulled, RecordInputs); 02_46 — хук `session.start` ставить `repairAtTurnEnd` до StartRun; ремонт лишається на кінці першого ходу, а після застосування StartRun бачить `compactedHere` і довірену межу (NeedsRepair = `false`) |

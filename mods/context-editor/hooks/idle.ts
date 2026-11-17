@@ -22,7 +22,9 @@ export type ArmedBy = 'turn' | 'start'
 // [SP_HELP_02_11] Module memory; a reload or the end of the process drops
 // the timer with it. `seq` names the timer armed last: a replaced one that
 // still fires does nothing. `applying`: the idle apply's command runs, so
-// the handler marks its journal entry `idle` ([SP_HELP_01_08]).
+// the handler marks its journal entry `idle` ([SP_HELP_01_08]); `starting`:
+// StartRun's command runs ([SP_HELP_02_12]). With either, the handler skips
+// a command a turn overtook ([SP_CTX_02_07]).
 export type IdleMemory = {
   session?: string
   armedTurns?: number
@@ -30,10 +32,11 @@ export type IdleMemory = {
   timer?: { cancel: () => void }
   seq: number
   applying: boolean
+  starting: boolean
 }
 
 export function newIdleMemory(): IdleMemory {
-  return { seq: 0, applying: false }
+  return { seq: 0, applying: false, starting: false }
 }
 
 // [SP_HELP_02_11] What IdleRun reads and runs; register.ts binds it to `$`.
@@ -219,4 +222,125 @@ async function sameSession(io: IdleIO, session: string | undefined): Promise<boo
 // handler drops as stale once the last request moves ([SP_HELP_02_10]).
 async function clearMark(io: IdleIO, dir: string): Promise<void> {
   await io.updateQueue(dir, withoutApplyDeferred).catch(err => io.debug?.(modText(`idle mark not cleared: ${errorText(err)}`)))
+}
+
+// [SP_HELP_01_09] The longest wait of the session.start hook for StartRun's
+// callback to start the command: the session.start chain holds the
+// person's first prompt.
+export const START_WAIT_MS = 1000
+
+// [SP_HELP_02_12] What StartRun reads besides IdleRun's ports.
+export type StartIO = IdleIO & {
+  // [SP_CTX_02_53] Verdict(compact) as a session start knows it: the cache
+  // of this host version (no probe wait, SP_HELP_DEC_09)
+  compactVerdict: () => 'reached' | 'passed' | 'unknown'
+  // [SP_HELP_01_07] the last request of the session whose storage is `dir`:
+  // the registry and the module memory (null: none seen); or why the
+  // registry is unreadable
+  clockAt: (dir: string) => Promise<{ last: number | null } | { reason: string }>
+  // the bounded wait of the hook
+  sleep: (ms: number) => Promise<unknown>
+}
+
+// What StartRun did; the tests read it, the debug log names it.
+export type StartOutcome = 'not-reached' | 'nothing' | 'unknown' | 'armed' | 'not-armed' | 'not-marked' | 'started' | 'timeout'
+
+// [SP_HELP_02_12] StartRun: a session start in a new host process, after
+// PrepareStorage. Cold: the batches that outlived the process apply before
+// its first request, through a command planned with `after(0)`; the hook
+// waits until the callback has called the command, at most START_WAIT_MS,
+// never for the command itself. Warm: the idle timer for the rest of the
+// cache's life (armedBy 'start'). No prompt follows in any branch (I7).
+export async function startRun(io: StartIO, mem: IdleMemory): Promise<StartOutcome> {
+  const [out, why] = await startSteps(io, mem)
+  // [ERR-01] `nothing` names its cause
+  io.debug?.(modText(`start run: ${out}${why ? ` (${why})` : ''}`))
+  return out
+}
+
+async function startSteps(io: StartIO, mem: IdleMemory): Promise<[StartOutcome, string?]> {
+  const out = await startBranch(io, mem)
+  return typeof out === 'string' ? [out] : ['nothing', out.why]
+}
+
+async function startBranch(io: StartIO, mem: IdleMemory): Promise<StartOutcome | { why: string }> {
+  // unknown is not enough: the first session on a new host version probes, the batches wait
+  if (io.compactVerdict() !== 'reached') return 'not-reached'
+  // [SP_CTX_01_07] CONC-01: the folder once, for every step of this run
+  const dir = await io.storage()
+  if (!dir) return { why: 'no storage' }
+  const read = await io.readQueue(dir)
+  if (read.state === 'unreadable') return { why: `queue unreadable: ${read.reason}` }
+  const q = read.value
+  if (q.handoff) return { why: 'a handoff waits' }
+  if (!q.edits.some(e => e.deferred !== undefined)) return { why: 'no deferred edit' }
+  const clock = await io.clockAt(dir)
+  if ('reason' in clock) return { why: `registry unreadable: ${clock.reason}` }
+  const last = clock.last
+  const now = io.now()
+  const temp = temperature(last, now)
+  if (temp === 'unknown') return 'unknown'
+  if (temp === 'warm') return armIdle(io, mem, await io.sessionId(), 'start', idleDelay(last, now)) ? 'armed' : 'not-armed'
+  // the mark ties the apply to this cold cache; the reads and the write come
+  // before the timer, so the command queues before the session.start chain ends
+  const marked = await io.updateQueue(dir, x => (x.edits.some(e => e.deferred !== undefined) ? withApplyDeferred(x, last!) : undefined)).catch(err => {
+    io.debug?.(modText(`start apply not marked: ${errorText(err)}`))
+    return false
+  })
+  if (!marked) return 'not-marked'
+  const id0 = q.reportId
+  type Wait = 'waiting' | 'started' | 'ended'
+  let state: Wait = 'waiting'
+  // the callback moves it: read it through this, past the compiler's narrowing
+  const stateNow = (): Wait => state
+  let begun!: () => void
+  const started = new Promise<void>(resolve => (begun = resolve))
+  const run = () => {
+    // the wait already ended: the person's first prompt goes first
+    if (state !== 'waiting') return
+    // the command first, before any read or write; one attempt, no calibration;
+    // `starting` lets the handler skip it when the first turn overtook it
+    mem.starting = true
+    let ran: Promise<void>
+    try {
+      ran = io.compact(MARKER)
+    } catch (err) {
+      mem.starting = false
+      throw err
+    }
+    state = 'started'
+    begun()
+    void ran.finally(() => void (mem.starting = false)).then(
+      () => appliedSince({ ...io, readQueue: () => io.readQueue(dir) }, id0),
+      async err => {
+        await clearMark(io, dir)
+        io.status(modText(`start apply refused: ${errorText(err)}; deferred edits wait`))
+      },
+    ).catch(err => io.debug?.(modText(`start run failed: ${errorText(err)}`)))
+  }
+  let why = `no callback within ${START_WAIT_MS} ms`
+  try {
+    io.after(0, () => {
+      try {
+        run()
+      } catch (err) {
+        // a callback failing before the command: the wait ends at once
+        if (state === 'waiting') state = 'ended'
+        why = `the callback failed: ${errorText(err)}`
+        begun()
+      }
+    })
+  } catch (err) {
+    state = 'ended'
+    why = `the timer was refused: ${errorText(err)}`
+  }
+  if (stateNow() === 'waiting') {
+    await Promise.race([started, io.sleep(START_WAIT_MS).catch(() => undefined)])
+    // the bound reached first: the callback that comes later does nothing
+    if (stateNow() === 'waiting') state = 'ended'
+  }
+  if (stateNow() === 'started') return 'started'
+  await clearMark(io, dir)
+  io.debug?.(modText(`start apply not started (${why}); deferred edits wait`))
+  return 'timeout'
 }

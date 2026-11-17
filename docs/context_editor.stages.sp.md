@@ -293,11 +293,13 @@ Purpose: `/compact` людини, коли мод увімкнено ([C_CTX_DEC
 
 Логіка — чисті функції `hooks/personcompact.ts` (CompactRoute, RequestCompact, PersonCompact, CompactFailure) за портом PersonCompactIO: сховище й id сесії одним читанням (CONC-01), Update черги в цьому каталозі, ознака покинутого хука (`next.signal`, CONC-02), планування Flush (RequestFlush), спливне повідомлення; зв'язування — хук `command.run` з матчером `{ command: 'compact' }` у `register.ts`. Текст промпту — CompactTurnText у `hooks/stages.ts`. Пам'яті модуля, окремої від Flush, немає: «зайнято» читається з черги і з `FlushState`.
 
+Власна команда StartRun ([SP_HELP_02_12](./context_helper.batches.sp.md#SP_HELP_02_12); PL_HELP, фаза 6) йде з таймера `session.start`, і повторного входу хост для неї не пропускає: хук `command.run` мода її бачить (зонд DEC_10; команди з таймера `turn.complete` хост пропускає як re-entry). CompactRoute пропускає її за походженням `plugin` (`pass`, нічого не читається), і MARKER доходить до обробника компактизації без змін (тест «PersonCompact — маршрут», `tests/personcompact.test.ts`).
+
 Input: подія `command.run` (`command = compact`, `args`, `origin`; типи хоста `CommandRunInput`).
 
 Processing logic (pseudocode):
     CompactRoute(e) =
-        e.origin.kind = plugin                     → pass        # застосування мода, засів, інші розширення
+        e.origin.kind = plugin                     → pass        # застосування мода (зокрема StartRun з таймера session.start), засів, інші розширення
         trim(e.args) = ""                          → agent       # людина: composer, sdk, unclassified, bridge — будь-яке походження, крім plugin
         lower(trim(e.args)) = HOST_ARG             → host
         otherwise                                  → pass        # власні інструкції людини для підсумку хоста
@@ -392,6 +394,7 @@ Errors: відмов немає. Рядка немає, коли жодна пр
 
 | Date | Change |
 |------|--------|
+| 2026-11-17 | PL_HELP фаза 6 ([SP_HELP_02_12](./context_helper.batches.sp.md#SP_HELP_02_12)): 02_42 — хук `command.run` мода бачить власну команду StartRun з таймера `session.start` (повторного входу хост там не пропускає); CompactRoute пропускає її за походженням `plugin` |
 | 2026-11-17 | PL_HELP фаза 4 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)): 02_30 — порожній не перерваний хід стискання з відкладеними правками в тому самому записі черги ставить `applyDeferred` і знімає `coldSince`, без COMPACT_NOTHING; перерваний хід і хід із власною правкою — нічого; 02_42 — Flush кінця такого ходу застосовує всі пакети без продовження |
 | 2026-11-16 | PL_HELP фаза 3 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)): 02_30 — порожній хід стискання за NonDeferred (COMPACT_NOTHING і за відкладених правок; `applyDeferred` після нього — фаза 4); 02_42 — перше застосування перед ходом стискання — за Applicable і SelectEdits без `applyDeferred` |
 | 2026-11-15 | Verify PL_FOLD, виправлення ([SP_FOLD_02_05](./context_folds.sp.md#SP_FOLD_02_05)): 02_27 — навичка: блок завдання із запиту людини, закривати завдання до інших викликів ходу нового запиту, 8994 символи; 02_29 — `carrier` CloseStage може бути промптом ходу |

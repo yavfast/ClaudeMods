@@ -173,25 +173,34 @@ Purpose: застосувати відкладені пакети, що пере
 
 Processing logic (pseudocode):
 
-    ON session start (main conversation, new host process), after PrepareStorage:   // не ProbeMode; `/resume` у процесі `session.start` не дає — StartRun немає
-        IF Verdict(compact) ≠ reached: RETURN                     // SP_CTX_02_53: на старті — кеш за версією хоста; unknown не досить, зонда не чекає (DEC_09)
-        q = read Queue (missing or unreadable → RETURN)
-        IF q has no deferred edit OR q.handoff present: RETURN
-        clock = later of module memory and the registry for this session (§01_07; the registry unreadable → RETURN)
+    ON session start (main conversation, new host process), after PrepareStorage, the capabilities and the repair plan:   // не ProbeMode; `/resume` у процесі `session.start` не дає — StartRun немає; порядок хука — SP_CTX §02
+        IF Verdict(compact) ≠ reached: RETURN not-reached         // SP_CTX_02_53: на старті — кеш за версією хоста; unknown не досить, зонда не чекає (DEC_09)
+        dir = the storage folder, taken once for every step of this run (CONC-01); none → RETURN nothing
+        q = read Queue in dir (unreadable → RETURN nothing; missing — порожня)
+        IF q has no deferred edit OR q.handoff present: RETURN nothing
+        clock = LastRequest: the registry in dir and the module memory of that folder's session (§01_07; the registry unreadable → RETURN nothing)
         SWITCH Temperature(now):
-            unknown: RETURN
-            warm: arm the idle timer for lastRequestAt + CACHE_TTL_MS + IDLE_SLACK_MS − now (§02_11, armedTurns = turns, armedBy = start); RETURN
+            unknown: RETURN unknown
+            warm: arm the idle timer for lastRequestAt + CACHE_TTL_MS + IDLE_SLACK_MS − now (§02_11, the current session, armedTurns = turns, armedBy = start); RETURN armed   // хост відхилив таймер — not-armed, рядок `idle timer refused: …`
             cold:
-                on the queue chain: applyDeferred = true; coldSince = lastRequestAt
+                on the queue chain, while the queue still has a deferred edit: applyDeferred = true; coldSince = lastRequestAt
+                    failure or no deferred edit by then: RETURN not-marked; a failure leaves the debug line "start apply not marked: <error>"   // команди немає
                 plan $.clock.after(0); wait in this hook until its callback has called $.command.run, at most START_WAIT_MS; the hook never awaits the command's promise
                     the callback returns at once when the wait has already ended; otherwise it calls $.command.run first, before any read or write
-                    the run: the mod's own compaction with MARKER, one attempt (SP_CTX_02_06), without calibration; the person's line LogApply
+                    the run: the mod's own compaction with MARKER, one attempt (SP_CTX_02_06), without calibration; `applying` stays false, so the apply record has no `idle` (SP_HELP_01_08)
+                    after the command returns, in the background: AppliedSince (SP_CTX_02_06) — a new reportId gives the person's line LogApply; a skip writes no report and gives none
                     no resume prompt and no optimization prompt, even when the queue also holds edits without `deferred` or an `optimize` left by the last process: the person or the streaming host is about to send the first prompt
                     the report waits for the first prompt that passes the mod's hooks (DeliverReport, SP_CTX_02_08)
-                    ON refusal: on the queue chain: applyDeferred = false, coldSince absent; status line "context-editor: start apply refused: <error>; deferred edits wait"
-                ON wait timeout, or the callback failing before $.command.run: the wait ends; on the queue chain: applyDeferred = false, coldSince absent; debug log line
+                    ON refusal: ClearMark (§02_11: applyDeferred and coldSince absent; failure — debug line "idle mark not cleared: <error>"); status line "context-editor: start apply refused: <error>; deferred edits wait"
+                    a failure of this background part: debug line "start run failed: <error>"
+                callback called the command: RETURN started
+                ON wait timeout, the callback failing before $.command.run, or the host refusing the timer: the wait ends (a callback that comes later returns at once); ClearMark; debug line "start apply not started (<why>); deferred edits wait"; RETURN timeout
+                    why = "no callback within 1000 ms" (START_WAIT_MS) / "the callback failed: <error>" / "the timer was refused: <error>"
+        debug line "start run: <outcome>"; `nothing` with its cause: "start run: nothing (<cause>)"   // виняток самого StartRun — `.catch` хука: "start run failed: <error>"
 
-Вердикт «холодний» StartRun не бере: його бере перший промпт (§02_09), бо `lastRequestAt` застосування не змінює; доручення `cold` спрацьовують там. Пробудження StartRun не надсилає: людина чи потоковий хост от-от дадуть промпт.
+Результат StartRun (StartOutcome: `not-reached`, `nothing`, `unknown`, `armed`, `not-armed`, `not-marked`, `started`, `timeout`) читають тести й рядок налагодження `start run: <outcome>` у кінці кожного прогону; `started` означає лише, що зворотний виклик запустив команду, — її підсумок (рядок людині, рядок стану чи нічого після `skip`) приходить пізніше. Рядки налагодження — `$.ui.log` з `to: "debug"`, кожен з префіксом мода (ERR-01): `start run: …`, `start apply not marked: …`, `start apply not started (…); deferred edits wait`, `start run failed: …`, у теплій гілці — `idle timer armed for <ms> ms (start, turn <n>)` чи `idle timer refused: …` (ArmIdle, §02_11), у ClearMark — `idle mark not cleared: …`. Виняток самого StartRun (читання сховища, черги, реєстру, id сесії теплої гілки) хук `session.start` ловить `.catch` з рядком `start run failed: <помилка>` (quietFailure, без рядка `start run: …`) і йде далі — до прибирання старих сесій і `next`. Позначку пишуть лише поки в черзі ще є відкладена правка: зміна на ланцюжку черги перевіряє це знову. Папку сховища StartRun бере раз на прогін (CONC-01): черга, реєстр годинника, позначка, ClearMark і AppliedSince читають і пишуть у ній. Хук чекає StartRun — читання, позначку й очікування з межею, — але не команду: її продовження (AppliedSince, гілка відмови) іде у фоні.
+
+Вердикт «холодний» StartRun не бере: його бере перший промпт (§02_09), бо `lastRequestAt` застосування не змінює; доручення `cold` спрацьовують там. Пам'ять модуля `starting` стоїть від виклику команди до її кінця (обидві гілки): обробник за нею пропускає команду StartRun, яку випередив хід. Пробудження StartRun не надсилає: людина чи потоковий хост от-от дадуть промпт.
 
 Застосування StartRun проходить DropPulled обробника компактизації ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)): оригінали, які завантажувач повернув поруч із копіями, відпадають до першого запиту, межа після застосування довірена, і ремонт, запланований на кінець першого ходу ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)), бачить `NeedsRepair = false`.
 
@@ -204,9 +213,13 @@ Errors:
 |------|-----------|----------|
 | — | вердикт `compact` не `reached`, черга без відкладених правок, запит передачі, годинник невідомий чи теплий | нічого; теплий — таймер простою |
 | — | `$.command.run` відмовлено | рядок стану; `applyDeferred` і `coldSince` зняті; пакети чекають |
-| — | зворотний виклик не запустив команди за START_WAIT_MS чи впав до неї | очікування закінчено, перший промпт не тримається; `applyDeferred` і `coldSince` зняті; рядок журналу налагодження; пакети чекають |
+| — | зворотний виклик не запустив команди за START_WAIT_MS чи впав до неї; хост відхилив таймер | очікування закінчено, перший промпт не тримається; `applyDeferred` і `coldSince` зняті; рядок налагодження `start apply not started (<why>); deferred edits wait`; пакети чекають; зворотний виклик, що настав пізніше, команди не запускає |
+| — | позначку не записано (збій запису; відкладених правок у черзі на ланцюжку вже немає) | команди немає (`not-marked`); збій — рядок налагодження `start apply not marked: <помилка>` |
 | — | вердикт `reached` з кешу застарів: мод перевели з керованого плагіна на рівень user на тій самій версії хоста | команда йде повз обробник мода, і хост робить справжній підсумок (залишковий ризик DEC_09); живі ознаки першого ходу виправляють кеш для наступних дій |
-| — | промпт випередив команду | команда чекає кінця ходу (як кожна команда); обробник бачить новіший `lastRequestAt` і вибирає за SelectEdits без `applyDeferred`; порожній вибір — `skip "no applicable edits"`, у stream-json видно `Not compacted · context-editor: no applicable edits` (як хибна тривога ремонту, SP_CTX_02_46); запланований потім Flush знаходить чергу за Applicable |
+| — | промпт випередив команду | команда чекає кінця ходу (як кожна команда); обробник за пам'яттю модуля `starting` знає команду StartRun, бачить новіший `lastRequestAt` (позначка вже не діє) і пропускає її до вибору: `skip "start apply overtaken by a turn"` (SKIP_IDLE_OVERTAKEN, [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)), `applyDeferred` і `coldSince` знято; правки першого ходу застосує його власний Flush з промптом продовження, який агентові обіцяно (рецензія фази 6: без пропуску обробник застосував би їх командою StartRun, а Flush не знайшов би черги й промпту не надіслав) |
+| — | stream-json | команда StartRun дає клієнтові окремий `result` з порожнім текстом і `num_turns: 0` раніше за `result` першого промпту (як команди Flush і IdleRun, але тут промпт клієнта вже може чекати); одноразовий `claude -p --resume <id> "<промпт>"` з `--output-format json` чи `text` друкує лише відповідь на промпт зі звітом (зонд `help-p6`, O1, O2) |
+
+Реалізація — чистий модуль `hooks/idle.ts` (PL_HELP, фаза 6: StartRun — `startRun` з рядком `start run: …` і `startSteps`; порт StartIO поверх IdleIO — вердикт старту `compactVerdict`, годинник реєстру в папці прогону `clockAt`, межа очікування `sleep`; StartOutcome; START_WAIT_MS; таймер теплої гілки — ArmIdle з `armedBy = start`, ClearMark і AppliedSince — ті самі, що в IdleRun); зв'язування — `startIO` і хук `session.start` у `hooks/register.ts` (вердикт — `verdict(caps, 'compact')` після завантаження можливостей, годинник — `TagRegistry.cache` у папці й ClockMemory сесії цієї папки, `$.clock.sleep`; `.catch` — quietFailure); маршрут власної команди — CompactRoute (`hooks/personcompact.ts`, [SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)).
 
 ## Changelog
 
@@ -224,3 +237,5 @@ Errors:
 | 2026-11-17 | Рецензія фази 4: §02_10 «Постановка» — правки слота стану (`op: 'state'`, `rewrite` рядка слота) у виклику з `defer` відхиляються DEFER_STATE: відкладений пакет, що починається раніше за пакет звичайних правок, застосувався б пізніше за новішу правку слота й перезаписав би її |
 | 2026-11-17 | PL_HELP фаза 5 (код `hooks/idle.ts`, `hooks/flush.ts`, `hooks/batches.ts`, `hooks/compaction.ts`, `hooks/journal.ts`), уточнення за кодом: §02_10 — речення `Deferred as …` без фазової примітки; WithApplyDeferred і WithoutApplyDeferred у рядку «Реалізація»; §02_11 — замінений таймер, що спрацював, нічого не робить; відхилений хостом таймер нічого не взводить; перевзведення на теплому кеші зберігає сесію, `armedTurns` і `armedBy`; нечитна черга чи передача, що чекає, — нічого; позначка не записалась — команди немає; хід під час калібрування знімає позначку; команда без звіту — не застосування (AppliedSince); жодного промпту за будь-якого вибору; результати IdleOutcome; рядки налагодження `idle timer armed for …`, `idle timer fired: …`, `idle timer refused: …`, `idle apply not marked: …`, `idle mark not cleared: …`, `idle cold verdict not written: …`, `idle run failed: …`; поле `idle` запису `apply` — за `applying` і DeferredHolds; рядок «Реалізація» |
 | 2026-11-17 | Рецензія фази 5: §02_11 — папка сховища раз на прогін (CONC-01), позначку на порожній черзі знято без команди, `flush-planned`, сесію перевіряють знову перед командою, взведення пропускає хід, що вже почався; обробник пропускає команду IdleRun, яку хід випередив (SKIP_IDLE_OVERTAKEN, [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); рядки налагодження збоїв сесії й вердикту обходу; команда з вкладеного таймера — зонд `help-p5/nest` |
+| 2026-11-17 | PL_HELP фаза 6 (код `hooks/idle.ts`, `hooks/register.ts`), уточнення §02_12 за кодом: папка сховища раз на прогін (CONC-01), годинник — реєстр у ній і пам'ять сесії цієї папки; позначка лише поки в черзі є відкладена правка, інакше чи при збої — `not-marked` без команди; таймер, відхилений хостом, закінчує очікування, як збій зворотного виклику; відмова й межа очікування знімають позначку ClearMark; рядок людині — AppliedSince після повернення команди, `skip` без рядка; запис `apply` без `idle`; результати StartOutcome; рядки налагодження `start run: …`, `start apply not marked: …`, `start apply not started (<why>); deferred edits wait`, `start run failed: …` (і `.catch` хука); хук не чекає команди; рядок «Реалізація»; рядок помилок «позначку не записано» |
+| 2026-11-17 | Рецензія фази 6: §02_12 — пам'ять модуля `starting` і пропуск обробником команди StartRun, яку випередив перший хід (`skip "start apply overtaken by a turn"`), замість застосування правок ходу без його промпту продовження; рядок «stream-json»: окремий порожній `result` команди (одноразові json і text його не друкують); `start run: nothing (<причина>)` — причини `no storage`, `queue unreadable: <причина>`, `a handoff waits`, `no deferred edit`, `registry unreadable: <причина>` |

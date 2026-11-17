@@ -2,7 +2,7 @@
 
 > **Task ID:** `task_20261116_141010_helper-concept`
 > **Created:** 2026-11-16 14:10
-> **Last updated:** 2026-11-17 11:31
+> **Last updated:** 2026-11-17 11:57
 > **Status:** `in-progress`
 > **Contributors:** `claude-session-9a12e9ac`
 > **Autonomy:** `full` — "Продовжуй автономно виконання всіх фаз згідно плану." (з 19:33, для решти фаз PL_HELP; до того — `checkpoints`)
@@ -83,9 +83,13 @@
   - [x] Код і тести (IdleRun, взведення після Flush, поле `idle` запису `apply`, тексти з простоєм): 1165 тестів, tsc, validate, skill-limits.
   - [x] Живий короткий прогін S1 (stream-json, 2.1.326): таймер взводиться в кінці завершених ходів, перерваний хід — без таймера; тексти з простоєм.
   - [x] Документи «Змінює»; рецензія (pass with advisories: 0 must / 3 should / 6 prefer — усе виправлено); живі S2 (після правок) і L1 (простій 62 хв: застосовано без ходу, `idle: true`, звіт з наступним промптом); зонд вкладеного таймера N1.
-- [ ] Фаза 6 PL_HELP — новий процес (StartRun, `hooks/idle.ts`).
+- [x] Фаза 6 PL_HELP — новий процес (StartRun, `hooks/idle.ts`).
+  - [x] Код і тести (StartRun, StartIO, START_WAIT_MS; виклик у `session.start`; маршрут власної команди); 1173 тести, tsc, validate.
+  - [x] Живий прогін: stream-json теплий і холодний `--resume`, термінал холодний (`.dev_flow/cache/live-test/help-p6/`).
+  - [x] Документи «Змінює»; рецензія (pass with advisories: 0 must / 2 should / 3 prefer — виправлено; S2 перевірено живим одноразовим `-p --resume` json/text); план [DONE]; коміт.
+- [ ] Фаза 7 PL_HELP — доручення з умовою й доставка (`hooks/errands.ts`).
 
-**Next:** фаза 6 PL_HELP (StartRun: `session.start`, START_WAIT_MS, вердикт `compact` = `reached`) — phases/implement.md § Implementation Workflow; автономно, коміт кожної фази без підписання, push після останньої
+**Next:** фаза 7 PL_HELP (доручення з умовою й доставка, `hooks/errands.ts`) — phases/implement.md § Implementation Workflow; автономно, коміт кожної фази без підписання, push після останньої
 
 ## Activity
 

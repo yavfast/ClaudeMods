@@ -3,7 +3,8 @@ import { CACHE_TTL_MS } from '../hooks/cacheclock'
 import { MARKER } from '../hooks/compaction'
 import type { QueuedEdit } from '../hooks/edits'
 import { afterTurn, type TurnEndIO } from '../hooks/flush'
-import { armAtTurnEnd, armIdle, IDLE_SLACK_MS, idleDelay, idleRun, newIdleMemory, type IdleIO, type IdleMemory } from '../hooks/idle'
+import { armAtTurnEnd, armIdle, IDLE_SLACK_MS, idleDelay, idleRun, newIdleMemory, START_WAIT_MS, startRun, type IdleIO, type IdleMemory, type StartIO } from '../hooks/idle'
+import { applicable } from '../hooks/batches'
 import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import { newTurns, turnCompleted, turnStarted } from '../hooks/turns'
 
@@ -332,4 +333,232 @@ test('AfterTurn — таймер простою: armed after Flush was planned, 
     await afterTurn(io, { aborted, answer: '' })
     expect(calls).toEqual(aborted ? ['flush true', 'idle true'] : ['count', 'flush false', 'idle false'])
   }
+})
+
+// A fake session start: IdleRun's fake host, the cached verdict, the
+// registry's clock, and a bounded wait the test settles. StartIO has no
+// prompt port, so I7 holds by its shape; `submits` stays 0 as a guard only.
+function startFake(opts: { queue?: Queue; last?: number | null; now?: number; verdict?: 'reached' | 'passed' | 'unknown'; clock?: 'unreadable' } = {}) {
+  const f = fake(opts)
+  const waits: { ms: number; done: () => void }[] = []
+  const calls = { calibrate: 0 }
+  const io: StartIO & { submit: (text: string) => Promise<void> } = {
+    ...f.io,
+    calibrate: async () => void (calls.calibrate += 1),
+    compactVerdict: () => opts.verdict ?? 'reached',
+    clockAt: async () => (opts.clock === 'unreadable' ? { reason: 'bad json' } : { last: f.state.last }),
+    sleep: ms => new Promise<void>(done => waits.push({ ms, done })),
+  }
+  return { ...f, io, waits, calls }
+}
+
+// [SP_HELP_05_01] StartRun — гілки; [SP_HELP_05_04] «Перша сесія на новій версії хоста»; [SP_HELP_02_12]
+test('StartRun — гілки: unknown or passed verdict, no deferred edit, a handoff waiting, an unreadable registry or an unknown clock do nothing; warm arms the idle timer for the rest (armedBy start)', async () => {
+  for (const verdict of ['unknown', 'passed'] as const) {
+    const { io, mem, log, state } = startFake({ verdict })
+    const q = state.queue
+    expect(await startRun(io, mem)).toBe('not-reached')
+    expect(state.queue).toBe(q)
+    expect(log.timers).toHaveLength(0)
+    expect(log.compact).toHaveLength(0)
+  }
+  // [ERR-01] `nothing` names its cause in the debug line
+  const nothing = async (f: ReturnType<typeof startFake>, why: string) => {
+    expect(await startRun(f.io, f.mem)).toBe('nothing')
+    expect(f.log.timers).toHaveLength(0)
+    expect(f.log.debug.at(-1)).toBe(`context-editor: start run: nothing (${why})`)
+  }
+  await nothing(startFake({ queue: q0([sum('c1')]) }), 'no deferred edit')
+  await nothing(startFake({ queue: q0([sum('c1', 'b1')], { handoff: { mode: 'transcript' } } as Partial<Queue>) }), 'a handoff waits')
+  await nothing(startFake({ clock: 'unreadable' }), 'registry unreadable: bad json')
+  {
+    const f = startFake()
+    f.io.readQueue = async () => ({ state: 'unreadable', reason: 'truncated' })
+    await nothing(f, 'queue unreadable: truncated')
+  }
+  {
+    const f = startFake()
+    f.io.storage = async () => undefined
+    await nothing(f, 'no storage')
+  }
+  {
+    const { io, mem, log } = startFake({ last: null })
+    expect(await startRun(io, mem)).toBe('unknown')
+    expect(log.timers).toHaveLength(0)
+    expect(log.debug.at(-1)).toContain('start run: unknown')
+  }
+  {
+    const now = 100 * WHOLE
+    const { io, mem, log, state } = startFake({ now, last: now - 30 * 60_000 })
+    const q = state.queue
+    expect(await startRun(io, mem)).toBe('armed')
+    expect(log.timers.map(t => t.ms)).toEqual([WHOLE - 30 * 60_000])
+    expect(mem).toMatchObject({ session: 's1', armedTurns: 0, armedBy: 'start' })
+    expect(state.queue).toBe(q)
+    expect(log.compact).toHaveLength(0)
+  }
+  {
+    // a timer the host refuses on a warm cache arms nothing
+    const now = 100 * WHOLE
+    const { io, mem, log } = startFake({ now, last: now - 30 * 60_000 })
+    io.after = () => {
+      throw new Error('refused')
+    }
+    expect(await startRun(io, mem)).toBe('not-armed')
+    expect(log.debug.some(d => d.includes('idle timer refused: refused'))).toBe(true)
+  }
+})
+
+test('StartRun — гілки: a mark not written plans no timer and runs no command (a write that throws: a debug line; a queue that lost its deferred edits meanwhile: no write); a host that runs the callback at once starts the command with no wait', async () => {
+  {
+    const { io, mem, log } = startFake()
+    io.updateQueue = async () => {
+      throw new Error('disk full')
+    }
+    expect(await startRun(io, mem)).toBe('not-marked')
+    expect(log.debug.some(d => d.includes('start apply not marked: disk full'))).toBe(true)
+    expect(log.timers).toHaveLength(0)
+  }
+  {
+    const { io, mem, log, state } = startFake()
+    const update = io.updateQueue
+    io.updateQueue = (dir, change) => ((state.queue = q0([sum('c1')])), update(dir, change))
+    expect(await startRun(io, mem)).toBe('not-marked')
+    expect(state.queue.applyDeferred).toBeUndefined()
+    expect(log.timers).toHaveLength(0)
+  }
+  {
+    const { io, mem, log, waits } = startFake()
+    const after = io.after
+    io.after = (ms, fn) => {
+      const t = after(ms, fn)
+      fn()
+      return t
+    }
+    expect(await startRun(io, mem)).toBe('started')
+    expect(waits).toHaveLength(0)
+    expect(log.compact.map(c => c.args)).toEqual([MARKER])
+  }
+})
+
+test('StartRun — гілки: cold marks the queue with the last request before the timer, runs the command from after(0) without calibration and returns once the command was called, not when it ends; the person gets the line; no prompt (I7, I13)', async () => {
+  const { io, mem, log, state, calls, waits } = startFake()
+  const last = state.last as number
+  let finish!: () => void
+  const compact = io.compact
+  io.compact = args => {
+    // the mark is on the queue when the command starts
+    expect(state.queue).toMatchObject({ applyDeferred: true, coldSince: last })
+    return new Promise<void>(done => (finish = done)).then(() => compact(args))
+  }
+  const run = startRun(io, mem)
+  await ticks()
+  expect(log.timers.map(t => t.ms)).toEqual([0])
+  expect(waits.map(w => w.ms)).toEqual([START_WAIT_MS])
+  log.timers[0]!.fn()
+  expect(await run).toBe('started')
+  expect(log.lines).toEqual([])
+  // the handler can tell StartRun's command while it runs
+  expect(mem.starting).toBe(true)
+  finish()
+  await ticks()
+  expect(mem.starting).toBe(false)
+  expect(log.compact.map(c => c.args)).toEqual([MARKER])
+  expect(log.compact[0]!.applying).toBe(false)
+  expect(calls.calibrate).toBe(0)
+  expect(log.lines).toEqual(['applied 1'])
+  expect(log.submits).toBe(0)
+  // the report waits for the first prompt (DeliverReport)
+  expect(state.queue.report).toBe('report')
+  expect(log.debug).toContain('context-editor: start run: started')
+})
+
+test('StartRun — гілки: a refused command clears the mark; the status line names the refusal; the batches wait', async () => {
+  const { io, mem, log, state } = startFake()
+  io.compact = async () => {
+    throw new Error('Not available while interrupted')
+  }
+  const run = startRun(io, mem)
+  await ticks()
+  log.timers[0]!.fn()
+  expect(await run).toBe('started')
+  await ticks()
+  expect(state.queue.applyDeferred).toBeUndefined()
+  expect(state.queue.coldSince).toBeUndefined()
+  expect(state.queue.edits).toHaveLength(1)
+  expect(log.status.at(-1)).toBe('context-editor: start apply refused: Not available while interrupted; deferred edits wait')
+  expect(mem.starting).toBe(false)
+})
+
+// [SP_HELP_05_01] StartRun — без продовження
+test('StartRun — без продовження: cold with a deferred batch, an edit without deferred and an optimize request: the mark makes every edit applicable; no resume or optimization prompt; the report stays for the first prompt', async () => {
+  const queue = q0([sum('c1', 'b1'), sum('c2')], { deferredSince: { b1: 1 }, nextBatch: 2, optimize: true, compact: true })
+  const { io, mem, log, state } = startFake({ queue })
+  let marked: Queue | undefined
+  const compact = io.compact
+  io.compact = args => ((marked = state.queue), compact(args))
+  const run = startRun(io, mem)
+  await ticks()
+  log.timers[0]!.fn()
+  expect(await run).toBe('started')
+  await ticks()
+  expect(applicable(marked!, state.last).map(e => (e as { tool_use_id: string }).tool_use_id)).toEqual(['c1', 'c2'])
+  expect(log.submits).toBe(0)
+  expect(state.queue.report).toBe('report')
+  // [SP_HELP_05_04] «Промпт випередив команду»: a newer last request than the mark's leaves only the edits without deferred
+  expect(applicable(marked!, (state.last as number) + 1).map(e => (e as { tool_use_id: string }).tool_use_id)).toEqual(['c2'])
+})
+
+// [SP_HELP_05_01] StartRun — межа очікування
+test('StartRun — межа очікування: no callback within START_WAIT_MS ends the wait, clears the mark and leaves a debug line; the callback that comes later runs no command; a callback failing before the command or a refused timer ends it at once', async () => {
+  {
+    const { io, mem, log, state, waits } = startFake()
+    const run = startRun(io, mem)
+    await ticks()
+    waits[0]!.done()
+    expect(await run).toBe('timeout')
+    expect(state.queue.applyDeferred).toBeUndefined()
+    expect(state.queue.coldSince).toBeUndefined()
+    expect(log.debug.some(d => d.includes(`start apply not started (no callback within ${START_WAIT_MS} ms); deferred edits wait`))).toBe(true)
+    log.timers[0]!.fn()
+    await ticks()
+    expect(log.compact).toHaveLength(0)
+  }
+  {
+    const { io, mem, log, state, waits } = startFake()
+    io.compact = () => {
+      throw new Error('boom')
+    }
+    const run = startRun(io, mem)
+    await ticks()
+    log.timers[0]!.fn()
+    expect(await run).toBe('timeout')
+    expect(waits).toHaveLength(1)
+    expect(state.queue.applyDeferred).toBeUndefined()
+    expect(log.debug.some(d => d.includes('start apply not started (the callback failed: boom)'))).toBe(true)
+  }
+  {
+    const { io, mem, log, state, waits } = startFake()
+    io.after = () => {
+      throw new Error('refused')
+    }
+    expect(await startRun(io, mem)).toBe('timeout')
+    expect(waits).toHaveLength(0)
+    expect(state.queue.applyDeferred).toBeUndefined()
+    expect(log.debug.some(d => d.includes('start apply not started (the timer was refused: refused)'))).toBe(true)
+  }
+})
+
+// [SP_HELP_05_01] IdleRun — таймер StartRun (WakeCheck — phase 8)
+test('IdleRun — таймер StartRun: armed warm at the start, it fires on a cold cache with no turn since and applies the batch', async () => {
+  const now = 100 * WHOLE
+  const { io, mem, log, state } = startFake({ now, last: now - 30 * 60_000 })
+  expect(await startRun(io, mem)).toBe('armed')
+  state.now = now + 31 * 60_000 + IDLE_SLACK_MS
+  log.timers[0]!.fn()
+  await ticks()
+  expect(log.compact.map(c => c.args)).toEqual([MARKER])
+  expect(log.compact[0]!.applying).toBe(true)
+  expect(log.lines).toEqual(['applied 1'])
+  expect(log.submits).toBe(0)
 })

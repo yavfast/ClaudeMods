@@ -67,7 +67,7 @@ import {
 } from './hostattach'
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
-import { armAtTurnEnd, newIdleMemory, type IdleIO } from './idle'
+import { armAtTurnEnd, newIdleMemory, startRun, type IdleIO, type StartIO } from './idle'
 import {
   CAP_CACHE_FILE,
   capsOf,
@@ -96,6 +96,7 @@ import {
   probeSkip,
   runProbe,
   scheduleProbe,
+  verdict,
   type CapabilityIO,
   type CapEntry,
   type ProbeCounts,
@@ -1002,6 +1003,21 @@ function idleIO($: EngineInterface): IdleIO {
   }
 }
 
+// [SP_HELP_02_12] StartRun bound to the host: IdleRun's ports, the verdict
+// of the session start (the cache of this host version), the registry's
+// clock read in `dir`, the hook's bounded wait.
+function startIO($: EngineInterface): StartIO {
+  return {
+    ...idleIO($),
+    compactVerdict: () => verdict(caps, 'compact'),
+    clockAt: async dir => {
+      const read = await stores($, dir).tags.read()
+      return read.state === 'unreadable' ? { reason: read.reason } : { last: lastRequest(read.value.cache, memoryAt(clockMem, sessionOfDir(dir))) }
+    },
+    sleep: ms => $.clock.sleep(ms),
+  }
+}
+
 // [SP_CTX_02_72] RunRename's ports in `dir`: the registry on its chain, the
 // built-in /rename through $.command.run (one attempt).
 function renameIO($: EngineInterface, dir: string): RenameIO {
@@ -1546,6 +1562,10 @@ export const register: Register = on => {
     // IDE opening the session): the repair's one attempt, planned at the end
     // of the first turn, once the compaction hook's verdict is known
     repairAtStart(repairMem)
+    // [SP_HELP_02_12] StartRun: the deferred batches that outlived the process
+    // apply before its first request (cold), or the idle timer waits (warm);
+    // the wait for its command is bounded by START_WAIT_MS
+    await startRun(startIO($), idleMem).catch(quietFailure($, 'start run'))
     // [SP_CTX_02_50] the sweep of old sessions, in the background
     void $.clock.after(SWEEP_DELAY_MS, () => runSweep($).catch(() => undefined))
     return next(e)
@@ -1998,6 +2018,7 @@ export const register: Register = on => {
           journal: entry => onJournal($, io => journalApply(io, entry), dir),
           // [SP_HELP_01_08] IdleRun's command runs
           idle: () => idleMem.applying,
+          start: () => idleMem.starting,
           // [SP_CTX_02_07] [SP_CTX_02_36] on the deliveries' chain
           readDeliveries: () => s.deliveries.onChain(() => s.deliveries.read(), q),
           pruneDeliveries: done => void pruneDeliveries(updateOf(s.deliveries, q), done).catch(quietFailure($, 'PruneDeliveries')),
