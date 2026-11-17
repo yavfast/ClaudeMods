@@ -29,7 +29,8 @@ import { afterTurn, enteredOrThrow, flushAfterTurn, isPlanned, newFlushState, re
 import { bounded, callLines, HINT_WAIT_MS, newHintMemo, softHint, turnSuggestion, type HintIO } from './hints'
 import { compactFailure, personCompact, type PersonCompactIO } from './personcompact'
 import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandoffMemory, parseSeedNames, type HandoffArgs, type HandoffIO, type SeedIO } from './handoff'
-import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type Queue, type QueueIO } from './queue'
+import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type EditArgs, type Queue, type QueueIO } from './queue'
+import { queueStatus } from './batches'
 import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, recallScope, detectOptimize, endWaiting, guideText, introFor, measure, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
 import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
 import { errorText, modText, REPAIR_MARKER } from './rows'
@@ -348,7 +349,8 @@ function stores($: EngineInterface, dir: string): Stores {
     queue: jsonFile(fs, `${dir}/pending.json`, () => ({ ...EMPTY_QUEUE }), parseQueue, {
       lock: chainOf($, 'queue'),
       written: q => {
-        if (dir === publishedDir(storage)) $.ui.status(q.edits.length ? `${q.edits.length} context edit(s) queued` : undefined)
+        // [SP_HELP_02_10] the deferred edits apart
+        if (dir === publishedDir(storage)) $.ui.status(queueStatus(q.edits))
       },
     }),
     tags: jsonFile(fs, `${dir}/tags.json`, () => ({ ...EMPTY_REGISTRY }), parseRegistry, { lock: chainOf($, 'tags'), cache: fileCache }),
@@ -1302,6 +1304,8 @@ function listIO($: EngineInterface, snap: Snapshot = snapshot($)): ListIO {
     folds: dir => stores($, dir).folds.read(),
     // [SP_HELP_02_13] the cache clock's memory for this session
     clock: async () => ({ memory: memoryAt(clockMem, await $.session.id()), now: Date.now() }),
+    // [SP_HELP_02_13] the queue, a read: the Deferred line
+    queue: dir => stores($, dir).queue.read(),
     // [SP_CTX_02_69] the mod reads its own file: no permission asked
     rules: () => $.fs.read(`${$.plugin.root}/skills/${SKILL}/${RULES_FILE}`),
   }
@@ -1540,7 +1544,7 @@ export const register: Register = on => {
     const st = await ensureStorage($)
     if ('reason' in st) return deny(storageRefusal(st.reason))
     const { dir } = st
-    const args = e as unknown as { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
+    const args = e as unknown as EditArgs
     const out = await stores($, dir).queue.onChain(async held => {
       const snap = snapshot($)
       const { rows, key } = await snap.view()
@@ -1574,6 +1578,8 @@ export const register: Register = on => {
           }),
         hostRows: () => hostRowsNow($, dir, held),
         recalls: () => recallsNow($, dir, held),
+        // [SP_HELP_01_06] deferredSince of a new batch
+        turn: tagsRead.state !== 'unreadable' ? tagsRead.value.turn : 0,
       }
       return contextEdit(io, rows, args, pins, await resolver($, dir, e.tool_use_id), listed.key !== key, hasMediaFrom(found), await deliveredNow($, dir, held), closed)
     })

@@ -461,3 +461,30 @@ test('CompactRoute — обхід: a bare /compact goes to the host with the bri
   }
   expect(await personCompact(failing, person(''), () => false)).toEqual({ next: BRIEF_HEAD, brief: true })
 })
+
+// [SP_HELP_05_01] `/compact` людини — порожній хід з відкладеним пакетом ([SP_HELP_02_10])
+test('PersonCompact — порожній хід з відкладеним пакетом: the first apply takes no deferred edit; the compression turn queues nothing: applyDeferred without coldSince, a Flush applies the batch, no COMPACT_NOTHING', async () => {
+  const deferred = [{ op: 'drop' as const, tool_use_id: 'a', deferred: 'b1' }]
+  const h = harness(ok({ edits: deferred, nextBatch: 2, deferredSince: { b1: 1 } }))
+  expect(await h.run()).toEqual({ text: COMPACT_REPLY })
+  await fire(h.log)
+  // the apply before the turn selects without applyDeferred: nothing to apply, the compression prompt alone
+  expect(h.log.compacts).toEqual([])
+  expect(h.log.submits.length).toBe(1)
+  turnStarted(h.turns)
+  turnCompleted(h.turns, false)
+  h.log.queue = ok({ ...queued(h.log), coldSince: 5 })
+  await detectOptimize(detectIO(h.log), { aborted: false, answer: 'nothing to compress' })
+  expect(h.log.toasts).toEqual([])
+  expect([queued(h.log).applyDeferred, queued(h.log).coldSince, queued(h.log).compact, queued(h.log).optimizePrompted]).toEqual([true, undefined, false, false])
+  expect(await flushAfterTurn(h.fio, h.state, false)).toBe(true)
+  await fire(h.log)
+  expect(h.log.compacts).toEqual([MARKER])
+  // an aborted compression turn sets nothing; one that queued an own edit leaves the batch to the selection
+  const aborted = harness(ok({ edits: deferred, optimizePrompted: true, compact: true }))
+  await detectOptimize(detectIO(aborted.log), { aborted: true, answer: '' })
+  expect([queued(aborted.log).applyDeferred, aborted.log.toasts]).toEqual([undefined, []])
+  const own = harness(ok({ edits: [...EDITS, ...deferred], optimizePrompted: true, compact: true }))
+  await detectOptimize(detectIO(own.log), { aborted: false, answer: 'done' })
+  expect([queued(own.log).applyDeferred, own.log.toasts]).toEqual([undefined, []])
+})

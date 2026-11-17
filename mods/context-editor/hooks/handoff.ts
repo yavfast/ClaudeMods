@@ -33,6 +33,7 @@ import {
   type StateOutput,
 } from './edits'
 import { assignFoldIds, emptyFolds, recordFolds, type FoldLedger } from './folds'
+import { nonDeferred, queueStatus, withoutDeferred } from './batches'
 import { appendReport, MAX_QUEUE_BYTES, DEFAULT_RESUME, HANDOFF_RESUME_FRAME, keepOtherSteps, MAX_DOCUMENT, resumeText, screenPerson, SUMMARY_OPENER, type HandoffRequest, type Queue } from './queue'
 import { rebindNotes } from './notes'
 import { insertDeliveries, type Deliveries } from './deliveries'
@@ -651,8 +652,12 @@ function moved(run: Run): boolean {
   return movedSince(run.io.turns, run.turns0)
 }
 
+// [SP_CTX_02_21] [SP_HELP_02_10] the document way: the queued edits counted
+// by NonDeferred, so the deferred ones are not counted twice
 function dropped(run: Run): string {
-  return run.q.edits.length ? ` The ${run.q.edits.length} queued edit(s) were not carried over.` : ''
+  const own = nonDeferred(run.q.edits).length
+  const deferred = run.q.edits.length - own
+  return (own ? ` The ${own} queued edit(s) were not carried over.` : '') + (deferred ? ` ${deferred} deferred edit(s) were dropped with the old conversation.` : '')
 }
 
 async function updateOld(run: Run, change: (q: Queue) => Queue): Promise<void> {
@@ -686,7 +691,9 @@ async function once(run: Run, name: string, write: () => Promise<void>): Promise
 // --resume does not inherit keep_cache or a continuation.
 function handedOff(run: Run, to: string, mode: HandoffRequest['mode']): Promise<void> {
   return once(run, 'HandedOff', () =>
-    updateOld(run, q => ({ ...withReport(keepOtherSteps(q), modText(`this session was handed off to ${to} (${mode}).`), run.io.now()), handoff: undefined })),
+    // [SP_HELP_01_06] the deferred edits go too: the transcript seed applied
+    // them, the document way dropped them (KeepOtherSteps alone keeps them)
+    updateOld(run, q => ({ ...withReport(withoutDeferred(keepOtherSteps(q)), modText(`this session was handed off to ${to} (${mode}).`), run.io.now()), handoff: undefined })),
   )
 }
 
@@ -1308,8 +1315,8 @@ async function refreshStatus(io: HandoffIO): Promise<void> {
   try {
     const st = await io.storage()
     const read = 'reason' in st ? undefined : await io.readQueue(st.dir)
-    const n = read && read.state !== 'unreadable' ? read.value.edits.length : 0
-    io.status(n ? `${n} context edit(s) queued` : undefined)
+    // [SP_HELP_02_10] the deferred edits apart
+    io.status(read && read.state !== 'unreadable' ? queueStatus(read.value.edits) : undefined)
   } catch {
     io.status(undefined)
   }

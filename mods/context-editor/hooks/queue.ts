@@ -6,7 +6,7 @@ import { bytes, jsonObject, type Read } from './store'
 import type { Replaced } from './stages'
 import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
 import { addReturns, isOwnReturn, type Returnable } from './folds'
-import { isBatchId } from './batches'
+import { BATCH_PREFIX, isBatchId, nonDeferred } from './batches'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -252,7 +252,28 @@ function isQueuedEdit(raw: unknown): boolean {
   )
 }
 
-export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown }
+export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unknown; keep_cache?: unknown; defer?: unknown }
+
+// [SP_HELP_02_10] the sentence a call with `defer: true` adds about its batch
+export function deferredText(batch: string): string {
+  return `Deferred as ${batch}: it applies with your next apply that rewrites the cache from no later a point, or in a handoff.`
+}
+// [SP_HELP_02_10] a deferred call names its batch's choices it ignores
+export const DEFER_IGNORES = 'resume and keep_cache do not apply to a deferred batch.'
+// [SP_HELP_02_10] a summarize of a recall or question pair is a return: it applies with an apply that is not deferred
+export const DEFER_RETURN = 'a recalled level or a question pair not yet returned returns with an apply that is not deferred; leave it out of a deferred batch'
+// [SP_HELP_02_10] the state slot changes only in the batch that applies next:
+// a deferred state op or rewrite of the slot could land after a newer one
+export const DEFER_STATE = 'the state slot changes only with an apply that is not deferred; leave it out of a deferred batch'
+
+// [SP_CTX_02_02] [SP_HELP_02_10] DENIED_QUEUE_FULL: when every queued edit is
+// deferred, ending the turn applies none of them
+function queueFull(limit: string, q: Queue): string {
+  const deferred = q.edits.length - nonDeferred(q.edits).length
+  return deferred > 0 && deferred === q.edits.length
+    ? `the queue would exceed ${limit}, all of its edits deferred: ending the turn applies none of them; the person's /compact or a handoff does.`
+    : `the queue would exceed ${limit}; end the turn so the current batch applies.`
+}
 
 // [SP_CTX_01_12] [SP_CTX_DEC_26] The mod's compaction marks live in rows.ts
 // and PersonText in deliveries.ts (phase 27: edits.ts reads PersonText too,
@@ -407,9 +428,14 @@ export function queueEdits(
   // [SP_FOLD_02_03] the recalls not yet returned: a summarize of a recall
   // pair returns it with the agent's words, and the due ones join the batch
   recalls: readonly Returnable[] = [],
-): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[] } | { deny: string } {
+  // [SP_HELP_01_06] TagRegistry.turn now: deferredSince of a new batch
+  turn = 0,
+): { queue: Queue; queued: number; errors: string[]; warnings: string[]; refLines: string[]; deferred?: string } | { deny: string } {
   if (!Array.isArray(args.edits) || args.edits.length === 0 || args.edits.length > MAX_QUEUE_EDITS)
     return { deny: `"edits" must be a list of 1..${MAX_QUEUE_EDITS} edits.` }
+  // [SP_HELP_02_10] the mod's side of the schema's boolean
+  if (args.defer !== undefined && typeof args.defer !== 'boolean') return { deny: '"defer" must be true or false.' }
+  const defer = args.defer === true
   if (typeof args.resume_prompt === 'string' && args.resume_prompt.length > MAX_TEXT)
     return { deny: `resume_prompt is too long (max ${MAX_TEXT} chars).` }
   // [SP_CTX_02_17] refs resolve on these rows; "last" names its call
@@ -425,6 +451,18 @@ export function queueEdits(
     const region = regionOf(edit, closed)
     // [SP_FOLD_02_03] the agent's summarize of a recall pair is a return edit
     const back = edit.op === 'summarize' && recalls.some(r => r.tool_use_id === edit.tool_use_id)
+    // [SP_HELP_02_10] a deferred call adds no return (I10): an edit over a
+    // pair not yet returned (its summarize is the return; a drop or a range
+    // over it would meet the return the next ordinary batch queues) waits for none
+    if (defer && (back || touchesPair(rows, edit, recalls, (ix ??= indexRows(rows))))) {
+      errors.push(`${describeEdit(edit)}: ${DEFER_RETURN}`)
+      continue
+    }
+    // [SP_HELP_02_10] the state slot: a state op, or a rewrite of its row
+    if (defer && (edit.op === 'state' || (edit.op === 'rewrite' && pinned.state !== undefined && touchedBy(rows, edit, (ix ??= indexRows(rows)))?.rows[0] === pinned.state))) {
+      errors.push(`${describeEdit(edit)}: ${DEFER_STATE}`)
+      continue
+    }
     const e: QueuedEdit = region ? { ...edit, region } : back ? { ...edit, via: 'return' } : edit
     // [SP_CTX_02_61] DetachNote: what the row before the host row loses
     if (isHostDrop(e)) {
@@ -447,8 +485,20 @@ export function queueEdits(
     } else queued.push(e)
   }
   // [SP_FOLD_02_03] the mod's own return edits give way: AddReturns re-adds what fits
-  if (q.edits.filter(e => !isOwnReturn(e)).length + queued.length > MAX_QUEUE_EDITS)
-    return { deny: `the queue would exceed ${MAX_QUEUE_EDITS} edits; end the turn so the current batch applies.` }
+  if (q.edits.filter(e => !isOwnReturn(e)).length + queued.length > MAX_QUEUE_EDITS) return { deny: queueFull(`${MAX_QUEUE_EDITS} edits`, q) }
+  // [SP_HELP_02_10] a deferred call: every accepted edit joins the batch
+  // b<nextBatch>; the batch's choices (resume, resume_prompt, keep_cache,
+  // tagsOnly) and the returns belong to the batch that applies next, which
+  // this one is not
+  if (defer) {
+    if (!queued.length) return { queue: q, queued: 0, errors, warnings: notes, refLines: refs.lines }
+    const n = q.nextBatch ?? 1
+    const batch = `${BATCH_PREFIX}${n}`
+    const next: Queue = { ...q, edits: [...q.edits, ...queued.map(e => ({ ...e, deferred: batch }))], nextBatch: n + 1, deferredSince: { ...q.deferredSince, [batch]: turn } }
+    if (bytes(next) > MAX_QUEUE_BYTES) return { deny: queueFull(`${MAX_QUEUE_BYTES} bytes`, q) }
+    const warnings = [...notes, ...(queued.some(e => e.op === 'describe') ? [DESCRIBE_DROPS] : [])]
+    return { queue: next, queued: queued.length, errors, warnings, refLines: refs.lines, deferred: batch }
+  }
   // [SP_FOLD_02_03] AddReturns, only beside an accepted edit of this call
   const next: Queue = { ...q, edits: queued.length ? addReturns([...q.edits, ...queued], rows, recalls, pinned) : q.edits }
   if (queued.length) next.tagsOnly = false
@@ -467,24 +517,47 @@ export function queueEdits(
   // [SP_CTX_02_02] [SP_CTX_DEC_22] the last explicit "keep_cache" of the batch
   // wins; a call without it leaves the batch's choice (default false)
   if (typeof args.keep_cache === 'boolean') next.keepCache = args.keep_cache
-  if (bytes(next) > MAX_QUEUE_BYTES)
-    return { deny: `the queue would exceed ${MAX_QUEUE_BYTES} bytes; end the turn so the current batch applies.` }
+  if (bytes(next) > MAX_QUEUE_BYTES) return { deny: queueFull(`${MAX_QUEUE_BYTES} bytes`, q) }
   const warnings = [...notes, ...(queued.some(e => e.op === 'describe') ? [DESCRIBE_DROPS] : [])]
   return { queue: next, queued: queued.length, errors, warnings, refLines: refs.lines }
 }
 
+// [SP_HELP_02_10] Whether `edit` changes a row of a recall or question pair
+// not yet returned (its call row or its result row).
+function touchesPair(rows: readonly SessionMessage[], edit: QueuedEdit, recalls: readonly Returnable[], ix: RowIndex): boolean {
+  if (!recalls.length) return false
+  const hit = touchedBy(rows, edit, ix)
+  if (!hit) return false
+  const pair = new Set(recalls.flatMap(r => [ix.useAt(r.tool_use_id), ix.resultAt(r.tool_use_id)]).filter(i => i >= 0))
+  return hit.rows.some(i => pair.has(i)) || hit.ids.some(id => recalls.some(r => r.tool_use_id === id))
+}
+
 // [SP_CTX_02_02] `refLines`: the line naming the call "last" resolved to.
-export function queuedText(q: Queue, queued: number, errors: readonly string[], warnings: readonly string[] = [], refLines: readonly string[] = []): string {
+// [SP_HELP_02_10] `deferred`: the call had `defer: true` (`batch`: the batch
+// its accepted edits joined; `ignores`: it gave resume, resume_prompt or
+// keep_cache): no promise of an apply when this turn ends.
+export function queuedText(
+  q: Queue,
+  queued: number,
+  errors: readonly string[],
+  warnings: readonly string[] = [],
+  refLines: readonly string[] = [],
+  deferred?: { batch?: string; ignores: boolean },
+): string {
   // [SP_FOLD_02_03] the mod's return edits are no edits of the agent's count
   const returns = q.edits.filter(isOwnReturn).length
+  // [SP_HELP_02_10] the edits the apply at the end of this turn takes
+  const own = nonDeferred(q.edits).length
   return [
     `Queued ${queued} edit(s); ${q.edits.length - returns} pending in total.`,
     // [SP_HELP_02_05] the question pairs return the same way
-    returns ? `${returns} recalled level(s) or question pair(s) of closed stages return with this batch: each becomes a one-line trace, and the fold records stay.` : '',
+    returns && !deferred ? `${returns} recalled level(s) or question pair(s) of closed stages return with this batch: each becomes a one-line trace, and the fold records stay.` : '',
     ...refLines,
     errors.length ? `Rejected: ${errors.join('; ')}.` : '',
     ...warnings,
-    q.edits.length
+    deferred?.batch ? deferredText(deferred.batch) : '',
+    deferred?.ignores ? DEFER_IGNORES : '',
+    own && !deferred
       ? `They apply when this turn ends. End your turn now with a one-line status.${
           // [SP_CTX_DEC_16] the result names what the apply will do, in every turn
           resumesAfter(q) ? ` The session then resumes by itself with: "${q.resumePrompt}"` : ' The session then stops; pass "resume": true to go on.'
@@ -527,6 +600,8 @@ export type QueueIO = {
   // [SP_FOLD_02_03] the recalls not yet returned, of the fold ledger as it is
   // now; an unreadable or missing ledger gives none
   recalls?: () => Promise<readonly Returnable[]>
+  // [SP_HELP_01_06] TagRegistry.turn as read for this call; absent: 0
+  turn?: number
 }
 
 // [SP_CTX_02_02]
@@ -552,17 +627,22 @@ export async function contextEdit(
   const wantsHost = Array.isArray(args.edits) && args.edits.some(x => (x as { host?: unknown } | null)?.host !== undefined)
   const hostRows = wantsHost && io.hostRows ? await io.hostRows().catch(() => []) : []
   const recalls = io.recalls ? await io.recalls().catch(() => []) : []
-  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows, closed, recalls)
+  const defer = args.defer === true
+  // [SP_HELP_02_10] a deferred call adds no return: the recalls are read only to refuse a summarize of one
+  const out = queueEdits(read.value, rows, args, pinned, resolve, staleIndexes, hasMedia, delivered, hostRows, closed, recalls, io.turn ?? 0)
   if ('deny' in out) return out
   try {
     await io.writeQueue(out.queue)
   } catch (err) {
     return { deny: `could not save the queue: ${String(err)}` }
   }
-  let result = notice + queuedText(out.queue, out.queued, out.errors, out.warnings, out.refLines)
+  // [SP_HELP_02_10] the batch's choices this deferred call ignored
+  const ignores = defer && (typeof args.resume === 'boolean' || (typeof args.resume_prompt === 'string' && args.resume_prompt.trim() !== '') || typeof args.keep_cache === 'boolean')
+  let result = notice + queuedText(out.queue, out.queued, out.errors, out.warnings, out.refLines, defer ? { ...(out.deferred ? { batch: out.deferred } : {}), ignores } : undefined)
   // [SP_CTX_DEC_37] an accepted edit is the agent's move: the waiting block
-  // ends, and its disposable replacements join this batch
-  if (out.queued > 0 && io.endWaiting) {
+  // ends, and its disposable replacements join this batch. [SP_HELP_02_10]
+  // A deferred call is none: the replacements would plan the apply it avoids (I10)
+  if (out.queued > 0 && !defer && io.endWaiting) {
     const waited = await io.endWaiting().catch(() => undefined)
     if (waited) {
       const replaced = await io.replace?.().catch(() => undefined)

@@ -2019,3 +2019,16 @@ test('PersonWords — рядок прибраного тегу у звіті з�
   const text = await blockReport(blockIO(list, reg({ tags: [] })), block, { queued: 0, freed: '~0 tokens', dropped: ["disposable #0..#2 dropped: it covers the person's words"] })
   expect(text).toContain("\ndisposable #0..#2 dropped: it covers the person's words.")
 })
+
+// [SP_HELP_02_13] the Deferred line of the listing: read from the queue, priced over the rows
+test('contextList — рядок Deferred: the queue\'s deferred batches with their cost; none without a deferred edit or with an unreadable queue', async () => {
+  const deferred: Queue = { ...EMPTY_QUEUE, edits: [{ op: 'drop', tool_use_id: 'a', deferred: 'b1' }], deferredSince: { b1: 2 } }
+  const { io } = listHarness({ queue: async () => okRead(deferred) })
+  const out = await contextList(io, { count: 20 })
+  if (!('result' in out)) throw new Error(out.deny)
+  expect(out.result).toMatch(/\nDeferred: 1 batch\(es\), 1 edit\(s\), the oldest from turn 2; applying them now would rewrite ~\S+ tokens of cache; they wait for an apply that starts no later, or a handoff\.\n/)
+  for (const queue of [async () => okRead({ ...EMPTY_QUEUE, edits: [{ op: 'drop' as const, tool_use_id: 'a' }] }), async () => unreadableRead<Queue>('bad'), undefined]) {
+    const plain = await contextList(listHarness(queue ? { queue } : {}).io, { count: 20 })
+    expect('result' in plain && plain.result).not.toContain('Deferred:')
+  }
+})

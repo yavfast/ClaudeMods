@@ -47,7 +47,7 @@ import type { HelperSummary, JournalSummary } from './journal'
 import { helperCost } from './helper'
 import { checksLine, clockLine, lastRequest } from './cacheclock'
 import type { Queue } from './queue'
-import { nonDeferred } from './batches'
+import { deferredRewrite, deferredView, firstRowOf, nonDeferred, type DeferredView } from './batches'
 import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
 import { afterReminders, applyNoteRequests, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
@@ -430,6 +430,9 @@ export type Telemetry = {
   // [SP_HELP_02_13] the cache clock: the last request (null: none seen) and
   // the time of the listing; absent: not read (no line)
   clock?: { last: number | null; now: number }
+  // [SP_HELP_02_13] the deferred batches of the queue and the cache they alone
+  // would rewrite now (absent: none of their rows found); absent: none wait
+  deferred?: DeferredView & { tokens?: number }
 }
 
 // [SP_CTX_02_28] Whole(t): the tokens the request's messages hold, the
@@ -696,6 +699,7 @@ export function telemetryText(t: Telemetry): string {
   if (cache) lines.push(cache)
   // [SP_HELP_02_13] after the Cache line: the clock, the helper, the clock's checks
   if (t.clock) lines.push(clockLine(t.clock.last, t.clock.now))
+  if (t.deferred) lines.push(deferredLine(t.deferred))
   const summary = t.journal && !('unreadable' in t.journal) ? t.journal : undefined
   if (summary?.helper) lines.push(helperLine(summary.helper))
   if (summary?.checks) lines.push(checksLine(summary.checks))
@@ -748,6 +752,15 @@ export function telemetryText(t: Telemetry): string {
   return lines.join('\n')
 }
 
+// [SP_HELP_02_13] Deferred: the batches waiting in the queue, the turn of
+// the oldest, and the cache they alone would rewrite were they applied now;
+// the warm variant (the cold one and the idle part come with phase 5).
+export function deferredLine(d: DeferredView & { tokens?: number }): string {
+  const oldest = d.oldest !== undefined ? `, the oldest from turn ${d.oldest}` : ''
+  const cost = d.tokens !== undefined ? `applying them now would rewrite ~${tokensText(d.tokens)} tokens of cache; ` : ''
+  return `Deferred: ${d.batches} batch(es), ${d.edits} edit(s)${oldest}; ${cost}they wait for an apply that starts no later, or a handoff.`
+}
+
 // [SP_HELP_02_13] Helper: the sums of the journal's `ask` entries and their
 // cost at the helper's list prices (an upper estimate).
 export function helperLine(h: HelperSummary): string {
@@ -790,6 +803,8 @@ export type ListIO = {
   // [SP_HELP_02_13] the cache clock's memory time of this session and the
   // time now; absent: no Cache clock line
   clock?: () => Promise<{ memory?: number; now: number }>
+  // [SP_HELP_02_13] the queue in `dir`, a view: the Deferred line; absent: none
+  queue?: (dir: string) => Promise<Read<Queue>>
 }
 
 export type ListArgs = { agentId?: unknown; from?: unknown; count?: unknown; index?: unknown; full?: unknown; rules?: unknown; folds?: unknown }
@@ -860,7 +875,8 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
   const { rows, key } = await io.view()
   const mode = listMode(args, rows.length)
   if ('bad' in mode) return { deny: mode.bad }
-  const { found } = collectMedia(await io.api(), rows)
+  const form = await io.api()
+  const { found } = collectMedia(form, rows)
   const dir = await io.storage()
   const tagged = listLabels(rows, dir ? await io.readTags(dir) : undefined)
   // [SP_CTX_02_01] one row whole: no telemetry, no new listedKey
@@ -884,6 +900,15 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
     // [SP_HELP_02_09] the later of the registry's time and the memory's
     const clock = io.clock ? await io.clock().catch(() => undefined) : undefined
     if (clock) t.clock = { last: lastRequest(tagged.reg?.cache, clock.memory), now: clock.now }
+    // [SP_HELP_02_13] the deferred batches and what they alone would rewrite now
+    const q = dir && io.queue ? await io.queue(dir).catch(() => undefined) : undefined
+    const view = q && q.state !== 'unreadable' ? deferredView(q.value) : undefined
+    if (view && q && q.state !== 'unreadable') {
+      const ratio = t.ratio ?? PLAIN_RATIO
+      const whole = wholeOf(t) ?? t.request ?? Math.round((t.chars ?? totalChars(rows)) / ratio)
+      const tokens = deferredRewrite(q.value.edits, cacheShape(rows, form), firstRowOf(rows), whole, ratio)
+      t.deferred = { ...view, ...(tokens !== undefined ? { tokens } : {}) }
+    }
     tele = telemetryText(t)
     size = headerSize(t, t.chars ?? totalChars(rows))
   } catch (err) {
@@ -1323,22 +1348,29 @@ export type DetectOutcome =
 export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer?: string }): Promise<DetectOutcome> {
   const ready = await io.ready()
   let prompted = false
-  // [SP_CTX_02_42] the end of the compression turn of the person's /compact, and whether it queued anything
-  let compacted: { empty: boolean } | undefined
+  // [SP_CTX_02_42] the end of the compression turn of the person's /compact,
+  // whether it queued anything, and [SP_HELP_02_10] whether deferred edits wait
+  let compacted: { empty: boolean; deferred: boolean } | undefined
   if (ready)
     await io
       .changeQueue(read => {
         if (read.state !== 'ok' || !read.value.optimizePrompted) return undefined
         prompted = true
         // [SP_HELP_02_10] an empty compression turn: no edit without `deferred`
-        if (read.value.compact) compacted = { empty: nonDeferred(read.value.edits).length === 0 }
+        if (read.value.compact) compacted = { empty: nonDeferred(read.value.edits).length === 0, deferred: nonDeferred(read.value.edits).length < read.value.edits.length }
+        // [SP_HELP_02_10] the deferred batches apply after an empty one: applyDeferred without coldSince; Flush counts them by Applicable
+        const deferredNow = !!compacted?.empty && compacted.deferred && !e.aborted
         // [SP_CTX_02_42] the batch of an ended compression turn waits for its Flush: compactEndedAt
         const { compactEndedAt: _ended, ...rest } = read.value
-        return { ...rest, optimizePrompted: false, compact: false, ...(read.value.compact && !e.aborted ? { compactEndedAt: io.now() } : {}) }
+        const base: Queue = { ...rest, optimizePrompted: false, compact: false, ...(read.value.compact && !e.aborted ? { compactEndedAt: io.now() } : {}) }
+        if (!deferredNow) return base
+        const { coldSince: _cold, ...warm } = base
+        return { ...warm, applyDeferred: true }
       })
       .catch(() => undefined)
-  // COMPACT_NOTHING: the host's summary is never run in its place
-  if (compacted?.empty && !e.aborted) io.toast(COMPACT_NOTHING)
+  // COMPACT_NOTHING: the host's summary is never run in its place;
+  // [SP_HELP_02_10] not when the deferred batches apply instead (the person sees the apply's line)
+  if (compacted?.empty && !compacted.deferred && !e.aborted) io.toast(COMPACT_NOTHING)
   const t = parseTrailers(e.answer)
   if (e.aborted || !t.lines.length) return 'none'
   // MARK_IN_OPTIMIZATION: silently ignored; the mod never loops

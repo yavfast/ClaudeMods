@@ -12,6 +12,7 @@ import { SUMMARY_OPENER } from './deliveries'
 import { fingerprint, locate, oneLine, type Boundary, type QueuedEdit } from './edits'
 import type { Note } from './notes'
 import type { Queue } from './queue'
+import { withoutDeferred } from './batches'
 import { errorText, findToolUse, modText, PROBE_MARKER, REPLACED } from './rows'
 import { dropLastApply, isRange, pruneDeadTags, type TagRegistry } from './tags'
 
@@ -535,9 +536,14 @@ export function briefedTags(reg: TagRegistry, before: readonly SessionMessage[],
   return next === reg ? undefined : next
 }
 
-// [SP_CTX_02_55] QUEUE_BRIEFED: the edits went into the brief; the batch's choices go back to their defaults.
+// [SP_CTX_02_55] QUEUE_BRIEFED: the edits went into the brief, the deferred
+// ones too ([SP_HELP_01_06]: with their deferredSince, applyDeferred and
+// coldSince); the batch's choices go back to their defaults.
 export function briefedQueue(q: Queue, empty: Pick<Queue, 'resume' | 'resumePrompt'>): Queue | undefined {
-  return q.edits.length || q.keepCache || q.resumeSet ? { ...q, edits: [], keepCache: false, resume: empty.resume, resumePrompt: empty.resumePrompt, resumeSet: false } : undefined
+  const deferredLeft = q.applyDeferred !== undefined || q.coldSince !== undefined || q.deferredSince !== undefined
+  return q.edits.length || q.keepCache || q.resumeSet || deferredLeft
+    ? withoutDeferred({ ...q, edits: [], keepCache: false, resume: empty.resume, resumePrompt: empty.resumePrompt, resumeSet: false })
+    : undefined
 }
 
 export type PassedCompactIO = {

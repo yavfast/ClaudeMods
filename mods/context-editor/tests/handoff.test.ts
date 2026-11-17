@@ -2367,3 +2367,32 @@ test('CarryRegistries — годинник кешу: the new session gets no cac
   expect(carried).toBeDefined()
   expect('cache' in carried!).toBe(false)
 })
+
+// [SP_HELP_05_01] Передача — перенесення (у частині відкладених), [SP_HELP_02_14]
+test('Передача — транскрипт з відкладеним пакетом: the seed applies the deferred edit with the rest; the old queue keeps neither it nor deferredSince', async () => {
+  const { io, s, oldQueue } = host({ edits: [{ op: 'summarize', tool_use_id: 'a', summary: 'KEY_0042 = 2c5f' }, { op: 'drop', tool_use_id: 'b' }] })
+  const q = oldQueue()
+  s.queues.set('/s/old', { ...q, edits: [q.edits[0]!, { ...q.edits[1]!, deferred: 'b1' }], nextBatch: 2, deferredSince: { b1: 0 } })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  expect(s.submitted[0]).toContain('applied 2 edit(s)')
+  const seeded = s.sessions.get('new')!
+  expect(seeded.some(r => r.toolUses.some(u => u.tool_use_id === 'b'))).toBe(false)
+  expect([oldQueue().edits, oldQueue().deferredSince, oldQueue().nextBatch]).toEqual([[], undefined, 2])
+})
+
+// [SP_HELP_05_01] Передача — документ (у частині відкладених)
+test('Передача — документ з відкладеним пакетом: the deferred edit drops with the old conversation, its own sentence; the queued count is by NonDeferred', async () => {
+  const { io, s, oldQueue } = host({ h: { mode: 'document', document: 'my handoff' }, edits: [{ op: 'drop', tool_use_id: 'a' }, { op: 'drop', tool_use_id: 'b' }] })
+  const q = oldQueue()
+  s.queues.set('/s/old', { ...q, edits: [q.edits[0]!, { ...q.edits[1]!, deferred: 'b1' }], nextBatch: 2, deferredSince: { b1: 0 } })
+  expect(await runHandoff(io, s.mem, 0)).toBe('document')
+  expect(s.submitted[0]).toContain('The 1 queued edit(s) were not carried over. 1 deferred edit(s) were dropped with the old conversation.')
+  expect([oldQueue().edits, oldQueue().deferredSince]).toEqual([[], undefined])
+  // only deferred: no count of the queued ones
+  const only = host({ h: { mode: 'document', document: 'my handoff' }, edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  const q2 = only.oldQueue()
+  only.s.queues.set('/s/old', { ...q2, edits: [{ ...q2.edits[0]!, deferred: 'b1' }] })
+  expect(await runHandoff(only.io, only.s.mem, 0)).toBe('document')
+  expect(only.s.submitted[0]).not.toContain('queued edit(s) were not carried over')
+  expect(only.s.submitted[0]).toContain(' 1 deferred edit(s) were dropped with the old conversation.')
+})

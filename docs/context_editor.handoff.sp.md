@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-11-16
+> **Updated:** 2026-11-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_21](#SP_CTX_02_21)
 >
@@ -127,7 +127,7 @@ Processing logic (pseudocode):
                 TRY FailAfterClear(seed, reasons + "failed: <error>") CATCH: toast "context-editor: handoff failed after /clear: <error>; the old queue could not be written"
             RETURN failed
         FINALLY: handoffInFlight = false                                    # на кожному виході: поверненні, винятку, deferred, nothing
-                 IF cleared: status line = "<n> context edit(s) queued" from the current session's queue, or cleared when it is empty   # рядок стану старої сесії не лишається в новій
+                 IF cleared: status line = QueueStatus of the current session's queue (SP_CTX_02_02; відкладені правки окремо — PL_HELP, фаза 4), or cleared when it is empty   # рядок стану старої сесії не лишається в новій
 
     FUNCTION PrepareSeed() → (HandoffSeed, none) | (none, reason):
         transcript = read main conversation rows; rows = CurrentRows(); api = read main conversation in Messages API form
@@ -253,7 +253,7 @@ Processing logic (pseudocode):
         write text into file (owner-only, host command)                    # текст, який мав піти: з рамкою і хвостом, без продовження
         RETURN written ? " The document is in <file>." : " The document is lost: <file> could not be written."
 
-    FUNCTION HandedOff(to, mode): old Queue: KeepOtherSteps (edits = [], resume, resumePrompt, resumeSet, tagsOnly, keepCache — за замовчуванням), handoff absent, AppendReport("this session was handed off to <to> (<mode>)", reportId = now, reportResume = false); terminal = true   # SP_CTX_01_04: вибори пакета скидаються з пакетом, інакше пакет старої сесії після --resume успадкував би keep_cache (аудит PL_AUD_CTX, CF-6)
+    FUNCTION HandedOff(to, mode): old Queue: WithoutDeferred(KeepOtherSteps) (edits = [], resume, resumePrompt, resumeSet, tagsOnly, keepCache — за замовчуванням; відкладені правки, `deferredSince`, `applyDeferred`, `coldSince` прибрано, `nextBatch` лишається — PL_HELP, фаза 4: засів «транскрипт» їх застосував, спосіб «документ» скинув), handoff absent, AppendReport("this session was handed off to <to> (<mode>)", reportId = now, reportResume = false); terminal = true   # SP_CTX_01_04: вибори пакета скидаються з пакетом, інакше пакет старої сесії після --resume успадкував би keep_cache (аудит PL_AUD_CTX, CF-6)
     FUNCTION Defer(): old Queue: handoff.state = queued, owner removed     # знову після наступного кінця ходу
     FUNCTION Fail(reasons): old Queue: handoff absent, report += "handoff failed: <reasons>; the session was not changed", reportId = now, reportResume = false; terminal = true; toast
     FUNCTION FailAfterClear(s?, reasons): old Queue: handoff absent, report += "handoff failed after the session was cleared: <reasons>; this session was not changed" + (s present ? "; the assembled conversation is in <s.file>" : ""), reportId = now, reportResume = false; terminal = true; toast
@@ -263,9 +263,9 @@ Processing logic (pseudocode):
 
 Форк і годинник кешу (PL_HELP, фаза 2; [SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09)). Форк документа — запит до моделі на префіксі старої розмови, тож після відповіді форку DocumentWay викликає порт Forked (`forked` у HandoffIO): пам'ять модуля годинника отримує поточний час для старої сесії, потім реєстр старої сесії — `cache.lastRequestAt` (той самий запис, що в кінці ходу, [SP_CTX_02_12](./context_editor.tags.sp.md#SP_CTX_02_12)). Збій Forked передачі не зупиняє; форк, що впав чи не відповів, годинника не чіпає. Документ агента форку не має, тож і запису немає.
 
-`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.methods.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`; для документа спливне повідомлення ще й називає його копію (KeepDocument, DOCUMENT_NOT_DELIVERED), бо HandedOff уже прибрав документ зі старої черги.
+`dropped` = ` The <n> queued edit(s) were not carried over.`, коли черга мала правки без `deferred` (`n` — NonDeferred), потім ` <d> deferred edit(s) were dropped with the old conversation.`, коли в ній були відкладені правки (PL_HELP, фаза 4; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)): відкладені не лічаться двічі. Причина з відмови команди хоста несе текст винятку хоста дослівно: мод ніколи не ковтає відмову `/clear` чи `/compact` ([C_CTX_DEC_13](./context_editor.methods.concept.md#C_CTX_DEC_13)). Відправка промпту, відхилена хостом (виняток або `drop`), дає спливне повідомлення з текстом відмови хоста і не кидає винятку далі: результат лишається `transcript` (REPORT_LOST) або `document`; для документа спливне повідомлення ще й називає його копію (KeepDocument, DOCUMENT_NOT_DELIVERED), бо HandedOff уже прибрав документ зі старої черги.
 
-Порядок має значення. Засів збирається і пишеться до очищення сесії: після `/clear` читання розмови й API-подання бачать уже нову, порожню сесію, а окремий запит до моделі над старою розмовою неможливий. Тому збій збирання веде до способу `document` у старій сесії, а збій після очищення — до повторного очищення (лише коли засів уже взято) і документа агента, а без нього — повідомлення з ідентифікатором старої сесії і шляхом до файлу засіву. Правки черги старої сесії при `Fail` і `FailAfterClear` лишаються в її черзі: стара сесія не змінена, і її можна відновити; при `HandedOff` вони йдуть у засів або, для `document`, не переносяться (`dropped`).
+Порядок має значення. Засів збирається і пишеться до очищення сесії: після `/clear` читання розмови й API-подання бачать уже нову, порожню сесію, а окремий запит до моделі над старою розмовою неможливий. Тому збій збирання веде до способу `document` у старій сесії, а збій після очищення — до повторного очищення (лише коли засів уже взято) і документа агента, а без нього — повідомлення з ідентифікатором старої сесії і шляхом до файлу засіву. Правки черги старої сесії при `Fail` і `FailAfterClear` лишаються в її черзі: стара сесія не змінена, і її можна відновити; при `HandedOff` вони йдуть у засів або, для `document`, не переносяться (`dropped`) — відкладені (`deferred`) теж.
 
 Ідентифікатор нової сесії до `/clear` невідомий, тож файл засіву, архів оригіналів і перенесене медіа лежать у сховищі старої сесії ([SP_CTX_DEC_09](./context_editor.decisions-01.sp.md#SP_CTX_DEC_09)); їхні шляхи вписано в текст засіяних рядків. Засів живе в пам'яті модуля: перезавантаження модуля між `/clear` і компактизацією засіву лишає нову сесію порожньою, а запит у старій черзі — у стані `running`; новий екземпляр, у якого `handoffInFlight = false`, вважає його належним через HANDOFF_STALE ([SP_CTX_01_15](./context_editor.records.sp.md#SP_CTX_01_15), [SP_CTX_05_04](./context_editor.edges.sp.md#SP_CTX_05_04)). Поки RunHandoff цього екземпляра йде, запит не належний, хоч би скільки `/clear` чекав кінця довгого ходу; будь-який виняток RunHandoff до засіву закінчується Fail, AfterClear або FailAfterClear, а збої після засіву Seed перехоплює сам, як і HandDocument — збої HandedOff і Deliver документа після `/clear` (спливне повідомлення називає крок; документ, який Deliver не віддав, лишається копією в сховищі старої сесії), тож запит не лишається `running`, хіба що не вдався сам запис старої черги. Теги й псевдоніми копіюються і одразу проходять ті самі RebindTags і очищення псевдонімів, що й після компактизації в тій самій сесії ([SP_CTX_02_14](./context_editor.tags.sp.md#SP_CTX_02_14)): незмінені засіяні пари зберігають ідентифікатори викликів старої сесії ([SP_CTX_01_17](./context_editor.records.sp.md#SP_CTX_01_17)), тож їхні теги й псевдоніми працюють далі; змінені пари отримали FreshId, і їхні теги й псевдоніми видаляються, тож `ref` такої пари в новій сесії дає UNKNOWN_REF, а не TARGET_NOT_FOUND.
 
@@ -309,7 +309,7 @@ Input:
 | transcript | list<Row> | yes | рядки, як їх повернуло читання розмови, ≤ ROW_WINDOW |
 | rows | list<Row> | yes | CurrentRows ([SP_CTX_02_18](./context_editor.tags.sp.md#SP_CTX_02_18)) — суфікс `transcript` |
 | api | list<json> | yes | API-подання основної розмови, ≤ ROW_WINDOW повідомлень |
-| edits | list<QueuedEdit> | yes | Queue.edits старої сесії, ≤ MAX_QUEUE_EDITS |
+| edits | list<QueuedEdit> | yes | Queue.edits старої сесії, ≤ MAX_QUEUE_EDITS; усі, відкладені (`deferred`) теж: засів пакетів не вибирає (PL_HELP, фаза 4; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)) |
 | tags | TagRegistry зі станом читання | yes | для перевірки `pin`, як у [SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07) |
 | folder | string | yes | `<old storage>/<id>` |
 | archive | string | yes | `<old storage>/<id>.json` |
@@ -474,6 +474,7 @@ Errors:
 
 | Date | Change |
 |------|--------|
+| 2026-11-17 | PL_HELP фаза 4 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10), [SP_HELP_02_14](./context_helper.sp.md#SP_HELP_02_14)): 02_21 — HandedOff пише стару чергу як WithoutDeferred(KeepOtherSteps) в обох способах (`nextBatch` лишається), `dropped` рахує NonDeferred і додає речення про скинуті відкладені правки, рядок стану після `/clear` — QueueStatus; 02_22 — `edits` засіву — уся черга, відкладені теж |
 | 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09), [SP_HELP_02_14](./context_helper.sp.md#SP_HELP_02_14)): 02_21 — форк документа, що відповів, оновлює годинник кешу старої сесії (порт Forked: пам'ять, потім реєстр); CarryRegistries не переносить поле `cache` |
 | 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 02_22 BuildSeed — ScreenPinned повертає піни, ScreenPerson і ApplyEdits їх отримують; згортання засіву обходить пін і слот стану |
 | 2026-10-11 | Структура (audit, Docs Scaling `hard_split`): §02 Contracts 02_19–02_26 перенесено дослівно з [context_editor.sp.md](./context_editor.sp.md) у [context_editor.handoff.sp.md](./context_editor.handoff.sp.md), якорі без змін |

@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-14
-> **Updated:** 2026-11-16
+> **Updated:** 2026-11-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §02 Contracts 02_53–02_57 специфікації [SP_CTX](./context_editor.sp.md): можливості хоста, від яких залежить мод, їх перевірка процесом-зондом раз на версію хоста і живими ознаками, і що мод вимикає, коли хост пропускає його хуки ([C_CTX_03_11](./context_editor.core.concept.md#C_CTX_03_11), [C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), [SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38); спайк [context_editor_probe](./context_editor_probe.spike.md)). Читати перед зміною `hooks/capabilities.ts`, хуків `prompt.attachment`, `session.start`, `turn.complete`, `command.run`, `session.compact` чи перевірок перед компактизацією мода.
@@ -107,7 +107,7 @@ Input: рядки основної розмови (CurrentRows), реєстр т
         lines = [BRIEF_HEAD]
         state = text of the row tagged `state` in reg (rows)
         IF state: lines += "Keep this task state verbatim:\n" + state
-        FOR e IN q.edits (queue order):
+        FOR e IN q.edits (queue order):                                         # відкладені (`deferred`) теж (PL_HELP, фаза 4)
             collapse / summarize  → "Use this summary for " + Targets(e) + ":\n" + e.summary
             rewrite               → "Use this text for " + Targets(e) + ":\n" + e.text
             drop                  → "Leave out " + Targets(e) + "."
@@ -139,7 +139,7 @@ Input: рядки основної розмови (CurrentRows), реєстр т
         IF the handler saw a compaction meanwhile (passSeen moved): RETURN     # спостерігач обробника вже все зробив
         IF copies: RecordBoundary(boundaryOf(copies, hostId))                  # у цьому процесі читання — оригінали + копії
         tags: pruneDeadTags(reg, before, copies ?? after); lastApply dropped; introduced → reintroduce   # одна зміна реєстру
-        queue: edits = [] (their summaries went into the brief); keepCache, resume, resumePrompt cleared   # QUEUE_BRIEFED
+        queue: edits = [] (their summaries went into the brief), deferred ones too, with deferredSince, applyDeferred, coldSince (WithoutDeferred; nextBatch stays); keepCache, resume, resumePrompt cleared   # QUEUE_BRIEFED; PL_HELP, фаза 4 (SP_HELP_01_06): черга лише з полями пакета (`applyDeferred`, `coldSince`, `deferredSince`) теж очищається
         attachments: the answers go (SP_CTX_02_41)
 
 Коли читання після компактизації не продовжує читання до неї, межа не пишеться (OBSERVE_NO_PREFIX): у цьому процесі перелік показує й рядки до підсумку, до наступного процесу; припущення перевіряє живий сценарій «/compact при обході» ([SP_CTX_05_03](./context_editor.scenarios.sp.md#SP_CTX_05_03)). Автоматична компактизація хоста при `compact = passed` не видна моду зовсім: та сама межа процесу, прийняте обмеження ([SP_CTX_DEC_38](./context_editor.decisions-21.sp.md#SP_CTX_DEC_38) (б)). `/compact <інструкції>` людини і `/compact host` ідуть до хоста без змін і без ObservePassedCompact.
@@ -149,7 +149,7 @@ Errors:
 |------|-----------|----------|
 | BRIEF_FAILED | CompactBrief кинув виняток | команда йде з BRIEF_HEAD; журнал налагодження |
 | OBSERVE_NO_PREFIX | рядки після компактизації не починаються рядками до неї | межа не пишеться; теги чистяться за `after`; черга очищається |
-| QUEUE_BRIEFED | ObservePassedCompact очистив чергу | правки перейшли в бриф; рядок людині не потрібен |
+| QUEUE_BRIEFED | ObservePassedCompact очистив чергу | правки, відкладені теж, перейшли в бриф; рядок людині не потрібен |
 
 ### 02_56. RunProbe  {#SP_CTX_02_56}
 
@@ -233,3 +233,4 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лічи
 | 2026-10-21 | Фаза 47 ([SP_CTX_DEC_45](./context_editor.decisions-21.sp.md#SP_CTX_DEC_45)): 02_57 — ProbeMode пише PROBE_FILE у корінь проєкту процесу-зонда (`$.session.root()`, тека `tmp`, де він стартував), не в поточну теку оболонки |
 | 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_53 — від `compact` залежить повернення пар розгортання й питань; 02_54 — `context_helper` `ask` відмовляє HELPER_PASSED_OVER, як `context_recall`; 02_57 — ProbeMode не реєструє й `context_helper` |
 | 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_57 — у ProbeMode годинника кешу немає: `prompt.submit` не бере вердикту, `turn.complete` не пише кінця ходу, `turn.step` лише пропускає потік без перевірки й запису сховища |
+| 2026-11-17 | PL_HELP фаза 4 ([SP_HELP_01_06](./context_helper.batches.sp.md#SP_HELP_01_06)): 02_55 — CompactBrief називає й відкладені правки; QUEUE_BRIEFED очищає їх разом з `deferredSince`, `applyDeferred`, `coldSince` (WithoutDeferred), `nextBatch` лишається; черга лише з цими полями пакета теж очищається |

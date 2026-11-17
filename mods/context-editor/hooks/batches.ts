@@ -5,7 +5,7 @@
 // rows it returns (BindUnselected), and the counts the rest of the mod reads
 // (NonDeferred, Applicable). Pure.
 import type { SessionMessage } from 'claude-code'
-import { withinLookback, type CacheShape } from './cache'
+import { cacheCost, withinLookback, type CacheShape } from './cache'
 import { indexRows, locate, locateSpan, responseStart, touchedBy, type QueuedEdit, type RowIndex } from './edits'
 
 // ---- [SP_HELP_01_09] constants
@@ -115,6 +115,49 @@ export function sinceOf(since: Readonly<Record<string, number>> | undefined, edi
   const left = new Set(batchesOf(edits))
   const out = Object.fromEntries(Object.entries(since).filter(([b]) => left.has(b)))
   return Object.keys(out).length ? out : undefined
+}
+
+// [SP_HELP_01_06] The queue once its deferred edits are gone: the transcript
+// seed applied them, the document handoff's reset and ObservePassedCompact
+// dropped them; with them go `deferredSince` and the batch's `applyDeferred`
+// and `coldSince`. `nextBatch` stays: a batch number never repeats.
+export function withoutDeferred<Q extends Deferrable & { deferredSince?: Record<string, number> }>(q: Q): Q {
+  const { deferredSince: _since, applyDeferred: _apply, coldSince: _cold, ...rest } = q
+  return { ...rest, edits: nonDeferred(q.edits) } as unknown as Q
+}
+
+// [SP_CTX_02_02] [SP_HELP_02_10] The status line of a queue: the edits the
+// next apply takes, and the deferred ones apart; undefined when it is empty.
+export function queueStatus(edits: readonly QueuedEdit[]): string | undefined {
+  const deferred = edits.length - nonDeferred(edits).length
+  const own = edits.length - deferred
+  if (own && deferred) return `${own} context edit(s) queued, ${deferred} deferred`
+  if (own) return `${own} context edit(s) queued`
+  if (deferred) return `${deferred} deferred context edit(s)`
+  return undefined
+}
+
+// [SP_HELP_02_13] What the Deferred line shows of the queue: its batches,
+// their edits and the turn of the oldest (absent: no deferredSince for any);
+// undefined when no deferred edit waits.
+export type DeferredView = { batches: number; edits: number; oldest?: number }
+
+export function deferredView(q: Pick<Deferrable, 'edits'> & { deferredSince?: Readonly<Record<string, number>> }): DeferredView | undefined {
+  const edits = q.edits.filter(e => e.deferred !== undefined)
+  if (!edits.length) return undefined
+  const ids = batchesOf(edits)
+  const turns = ids.flatMap(id => (q.deferredSince?.[id] !== undefined ? [q.deferredSince[id]!] : []))
+  return { batches: ids.length, edits: edits.length, ...(turns.length ? { oldest: Math.min(...turns) } : {}) }
+}
+
+// [SP_HELP_02_13] The cache the deferred edits alone would rewrite, were they
+// applied now with keep_cache: CacheCost ([SP_CTX_02_38]) from the earliest
+// row they change, nothing subtracted for what they free (an upper estimate);
+// undefined when none of their rows is found.
+export function deferredRewrite(edits: readonly QueuedEdit[], shape: CacheShape, firstOf: FirstRow, whole: number, ratio: number): number | undefined {
+  const firsts = edits.filter(e => e.deferred !== undefined).map(firstOf).filter((i): i is number => i !== undefined && i >= 0)
+  if (!firsts.length) return undefined
+  return cacheCost(shape, Math.min(...firsts), 0, whole, ratio).rewrite
 }
 
 // [SP_HELP_02_10] BindUnselected at the commit point: a deferred edit by row

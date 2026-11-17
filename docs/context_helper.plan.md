@@ -56,7 +56,7 @@
 - [x] [Phase 1 — Помічник і питання до архіву](#PL_HELP_P1)
 - [x] [Phase 2 — Годинник кешу](#PL_HELP_P2)
 - [x] [Phase 3 — Відкладені пакети в обробнику й черзі](#PL_HELP_P3)
-- [ ] [Phase 4 — Поле `defer` і видимі відкладені пакети](#PL_HELP_P4)
+- [x] [Phase 4 — Поле `defer` і видимі відкладені пакети](#PL_HELP_P4)
 - [ ] [Phase 5 — Простій](#PL_HELP_P5)
 - [ ] [Phase 6 — Новий процес](#PL_HELP_P6)
 - [ ] [Phase 7 — Доручення з умовою й доставка](#PL_HELP_P7)
@@ -141,7 +141,7 @@ Pseudocode sketch:
         sO = RewriteStart(O, rows, queue.keepCache)
         RETURN O + batches B with sO ≤ RewriteStart(B, rows, true), in queue order
 
-### Phase 4 — Поле `defer` і видимі відкладені пакети [TODO]  {#PL_HELP_P4}
+### Phase 4 — Поле `defer` і видимі відкладені пакети [DONE]  {#PL_HELP_P4}
 
 **Depends on:** Phase 3
 **Implements:** з [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10) — постановка (поле `defer`, речення `Deferred as <batch>…` поки без частини «when the cache turns cold in idle» — її додає фаза 5, ігнорування `resume`, `resume_prompt`, `keep_cache`, без повернень, без замін тегів, очікування блоку не закінчується), `/compact` людини, передача; переходи передачі з [SP_HELP_04_02](./context_helper.sp.md#SP_HELP_04_02); рядок «Відкладені» з [SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13) у теплому варіанті без «a cold cache in idle» (холодний варіант і цю частину додає фаза 5); рядок «Відкладені правки» з [SP_HELP_02_14](./context_helper.sp.md#SP_HELP_02_14); рядок `defer` з [SP_HELP_03_01](./context_helper.sp.md#SP_HELP_03_01); інваріант I10; рядок «Черга» з [SP_HELP_06_01](./context_helper.sp.md#SP_HELP_06_01)
@@ -332,3 +332,4 @@ Items deferred from the current implementation cycle (each with a return trigger
 | 2026-11-16 | Фаза 1 `[DONE]`: код, тести (1106), рев'ю з чистим контекстом (pass with advisories, усе виправлено), живий L1 у stream-json і терміналі; перерваний виклик не пише запису питання; мітки матеріалу в цитатах помічника знімаються перевіркою |
 | 2026-11-16 | Фаза 2 `[DONE]`: годинник кешу (`hooks/cacheclock.ts`, хук `turn.step`, вердикт на промпті, перевірка першим кроком, рядки телеметрії, форк і передача), тести (1123), рев'ю з чистим контекстом (pass with advisories, усе виправлено: ConfirmCheck у чистому модулі зі StartCheck, `prev` з початку кроку, `mismatch` лише за межею CACHE_TTL_MS), живі прогони stream-json на sonnet і термінал на opus; попутно сигнал хука в `$.model.complete` (фаза 1) |
 | 2026-11-17 | Фаза 3 `[DONE]`: відкладені пакети в обробнику й черзі (`hooks/batches.ts`: NonDeferred, Applicable, RewriteStart на спільному `withinLookback`, SelectEdits з другим зважуванням після екранів, BindUnselected; поля черги, фіксація, гілка збою з `selectedBatches`, Flush за Applicable, поле `deferred` запису `apply`), тести (1140), рев'ю з чистим контекстом (pass with advisories, 0 must / 0 should / 4 prefer — усе виправлено), живі S1 і T1 (група `help-p3`); хост за ніч оновився до 2.1.326 — тип-перевірка на його типах чиста |
+| 2026-11-17 | Фаза 4 `[DONE]`: поле `defer` у `context_edit` (пакет `b<n>`, вибори пакета без змін, без повернень і замін тегів; DEFER_RETURN для правки над ще не поверненою парою розгортання чи питання, DEFER_STATE для правок слота стану — рішення делеговані), рядок стану з відкладеними окремо, порожній хід стискання `/compact` застосовує пакети, передача (засів «транскрипт» застосовує, «документ» скидає з реченням), бриф обходу, рядок `Deferred:` у `context_list`; тести (1154), рецензія з чистим контекстом (pass with advisories, усе виправлено), живі прогони S2, S3 (stream-json) і T1 (термінал) на хості 2.1.326: L5, L6, неглибокий `keep_cache` лишає ранній пакет |

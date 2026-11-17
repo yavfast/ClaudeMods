@@ -143,6 +143,12 @@ const EDIT_SCHEMA = {
       description:
         'Keep the prompt cache up to the first edit (default false): cheaper when the earliest edit is within your last few calls and you end the turn soon.',
     },
+    // [SP_HELP_02_10] [PL_HELP_DEC_03] without the idle part until phase 5
+    defer: {
+      type: 'boolean',
+      description:
+        'Defer this call\'s edits as a batch (default false): no apply is planned for them; they apply with a later apply that rewrites the cache from no later a point, or in a handoff. resume, resume_prompt and keep_cache are ignored with it.',
+    },
   },
   required: ['edits'],
 }
