@@ -47,12 +47,17 @@ import {
   outputSize,
   restoreBlock,
   submitWithBlock,
+  wakeWithRecheck,
+  wakeCheck,
   wantsSize,
+  newWakeMemory,
+  ownCompaction,
   type BlockPort,
   type CheckIO,
   type Errand,
   type ErrandEvent,
   type ErrandIO,
+  type WakeIO,
 } from './errands'
 import { errorText, modText, REPAIR_MARKER } from './rows'
 import {
@@ -205,6 +210,8 @@ const turns = newTurns()
 const flushState = newFlushState()
 // [SP_HELP_02_11] The idle timer and whether its command runs.
 const idleMem = newIdleMemory()
+// [SP_HELP_02_08] WakeCheck's memory: the idle's one wake, the recheck timer
+const wakeMem = newWakeMemory()
 // [SP_CTX_01_15] The handoff of this module instance; `instance` marks its claims.
 const handoff = newHandoffMemory(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`)
 // [SP_CTX_02_12] The result ids of the rows the last compaction returned: in
@@ -508,7 +515,7 @@ function askErrand($: EngineInterface, dir: string, errand: Errand): void {
 function blockPort($: EngineInterface, given?: string): BlockPort {
   let dir = given
   return {
-    claim: async () => {
+    claim: async (wakeFirst = false) => {
       dir ??= await storageDir($).catch(() => undefined)
       if (!dir) return undefined
       const tags = stores($, dir).tags
@@ -517,7 +524,7 @@ function blockPort($: EngineInterface, given?: string): BlockPort {
       const debug = (text: string) => $.ui.log(modText(text), { to: 'debug' })
       // [ERR-01] a failure delivers nothing and leaves a debug line; the next moment tries again
       return tags
-        .onChain(() => claimDelivery({ readTags: io.readTags, writeTags: io.writeTags, now: () => Date.now(), debug }))
+        .onChain(() => claimDelivery({ readTags: io.readTags, writeTags: io.writeTags, now: () => Date.now(), debug }, wakeFirst))
         .catch(err => (debug(`delivery not claimed: ${errorText(err)}`), undefined))
     },
     restore: async claimed => {
@@ -1121,6 +1128,38 @@ function flushIO($: EngineInterface): FlushIO {
     now: () => Date.now(),
     sessionId: () => $.session.id(),
     turns,
+    // [SP_HELP_02_08] the end of a Flush that sent no prompt
+    wake: turns0 => wakeCheck(wakeIO($), wakeMem, turns0),
+  }
+}
+
+// [SP_HELP_02_08] WakeCheck bound to the host: the module's memory for its
+// conditions, the storage taken once, DeliveryBlock in that folder, the
+// wake prompt through $.prompt.submit (from the turn.complete chain: the
+// turn's end, Flush, the idle timer, the recheck timer).
+function wakeIO($: EngineInterface): WakeIO {
+  const f = flushIO($)
+  return {
+    turns,
+    sessionId: () => $.session.id(),
+    flushPlanned: () => isPlanned(flushState, Date.now()),
+    compacting: () => ownCompaction(idleMem, repairMem.state, handoff),
+    lastRequestAt: f.lastRequestAt!,
+    peek: () => {
+      const dir = publishedDir(storage)
+      return dir ? stores($, dir).tags.peek() : undefined
+    },
+    storage: () => storageDir($),
+    readQueue: dir => stores($, dir).queue.read(),
+    readTags: dir => stores($, dir).tags.read(),
+    block: dir => blockPort($, dir),
+    submit: text => enteredOrThrow($.prompt.submit({ text })),
+    removeDelivered: (dir, report) => updateOf(stores($, dir).queue)(q => withoutReport(q, report)),
+    advised: dir => changeOf(stores($, dir).tags)(adviseWaiting),
+    status: text => $.ui.status(text),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    now: () => Date.now(),
+    debug: text => $.ui.log(modText(text), { to: 'debug' }),
   }
 }
 
@@ -1144,6 +1183,8 @@ function idleIO($: EngineInterface): IdleIO {
     },
     after: (ms, fn) => $.clock.after(ms, fn),
     debug: text => $.ui.log(text, { to: 'debug' }),
+    // [SP_HELP_02_08] the end of a run whose timer a turn armed; its `cold` ask errands rechecked
+    wake: turns0 => wakeWithRecheck(wakeIO($), wakeMem, turns0),
   }
 }
 
@@ -1995,6 +2036,8 @@ export const register: Register = on => {
     }
     // nothing starts while the turn ends: the counter moves whatever `next` does
     if (!e.agentId) turnCompleted(turns, e.isAborted)
+    // [SP_HELP_02_08] the count of this turn's end, for WakeCheck and its recheck
+    const turns0 = turns.turns
     const done = await next(e)
     if (e.agentId) return done
     void afterTurn(
@@ -2011,6 +2054,8 @@ export const register: Register = on => {
         flush: aborted => flushAfterTurn(flushIO($), flushState, aborted),
         // [SP_HELP_02_11] the idle timer after Flush was planned
         idle: aborted => armAtTurnEnd(idleIO($), idleMem, aborted),
+        // [SP_HELP_02_08] WakeCheck last, then the recheck of a running question with `wake`
+        wake: () => wakeWithRecheck(wakeIO($), wakeMem, turns0),
         handoff: aborted => handoffAfterTurn(handoffIO($), handoff, aborted),
       },
       { aborted: e.isAborted, answer: e.answer },

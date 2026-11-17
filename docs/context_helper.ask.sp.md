@@ -176,7 +176,7 @@ Input:
 | name | string | no | для `when: 'closed'`; 1..MAX_STAGE_NAME після обрізання |
 | action | `'remind' \| 'ask' \| 'apply'` | для `errand_add` | — |
 | text | string | для `action: 'remind'` | 1..MAX_NOTE |
-| wake | bool | no | лише `errand_add`; за замовчуванням false; до фази 8 PL_HELP поле відхиляється як BAD_OP і в схемі його немає |
+| wake | bool | no | лише `errand_add`; за замовчуванням false; не булеве — ERRAND_WAKE (§02_06); у схемі `HELPER_SCHEMA` є (фаза 8 PL_HELP), для інших операцій — BAD_OP |
 | id | string | для `errand_remove` | ідентифікатор доручення |
 
 Output: результат інструмента — текст операції (§02_03, §02_06). Відмова — `context-editor: <причина>`, як в інших інструментах мода.
@@ -195,7 +195,7 @@ Errors (спільні, у порядку перевірки):
     op "errand_list"; op "errand_remove" with id.
     To defer an edit batch until the cache is cold, pass defer: true to context_edit.
 
-Опис відкривається поетапно: він називає лише те, що вже працює ([PL_HELP_DEC_03](./context_helper.plan.md#PL_HELP_DEC_03)). Після фази 5 (`HELPER_DESCRIPTION` у `hooks/tools.ts`) він має перший рядок без `, or set errands the mod runs when a condition on the context holds` (`Ask the mod's helper about your folds.`), рядок `op "ask"` (фаза 1) і останній рядок `To defer …` (фаза 5: застосування в простої, [§02_11](./context_helper.batches.sp.md#SP_HELP_02_11), робить його правдивим). Рядки `op "errand_add"` і `op "errand_list"; op "errand_remove" with id.` та другу половину першого рядка додає фаза 7, речення про `wake` у рядку `errand_add` — фаза 8.
+Опис відкривається поетапно: він називає лише те, що вже працює ([PL_HELP_DEC_03](./context_helper.plan.md#PL_HELP_DEC_03)). Після фази 5 (`HELPER_DESCRIPTION` у `hooks/tools.ts`) він має перший рядок без `, or set errands the mod runs when a condition on the context holds` (`Ask the mod's helper about your folds.`), рядок `op "ask"` (фаза 1) і останній рядок `To defer …` (фаза 5: застосування в простої, [§02_11](./context_helper.batches.sp.md#SP_HELP_02_11), робить його правдивим). Рядки `op "errand_add"` і `op "errand_list"; op "errand_remove" with id.` та другу половину першого рядка додає фаза 7, речення про `wake` у рядку `errand_add` і властивість `wake` схеми додала фаза 8 (зроблено).
 
 ### 02_03. Ask (операція `ask`)  {#SP_HELP_02_03}
 
@@ -313,3 +313,4 @@ Purpose: пара питання — відповідь живе як згада
 | 2026-11-16 | PL_HELP фаза 1, рев'ю коду й живий прогін L1: FailureReason (`empty-reply`, `api-error without a response`), токени кожного виклику; перерваний виклик не пише запису; рядок налагодження при невдалому записі; StripLabels у VerifyQuotes; слід власної правки на парі питання; перевірка залежностей пар питань не враховує |
 | 2026-11-16 | PL_HELP фаза 2: сигнал хука `tool.call` іде в `$.model.complete` другим аргументом (`options.signal`) — §02_03 |
 | 2026-11-17 | PL_HELP фаза 5: §02_02 — HELPER_DESCRIPTION отримав останній рядок `To defer an edit batch until the cache is cold, pass defer: true to context_edit.`; речення про поетапне відкриття опису: рядки доручень — фаза 7, `wake` — фаза 8 ([PL_HELP_DEC_03](./context_helper.plan.md#PL_HELP_DEC_03)) |
+| 2026-11-17 | PL_HELP фаза 8: §02_02 — поле `wake` більше не BAD_OP для `errand_add` і є в схемі (`HELPER_SCHEMA.wake`); речення про `wake` в описі й у схемі додано (фаза 8 зроблено) |

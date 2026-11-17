@@ -592,3 +592,54 @@ test('IdleRun — позначка доручення: kept as it is (no coldSin
   await idleRun(own.io, own.mem)
   expect(own.state.queue.applyDeferred).toBeUndefined()
 })
+
+// [SP_HELP_02_08] I5: WakeCheck ends a run whose timer a turn armed; a StartRun timer's run calls none
+test('IdleRun — пробудження: a turn\'s timer ends its run with WakeCheck at the armed count, after the apply; a StartRun timer\'s run calls none', async () => {
+  const turnTimer = fake()
+  const order: string[] = []
+  const compact = turnTimer.io.compact
+  turnTimer.io.compact = async args => (order.push('compact'), compact(args))
+  turnTimer.io.wake = async t => void order.push(`wake ${t}`)
+  turnStarted(turnTimer.turns)
+  turnCompleted(turnTimer.turns, false)
+  armIdle(turnTimer.io, turnTimer.mem, 's1', 'turn', WHOLE)
+  expect(await idleRun(turnTimer.io, turnTimer.mem)).toBe('applied')
+  expect(order).toEqual(['compact', 'wake 1'])
+  // nothing to apply: WakeCheck still runs (a cold errand with wake may have fired)
+  const empty = fake({ queue: q0([]) })
+  const woke: number[] = []
+  empty.io.wake = async t => void woke.push(t)
+  armIdle(empty.io, empty.mem, 's1', 'turn', WHOLE)
+  expect(await idleRun(empty.io, empty.mem)).toBe('nothing')
+  expect(woke).toEqual([0])
+  const now = 100 * WHOLE
+  const start = startFake({ now, last: now - 30 * 60_000 })
+  const calls: number[] = []
+  start.io.wake = async t => void calls.push(t)
+  expect(await startRun(start.io, start.mem)).toBe('armed')
+  start.state.now = now + 31 * 60_000 + IDLE_SLACK_MS
+  start.log.timers[0]!.fn()
+  await ticks()
+  expect(start.log.compact.map(c => c.args)).toEqual([MARKER])
+  expect(calls).toEqual([])
+})
+
+test('IdleRun — пробудження: a run that left (a turn since, another session), found no clock or re-armed on a warm cache calls no WakeCheck', async () => {
+  const calls: string[] = []
+  const moved = fake()
+  moved.io.wake = async () => void calls.push('moved')
+  armIdle(moved.io, moved.mem, 's1', 'turn', WHOLE)
+  moved.state.session = 's2'
+  expect(await idleRun(moved.io, moved.mem)).toBe('moved')
+  const unknown = fake({ last: null })
+  unknown.io.lastRequestAt = () => undefined
+  unknown.io.wake = async () => void calls.push('unknown')
+  armIdle(unknown.io, unknown.mem, 's1', 'turn', WHOLE)
+  expect(await idleRun(unknown.io, unknown.mem)).toBe('unknown')
+  const warm = fake()
+  warm.state.last = warm.state.now - 1000
+  warm.io.wake = async () => void calls.push('warm')
+  armIdle(warm.io, warm.mem, 's1', 'turn', WHOLE)
+  expect(await idleRun(warm.io, warm.mem)).toBe('rearmed')
+  expect(calls).toEqual([])
+})

@@ -130,7 +130,7 @@ Processing logic (pseudocode):
             re-arm for lastRequestAt + CACHE_TTL_MS + IDLE_SLACK_MS − now (not below 0), the same session, armedTurns and armedBy; RETURN rearmed   // хост відхилив таймер — unknown
         ColdVerdict(now, 'idle')                                   // §02_09 → errands `cold` (§02_07); збій — рядок налагодження `idle cold verdict not written: <помилка>`, далі
         outcome = ApplyIdle()
-        IF armedBy = turn: WakeCheck()                              // §02_08, фаза 8; таймер StartRun — без пробудження (I5)
+        IF armedBy = turn AND outcome NOT IN (moved, unknown, rearmed): WakeCheck() and the recheck   // §02_08; таймер StartRun — без пробудження (I5)
         debug line "idle timer fired: <outcome>"                   // виняток усього IdleRun — "idle run failed: <помилка>"
 
     FUNCTION ApplyIdle():                                           // ColdVerdict і всі кроки — у папці сховища, взятій раз на прогін (CONC-01); немає — nothing

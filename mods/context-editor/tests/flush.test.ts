@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { MARKER } from '../hooks/compaction'
-import { afterTurn, CALIB_WAIT_MS, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, logApplied, newFlushState, swapOptimize, type FlushIO, type TurnEndIO } from '../hooks/flush'
+import { afterTurn, CALIB_WAIT_MS, enteredOrThrow, flush, FLUSH_DELAY_MS, flushAfterTurn, logApplied, newFlushState, requestFlush, swapOptimize, wakesAfter, type FlushIO, type TurnEndIO } from '../hooks/flush'
 import { DEFAULT_RESUME, EMPTY_QUEUE, HANDOFF_RESUME_FRAME, queueEdits, RESUME_FRAME, resumeText, withoutReport, type HandoffRequest, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { adviseWaiting, compactTurnText, STAGE_ADVICE, waitingAdvice, type ClosedBlock } from '../hooks/stages'
@@ -840,4 +840,49 @@ test('RenameAtTurnEnd — хід почався під час /rename: no compac
   const out = await flush(h.io, h.state, h.turns.turns)
   expect(out).toEqual({ outcome: 'person-moved', resume: 'none', renamed: 'ran' })
   expect(order).toEqual(['rename'])
+})
+
+// [SP_HELP_02_08] WakeCheck at the end of TurnEnd and of a Flush that sent no prompt
+test('AfterTurn — пробудження: WakeCheck is the last step of a completed turn, after the idle timer; an aborted turn runs none', async () => {
+  const { io, calls } = turnEnd({
+    idle: async aborted => void calls.push(`idle ${aborted}`),
+    wake: async () => void calls.push('wake'),
+  })
+  await afterTurn(io, { aborted: false, answer: '' })
+  expect(steps(calls)).toEqual(['storage', 'detect /s false ""', 'count /s', 'flush false', 'idle false', 'wake'])
+  const aborted = turnEnd({ wake: async () => void aborted.calls.push('wake') })
+  await afterTurn(aborted.io, { aborted: true, answer: '' })
+  expect(aborted.calls).not.toContain('wake')
+})
+
+test('Flush — пробудження: a Flush that sent no prompt ends with WakeCheck at its turn count, `scheduled` down; one that sent the resume prompt runs none', async () => {
+  const seen: { turns0: number; scheduled: boolean }[] = []
+  const quiet = harness(ok({ edits: EDITS }), { wake: async t => void seen.push({ turns0: t, scheduled: quiet.state.scheduled }) }, log => void (log.queue = ok({ report: 'r', reportId: 7, reportResume: false })))
+  quiet.state.scheduled = true
+  expect(await flush(quiet.io, quiet.state, quiet.turns.turns)).toEqual({ outcome: 'compacted', resume: 'none' })
+  expect(seen).toEqual([{ turns0: 0, scheduled: false }])
+  const resumed = harness(ok({ edits: EDITS }), { wake: async t => void seen.push({ turns0: t, scheduled: false }) }, applied)
+  expect((await flush(resumed.io, resumed.state, 0)).resume).toBe('submitted')
+  expect(seen).toHaveLength(1)
+  // a failing WakeCheck changes nothing of Flush's result
+  const failing = harness(ok({}), { wake: async () => Promise.reject(new Error('x')) })
+  expect(await flush(failing.io, failing.state, 0)).toEqual({ outcome: 'nothing-queued', resume: 'none' })
+})
+
+test('Flush — пробудження: none after a Flush the person\'s /compact planned (I5: its chain began in command.run), nor after a refused command or resume prompt', async () => {
+  const calls: number[] = []
+  const person = harness(ok({ edits: EDITS }), { wake: async t => void calls.push(t) }, log => void (log.queue = ok({ report: 'r', reportId: 7, reportResume: false })))
+  requestFlush(person.io, person.state, 's1')
+  expect(person.state.compactSession).toBe('s1')
+  await flush(person.io, person.state, person.turns.turns)
+  const refused = harness(ok({ edits: EDITS }), {
+    wake: async t => void calls.push(t),
+    compact: async () => Promise.reject(new Error('stopped')),
+  })
+  expect((await flush(refused.io, refused.state, 0)).outcome).toBe('host-refused')
+  const failed = harness(ok({ edits: EDITS }), { wake: async t => void calls.push(t), submit: async () => Promise.reject(new Error('drop')) }, applied)
+  expect((await flush(failed.io, failed.state, 0)).resume).toBe('resume-failed')
+  expect(calls).toEqual([])
+  expect(wakesAfter({ outcome: 'nothing-queued', resume: 'none' })).toBe(true)
+  expect(wakesAfter({ outcome: 'compacted', resume: 'none', optimize: 'person' })).toBe(false)
 })

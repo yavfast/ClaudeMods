@@ -13,12 +13,14 @@ import { MAX_NOTE, MAX_REMIND, dueReminders } from './notes'
 import { CACHE_TTL_MS } from './cacheclock'
 import { oneLine } from './edits'
 import { askFields, foldsOf } from './ask'
-import { MARK, PLAIN_RATIO, errorText } from './rows'
+import { MARK, PLAIN_RATIO, WAKE_TEXT, errorText, modText } from './rows'
 import { isCount, type Read } from './store'
 import type { TagRegistry } from './tags'
 import type { FoldLedger } from './folds'
-import type { Queue } from './queue'
+import { noteOnce, type Queue } from './queue'
 import { errandMarked } from './batches'
+import { adviceFor } from './stages'
+import { movedSince, type Turns } from './turns'
 
 // [SP_HELP_01_09] The constants of the errands.
 export const ERRAND_PREFIX = 'e'
@@ -27,6 +29,8 @@ export const MAX_ERRAND_RESULT = 16_000
 export const MAX_SIZE_TOKENS = 10_000_000
 export const STALE_RUNNING_MS = 240_000
 export const MAX_DELIVERY = 32_000
+// [SP_HELP_02_08] The step of the recheck while a running `ask` errand has `wake`.
+export const WAKE_RECHECK_MS = 15_000
 // the head of the condition and action texts the operations echo
 const ECHO = 80
 
@@ -170,6 +174,7 @@ export type ErrandDeny =
   | 'ERRAND_N'
   | 'ERRAND_ACTION'
   | 'ERRAND_TEXT'
+  | 'ERRAND_WAKE'
   | 'ASK_QUESTION'
   | 'ASK_FOLDS'
   | 'FOLD_UNKNOWN'
@@ -204,11 +209,14 @@ export const ERRAND_PASSED_OVER =
 
 export type ErrandArgs = Record<string, unknown>
 
+// [SP_HELP_02_06] The sentence of errand_add's result with `wake: true`.
+export const WAKE_SET = 'If it fires while the session is idle, it wakes you: that turn is a full request, on a cold cache a write of the whole context.'
+
 const no = (code: ErrandDeny, deny: string): ErrandOut => ({ code, deny: `${deny} (${code})` })
 
 // [SP_HELP_02_02] The fields each errand operation takes besides "op".
 const ERRAND_FIELDS: Record<string, readonly string[]> = {
-  errand_add: ['when', 'n', 'name', 'action', 'text', 'folds', 'question'],
+  errand_add: ['when', 'n', 'name', 'action', 'text', 'folds', 'question', 'wake'],
   errand_list: [],
   errand_remove: ['id'],
 }
@@ -248,6 +256,8 @@ export async function errandAdd(io: ErrandIO, args: ErrandArgs): Promise<ErrandO
   if (action !== 'remind' && args.text !== undefined) return no('ERRAND_ACTION', '"text" goes only with "action": "remind"')
   if (action !== 'ask' && (args.folds !== undefined || args.question !== undefined)) return no('ERRAND_ACTION', '"folds" and "question" go only with "action": "ask"')
   if (action === 'remind' && (typeof args.text !== 'string' || !args.text.trim() || args.text.length > MAX_NOTE)) return no('ERRAND_TEXT', `"remind" needs "text" of 1..${MAX_NOTE} chars`)
+  if (args.wake !== undefined && typeof args.wake !== 'boolean') return no('ERRAND_WAKE', '"wake" is true or false')
+  const wake = args.wake === true
   let act: Action
   if (action === 'ask') {
     const checked = askFields(args)
@@ -269,13 +279,13 @@ export async function errandAdd(io: ErrandIO, args: ErrandArgs): Promise<ErrandO
     const errands = reg.errands ?? []
     if (errands.length >= MAX_ERRANDS) return no('ERRANDS_FULL', `${errands.length} errands are set; remove one with errand_remove first.`)
     const next = reg.nextErrand ?? 1
-    const errand: Errand = { id: `${ERRAND_PREFIX}${next}`, when: cond, action: act, wake: false, createdTurn: reg.turn, state: 'open' }
+    const errand: Errand = { id: `${ERRAND_PREFIX}${next}`, when: cond, action: act, wake, createdTurn: reg.turn, state: 'open' }
     try {
       await io.writeTags({ ...reg, errands: [...errands, errand], nextErrand: next + 1 })
     } catch (err) {
       return { code: 'DENIED_REGISTRY_WRITE', deny: `could not save the tag registry: ${errorText(err)}` }
     }
-    return { result: `Errand ${errand.id} set: when ${conditionText(cond, reg.turn, cur)} → ${actionText(act)}.` }
+    return { result: `Errand ${errand.id} set: when ${conditionText(cond, reg.turn, cur)} → ${actionText(act)}.${wake ? ` ${WAKE_SET}` : ''}` }
   })
 }
 
@@ -490,7 +500,7 @@ export function deliveryPending(peek: Read<TagRegistry> | undefined): boolean {
 // errands by `firedAt`, together within MAX_DELIVERY; an errand that does not
 // fit stays fired for the next moment. A stale running errand becomes fired
 // with STALE_TEXT first. Undefined when nothing changes. Pure.
-export function claimBlock(reg: TagRegistry, now: number): { registry: TagRegistry; lines: string[]; claimed: Claimed } | undefined {
+export function claimBlock(reg: TagRegistry, now: number, wakeFirst = false): { registry: TagRegistry; lines: string[]; claimed: Claimed } | undefined {
   const due = dueReminders(reg)
   const base = due?.registry ?? reg
   const notes = due ? reg.notes.flatMap(n => (n.remindAt !== undefined && n.remindAt <= reg.turn ? [{ id: n.id, remindAt: n.remindAt }] : [])) : []
@@ -503,7 +513,9 @@ export function claimBlock(reg: TagRegistry, now: number): { registry: TagRegist
   })
   let size = lines.join('\n').length
   const taken = new Set<string>()
-  for (const e of [...errands].filter(x => x.state === 'fired').sort((a, b) => a.firedAt! - b.firedAt!)) {
+  // [SP_HELP_02_08] the wake prompt takes the errands with `wake` first, so a full block still holds them
+  const order = (a: Errand, b: Errand) => (wakeFirst ? Number(b.wake) - Number(a.wake) : 0) || a.firedAt! - b.firedAt!
+  for (const e of [...errands].filter(x => x.state === 'fired').sort(order)) {
     const add = e.result!.length + (lines.length ? 1 : 0)
     if (size + add > MAX_DELIVERY) break
     lines.push(e.result!)
@@ -549,13 +561,13 @@ export type DeliveryIO = {
   debug?: (text: string) => void
 }
 
-export async function claimDelivery(io: DeliveryIO): Promise<{ lines: string[]; claimed: Claimed } | undefined> {
+export async function claimDelivery(io: DeliveryIO, wakeFirst = false): Promise<{ lines: string[]; claimed: Claimed } | undefined> {
   const read = await io.readTags()
   if (read.state !== 'ok') {
     if (read.state === 'unreadable') io.debug?.(`delivery not claimed: the tag registry cannot be read (${read.reason})`)
     return undefined
   }
-  const out = claimBlock(read.value, io.now())
+  const out = claimBlock(read.value, io.now(), wakeFirst)
   if (!out) return undefined
   try {
     await io.writeTags(out.registry)
@@ -574,7 +586,8 @@ export function withBlock(text: string, lines: readonly string[]): string {
 // [SP_HELP_02_08] The block of one moment: claimed on the registry's chain,
 // put back there by one write when its prompt is dropped.
 export type BlockPort = {
-  claim: () => Promise<{ lines: string[]; claimed: Claimed } | undefined>
+  // `wakeFirst`: the errands with `wake` before the others (the wake prompt)
+  claim: (wakeFirst?: boolean) => Promise<{ lines: string[]; claimed: Claimed } | undefined>
   restore: (claimed: Claimed) => Promise<void>
 }
 
@@ -589,6 +602,219 @@ export async function submitWithBlock(port: BlockPort, submit: (text: string) =>
   } catch (err) {
     if (block) await port.restore(block.claimed).catch(() => undefined)
     throw err
+  }
+}
+
+// ---- [SP_HELP_02_08] WakeCheck
+
+// [SP_HELP_02_08] Module memory; a reload starts it over. `wokeAt`: the
+// last wake prompt sent or tried (one per idle: a request after it opens the
+// next idle); `recheckSeq` names the recheck timer armed last, which keeps
+// the session it was armed in.
+export type WakeMemory = { wokeAt?: number; recheckSeq: number; recheck?: { cancel: () => void } }
+
+export function newWakeMemory(): WakeMemory {
+  return { recheckSeq: 0 }
+}
+
+// [SP_HELP_02_08] What WakeCheck reads and runs; register.ts binds it to `$`.
+// Every port works in the folder the check took once ([SP_CTX_01_07]).
+export type WakeIO = {
+  turns: Readonly<Turns>
+  // the current session id: the recheck stays in the session it was armed in
+  sessionId: () => Promise<string>
+  // [SP_CTX_02_06] Flush is planned or runs (IsPlanned)
+  flushPlanned: () => boolean
+  // the mod's own compaction runs or is planned (OwnCompaction)
+  compacting: () => boolean
+  // [SP_HELP_02_09] the cache clock's last request of the current session;
+  // null: none seen; undefined: not at hand
+  lastRequestAt: () => number | null | undefined
+  // the registry as this module instance last read or wrote it (a gate)
+  peek: () => Read<TagRegistry> | undefined
+  // the current session's storage folder, asked once per check; undefined: none
+  storage: () => Promise<string | undefined>
+  readQueue: (dir: string) => Promise<Read<Queue>>
+  readTags: (dir: string) => Promise<Read<TagRegistry>>
+  // DeliveryBlock in `dir`
+  block: (dir: string) => BlockPort
+  // a refused prompt (`drop` or a throw) rejects
+  submit: (text: string) => Promise<void>
+  // [SP_CTX_02_08] RemoveDelivered of the report the prompt carried
+  removeDelivered: (dir: string, report: string) => Promise<unknown>
+  // [SP_CTX_DEC_37] AdviseWaiting once the advice went with the prompt
+  advised: (dir: string) => Promise<unknown>
+  status: (text: string) => void
+  // a deferred action; register.ts creates it from the turn.complete chain
+  after: (ms: number, fn: () => void) => { cancel: () => void }
+  now: () => number
+  // [ERR-01] a line of the debug log
+  debug: (text: string) => void
+}
+
+// What WakeCheck did; the tests read it, the debug log names it (`none`
+// stays out of the log: the gate found no errand with `wake` due).
+export type WakeOutcome = 'none' | 'moved' | 'flush-planned' | 'compacting' | 'woken' | 'handoff' | 'nothing' | 'woke' | 'refused'
+
+// [SP_HELP_02_08] An errand with `wake` waits for delivery: fired, or
+// running and stale (the block delivers it as fired). Pure.
+export function wakeDue(reg: Pick<TagRegistry, 'errands'>, now: number): boolean {
+  return (reg.errands ?? []).some(e => e.wake && (e.state === 'fired' || stale(e, now)))
+}
+
+// [SP_HELP_02_08] A running `ask` errand with `wake` whose call may still end. Pure.
+export function runningWake(reg: Pick<TagRegistry, 'errands'>, now: number): boolean {
+  return (reg.errands ?? []).some(e => e.wake && e.state === 'running' && !stale(e, now))
+}
+
+// [SP_HELP_02_08] OwnCompaction: the mod's own compaction runs or is
+// planned, from the module's memory: IdleRun's or StartRun's command, the
+// repair's command, the handoff (planned or in flight). A planned repair does
+// not count: every process plans one at its first turn end, it mostly runs
+// no command, and a command it runs waits for the woken turn's end. Pure.
+export function ownCompaction(
+  idle: { applying: boolean; starting: boolean },
+  repair: 'none' | 'planned' | 'running' | 'done' | 'failed',
+  handoff: { inFlight: boolean; scheduled: boolean },
+): boolean {
+  return idle.applying || idle.starting || repair === 'running' || handoff.inFlight || handoff.scheduled
+}
+
+// The conditions of the module's memory: a turn runs or started since
+// `turns0`, Flush is planned or runs, the mod's own compaction runs.
+function busy(io: WakeIO, turns0: number): WakeOutcome | undefined {
+  if (movedSince(io.turns, turns0)) return 'moved'
+  if (io.flushPlanned()) return 'flush-planned'
+  if (io.compacting()) return 'compacting'
+  return undefined
+}
+
+// One wake per idle: `wokeAt` not later than the last request (a request
+// unknown counts as none since).
+function wokenThisIdle(io: WakeIO, mem: WakeMemory): boolean {
+  if (mem.wokeAt === undefined) return false
+  const last = io.lastRequestAt()
+  return last === null || last === undefined || mem.wokeAt > last
+}
+
+// [SP_HELP_02_08] WakeCheck, at the end of a turn whose count was `turns0`
+// (the end of TurnEnd, of a Flush that sent no prompt, of IdleRun armed by
+// a turn, of a recheck): with the session idle, no Flush, no own
+// compaction, no handoff request and no wake yet in this idle, an errand
+// with `wake` due sends one prompt: the waiting report (NoteOnce),
+// WAKE_TEXT, WaitingAdvice, then the block. A refused prompt puts the block
+// back and leaves a status line; the idle keeps its one try.
+export async function wakeCheck(io: WakeIO, mem: WakeMemory, turns0: number): Promise<WakeOutcome> {
+  const out = await wakeSteps(io, mem, turns0).catch((err): WakeOutcome => {
+    io.debug(`wake check failed: ${errorText(err)}`)
+    return 'nothing'
+  })
+  if (out !== 'none') io.debug(`wake check: ${out}`)
+  return out
+}
+
+async function wakeSteps(io: WakeIO, mem: WakeMemory, turns0: number): Promise<WakeOutcome> {
+  // the gate: a known registry with no errand with `wake` due takes no read
+  const view = io.peek()
+  if (view && view.state !== 'unreadable' && !wakeDue(view.value, io.now())) return 'none'
+  const early = busy(io, turns0) ?? (wokenThisIdle(io, mem) ? 'woken' : undefined)
+  if (early) return early
+  const dir = await io.storage()
+  if (!dir) return 'nothing'
+  const reg = await io.readTags(dir)
+  if (reg.state === 'unreadable') {
+    io.debug(`wake check: the tag registry cannot be read (${reg.reason})`)
+    return 'nothing'
+  }
+  if (!wakeDue(reg.value, io.now())) return 'none'
+  const q = await io.readQueue(dir)
+  if (q.state === 'unreadable') {
+    io.debug(`wake check: the queue cannot be read (${q.reason})`)
+    return 'nothing'
+  }
+  // [SP_CTX_02_21] a handoff waits or runs: the block waits for its session
+  if (q.value.handoff) return 'handoff'
+  // the same synchronous step checks and claims the idle's one wake
+  const late = busy(io, turns0) ?? (wokenThisIdle(io, mem) ? 'woken' : undefined)
+  if (late) return late
+  const before = mem.wokeAt
+  mem.wokeAt = io.now()
+  const port = io.block(dir)
+  const block = await port.claim(true).catch(() => undefined)
+  const ids = block?.claimed.errands.filter(e => e.wake).map(e => e.id) ?? []
+  // another moment took the errand meanwhile, or a turn began during the claim
+  const moved = busy(io, turns0)
+  if (!block || !ids.length || moved) {
+    if (block) await port.restore(block.claimed).catch(() => undefined)
+    mem.wokeAt = before
+    return moved ?? 'nothing'
+  }
+  const report = q.value.report || undefined
+  const wait = adviceFor(reg)
+  const text = withBlock([...(report ? [noteOnce(report)] : []), WAKE_TEXT, ...(wait ? [wait] : [])].join('\n\n'), block.lines)
+  try {
+    await io.submit(text)
+  } catch (err) {
+    await port.restore(block.claimed).catch(() => undefined)
+    io.status(modText(`could not wake the agent for errand(s) ${ids.join(', ')}: ${errorText(err)}`))
+    return 'refused'
+  }
+  // WAIT_ADVICE_LOST: the advice goes again with the next prompt
+  if (wait) await io.advised(dir).catch(err => io.debug(`wake: the advice not marked: ${errorText(err)}`))
+  // DELIVERY_FAILED: the report stays and goes with the next prompt
+  if (report) await io.removeDelivered(dir, report).catch(() => undefined)
+  return 'woke'
+}
+
+// [SP_HELP_02_08] WakeCheck at the end of TurnEnd or of IdleRun armed by a
+// turn, then the recheck timer while a running `ask` errand has `wake` (a
+// `cold` errand of the idle timer starts its question there too).
+export async function wakeWithRecheck(io: WakeIO, mem: WakeMemory, turns0: number): Promise<WakeOutcome> {
+  const out = await wakeCheck(io, mem, turns0)
+  const session = await io.sessionId().catch(err => void io.debug(`wake recheck: the session not read: ${errorText(err)}`))
+  if (session !== undefined) armRecheck(io, mem, turns0, session)
+  return out
+}
+
+// [SP_HELP_02_08] The recheck of a background question: a timer of
+// WAKE_RECHECK_MS from the turn.complete chain (the question's own chain
+// began in a tool.call or prompt.submit hook, whose commands and prompts the
+// host refuses), armed while the registry's view holds a running `ask`
+// errand with `wake`; its callback runs WakeCheck and arms the next one. A
+// turn that began or another session (/clear, /resume, a handoff) ends it;
+// a new arming replaces it.
+export function armRecheck(io: WakeIO, mem: WakeMemory, turns0: number, session: string): boolean {
+  cancelRecheck(mem)
+  const view = io.peek()
+  if (!view || view.state === 'unreadable' || !runningWake(view.value, io.now()) || movedSince(io.turns, turns0)) return false
+  const seq = mem.recheckSeq
+  try {
+    mem.recheck = io.after(WAKE_RECHECK_MS, () => {
+      if (mem.recheckSeq !== seq) return
+      mem.recheck = undefined
+      if (movedSince(io.turns, turns0)) return
+      void (async () => {
+        if ((await io.sessionId()) !== session) return
+        await wakeCheck(io, mem, turns0)
+        if (mem.recheckSeq === seq) armRecheck(io, mem, turns0, session)
+      })().catch(err => io.debug(`wake recheck failed: ${errorText(err)}`))
+    })
+  } catch (err) {
+    io.debug(`wake recheck refused: ${errorText(err)}`)
+    return false
+  }
+  return true
+}
+
+// The armed recheck stops; one that fires anyway finds `recheckSeq` moved on.
+export function cancelRecheck(mem: WakeMemory): void {
+  const t = mem.recheck
+  mem.recheck = undefined
+  mem.recheckSeq += 1
+  try {
+    t?.cancel()
+  } catch {
+    // a timer the host already dropped
   }
 }
 

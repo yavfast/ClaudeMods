@@ -16,7 +16,7 @@ import { movedSince, type Turns } from './turns'
 export const IDLE_SLACK_MS = 60_000
 
 // [SP_HELP_02_11] What armed the timer: the end of a turn, or StartRun
-// ([SP_HELP_02_12]); only a turn's timer may wake the agent (I5, phase 8).
+// ([SP_HELP_02_12]); only a turn's timer may wake the agent (I5).
 export type ArmedBy = 'turn' | 'start'
 
 // [SP_HELP_02_11] Module memory; a reload or the end of the process drops
@@ -65,6 +65,9 @@ export type IdleIO = Pick<FlushIO, 'compact' | 'calibrate' | 'sleep' | 'status' 
   after: (ms: number, fn: () => void) => { cancel: () => void }
   // [ERR-01] a line of the debug log; absent: none
   debug?: (text: string) => void
+  // [SP_HELP_02_08] WakeCheck with the turn count the timer was armed at;
+  // only a timer armed by a turn calls it (I5); absent: none
+  wake?: (turns0: number) => Promise<unknown>
 }
 
 // [SP_HELP_02_11] The wait of a timer whose last request was `last`: until
@@ -136,11 +139,17 @@ export type IdleOutcome =
 
 // [SP_HELP_02_11] ON idle timer. No resume prompt and no optimization prompt
 // follow the apply: the report waits in the queue for the next prompt that
-// passes the mod's hooks (DeliverReport, [SP_CTX_02_08]). WakeCheck after it
-// comes with phase 8.
+// passes the mod's hooks (DeliverReport, [SP_CTX_02_08]), or the wake
+// prompt: [SP_HELP_02_08] WakeCheck ends a run whose timer a turn armed
+// (I5: a StartRun timer's chain began in session.start).
 export async function idleRun(io: IdleIO, mem: IdleMemory): Promise<IdleOutcome> {
+  const by = mem.armedBy
+  const armedTurns = mem.armedTurns ?? Number.NaN
   const out = await idleSteps(io, mem)
   io.debug?.(modText(`idle timer fired: ${out}`))
+  // a run that left (a turn, another session), found no clock or re-armed on a warm cache wakes no one
+  if (by === 'turn' && io.wake && out !== 'moved' && out !== 'unknown' && out !== 'rearmed')
+    await io.wake(armedTurns).catch(err => io.debug?.(modText(`wake check failed: ${errorText(err)}`)))
   return out
 }
 

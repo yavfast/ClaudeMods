@@ -312,10 +312,10 @@ const RECALL_SCHEMA = {
 
 // [SP_HELP_02_02] At most MAX_DESCRIPTION chars; [PL_HELP_DEC_03] only the
 // operations that work: phase 1 opens "ask"; phase 5 adds the pointer to
-// `defer`, which IdleRun makes true.
+// `defer`, which IdleRun makes true; phase 7 the errands, phase 8 `wake`.
 export const HELPER_DESCRIPTION = `Ask the mod's helper about your folds, or set errands the mod runs when a condition on the context holds.
 op "ask": a helper model (${HELP_MODEL}, outside this conversation: no turn, no row) reads the levels of the folds you name (ids from their fold records; up to ${MAX_ASK_FOLDS} folds and ~${(HELP_MAX_PARTS * HELP_PART_CHARS) / 1000}k chars in all) and answers your question. Only quotes the mod finds verbatim in the archive reach you, each marked whose it is; the helper's reading is not your own text, so weigh it as external. It takes seconds and a few cents per ~${HELP_PART_CHARS / 1000}k chars. The pair stays until the region you asked in closes; then the mod returns it. Use ${RECALL} when you need the whole level.
-op "errand_add": when (turns: n turns from now; size: the request, fixed part included, reaches n tokens; cold: the prompt cache expired in an idle of over an hour, seen by the mod's idle timer, or by the next prompt when the timer is gone, and an apply then rewrites the re-warmed cache like any; closed: a region closes, or the one named) → action (remind: your text; ask: the helper answers your question about folds then; apply: apply your deferred edits). The result reaches you with your next tool result or the next prompt.
+op "errand_add": when (turns: n turns from now; size: the request, fixed part included, reaches n tokens; cold: the prompt cache expired in an idle of over an hour, seen by the mod's idle timer, or by the next prompt when the timer is gone, and an apply then rewrites the re-warmed cache like any; closed: a region closes, or the one named) → action (remind: your text; ask: the helper answers your question about folds then; apply: apply your deferred edits). The result reaches you with your next tool result or the next prompt. wake: true lets an errand that fires while the session is idle send a prompt that starts a turn: a full request, on a cold cache a write of the whole context.
 op "errand_list"; op "errand_remove" with id.
 To defer an edit batch until the cache is cold, pass defer: true to ${EDIT}.`
 
@@ -330,6 +330,7 @@ const HELPER_SCHEMA = {
     name: { type: 'string', description: `errand_add with when "closed": the region's name, 1..${MAX_STAGE_NAME} chars; absent: any close.` },
     action: { type: 'string', enum: ['remind', 'ask', 'apply'], description: 'errand_add: what the mod does when the condition holds.' },
     text: { type: 'string', description: `errand_add with action "remind": your text, 1..${MAX_NOTE} chars.` },
+    wake: { type: 'boolean', description: 'errand_add: wake you with a prompt if it fires while the session is idle (default false).' },
     id: { type: 'string', description: `errand_remove: the errand's id, e.g. "e1"; at most ${MAX_ERRANDS} errands are set.` },
   },
   required: ['op'],

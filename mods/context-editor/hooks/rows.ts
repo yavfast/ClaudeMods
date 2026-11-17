@@ -254,6 +254,9 @@ export const HELPER_TOOL = 'context_helper'
 export const ASKED_HEAD = 'Asked: '
 // [SP_HELP_01_09] The longest question a record or a trace keeps.
 export const QUESTION_HEAD = 200
+// [SP_HELP_01_09] [SP_HELP_02_08] The start of the wake prompt: an errand
+// with `wake` fired while the session was idle.
+export const WAKE_TEXT = `${PREFIX} an errand you set fired while the session was idle, and you asked to be woken for it.`
 // [SP_HELP_02_05] ASK_RETURNED: the trace a returned question pair leaves in
 // the place of its answer; `when` as in ReturnedText. The agent's own words
 // (its summarize or disposable tag) follow it after ": ", as on RETURNED.

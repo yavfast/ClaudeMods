@@ -79,6 +79,9 @@ export type FlushIO = {
   // [SP_CTX_02_72] the session title: `due` — TitleDue on a readable
   // registry; `rename` — RunRename (never throws); absent: none
   title?: { due: () => Promise<boolean>; rename: () => Promise<Renamed | undefined> }
+  // [SP_HELP_02_08] WakeCheck once a Flush that sent no prompt took
+  // `scheduled` down, with the turn count it was planned at; absent: none
+  wake?: (turns0: number) => Promise<unknown>
 }
 
 // [SP_CTX_02_06] Module memory; a reload starts it over. `plannedAt`: when
@@ -188,6 +191,9 @@ export type TurnEndIO = {
   // [SP_HELP_02_11] the idle timer, armed after Flush was planned (a
   // completed turn only); absent: none
   idle?: (aborted: boolean) => Promise<unknown>
+  // [SP_HELP_02_08] WakeCheck and the recheck timer, last (a completed turn
+  // only: an interrupt is no idle to wake the agent in); absent: none
+  wake?: () => Promise<unknown>
   // [SP_CTX_02_21] the handoff's step of the end of the turn
   handoff: (aborted: boolean) => Promise<unknown>
 }
@@ -197,8 +203,8 @@ export type TurnEndIO = {
 // raised; an aborted turn does not count), the cache clock's write (an
 // aborted turn too, [SP_HELP_02_09]), the repair's timer after a
 // switch in the process ([SP_CTX_02_46]), Flush (once the mark's block
-// waits, so its resume prompt carries WaitingAdvice) and the idle timer
-// ([SP_HELP_02_11]); the handoff besides. The deferred
+// waits, so its resume prompt carries WaitingAdvice), the idle timer
+// ([SP_HELP_02_11]) and WakeCheck ([SP_HELP_02_08]); the handoff besides. The deferred
 // actions these plan come from the turn.complete hook, an origin the host
 // queues commands from.
 export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: unknown }): Promise<void> {
@@ -215,6 +221,7 @@ export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: u
     if (io.repair) await step(io.repair)
     await step(() => io.flush(e.aborted))
     if (io.idle) await step(() => io.idle!(e.aborted))
+    if (io.wake && !e.aborted) await step(io.wake)
   })()
   const handoff = step(() => io.handoff(e.aborted))
   await Promise.all([steps, handoff])
@@ -313,8 +320,24 @@ function schedule(io: FlushIO, state: FlushState): void {
 // attempt at the command: a refusal is final and waits for the next
 // completed turn. With the request of the person's /compact, the
 // compression turn's prompt takes the place of the resume prompt. `scheduled` is down on every
-// way out.
+// way out. [SP_HELP_02_08] A Flush that sent no prompt ends with WakeCheck,
+// unless the person's /compact planned it (its chain began in command.run,
+// I5) or the host refused its command or prompt (a wake prompt would be
+// refused too, and its line would hide this one).
 export async function flush(io: FlushIO, state: FlushState, turns0: number): Promise<FlushResult> {
+  const person = state.compactSession !== undefined
+  const r = await flushOnce(io, state, turns0)
+  // WakeCheck catches its own failures (a debug line)
+  if (io.wake && !person && wakesAfter(r)) await io.wake(turns0).catch(() => undefined)
+  return r
+}
+
+// [SP_HELP_02_08] Whether the end of this Flush may wake: no prompt sent, none refused.
+export function wakesAfter(r: FlushResult): boolean {
+  return r.resume === 'none' && r.optimize === undefined && r.outcome !== 'host-refused'
+}
+
+async function flushOnce(io: FlushIO, state: FlushState, turns0: number): Promise<FlushResult> {
   let again = false
   // the timer fired: no longer a planned-but-lost one
   state.plannedAt = undefined

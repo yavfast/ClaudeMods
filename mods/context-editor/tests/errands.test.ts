@@ -128,11 +128,12 @@ test('errand_list і errand_remove: the lines with state; a running errand goes 
   expect(await errandList(errandHarness(reg()).io)).toEqual({ result: 'No errands.' })
 })
 
-test('BAD_OP: an unknown op; a field of another operation; wake waits for phase 8', () => {
+test('BAD_OP: an unknown op; a field of another operation; wake goes only with errand_add', () => {
   expect(badHelperOp({ op: 'errand_drop' })).toContain('(BAD_OP)')
   expect(badHelperOp({ op: 'errand_list', id: 'e1' })).toBe('"errand_list" takes no "id"; it takes no other field (BAD_OP)')
   expect(badHelperOp({ op: 'errand_remove', text: 'x', id: 'e1' })).toBe('"errand_remove" takes no "text"; it takes "id" (BAD_OP)')
-  expect(badHelperOp({ op: 'errand_add', wake: true, when: 'cold', action: 'apply' })).toContain('"wake"')
+  expect(badHelperOp({ op: 'errand_add', wake: true, when: 'cold', action: 'apply' })).toBeUndefined()
+  expect(badHelperOp({ op: 'errand_remove', wake: true, id: 'e1' })).toBe('"errand_remove" takes no "wake"; it takes "id" (BAD_OP)')
   expect(badHelperOp({ op: 'errand_add', when: 'cold', action: 'apply' })).toBeUndefined()
 })
 
