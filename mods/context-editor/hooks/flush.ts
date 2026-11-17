@@ -182,6 +182,9 @@ export type TurnEndIO = {
   repair?: () => Promise<unknown>
   // [SP_CTX_02_06] FlushAfterTurn
   flush: (aborted: boolean) => Promise<unknown>
+  // [SP_HELP_02_11] the idle timer, armed after Flush was planned (a
+  // completed turn only); absent: none
+  idle?: (aborted: boolean) => Promise<unknown>
   // [SP_CTX_02_21] the handoff's step of the end of the turn
   handoff: (aborted: boolean) => Promise<unknown>
 }
@@ -190,8 +193,9 @@ export type TurnEndIO = {
 // the registry's turn count (the mark compares with the count not yet
 // raised; an aborted turn does not count), the cache clock's write (an
 // aborted turn too, [SP_HELP_02_09]), the repair's timer after a
-// switch in the process ([SP_CTX_02_46]) and Flush (once the mark's block
-// waits, so its resume prompt carries WaitingAdvice); the handoff besides. The deferred
+// switch in the process ([SP_CTX_02_46]), Flush (once the mark's block
+// waits, so its resume prompt carries WaitingAdvice) and the idle timer
+// ([SP_HELP_02_11]); the handoff besides. The deferred
 // actions these plan come from the turn.complete hook, an origin the host
 // queues commands from.
 export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: unknown }): Promise<void> {
@@ -206,6 +210,7 @@ export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: u
     if (io.clock && dir) await step(() => io.clock!(dir))
     if (io.repair) await step(io.repair)
     await step(() => io.flush(e.aborted))
+    if (io.idle) await step(() => io.idle!(e.aborted))
   })()
   const handoff = step(() => io.handoff(e.aborted))
   await Promise.all([steps, handoff])
@@ -385,12 +390,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
         return { outcome: 'host-refused', resume: 'none', ...named }
       }
       outcome = 'compacted'
-      const after = await io.readQueue()
-      q = after.state === 'unreadable' ? undefined : after.value
-      // the handler wrote the report of this application; a skip without one is no compaction
-      compacted = q?.reportId !== undefined && q.reportId !== id0
-      // [SP_CTX_02_43] one line for the person per apply that changed something
-      if (compacted) logApplied(io, q!.reportId!)
+      ;({ q, compacted } = await appliedSince(io, id0))
     }
     if (!q) return { outcome, resume: 'none', ...named }
     if (compactAsked(q)) {
@@ -414,7 +414,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
 
 // [SP_CTX_02_34] CalibrateBeforeApply, at most CALIB_WAIT_MS: a failure or a
 // timeout only leaves the ratio stored already.
-async function calibrateWithin(io: Pick<FlushIO, 'calibrate' | 'sleep'>): Promise<void> {
+export async function calibrateWithin(io: Pick<FlushIO, 'calibrate' | 'sleep'>): Promise<void> {
   if (!io.calibrate) return
   let work: Promise<unknown>
   try {
@@ -430,6 +430,21 @@ async function calibrateWithin(io: Pick<FlushIO, 'calibrate' | 'sleep'>): Promis
     return
   }
   await (bound ? Promise.race([work, bound]) : work)
+}
+
+// [SP_CTX_02_06] [SP_HELP_02_11] After the command of an apply (Flush,
+// IdleRun): the queue as the handler left it, and whether it wrote a new
+// report (a skip writes none); [SP_CTX_02_43] one line for the person per
+// apply that changed something.
+export async function appliedSince(
+  io: Pick<FlushIO, 'readQueue' | 'log' | 'appliedLine'>,
+  id0: number | undefined,
+): Promise<{ q: Queue | undefined; compacted: boolean }> {
+  const after = await io.readQueue()
+  const q = after.state === 'unreadable' ? undefined : after.value
+  const compacted = q?.reportId !== undefined && q.reportId !== id0
+  if (compacted) logApplied(io, q!.reportId!)
+  return { q, compacted }
 }
 
 // [SP_CTX_02_43] LogApply: the person's line of the apply that wrote report

@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-11-16
+> **Updated:** 2026-11-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 >
 > §01_13–01_26 специфікації [SP_CTX](./context_editor.sp.md): AliasRegistry, Boundary, HandoffRequest, HandoffSeed, Stage, Journal, Telemetry, Note, QueuedDelivery, HostAttachState, ApplyLedger, Capabilities, CapabilityCache. Читати, коли змінюєте файли стану сесії.
@@ -167,7 +167,7 @@ Invariants:
 JournalEntry — варіант за полем `kind`:
 | kind | Поля | Значення |
 |------|------|----------|
-| `apply` | `at: int` (мс від епохи, `reportId` застосування), `edits: int` (≥ 1, застосовані правки), `archive: string` (шлях архіву або `""`), `compressed: list<string>` (≤ MAX_QUEUE_EDITS, без повторів), `deferred?: int` (≥ 1; PL_HELP, фаза 3) | Застосування пакета компактизацією ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); `compressed` — `input.file_path` викликів `Read` у парах, які застосовані правки стиснули, прибрали або згорнули; `deferred` — скільки відкладених правок узяло застосування (змінено C_HELP, реалізовано; поле [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)): є лише коли їх > 0, тож запис без відкладених правок не змінився; значення не ціле ≥ 1 робить журнал нечитним. Поле `idle` того самого розділу SP_HELP — пізніша фаза |
+| `apply` | `at: int` (мс від епохи, `reportId` застосування), `edits: int` (≥ 1, застосовані правки), `archive: string` (шлях архіву або `""`), `compressed: list<string>` (≤ MAX_QUEUE_EDITS, без повторів), `deferred?: int` (≥ 1; PL_HELP, фаза 3), `idle?: true` (PL_HELP, фаза 5) | Застосування пакета компактизацією ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); `compressed` — `input.file_path` викликів `Read` у парах, які застосовані правки стиснули, прибрали або згорнули; `deferred` — скільки відкладених правок узяло застосування (змінено C_HELP, реалізовано; поле [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)): є лише коли їх > 0, тож запис без відкладених правок не змінився; значення не ціле ≥ 1 робить журнал нечитним; `idle` — застосування в простої (змінено C_HELP, реалізовано; поле того самого розділу SP_HELP): є лише як `true`, коли команду запустив таймер простою (IdleRun, [SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11)) і його позначка ще діяла — `applyDeferred` з `coldSince`, що дорівнює `lastRequestAt`; застосування, перед командою якого пройшов хід, вибирає лише за SelectEdits і поля не має; будь-яке інше значення робить журнал нечитним |
 | `changed` | `at: int`, `path: string` | Агент змінив інструментом з WRITE_TOOLS файл, названий у `compressed` якогось запису `apply` ([SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)); пізніше читання цього шляху — не повторне читання стиснутого, а читання нового вмісту |
 | `reread` | `at: int`, `path: string`, `tool_use_id: string`, `archive: bool` | Агент знову прочитав `Read` шлях, названий у `compressed` запису `apply`, після якого не було запису `changed` з тим самим шляхом (`archive = false`), або файл архіву чи медіа застосування — шлях `archive` або шлях усередині `<storage>/<at>/` (`archive = true`) ([SP_CTX_02_16](./context_editor.tags.sp.md#SP_CTX_02_16)) |
 | `ask` | поля [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08): `at`, `folds`, `parts`, `calls`, `in`, `out`, `verified`, `rejected`, `status`, `errand?` | Питання агента до архіву згорток через `context_helper` ([SP_HELP_02_03](./context_helper.ask.sp.md#SP_HELP_02_03)), після кожного питання, що дійшло до помічника (PL_HELP, фаза 1; `errand` — лише питання з доручення, фаза 1 його не пише); суми записів — рядок `Helper` телеметрії ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) |
@@ -333,6 +333,7 @@ CapEntry: `compact` і `attachments` — `reached` \| `passed` (кожне не�
 
 | Date | Change |
 |------|--------|
+| 2026-11-17 | PL_HELP фаза 5: 01_19 — поле `idle?: true` запису `apply` (застосування з команди IdleRun, поки її позначка діє; інше значення робить журнал нечитним; [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)) |
 | 2026-11-16 | PL_HELP фаза 3: 01_19 — поле `deferred?` запису `apply` (≥ 1, лише коли застосування взяло відкладені правки; [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)) |
 | 2026-11-16 | PL_HELP фаза 2: 01_19 — вид запису журналу `cache` (поля [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)); 01_20 — поле `checks` підсумку журналу й поле `clock` телеметрії (лише `context_list`) |
 | 2026-11-16 | PL_HELP фаза 1: 01_19 — вид запису журналу `ask` (поля [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)) |

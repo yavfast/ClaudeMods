@@ -126,6 +126,20 @@ export function withoutDeferred<Q extends Deferrable & { deferredSince?: Record<
   return { ...rest, edits: nonDeferred(q.edits) } as unknown as Q
 }
 
+// [SP_HELP_02_11] IdleRun's mark: the next apply takes every queued edit
+// while the last request is still `coldSince`.
+export function withApplyDeferred<Q extends Deferrable>(q: Q, coldSince: number): Q {
+  return { ...q, applyDeferred: true, coldSince }
+}
+
+// [SP_HELP_02_10] [SP_HELP_02_11] The mark gone (a stale one, a refused or
+// abandoned idle apply); undefined when there is none.
+export function withoutApplyDeferred<Q extends Deferrable>(q: Q): Q | undefined {
+  if (q.applyDeferred === undefined && q.coldSince === undefined) return undefined
+  const { applyDeferred: _a, coldSince: _c, ...rest } = q
+  return rest as Q
+}
+
 // [SP_CTX_02_02] [SP_HELP_02_10] The status line of a queue: the edits the
 // next apply takes, and the deferred ones apart; undefined when it is empty.
 export function queueStatus(edits: readonly QueuedEdit[]): string | undefined {

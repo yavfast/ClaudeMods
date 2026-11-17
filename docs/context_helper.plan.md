@@ -57,7 +57,7 @@
 - [x] [Phase 2 — Годинник кешу](#PL_HELP_P2)
 - [x] [Phase 3 — Відкладені пакети в обробнику й черзі](#PL_HELP_P3)
 - [x] [Phase 4 — Поле `defer` і видимі відкладені пакети](#PL_HELP_P4)
-- [ ] [Phase 5 — Простій](#PL_HELP_P5)
+- [x] [Phase 5 — Простій](#PL_HELP_P5)
 - [ ] [Phase 6 — Новий процес](#PL_HELP_P6)
 - [ ] [Phase 7 — Доручення з умовою й доставка](#PL_HELP_P7)
 - [ ] [Phase 8 — Пробудження](#PL_HELP_P8)
@@ -158,7 +158,7 @@ What to create:
 | ObservePassedCompact очищає відкладені; CompactBrief називає їх | `hooks/capabilities.ts` | обхід компактизації |
 | Рядок `Deferred:` з ціною CacheCost відкладених правок окремо | `hooks/stages.ts`, `hooks/cache.ts` | телеметрія |
 
-### Phase 5 — Простій (`hooks/idle.ts`) [TODO]  {#PL_HELP_P5}
+### Phase 5 — Простій (`hooks/idle.ts`) [DONE]  {#PL_HELP_P5}
 
 **Depends on:** Phases 2, 4
 **Implements:** [SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11) (без виклику WakeCheck — його додає фаза 8); частина «when the cache turns cold in idle» речення `Deferred as <batch>…` з [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10); рядок «Відкладені» з [SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13) повністю (теплий варіант з простоєм і холодний); рядок-покажчик `defer` в HELPER_DESCRIPTION з [SP_HELP_02_02](./context_helper.ask.sp.md#SP_HELP_02_02); поле `idle` запису `apply` з [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08); інваріант I7 у частині простою; константа IDLE_SLACK_MS
@@ -333,3 +333,4 @@ Items deferred from the current implementation cycle (each with a return trigger
 | 2026-11-16 | Фаза 2 `[DONE]`: годинник кешу (`hooks/cacheclock.ts`, хук `turn.step`, вердикт на промпті, перевірка першим кроком, рядки телеметрії, форк і передача), тести (1123), рев'ю з чистим контекстом (pass with advisories, усе виправлено: ConfirmCheck у чистому модулі зі StartCheck, `prev` з початку кроку, `mismatch` лише за межею CACHE_TTL_MS), живі прогони stream-json на sonnet і термінал на opus; попутно сигнал хука в `$.model.complete` (фаза 1) |
 | 2026-11-17 | Фаза 3 `[DONE]`: відкладені пакети в обробнику й черзі (`hooks/batches.ts`: NonDeferred, Applicable, RewriteStart на спільному `withinLookback`, SelectEdits з другим зважуванням після екранів, BindUnselected; поля черги, фіксація, гілка збою з `selectedBatches`, Flush за Applicable, поле `deferred` запису `apply`), тести (1140), рев'ю з чистим контекстом (pass with advisories, 0 must / 0 should / 4 prefer — усе виправлено), живі S1 і T1 (група `help-p3`); хост за ніч оновився до 2.1.326 — тип-перевірка на його типах чиста |
 | 2026-11-17 | Фаза 4 `[DONE]`: поле `defer` у `context_edit` (пакет `b<n>`, вибори пакета без змін, без повернень і замін тегів; DEFER_RETURN для правки над ще не поверненою парою розгортання чи питання, DEFER_STATE для правок слота стану — рішення делеговані), рядок стану з відкладеними окремо, порожній хід стискання `/compact` застосовує пакети, передача (засів «транскрипт» застосовує, «документ» скидає з реченням), бриф обходу, рядок `Deferred:` у `context_list`; тести (1154), рецензія з чистим контекстом (pass with advisories, усе виправлено), живі прогони S2, S3 (stream-json) і T1 (термінал) на хості 2.1.326: L5, L6, неглибокий `keep_cache` лишає ранній пакет |
+| 2026-11-17 | Фаза 5 `[DONE]`: IdleRun (`hooks/idle.ts`): таймер CACHE_TTL_MS + IDLE_SLACK_MS після Flush у кінці кожного завершеного ходу (новий замінює попередній; хід, що вже почався, таймера не ставить), гілки за температурою (теплий — перевзведення на залишок), вердикт `cold`, позначка черги й власна компактизація без ходу й промпту, звіт чекає наступного промпту; папка сховища раз на прогін, позначка на порожній черзі знімається без команди, запланований Flush і зміна сесії лишають прогін; обробник пропускає команду, яку хід випередив (SKIP_IDLE_OVERTAKEN); поле `idle` запису `apply`; частина про простій у `Deferred as …`, описі `defer`, рядку `Deferred:` (холодний варіант) і рядок-покажчик в HELPER_DESCRIPTION; тести (1167), рецензія з чистим контекстом (pass with advisories, усе виправлено), живі прогони S1, S2 і L1 (простій 62 хв: пакет застосовано без ходу, `idle: true`, звіт з наступним промптом, `mismatch: false`) на 2.1.326 у stream-json і зонд вкладеного таймера N1; перевзведення на теплому кеші наживо не спостерігали (`unobserved`: теплий кеш у мить спрацювання потребує запиту поза ходом, а такий робить лише форк передачі, що змінює сесію) — його покривають тест «IdleRun — гілки» і зонд N1 (команда з вкладеного таймера проходить); термінал — у фазі 9 |

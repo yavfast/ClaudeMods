@@ -26,7 +26,7 @@ Purpose: для кожної можливості хоста, від якої з
 
 | Можливість | Що перевіряє | Від неї залежать |
 |------------|--------------|------------------|
-| `compact` | хук `session.compact` мода отримує власну компактизацію мода (`$.command.run` з міткою) | застосування черги (Flush), передача, ремонт, хід стискання `/compact` людини; повернення пар `context_recall` і питань `context_helper` (лише застосування їх повертає) |
+| `compact` | хук `session.compact` мода отримує власну компактизацію мода (`$.command.run` з міткою) | застосування черги (Flush), застосування в простої (IdleRun, [SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11); PL_HELP, фаза 5), передача, ремонт, хід стискання `/compact` людини; повернення пар `context_recall` і питань `context_helper` (лише застосування їх повертає) |
 | `attachments` | хук `prompt.attachment` мода викликається | відповіді про застарілі копії інструкцій і переліки навичок ([SP_CTX_02_39](./context_editor.hostattach.sp.md#SP_CTX_02_39)) |
 
 Логіка — чисті функції `hooks/capabilities.ts` (Verdict, Merge, NoteAttachment, NoteTurn, NoteOwnCompaction, NoteCommandUnseen, PassedText) за портом CapabilityIO; стан — пам'ять модуля `Capabilities` ([SP_CTX_01_25](./context_editor.records.sp.md#SP_CTX_01_25)), один на процес хоста (хуки пропускає процес, а не сесія), і файл кешу `capabilities.json` ([SP_CTX_01_26](./context_editor.records.sp.md#SP_CTX_01_26)). Зв'язування в `register.ts`: хук `prompt.attachment` без матчера (один на модуль; лише рахує і передає `next(e)` без змін, відповіді за типами не змінюються), крок NoteTurn першим у AfterTurn ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)), версія хоста — `$.session.version()` один раз на екземпляр (валідатор вимагає виклику на місці).
@@ -62,7 +62,7 @@ Purpose: для кожної можливості хоста, від якої з
         + " To fix it, run the mod as a managed plugin (the ClaudeMods README, section \"Managed plugin\")."
         # Names: compact → "compaction", attachments → "attachment"; обидві — "compaction and attachment"
 
-`unknown` мод вважає робочим ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), (д) C, рішення розробника «Завжди дозволяти»), але дія, що запускає компактизацію мода (Flush, RunHandoff, RunRepair, маршрут `/compact` людини), спершу чекає зонда, що йде в цьому процесі, не довше PROBE_WAIT_MS ([SP_CTX_02_56](#SP_CTX_02_56)). Наступна сесія тієї самої версії хоста має вердикт з кешу від першого промпту. Помилки: `$.session.version()` кидає — кешу і зонда немає (CAP_NO_VERSION), вердикт лише живий; `$.ui.log` кидає — `noticed` лишається `true`.
+`unknown` мод вважає робочим ([C_CTX_DEC_31](./context_editor.core.concept.md#C_CTX_DEC_31), (д) C, рішення розробника «Завжди дозволяти»), але дія, що запускає компактизацію мода (Flush, IdleRun, RunHandoff, RunRepair, маршрут `/compact` людини), спершу чекає зонда, що йде в цьому процесі, не довше PROBE_WAIT_MS ([SP_CTX_02_56](#SP_CTX_02_56)). Наступна сесія тієї самої версії хоста має вердикт з кешу від першого промпту. Помилки: `$.session.version()` кидає — кешу і зонда немає (CAP_NO_VERSION), вердикт лише живий; `$.ui.log` кидає — `noticed` лишається `true`.
 
 ### 02_54. Дії мода, коли можливість пропущено  {#SP_CTX_02_54}
 
@@ -78,6 +78,7 @@ Purpose: при `Verdict(compact) = passed` мод не запускає жод�
 | `/handoff` ([SP_CTX_02_20](./context_editor.handoff.sp.md#SP_CTX_02_20)) | відмова; `cancel` працює як завжди | `handoff is off: this host passes over the mod's compaction hook (see the ClaudeMods README, section "Managed plugin")` |
 | RunHandoff ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)) | запит, поставлений до вердикту, не запускається: його знято з черги, у черзі — звіт HANDOFF_PASSED_OVER | `context-editor: handoff not run: this host passes over the mod's compaction hook.` |
 | Flush ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)) | не планується; запланований раніше — команди немає (FLUSH_PASSED_OVER), правки лишаються; запит ходу стискання, записаний до вердикту, знімається (його хід зустрів би лише відмови) | рядка немає: людина вже бачила PassedText |
+| IdleRun ([SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11); PL_HELP, фаза 5) | таймер простою, що спрацював на холодному кеші з відкладеними правками чи `applyDeferred` у черзі, після вердикту «холодний» команди не запускає: позначки `applyDeferred` немає, правки лишаються (бриф `/compact` людини передасть і їх, [SP_CTX_02_55](#SP_CTX_02_55)) | рядок стану `context-editor: deferred edits wait: this host passes over the mod's compaction` |
 | RunRepair ([SP_CTX_02_46](./context_editor.resume.sp.md#SP_CTX_02_46)) | команди немає | — |
 | `/compact` людини ([SP_CTX_02_42](./context_editor.stages.sp.md#SP_CTX_02_42)) | маршрут `brief`: підсумок хоста з CompactBrief ([SP_CTX_02_55](#SP_CTX_02_55)) | — |
 | DeliverReport ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)), підказка ([SP_CTX_02_37](./context_editor.telemetry.sp.md#SP_CTX_02_37)) | WaitingAdvice і `[context-editor: suggestion]` не додаються: вони радять інструмент, який відмовить | — |
@@ -208,7 +209,7 @@ Purpose: мод у процесі-зонді (`$.env.get('CONTEXT_EDITOR_PROBE')
         prompt.submit: no guide, no advice, no hint, no cold verdict of the cache clock (next(e) unchanged)
         prompt.attachment (any type): counts.attachments + 1; next(e) unchanged
         session.append (any door): counts.doors[door] + 1; next(e) unchanged
-        turn.complete: write PROBE_FILE in $.session.root() (= tmp) = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано; без AfterTurn — і без запису годинника кешу
+        turn.complete: write PROBE_FILE in $.session.root() (= tmp) = { version: $.session.version(), attachments, doors }   # ProbeCounts; ParseProbe читає його й тоді, коли обробник компактизації не викликано; хук повертається до AfterTurn — без запису годинника кешу й без таймера простою (IdleRun, PL_HELP фаза 5)
         turn.step: the stream passes unchanged; the cache clock's memory may take the step's end, but no check and no storage write   # PL_HELP фаза 2, SP_HELP_02_09: перевірка вердикту виходить одразу в ProbeMode; зонд запитів до моделі не робить, тож кроків і не буває
         session.compact with instructions = PROBE_MARKER: write PROBE_FILE; RETURN { skip: PROBE_PREFIX + " " + JSON(counts) }
         session.compact, other instructions: next(e) unchanged   # без спостерігача: межі не пише
@@ -234,3 +235,4 @@ Errors: запис PROBE_FILE не вдався — ParseProbe бере лічи
 | 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_53 — від `compact` залежить повернення пар розгортання й питань; 02_54 — `context_helper` `ask` відмовляє HELPER_PASSED_OVER, як `context_recall`; 02_57 — ProbeMode не реєструє й `context_helper` |
 | 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_03_03](./context_helper.sp.md#SP_HELP_03_03)): 02_57 — у ProbeMode годинника кешу немає: `prompt.submit` не бере вердикту, `turn.complete` не пише кінця ходу, `turn.step` лише пропускає потік без перевірки й запису сховища |
 | 2026-11-17 | PL_HELP фаза 4 ([SP_HELP_01_06](./context_helper.batches.sp.md#SP_HELP_01_06)): 02_55 — CompactBrief називає й відкладені правки; QUEUE_BRIEFED очищає їх разом з `deferredSince`, `applyDeferred`, `coldSince` (WithoutDeferred), `nextBatch` лишається; черга лише з цими полями пакета теж очищається |
+| 2026-11-17 | PL_HELP фаза 5 ([SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11)): 02_53 — від `compact` залежить застосування в простої; IdleRun, як Flush, при `unknown` чекає зонда, що йде; 02_54 — IdleRun при `compact = passed` команди не запускає й позначки не ставить, рядок стану `context-editor: deferred edits wait: this host passes over the mod's compaction`; 02_57 — у ProbeMode хук `turn.complete` повертається до AfterTurn: таймера простою немає |

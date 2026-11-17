@@ -67,6 +67,7 @@ import {
 } from './hostattach'
 import { HANDOFF_COMMAND, NOTE, TAG, TOOLS } from './tools'
 import { newTurns, turnCompleted, turnStarted } from './turns'
+import { armAtTurnEnd, newIdleMemory, type IdleIO } from './idle'
 import {
   CAP_CACHE_FILE,
   capsOf,
@@ -180,6 +181,8 @@ const listed: { key?: string } = {}
 const turns = newTurns()
 // [SP_CTX_02_06] Flush planned, and the last report whose resume was sent.
 const flushState = newFlushState()
+// [SP_HELP_02_11] The idle timer and whether its command runs.
+const idleMem = newIdleMemory()
 // [SP_CTX_01_15] The handoff of this module instance; `instance` marks its claims.
 const handoff = newHandoffMemory(`${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`)
 // [SP_CTX_02_12] The result ids of the rows the last compaction returned: in
@@ -319,9 +322,9 @@ function confirmIO($: EngineInterface): ConfirmIO {
   }
 }
 
-// [SP_HELP_02_09] ColdVerdict on the person's prompt in `dir`: a known
-// registry with no verdict due takes no chain (PL_AUD_CTX_P11).
-async function coldOnPrompt($: EngineInterface, dir: string): Promise<boolean> {
+// [SP_HELP_02_09] ColdVerdict in `dir` (the person's prompt, the idle
+// timer): a known registry with no verdict due takes no chain (PL_AUD_CTX_P11).
+async function coldVerdictAt($: EngineInterface, dir: string): Promise<boolean> {
   const at = memoryAt(clockMem, sessionOfDir(dir))
   const now = Date.now()
   const view = stores($, dir).tags.peek()
@@ -978,6 +981,24 @@ function flushIO($: EngineInterface): FlushIO {
     now: () => Date.now(),
     sessionId: () => $.session.id(),
     turns,
+  }
+}
+
+// [SP_HELP_02_11] IdleRun bound to the host: Flush's queue, command,
+// calibration and person's line; its timer comes from the turn.complete
+// chain (AfterTurn) and, re-armed, from its own timer.
+function idleIO($: EngineInterface): IdleIO {
+  const { readQueue: _r, updateQueue: _u, ...f } = flushIO($)
+  return {
+    ...f,
+    lastRequestAt: f.lastRequestAt!,
+    storage: () => storageDir($),
+    readQueue: dir => stores($, dir).queue.read(),
+    updateQueue: (dir, change) => updateOf(stores($, dir).queue)(change),
+    flushPlanned: () => isPlanned(flushState, Date.now()),
+    coldVerdict: dir => coldVerdictAt($, dir),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    debug: text => $.ui.log(text, { to: 'debug' }),
   }
 }
 
@@ -1813,6 +1834,8 @@ export const register: Register = on => {
         clock: dir => writeClock($, dir).catch(quietFailure($, 'cache clock at the turn end')),
         repair: () => repairAtTurnEnd(repairIO($), repairMem),
         flush: aborted => flushAfterTurn(flushIO($), flushState, aborted),
+        // [SP_HELP_02_11] the idle timer after Flush was planned
+        idle: aborted => armAtTurnEnd(idleIO($), idleMem, aborted),
         handoff: aborted => handoffAfterTurn(handoffIO($), handoff, aborted),
       },
       { aborted: e.isAborted, answer: e.answer },
@@ -1973,6 +1996,8 @@ export const register: Register = on => {
           requestTokens: () => requestTokens($),
           // [SP_CTX_02_31] on the journal's chain, never awaited here
           journal: entry => onJournal($, io => journalApply(io, entry), dir),
+          // [SP_HELP_01_08] IdleRun's command runs
+          idle: () => idleMem.applying,
           // [SP_CTX_02_07] [SP_CTX_02_36] on the deliveries' chain
           readDeliveries: () => s.deliveries.onChain(() => s.deliveries.read(), q),
           pruneDeliveries: done => void pruneDeliveries(updateOf(s.deliveries, q), done).catch(quietFailure($, 'PruneDeliveries')),
@@ -2121,7 +2146,7 @@ export const register: Register = on => {
       // [SP_CTX_02_37] the turn channel, between turns only
       suggestion: () => suggestionFor($, dir),
       // [SP_HELP_02_09] ColdVerdict, between turns only
-      cold: () => coldOnPrompt($, dir),
+      cold: () => coldVerdictAt($, dir),
     })
   }).catch(($, e, next) => next(e))
 }

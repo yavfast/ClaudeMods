@@ -256,7 +256,7 @@ export type EditArgs = { edits?: unknown; resume?: unknown; resume_prompt?: unkn
 
 // [SP_HELP_02_10] the sentence a call with `defer: true` adds about its batch
 export function deferredText(batch: string): string {
-  return `Deferred as ${batch}: it applies with your next apply that rewrites the cache from no later a point, or in a handoff.`
+  return `Deferred as ${batch}: it applies with your next apply that rewrites the cache from no later a point, when the cache turns cold in idle, or in a handoff.`
 }
 // [SP_HELP_02_10] a deferred call names its batch's choices it ignores
 export const DEFER_IGNORES = 'resume and keep_cache do not apply to a deferred batch.'

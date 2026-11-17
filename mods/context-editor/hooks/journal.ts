@@ -18,7 +18,7 @@ export const MAX_JOURNAL = 1000
 // [SP_CTX_01_19]
 export type JournalEntry =
   // [SP_HELP_01_08] `deferred`: the deferred edits the apply took
-  | { kind: 'apply'; at: number; edits: number; archive: string; compressed: string[]; deferred?: number }
+  | { kind: 'apply'; at: number; edits: number; archive: string; compressed: string[]; deferred?: number; idle?: true }
   | { kind: 'changed'; at: number; path: string }
   | { kind: 'reread'; at: number; path: string; tool_use_id: string; archive: boolean }
   // [SP_HELP_01_08] a question to the archive, of the agent or of an errand
@@ -42,7 +42,8 @@ function isEntry(raw: unknown): raw is JournalEntry {
         Array.isArray(e.compressed) &&
         e.compressed.length <= MAX_QUEUE_EDITS &&
         e.compressed.every(p => typeof p === 'string') &&
-        (e.deferred === undefined || isCount(e.deferred, 1))
+        (e.deferred === undefined || isCount(e.deferred, 1)) &&
+        (e.idle === undefined || e.idle === true)
       )
     case 'changed':
       return typeof e.path === 'string'
@@ -106,7 +107,8 @@ function readPaths(rows: readonly SessionMessage[], ids: ReadonlySet<string>): s
 // file_path of every Read call in the pairs the applied summarize and drop
 // edits name or the applied collapse spans hold (the first MAX_QUEUE_EDITS).
 // None when nothing applied. Pure.
-// [SP_HELP_01_08] `deferred`: how many deferred edits the apply took (0: no field)
+// [SP_HELP_01_08] `deferred`: how many deferred edits the apply took (0: no
+// field); `idle`: IdleRun's apply (false: no field)
 export function applyEntry(
   at: number,
   report: Pick<ApplyReport, 'applied'>,
@@ -114,6 +116,7 @@ export function applyEntry(
   before: readonly SessionMessage[],
   edits: readonly QueuedEdit[],
   deferred = 0,
+  idle = false,
 ): JournalEntry | undefined {
   const labels = new Set(report.applied)
   // [SP_FOLD_DEC_08] a return of a recall compresses nothing: no record of it
@@ -122,7 +125,7 @@ export function applyEntry(
   const ids = new Set<string>()
   for (const e of applied) if (e.op === 'summarize' || e.op === 'drop' || e.op === 'collapse') for (const id of touchedBy(before, e)?.ids ?? []) ids.add(id)
   const compressed = [...new Set(readPaths(before, ids))].slice(0, MAX_QUEUE_EDITS)
-  return { kind: 'apply', at, edits: applied.length, archive, compressed, ...(deferred > 0 ? { deferred } : {}) }
+  return { kind: 'apply', at, edits: applied.length, archive, compressed, ...(deferred > 0 ? { deferred } : {}), ...(idle ? { idle: true as const } : {}) }
 }
 
 // [SP_CTX_02_31] JournalReread: a Read of a path some application compressed

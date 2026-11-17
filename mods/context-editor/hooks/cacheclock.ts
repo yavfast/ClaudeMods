@@ -88,7 +88,7 @@ export function clockAfter(clock: CacheClock | undefined, memory: number | undef
 // when the cache is cold by `now` and no verdict was taken for this idle
 // ([SP_HELP_01_07]: coldAt null or older than the last request); undefined
 // otherwise. `memory`: the module's time for this session. The idle timer
-// (phase 5) and the first prompt of the main conversation take it.
+// ([SP_HELP_02_11]) and the first prompt of the main conversation take it.
 export function coldVerdict(clock: CacheClock | undefined, memory: number | undefined, now: number): CacheClock | undefined {
   const last = lastRequest(clock, memory)
   if (temperature(last, now) !== 'cold') return undefined

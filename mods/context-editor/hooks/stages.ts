@@ -45,7 +45,7 @@ import { hostHeader, hostSection, type HostRowRecord, type HostRows } from './ho
 import { apiChars, charsOf, errorText, findToolUse, isPromptRow, isReplacementText, modText, PLAIN_RATIO, resultsOf, totalChars } from './rows'
 import type { HelperSummary, JournalSummary } from './journal'
 import { helperCost } from './helper'
-import { checksLine, clockLine, lastRequest } from './cacheclock'
+import { checksLine, clockLine, lastRequest, temperature, type Temperature } from './cacheclock'
 import type { Queue } from './queue'
 import { deferredRewrite, deferredView, firstRowOf, nonDeferred, type DeferredView } from './batches'
 import type { Change, Read } from './store'
@@ -699,7 +699,7 @@ export function telemetryText(t: Telemetry): string {
   if (cache) lines.push(cache)
   // [SP_HELP_02_13] after the Cache line: the clock, the helper, the clock's checks
   if (t.clock) lines.push(clockLine(t.clock.last, t.clock.now))
-  if (t.deferred) lines.push(deferredLine(t.deferred))
+  if (t.deferred) lines.push(deferredLine(t.deferred, t.clock ? temperature(t.clock.last, t.clock.now) : 'unknown'))
   const summary = t.journal && !('unreadable' in t.journal) ? t.journal : undefined
   if (summary?.helper) lines.push(helperLine(summary.helper))
   if (summary?.checks) lines.push(checksLine(summary.checks))
@@ -753,12 +753,15 @@ export function telemetryText(t: Telemetry): string {
 }
 
 // [SP_HELP_02_13] Deferred: the batches waiting in the queue, the turn of
-// the oldest, and the cache they alone would rewrite were they applied now;
-// the warm variant (the cold one and the idle part come with phase 5).
-export function deferredLine(d: DeferredView & { tokens?: number }): string {
+// the oldest, and on a warm (or unknown) cache what they alone would rewrite
+// were they applied now; on a cold one, that IdleRun takes them.
+export function deferredLine(d: DeferredView & { tokens?: number }, temp: Temperature = 'unknown'): string {
   const oldest = d.oldest !== undefined ? `, the oldest from turn ${d.oldest}` : ''
+  const head = `Deferred: ${d.batches} batch(es), ${d.edits} edit(s)${oldest}; `
+  // [SP_HELP_02_11] on a cold cache IdleRun takes them in this idle
+  if (temp === 'cold') return `${head}the cache is cold: they apply in this idle.`
   const cost = d.tokens !== undefined ? `applying them now would rewrite ~${tokensText(d.tokens)} tokens of cache; ` : ''
-  return `Deferred: ${d.batches} batch(es), ${d.edits} edit(s)${oldest}; ${cost}they wait for an apply that starts no later, or a handoff.`
+  return `${head}${cost}they wait for an apply that starts no later, a cold cache in idle, or a handoff.`
 }
 
 // [SP_HELP_02_13] Helper: the sums of the journal's `ask` entries and their

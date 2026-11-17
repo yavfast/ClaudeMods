@@ -34,7 +34,7 @@ import { assignFoldIds, FOLDS_UNSAVED, pruneRecalls, recordFolds, type FoldLedge
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { goneText, handlesOf, rebaseHostRows, type HostRows } from './hostrows'
 import { applyEntry, type JournalEntry } from './journal'
-import { bindUnselected, deferredHolds, firstRowOf, nonDeferred, ridersOf, riding, selectEdits, sinceOf, unselected, type Selection } from './batches'
+import { bindUnselected, deferredHolds, firstRowOf, nonDeferred, ridersOf, riding, selectEdits, sinceOf, unselected, withoutApplyDeferred, type Selection } from './batches'
 import { cacheShape, type CacheShape } from './cache'
 import { lastRequest } from './cacheclock'
 import { appendReport, keepOtherSteps, markerKind, MAX_QUEUE_BYTES, resumesAfter, screenPerson, withCommandNote, type Queue } from './queue'
@@ -162,6 +162,9 @@ export type CompactionIO = {
   // [SP_CTX_02_31] JournalApply in the background, on the journal's chain:
   // never awaited, its failure changes nothing
   journal?: (entry: JournalEntry) => void
+  // [SP_HELP_01_08] IdleRun's command runs (module memory); with the idle
+  // mark still holding, the apply's entry is `idle`; absent: never
+  idle?: () => boolean
   // [SP_CTX_01_22] the host's deliveries recorded in this session, read on
   // their serial chain; absent: none
   readDeliveries?: () => Promise<Read<Deliveries>>
@@ -245,14 +248,21 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   }
   let shape: CacheShape | undefined
   const shapeOf = () => (shape ??= cacheShape(messages, api))
+  // [SP_HELP_02_11] IdleRun's command that waited behind a turn: the turn
+  // moved the last request past the mark, and its own Flush serves the
+  // queue with the resume prompt the agent was told of; the mark goes
+  if (io.idle?.() === true && !deferredHolds(q, last)) {
+    const rest = !io.isAborted() ? withoutApplyDeferred(q) : undefined
+    // [ERR-01] a failed write leaves a stale mark the next apply drops
+    if (rest) await io.writeQueue(rest).catch(err => io.debug?.(modText(`stale applyDeferred not cleared: ${errorText(err)}`)))
+    return { skip: modText('idle apply overtaken by a turn') }
+  }
   let selection = selectEdits(q, last, shapeOf, firstOf)
   io.selected?.(selection.batches)
   if (!selection.edits.length) {
-    if (q.applyDeferred && !deferredHolds(q, last) && !io.isAborted()) {
-      const { applyDeferred: _a, coldSince: _c, ...rest } = q
-      // [ERR-01] a failed write only leaves the stale flag for the next apply
-      await io.writeQueue(rest).catch(err => io.debug?.(modText(`stale applyDeferred not cleared: ${errorText(err)}`)))
-    }
+    const rest = q.applyDeferred && !deferredHolds(q, last) && !io.isAborted() ? withoutApplyDeferred(q) : undefined
+    // [ERR-01] a failed write only leaves the stale flag for the next apply
+    if (rest) await io.writeQueue(rest).catch(err => io.debug?.(modText(`stale applyDeferred not cleared: ${errorText(err)}`)))
     return { skip: modText('no applicable edits') }
   }
   // [SP_CTX_02_58] ScreenPerson beside ScreenPinned, on these rows and the
@@ -410,7 +420,9 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   const frozenAttach = disk && q.keepCache ? frozenAttachments(messages, api, applied.prefix) : undefined
   // [SP_CTX_02_31] [SP_CTX_02_18] what the steps after the commit need, made
   // before it: nothing after the queue's write can throw
-  const entry = applyEntry(id, applied.report, archived, messages, edits, deferredDone.length)
+  // [SP_HELP_01_08] idle: IdleRun's command, its mark still holding (a turn that ran before it moved the last request on)
+  const idle = io.idle?.() === true && deferredHolds(q, last)
+  const entry = applyEntry(id, applied.report, archived, messages, edits, deferredDone.length, idle)
   const boundary = boundaryOf(rows, io.hostId())
   // [SP_CTX_02_67] the items run state made, written with the registry
   const items = applied.state

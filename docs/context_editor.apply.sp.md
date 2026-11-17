@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-15
-> **Updated:** 2026-11-16
+> **Updated:** 2026-11-17
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_04](#SP_CTX_02_04), [SP_CTX_02_07](#SP_CTX_02_07)
 >
@@ -234,6 +234,8 @@ Processing logic (pseudocode):
         reg = read TagRegistry (unreadable → every edit failed "tag registry unreadable")
         api = read main conversation in Messages API form; hostRows = read the host rows' records (SP_CTX_02_61)   # PL_HELP, фаза 3: до перевірок — їх читає SelectEdits
         last = LastRequest(reg.cache, the clock memory of this instance for the session)   # SP_HELP_01_07; реєстр нечитний — лише пам'ять
+        IF the command is IdleRun's (module memory `applying`) AND NOT DeferredHolds(q, last):   # SP_HELP_02_11, PL_HELP фаза 5: хід до команди зсунув останній запит
+            write q without applyDeferred and coldSince; RETURN skip "idle apply overtaken by a turn"   # правки ходу застосує його Flush з промптом продовження
         (selected, selectedBatches) = SelectEdits(q, messages, last)          # SP_HELP_02_10: FirstRow — найраніший рядок touchedBy; drop з host — рядок, на якому висить запис рядка хоста (`after`)
         module memory: selectedBatches = selectedBatches                      # гілка збою читає; обробник очищає його на своєму початку
         IF selected empty:
@@ -315,6 +317,7 @@ Errors:
 | SKIP_EMPTY | черга порожня | розмова не змінюється |
 | SKIP_HANDOFF | у черзі запит передачі | розмова і черга не змінюються; правки застосує передача |
 | SKIP_NO_APPLICABLE | SelectEdits дав порожній вибір: у черзі лише відкладені правки, а `applyDeferred` не діє (PL_HELP, фаза 3) | `skip "no applicable edits"`; розмова не змінюється; застарілий `applyDeferred` (`coldSince` ≠ `lastRequestAt`) знято разом із `coldSince`, решта черги — як прочитано |
+| SKIP_IDLE_OVERTAKEN | команда IdleRun (пам'ять модуля `applying`), а позначка простою вже не діє: хід, що пройшов до команди, зсунув `lastRequestAt` (PL_HELP, фаза 5; [SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11)) | `skip "idle apply overtaken by a turn"` до вибору й перебудови; розмова не змінюється; `applyDeferred` і `coldSince` знято (збій запису — рядок налагодження `stale applyDeferred not cleared: <помилка>`); правки ходу застосує його власний Flush |
 | SKIP_NONE_APPLIED | жодна правка не застосувалась | звіт пояснює причини |
 | SKIP_FAILED | обробник впав | розмова не змінюється; правки без `deferred` і пакети `selectedBatches` прибрано, інші відкладені правки лишаються; звіт про збій чекає наступного промпту; якщо застосування вже записало свій звіт (точка фіксації), черга не змінюється |
 | SKIP_ABANDONED | хост покинув диспетчеризацію до повернення | розмова і черга не змінюються; реєстр, псевдоніми, межа, доставки й журнал — теж (записані в кроці фіксації реєстри повернуто); медіа-файли й архів, уже записані, лишаються без посилань |
@@ -398,6 +401,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-11-17 | PL_HELP фаза 5 ([SP_HELP_02_11](./context_helper.batches.sp.md#SP_HELP_02_11), код `hooks/compaction.ts`): 02_07 — команда IdleRun, чию позначку хід уже минув, — `skip "idle apply overtaken by a turn"` зі зняттям позначки (SKIP_IDLE_OVERTAKEN); поле `idle` запису `apply` — лише поки позначка діє |
 | 2026-11-16 | PL_HELP фаза 3 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10), код `hooks/batches.ts`): 02_04 — ApplyEdits отримує вибір SelectEdits, заморожений префікс — над вибором, речення звіту `Deferred: …`; 02_07 — API-подання й записи рядків хоста читаються до перевірок, SelectEdits з LastRequest і `selectedBatches`, порожній вибір — `skip "no applicable edits"` зі зняттям застарілого `applyDeferred` (SKIP_NO_APPLICABLE), BindUnselected і поле `deferred` звіту й журналу у фіксації, черга точки фіксації з невибраними правками й `deferredSince`, `reportResume = false` для вибору лише з відкладених, гілка збою й відмова архіву прибирають лише пакети вибору; живі прогони S1 і T1 |
 | 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)): 02_04 — опція `questions`, слід ASK_RETURNED правки повернення пари питання (з записом чи з самої пари), мітка `return of the question to fold(s) <ids>`, речення звіту `Returned <n> question pair(s).`, `drop` пари питання архівує; 02_07 — записи питань ідуть в ApplyEdits і в правило власних пар, облік пишеться й за самих записів питань, PruneRecalls прибирає й їх |
 | 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 02_04 — вхід `pinned`, вихід `kept`, FoldSpan на рядках застосування, запис без носія — завжди рядок асистента, крок на обійденому рядку йде перед згортанням, перевірки медіа й архів — лише над згорнутими рядками, текст невдачі медіа промпту називає `keep`; 02_07 — ScreenPinned не відхиляє `collapse` і повертає піни, застосовані правки несуть `kept` |

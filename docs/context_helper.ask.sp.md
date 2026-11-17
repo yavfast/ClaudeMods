@@ -3,7 +3,7 @@
 > **Code:** SP_HELP (дочірній файл набору)
 > **Status:** draft
 > **Created:** 2026-11-16
-> **Updated:** 2026-11-16
+> **Updated:** 2026-11-17
 > **Umbrella:** [SP_HELP](./context_helper.sp.md)
 >
 > §01_01–01_04 і §02_01–02_05 специфікації [SP_HELP](./context_helper.sp.md): виклик помічника з фіксованим форматом відповіді, інструмент `context_helper` і питання агента до архіву згорток з перевіреними цитатами. Читати, коли змінюєте помічника чи питання до архіву.
@@ -195,6 +195,8 @@ Errors (спільні, у порядку перевірки):
     op "errand_list"; op "errand_remove" with id.
     To defer an edit batch until the cache is cold, pass defer: true to context_edit.
 
+Опис відкривається поетапно: він називає лише те, що вже працює ([PL_HELP_DEC_03](./context_helper.plan.md#PL_HELP_DEC_03)). Після фази 5 (`HELPER_DESCRIPTION` у `hooks/tools.ts`) він має перший рядок без `, or set errands the mod runs when a condition on the context holds` (`Ask the mod's helper about your folds.`), рядок `op "ask"` (фаза 1) і останній рядок `To defer …` (фаза 5: застосування в простої, [§02_11](./context_helper.batches.sp.md#SP_HELP_02_11), робить його правдивим). Рядки `op "errand_add"` і `op "errand_list"; op "errand_remove" with id.` та другу половину першого рядка додає фаза 7, речення про `wake` у рядку `errand_add` — фаза 8.
+
 ### 02_03. Ask (операція `ask`)  {#SP_HELP_02_03}
 
 > Implements: [C_HELP_03_02](./context_helper.concept.md#C_HELP_03_02)
@@ -310,3 +312,4 @@ Purpose: пара питання — відповідь живе як згада
 | 2026-11-16 | Розділи перенесено дослівно з [context_helper.sp.md](./context_helper.sp.md): поділ файлу за модулями (11 739 слів, перед виправленнями рев'ю 2 і §02_12 — понад `hard_split`), якорі ті самі (structural-event) |
 | 2026-11-16 | PL_HELP фаза 1, рев'ю коду й живий прогін L1: FailureReason (`empty-reply`, `api-error without a response`), токени кожного виклику; перерваний виклик не пише запису; рядок налагодження при невдалому записі; StripLabels у VerifyQuotes; слід власної правки на парі питання; перевірка залежностей пар питань не враховує |
 | 2026-11-16 | PL_HELP фаза 2: сигнал хука `tool.call` іде в `$.model.complete` другим аргументом (`options.signal`) — §02_03 |
+| 2026-11-17 | PL_HELP фаза 5: §02_02 — HELPER_DESCRIPTION отримав останній рядок `To defer an edit batch until the cache is cold, pass defer: true to context_edit.`; речення про поетапне відкриття опису: рядки доручень — фаза 7, `wake` — фаза 8 ([PL_HELP_DEC_03](./context_helper.plan.md#PL_HELP_DEC_03)) |

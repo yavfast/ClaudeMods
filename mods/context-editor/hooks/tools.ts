@@ -143,11 +143,11 @@ const EDIT_SCHEMA = {
       description:
         'Keep the prompt cache up to the first edit (default false): cheaper when the earliest edit is within your last few calls and you end the turn soon.',
     },
-    // [SP_HELP_02_10] [PL_HELP_DEC_03] without the idle part until phase 5
+    // [SP_HELP_02_10] [SP_HELP_02_11]
     defer: {
       type: 'boolean',
       description:
-        'Defer this call\'s edits as a batch (default false): no apply is planned for them; they apply with a later apply that rewrites the cache from no later a point, or in a handoff. resume, resume_prompt and keep_cache are ignored with it.',
+        'Defer this call\'s edits as a batch (default false): no apply is planned for them; they apply with a later apply that rewrites the cache from no later a point, when the cache turns cold in idle, or in a handoff. resume, resume_prompt and keep_cache are ignored with it.',
     },
   },
   required: ['edits'],
@@ -310,9 +310,11 @@ const RECALL_SCHEMA = {
 }
 
 // [SP_HELP_02_02] At most MAX_DESCRIPTION chars; [PL_HELP_DEC_03] only the
-// operations that work: phase 1 opens "ask".
+// operations that work: phase 1 opens "ask"; phase 5 adds the pointer to
+// `defer`, which IdleRun makes true.
 export const HELPER_DESCRIPTION = `Ask the mod's helper about your folds.
-op "ask": a helper model (${HELP_MODEL}, outside this conversation: no turn, no row) reads the levels of the folds you name (ids from their fold records; up to ${MAX_ASK_FOLDS} folds and ~${(HELP_MAX_PARTS * HELP_PART_CHARS) / 1000}k chars in all) and answers your question. Only quotes the mod finds verbatim in the archive reach you, each marked whose it is; the helper's reading is not your own text, so weigh it as external. It takes seconds and a few cents per ~${HELP_PART_CHARS / 1000}k chars. The pair stays until the region you asked in closes; then the mod returns it. Use ${RECALL} when you need the whole level.`
+op "ask": a helper model (${HELP_MODEL}, outside this conversation: no turn, no row) reads the levels of the folds you name (ids from their fold records; up to ${MAX_ASK_FOLDS} folds and ~${(HELP_MAX_PARTS * HELP_PART_CHARS) / 1000}k chars in all) and answers your question. Only quotes the mod finds verbatim in the archive reach you, each marked whose it is; the helper's reading is not your own text, so weigh it as external. It takes seconds and a few cents per ~${HELP_PART_CHARS / 1000}k chars. The pair stays until the region you asked in closes; then the mod returns it. Use ${RECALL} when you need the whole level.
+To defer an edit batch until the cache is cold, pass defer: true to ${EDIT}.`
 
 const HELPER_SCHEMA = {
   type: 'object',

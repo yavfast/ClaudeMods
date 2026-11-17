@@ -5,7 +5,7 @@ import { cacheShape } from '../hooks/cache'
 import { failedQueue, failureRecord, handleCompaction } from '../hooks/compaction'
 import { describeEdit, fingerprint, prepare, type QueuedEdit } from '../hooks/edits'
 import { flushAfterTurn, newFlushState, type FlushIO } from '../hooks/flush'
-import { applyEntry } from '../hooks/journal'
+import { applyEntry, parseJournal } from '../hooks/journal'
 import { EMPTY_QUEUE, keepOtherSteps, parseQueue, type Queue } from '../hooks/queue'
 import type { Read } from '../hooks/store'
 import { EMPTY_REGISTRY, type TagRegistry } from '../hooks/tags'
@@ -275,6 +275,37 @@ test('JournalApply — поле deferred: only an apply that took deferred edits
   expect(plain).toBeDefined()
   expect(plain && 'deferred' in plain).toBe(false)
   expect(applyEntry(1, report, '/a.json', rows, [edit], 1)).toMatchObject({ kind: 'apply', edits: 1, deferred: 1 })
+  // [SP_HELP_01_08] `idle`: only IdleRun's apply; a stored `idle` other than true is no entry
+  const idle = applyEntry(1, report, '/a.json', rows, [edit], 1, true)
+  expect(idle).toMatchObject({ kind: 'apply', deferred: 1, idle: true })
+  expect(plain && 'idle' in plain).toBe(false)
+  expect(parseJournal(JSON.stringify({ entries: [idle] })).state).toBe('ok')
+  expect(parseJournal(JSON.stringify({ entries: [{ ...idle, idle: false }] })).state).toBe('unreadable')
+})
+
+// [SP_HELP_01_08] [SP_HELP_02_11] the apply record's `idle` in the handler
+test('Запис apply — idle: IdleRun’s command with its mark on the last request gives idle: true; overtaken by a turn it skips and the mark goes; a command not IdleRun’s gives none', async () => {
+  const rows = rowsWithOwn()
+  const tags: TagRegistry = { ...EMPTY_REGISTRY, cache: { lastRequestAt: 500, coldAt: 900, check: true } }
+  const idleOf = (j: unknown[]) => (j[0] as { idle?: unknown } | undefined)?.idle
+  const held = apply(rows, q0([sum('c30', 'b1')], { applyDeferred: true, coldSince: 500, deferredSince: { b1: 1 } }), tags)
+  held.io.idle = () => true
+  await held.run()
+  expect(held.written.journal).toEqual([expect.objectContaining({ kind: 'apply', deferred: 1, idle: true })])
+  // [SP_HELP_02_11] a turn ran before the command: the last request moved past
+  // the mark; the turn's own Flush serves the queue, the mark goes
+  const moved = apply(rows, q0([sum('c29'), sum('c30', 'b1')], { applyDeferred: true, coldSince: 400, deferredSince: { b1: 1 } }), tags)
+  moved.io.idle = () => true
+  const skipped = await moved.run()
+  expect(skipped).toEqual({ skip: 'context-editor: idle apply overtaken by a turn' })
+  expect(moved.written.journal).toEqual([])
+  expect(moved.written.queue?.applyDeferred).toBeUndefined()
+  expect(moved.written.queue?.edits).toEqual([sum('c29'), sum('c30', 'b1')])
+  // a command that is no IdleRun's
+  const other = apply(rows, q0([sum('c30', 'b1')], { applyDeferred: true, coldSince: 500, deferredSince: { b1: 1 } }), tags)
+  await other.run()
+  expect(other.written.journal).toHaveLength(1)
+  expect(idleOf(other.written.journal)).toBeUndefined()
 })
 
 // [SP_HELP_05_01] Фіксація — прив'язка in the handler, the shifted case: a

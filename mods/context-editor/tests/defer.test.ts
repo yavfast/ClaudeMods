@@ -147,9 +147,12 @@ test('Телеметрія — пакети: DeferredView, the rewrite of the de
   expect(x).toBeLessThanOrEqual(9000)
   expect(deferredRewrite([sum('gone', 'b1')], shape, firstRowOf(rows), 9000, 3)).toBeUndefined()
   expect(deferredLine({ batches: 2, edits: 3, oldest: 4, tokens: 12_000 })).toBe(
-    'Deferred: 2 batch(es), 3 edit(s), the oldest from turn 4; applying them now would rewrite ~12k tokens of cache; they wait for an apply that starts no later, or a handoff.',
+    'Deferred: 2 batch(es), 3 edit(s), the oldest from turn 4; applying them now would rewrite ~12k tokens of cache; they wait for an apply that starts no later, a cold cache in idle, or a handoff.',
   )
-  expect(deferredLine({ batches: 1, edits: 1 })).toBe('Deferred: 1 batch(es), 1 edit(s); they wait for an apply that starts no later, or a handoff.')
+  expect(deferredLine({ batches: 1, edits: 1 })).toBe('Deferred: 1 batch(es), 1 edit(s); they wait for an apply that starts no later, a cold cache in idle, or a handoff.')
+  // [SP_HELP_02_13] the cold variant: no cost, IdleRun takes them
+  expect(deferredLine({ batches: 2, edits: 3, oldest: 4, tokens: 12_000 }, 'cold')).toBe('Deferred: 2 batch(es), 3 edit(s), the oldest from turn 4; the cache is cold: they apply in this idle.')
+  expect(deferredLine({ batches: 1, edits: 1 }, 'warm')).toBe(deferredLine({ batches: 1, edits: 1 }))
   const t: Telemetry = { measure: 'unknown', autoCompactOff: false, registry: false, regions: [], reviews: new Map(), disposable: 0, state: 'none', notes: { count: 0, reminders: 0 } }
   const journal = { applications: 0, rereads: 0, archiveRereads: 0, helper: { questions: 1, calls: 1, in: 400, out: 90, verified: 1, rejected: 0 } }
   const lines = telemetryText({ ...t, journal, clock: { last: 0, now: 60_000 }, deferred: { batches: 1, edits: 1 } }).split('\n')
@@ -157,6 +160,9 @@ test('Телеметрія — пакети: DeferredView, the rewrite of the de
   expect(at('Deferred:')).toBe(at('Cache clock:') + 1)
   expect(at('Helper:')).toBe(at('Deferred:') + 1)
   expect(telemetryText(t)).not.toContain('Deferred:')
+  // a clock past CACHE_TTL_MS gives the cold variant
+  const cold = telemetryText({ ...t, clock: { last: 0, now: 2 * 3_600_000 }, deferred: { batches: 1, edits: 1, tokens: 5000 } })
+  expect(cold).toContain('Deferred: 1 batch(es), 1 edit(s); the cache is cold: they apply in this idle.')
 })
 
 // [SP_CTX_02_55] [SP_HELP_01_06] ObservePassedCompact and CompactBrief
