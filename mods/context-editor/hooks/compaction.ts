@@ -8,6 +8,8 @@ import {
   describeEdit,
   editLabel,
   isReturnEdit,
+  indexRows,
+  isHostDrop,
   dropOwnCallsCounted,
   formatReport,
   mediaExt,
@@ -32,6 +34,9 @@ import { assignFoldIds, FOLDS_UNSAVED, pruneRecalls, recordFolds, type FoldLedge
 import { frozenAttachments, type AttachPort } from './hostattach'
 import { goneText, handlesOf, rebaseHostRows, type HostRows } from './hostrows'
 import { applyEntry, type JournalEntry } from './journal'
+import { bindUnselected, deferredHolds, firstRowOf, nonDeferred, ridersOf, riding, selectEdits, sinceOf, unselected, type Selection } from './batches'
+import { cacheShape, type CacheShape } from './cache'
+import { lastRequest } from './cacheclock'
 import { appendReport, keepOtherSteps, markerKind, MAX_QUEUE_BYTES, resumesAfter, screenPerson, withCommandNote, type Queue } from './queue'
 import { dropPulled, type Pulled } from './repair'
 import { apiChars, errorText, modText, resultsOf, totalChars } from './rows'
@@ -96,6 +101,9 @@ export type FailureIO = {
   dir: string | undefined
   // the id of the last report an apply of this instance wrote and answered without an abandon
   reported: number | undefined
+  // [SP_HELP_02_10] selectedBatches: the batches the last apply selected;
+  // undefined: no selection yet in that apply
+  selected?: readonly string[]
   now: () => number
   // the queue's Change port in `dir`, never awaited
   changeQueue: (dir: string, change: ChangeFn<Queue>) => Promise<unknown>
@@ -109,7 +117,7 @@ export function compactionFailed(io: FailureIO, e: CompactionEvent, reason: stri
   const out = compactionFailure(e)
   if ('pass' in out) return out
   // [SP_CTX_02_07] nothing when the apply reached its commit point first and was not abandoned
-  if (out.recordFailure && io.dir) void io.changeQueue(io.dir, read => failureRecord(read, io.reported, reason, io.now())).catch(() => undefined)
+  if (out.recordFailure && io.dir) void io.changeQueue(io.dir, read => failureRecord(read, io.reported, reason, io.now(), io.selected)).catch(() => undefined)
   return { skip: out.skip }
 }
 
@@ -187,6 +195,12 @@ export type CompactionIO = {
   folds?: FoldPort
   // [ERR-01] the trace of a failure the apply swallows: a label and the error
   debug?: (text: string) => void
+  // [SP_HELP_02_09] the cache clock's memory of this module instance for the
+  // session (memoryAt); absent: the registry's time alone
+  clockMemory?: () => number | undefined
+  // [SP_HELP_02_10] selectedBatches, set by SelectEdits (the caller clears it
+  // when the handler starts)
+  selected?: (batches: string[]) => void
 }
 
 export type CompactionOutcome = { skip: string } | { messages: SessionMessage[] }
@@ -213,16 +227,59 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
 
   const tokensBefore = await (io.requestTokens?.() ?? Promise.resolve(undefined)).catch(() => undefined)
   const tagsRead = await io.readTags()
+  const api = await io.readApi()
+  // [SP_CTX_02_61] the host rows' records a host drop names
+  const hostRead = io.readHostRows ? await io.readHostRows().catch((err): Read<HostRows> => ({ state: 'unreadable', reason: String(err) })) : undefined
+  // [SP_CTX_01_31] a record kept by an earlier apply names its row by position
+  const hostRows = hostRead && hostRead.state !== 'unreadable' ? rebaseHostRows(hostRead.value.rows, messages) : []
+  // [SP_HELP_02_10] SelectEdits before anything is built: the deferred
+  // batches that add no rewrite of their own ride along; an empty selection
+  // skips, and a stale applyDeferred goes
+  const last = lastRequest(tagsRead.state === 'unreadable' ? undefined : tagsRead.value.cache, io.clockMemory?.())
+  const touched = firstRowOf(messages, indexRows(messages))
+  const firstOf = (e: QueuedEdit): number | undefined => {
+    if (!isHostDrop(e)) return touched(e)
+    const rec = hostRows.find(r => r.id === e.host)
+    const at = rec ? messages.findIndex(m => m.handle === rec.after) : -1
+    return at < 0 ? undefined : at
+  }
+  let shape: CacheShape | undefined
+  const shapeOf = () => (shape ??= cacheShape(messages, api))
+  let selection = selectEdits(q, last, shapeOf, firstOf)
+  io.selected?.(selection.batches)
+  if (!selection.edits.length) {
+    if (q.applyDeferred && !deferredHolds(q, last) && !io.isAborted()) {
+      const { applyDeferred: _a, coldSince: _c, ...rest } = q
+      // [ERR-01] a failed write only leaves the stale flag for the next apply
+      await io.writeQueue(rest).catch(err => io.debug?.(modText(`stale applyDeferred not cleared: ${errorText(err)}`)))
+    }
+    return { skip: modText('no applicable edits') }
+  }
   // [SP_CTX_02_58] ScreenPerson beside ScreenPinned, on these rows and the
   // deliveries file; refused edits go first in report.failed
   const delivered = await readDeliveries(io)
-  const pins = screenPinned(messages, q.edits, tagsRead)
-  const person = screenPerson(messages, pins.edits, delivered.items, pins.pinned)
+  const screen = (set: readonly QueuedEdit[]) => {
+    const pins = screenPinned(messages, [...set], tagsRead)
+    const person = screenPerson(messages, pins.edits, delivered.items, pins.pinned)
+    return { pins, person }
+  }
+  let screened = screen(selection.edits)
+  // [SP_HELP_02_10] a batch rides along only with the edits without
+  // `deferred` that pass the screens: weighed again over them, none left, no batch
+  if (selection.batches.length && !deferredHolds(q, last)) {
+    const own = screened.person.edits.filter(e => e.deferred === undefined)
+    const riders = ridersOf(q, own, shapeOf(), firstOf)
+    if (riders.length !== selection.batches.length) {
+      selection = riding(q, riders)
+      io.selected?.(selection.batches)
+      screened = screen(selection.edits)
+    }
+  }
+  const { pins, person } = screened
   const edits = person.edits
   const refused = [...pins.refused, ...person.refused]
   // [SP_CTX_02_34] the calibration the registry holds: the handler never asks for telemetry
   const ratio = tagsRead.state === 'unreadable' ? undefined : tagsRead.value.charsPerToken
-  const api = await io.readApi()
   const { found, knownResults, unmatchedPromptMedia, apiTruncated, toolRefs } = collectMedia(api, messages)
   // [SP_CTX_02_43] the person's line sizes the conversation by the API form
   // read here (phase 29); none when it may be cut at its window
@@ -237,10 +294,6 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // stretch is rebuilt as before, and --resume stays clean
   // [SP_CTX_02_67] run state starts from the items of the registry read here
   const state = tagsRead.state === 'unreadable' ? undefined : stateInput(tagsRead.value)
-  // [SP_CTX_02_61] the host rows' records a host drop names
-  const hostRead = io.readHostRows ? await io.readHostRows().catch((err): Read<HostRows> => ({ state: 'unreadable', reason: String(err) })) : undefined
-  // [SP_CTX_01_31] a record kept by an earlier apply names its row by position
-  const hostRows = hostRead && hostRead.state !== 'unreadable' ? rebaseHostRows(hostRead.value.rows, messages) : []
   const options = {
     knownResults,
     unmatchedPromptMedia,
@@ -282,6 +335,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // [C_CTX_01_01] Originals never vanish: without their archive nothing applies.
   if (applied.report.originals.length && !(await io.writeArchive(archive, archiveText(applied.report.originals, media)))) {
     if (io.isAborted()) return ABANDONED
+    const waiting = unselected(q.edits, selection)
     const text = formatReport(
       {
         ...applied.report,
@@ -290,11 +344,14 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
         charsAfter: applied.report.charsBefore,
         produced: [],
         mediaFiles: [],
+        // [SP_HELP_02_10] none applied; the batches it did not select still wait
+        ...(q.edits.some(e => e.deferred !== undefined) ? { deferred: { applied: 0, batches: 0, wait: waiting.length } } : {}),
       },
       '',
       'compaction',
     )
-    await io.writeQueue(reported(q, text, id))
+    // [SP_HELP_02_10] as the failure branch: the selected batches go, the others stay
+    await io.writeQueue(reported(q, text, id, selection, waiting))
     io.reported?.(id)
     io.toast(text.slice(0, 200))
     return { skip: modText('originals could not be archived') }
@@ -335,6 +392,14 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   // the tags, notes, aliases and the journal read them as untouched
   const done = edits.filter(e => names.has(describeEdit(e))).map(e => (applied.kept.has(e) ? { ...e, kept: applied.kept.get(e)! } : e))
   const after = done.length ? rows : messages
+  // [SP_HELP_02_10] BindUnselected: the deferred edits this apply did not
+  // select follow their rows into `after`; one whose rows it changed leaves
+  // the queue with a line of the report
+  const bound = bindUnselected(unselected(q.edits, selection), messages, after, done)
+  for (const e of bound.dropped) applied.report.failed.push(`${editLabel(messages, e)}: its rows changed in this apply`)
+  const deferredDone = done.filter(e => e.deferred !== undefined)
+  if (q.edits.some(e => e.deferred !== undefined))
+    applied.report.deferred = { applied: deferredDone.length, batches: new Set(deferredDone.map(e => e.deferred)).size, wait: bound.edits.length }
   const produced = applied.report.produced
   // [SP_CTX_02_40] the files the attachments' sections name, read before the
   // commit; only an apply that changes the conversation decides (the host
@@ -345,12 +410,12 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
   const frozenAttach = disk && q.keepCache ? frozenAttachments(messages, api, applied.prefix) : undefined
   // [SP_CTX_02_31] [SP_CTX_02_18] what the steps after the commit need, made
   // before it: nothing after the queue's write can throw
-  const entry = applyEntry(id, applied.report, archived, messages, edits)
+  const entry = applyEntry(id, applied.report, archived, messages, edits, deferredDone.length)
   const boundary = boundaryOf(rows, io.hostId())
   // [SP_CTX_02_67] the items run state made, written with the registry
   const items = applied.state
   const rebind = (reg: TagRegistry) => {
-    const out = rebindAfter(reg, messages, after, done, q.edits, produced)
+    const out = rebindAfter(reg, messages, after, done, selection.edits, produced)
     const withItems = items ? { ...out.registry, items: items.items, nextItem: items.nextItem } : out.registry
     // [SP_CTX_02_73] a rename's record stays while its row came back with its handle
     const titled = withTitle(withItems, keepRuns(withItems.title, after))
@@ -423,7 +488,7 @@ export async function handleCompaction(io: CompactionIO, input: readonly Session
     const unsaved = items && !tagsWritten ? ITEMS_UNSAVED(tagsError || 'not written') : ''
     const report = [formatReport(applied.report, archived, 'compaction', ratio), attached?.text ?? '', unsaved, foldsUnsaved].filter(Boolean).join(' ')
     try {
-      await io.writeQueue(reported(q, report, id))
+      await io.writeQueue(reported(q, report, id, selection, bound.edits))
     } catch (err) {
       await putBack()
       throw err
@@ -658,26 +723,48 @@ export async function archiveMedia(
 // after any report not yet delivered. [SP_CTX_01_04] The fields of other
 // steps (the optimization request, a handoff) stay as read (KeepOtherSteps).
 // [SP_CTX_01_05] The report enters with CommandNote; the toast goes without it.
-function reported(q: Queue, text: string, id: number): Queue {
-  return appendReport(keepOtherSteps(q), withCommandNote(text), id, resumesAfter(q), q.resumePrompt)
+// [SP_CTX_02_07] [SP_HELP_02_10] The queue at the commit point: the batch and
+// the deferred edits it selected gone; `waiting`, the deferred edits it left
+// (bound to the rows returned), stay in their order with the deferredSince of
+// their batches. ResumesAfter is false when it selected deferred edits alone.
+function reported(q: Queue, text: string, id: number, selection: Selection, waiting: readonly QueuedEdit[]): Queue {
+  const { edits: _e, deferredSince: _d, ...base } = keepOtherSteps(q)
+  const since = sinceOf(q.deferredSince, waiting)
+  const next: Queue = { ...base, edits: [...waiting], ...(since ? { deferredSince: since } : {}) }
+  const resumes = nonDeferred(selection.edits).length > 0 && resumesAfter(q)
+  return appendReport(next, withCommandNote(text), id, resumes, q.resumePrompt)
 }
 
 // [SP_CTX_02_07] The failure branch's write of the queue it read on the
 // queue's chain, or undefined: nothing to write. The apply that failed may
 // have reached its commit point first (`lastReported`, the id of the last
 // report an apply of this module instance wrote and returned without an
-// abandon): when the queue holds no batch and carries that report, the batch
-// is gone and its report stands, so no failure report goes beside it. An
-// apply the host gave up on never counts, so its failure is always recorded.
-export function failureRecord(read: Read<Queue>, lastReported: number | undefined, reason: string, now: number): Queue | undefined {
+// abandon): when the queue holds no batch, carries that report and keeps no
+// edit of the batches that apply selected ([SP_HELP_02_10] `selected`; not
+// known: no deferred edit may be left), the batch is gone and its report
+// stands, so no failure report goes beside it. An apply the host gave up on
+// never counts, so its failure is always recorded.
+export function failureRecord(read: Read<Queue>, lastReported: number | undefined, reason: string, now: number, selected?: readonly string[]): Queue | undefined {
   const q = read.state === 'unreadable' ? undefined : read.value
-  if (q && !q.edits.length && lastReported !== undefined && q.reportId === lastReported) return undefined
-  return failedQueue(q, reason, now)
+  const taken = selected ? new Set(selected) : undefined
+  const left = q ? q.edits.some(e => e.deferred !== undefined && (!taken || taken.has(e.deferred))) : false
+  if (q && !nonDeferred(q.edits).length && !left && lastReported !== undefined && q.reportId === lastReported) return undefined
+  return failedQueue(q, reason, now, selected)
 }
 
 // [SP_CTX_02_07] The queue after the handler failed: batch dropped, a report
-// of the failure waits for the next prompt.
-export function failedQueue(q: Queue | undefined, reason: string, now: number): Queue {
+// of the failure waits for the next prompt. [SP_HELP_02_10] Of the deferred
+// edits only those of the batches the failed apply selected go (`selected`;
+// not known: none).
+export function failedQueue(q: Queue | undefined, reason: string, now: number, selected?: readonly string[]): Queue {
   // [SP_CTX_01_04] the fields of other steps stay as read
-  return appendReport(keepOtherSteps(q), withCommandNote(modText(`applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.`)), now)
+  const kept = keepOtherSteps(q)
+  const taken = new Set(selected ?? [])
+  const went = [...new Set(kept.edits.flatMap(e => (e.deferred !== undefined && taken.has(e.deferred) ? [e.deferred] : [])))]
+  const waiting = kept.edits.filter(e => e.deferred === undefined || !taken.has(e.deferred))
+  const { edits: _e, deferredSince: _d, ...base } = kept
+  const since = sinceOf(kept.deferredSince, waiting)
+  const next: Queue = { ...base, edits: waiting, ...(since ? { deferredSince: since } : {}) }
+  const deferredWords = went.length ? ` Deferred batches ${went.join(', ')} went with it; ${waiting.length} deferred edit(s) still wait.` : ''
+  return appendReport(next, withCommandNote(modText(`applying the edits failed (${reason}); the conversation was not changed and the batch was dropped.${deferredWords}`)), now)
 }

@@ -31,7 +31,7 @@ Input:
 | Parameter | Type | Required | Constraints |
 |-----------|------|----------|-------------|
 | rows | list<Row> | yes | рядки події компактизації |
-| edits | list<QueuedEdit> | yes | уже перевірені на `pin` і `state` ([SP_CTX_02_07](#SP_CTX_02_07)); `collapse` ця перевірка пропускає — закріплене в його проміжку він обходить за `pinned` |
+| edits | list<QueuedEdit> | yes | у компактизації — вибір SelectEdits (PL_HELP, фаза 3), а не вся черга; уже перевірені на `pin` і `state` ([SP_CTX_02_07](#SP_CTX_02_07)); `collapse` ця перевірка пропускає — закріплене в його проміжку він обходить за `pinned` |
 | archive | string | yes | шлях архіву або `""` |
 | media | map<owner, list<string>> | yes | шляхи вже збережених медіа-файлів за власником |
 | mediaOwners | set<owner> | yes | усі власники медіа в розмові ([SP_CTX_02_10](#SP_CTX_02_10)) |
@@ -209,6 +209,8 @@ Processing logic (pseudocode):
 
 Повернення пар питань (PL_HELP, фаза 1; [SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)). Опція `questions: map<tool_use_id, {folds, question, verified, scope}>` — записи питань обліку ([SP_HELP_01_04](./context_helper.ask.sp.md#SP_HELP_01_04)). Правка з `via: "return"` над парою `context_helper`, що не тримає розгортання, замінює текст результату на ASK_RETURNED: з порожнім `summary` — із назвою закритої області, з текстом агента — ` by your own edit` і `: <summary>`. Запису немає — питання читається з самої пари: згортки — з рядка `Asked: fold(s) <ids> — …` результату, питання — з входу виклику (перші QUESTION_HEAD символів), `verified` — число рядків цитат, область невідома; без запису й без цього рядка правка мовчки не застосовується. Як і повернення згаданого, правка нічого не архівує (цитати лежать в архівах згорток), FoldEntry не створює, дає парі новий ідентифікатор і входить у `report.returned` з позначкою питання; невдала має мітку `return of the question to fold(s) <ids>`. `drop` пари питання архівує її, як будь-яку пару. FormatReport додає речення `Returned <n> question pair(s).` окремо, після речення про згадування; рядок людини пакета лише з повернень — `returned <n> recall(s) and <m> question pair(s)` (кожна частина — лише ненульова). ASK_RETURNED_HEAD входить до REPLACEMENT_OPENERS після RETURNED_HEAD.
 
+Відкладені пакети (змінено C_HELP: PL_HELP, фаза 3, реалізовано; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)). Контракт ApplyEdits не змінюється: у компактизації він отримує вибір SelectEdits ([SP_CTX_02_07](#SP_CTX_02_07)) — правки без `deferred` і відкладені пакети, що не додають власного переписування кешу, — а невибрані відкладені правки до нього не доходять і лишаються в черзі. Заморожений префікс (`freeze`) рахується над вибраним набором: вибраний пакет переписує не раніше за `sO` (RewriteStart правок без `deferred`), тож власного переписування кешу не додає; при `sO` = 0 запит після застосування й так пише всю розмову. FormatReport додає речення `Deferred: <k> edit(s) of <m> batch(es) applied; <r> still wait.` (поле `deferred` ApplyReport, [SP_CTX_01_05](./context_editor.structures.sp.md#SP_CTX_01_05)) після речення доставок, перед рядками хоста, коли черга мала відкладені правки, — і тоді, коли жодна не застосувалась; невибрана правка, чиї рядки змінило застосування, стоїть у `failed` як `<edit>: its rows changed in this apply`. Засів ([SP_CTX_02_22](./context_editor.handoff.sp.md#SP_CTX_02_22)) поля `deferred` не заповнює.
+
 ### 02_07. HandleCompaction  {#SP_CTX_02_07}
 
 > **Курування:** ScreenPerson поряд із ScreenPinned — [SP_CTX_02_58](./context_editor.curation.edits.sp.md#SP_CTX_02_58) (з PL_FOLD, фази 3 — лише для слів, що зникли б без сліду); запис рядків хоста в кроці фіксації — [SP_CTX_02_60](./context_editor.curation.hostrows.sp.md#SP_CTX_02_60).
@@ -230,9 +232,15 @@ Processing logic (pseudocode):
         IF q.edits empty: RETURN skip "no queued edits"
         IF q.handoff present: RETURN skip "handoff pending"            # правки належать передачі (SP_CTX_02_21)
         reg = read TagRegistry (unreadable → every edit failed "tag registry unreadable")
-        (edits, refused, pinned) = ScreenPinned(messages, q.edits, reg); refused → failed   # SP_CTX_02_03: pin і state одним кроком, як у BuildSeed; collapse не відхиляється — обходить закріплене в ApplyEdits (PL_FOLD, фаза 3)
+        api = read main conversation in Messages API form; hostRows = read the host rows' records (SP_CTX_02_61)   # PL_HELP, фаза 3: до перевірок — їх читає SelectEdits
+        last = LastRequest(reg.cache, the clock memory of this instance for the session)   # SP_HELP_01_07; реєстр нечитний — лише пам'ять
+        (selected, selectedBatches) = SelectEdits(q, messages, last)          # SP_HELP_02_10: FirstRow — найраніший рядок touchedBy; drop з host — рядок, на якому висить запис рядка хоста (`after`)
+        module memory: selectedBatches = selectedBatches                      # гілка збою читає; обробник очищає його на своєму початку
+        IF selected empty:
+            IF q.applyDeferred AND NOT (q.coldSince absent OR q.coldSince = last): write q without applyDeferred and coldSince   # застарілий простій
+            RETURN skip "no applicable edits"                                  # до будь-якої перебудови
+        (edits, refused, pinned) = ScreenPinned(messages, selected, reg); refused → failed   # SP_CTX_02_03: pin і state одним кроком, як у BuildSeed; collapse не відхиляється — обходить закріплене в ApplyEdits (PL_FOLD, фаза 3)
         (edits, refused) = ScreenPerson(messages, edits, deliveries file, pinned); refused → failed   # SP_CTX_02_58
-        api = read main conversation in Messages API form
         (found, knownResults, unmatchedPromptMedia, apiTruncated) = CollectMedia(api, messages); mediaOwners = keys(found)
         id = now (ms); media = {}; n = 0
         FOR owner IN owners whose media the edits replace:
@@ -245,7 +253,7 @@ Processing logic (pseudocode):
         frozen = messages[0..prefix)                                   # ті самі рядки; кеш промпту тримається до них
         IF report.originals not empty AND writing archive (compact JSON, through a host command) fails:
             IF the dispatch was abandoned: RETURN skip "compaction abandoned; the batch stays queued"
-            write Queue with every edit failed "originals could not be archived" (report and kept fields as below)
+            write Queue with every edit failed "originals could not be archived" (report and kept fields as below)   # PL_HELP, фаза 3: як гілка збою — пакети вибору йдуть, невибрані відкладені правки лишаються (без прив'язки: розмова не змінилась) з deferredSince своїх пакетів
             RETURN skip "originals could not be archived"                 # оригінали не зникають без архіву
         deliveries = read QueuedDeliveries on the deliveries chain (unreadable → none; report.deliveries.unreadable = reason)   # SP_CTX_01_22, фаза 20
         (rows, report.deliveries, done, added) = InsertDeliveries(messages, rows, deliveries, renamed, allRebuilt = false, goes = r ∉ frozen AND r holds only own results)   # SP_CTX_02_36: до DropOwnCalls; done — uuid записів, що більше не потрібні; added — розмір вставлених рядків; рядок префікса не «піде»: DropOwnCalls його не чіпає
@@ -253,11 +261,14 @@ Processing logic (pseudocode):
         report.produced = Produced(rows, applied steps)                # SP_CTX_02_04: індекси в кінцевому списку
         IF the dispatch was abandoned (interrupt, budget): RETURN skip "compaction abandoned; the batch stays queued"   # пакет лишається в черзі
         done = the applied edits, each applied collapse with kept[edit] as its transient field `kept`   # PL_FOLD, фаза 3: RebindTags, PruneAliases, JournalEntry й межі етапів читають обійдені рядки як незачеплені (SP_CTX_02_04); у чергу поле не пишеться
-        entry = JournalEntry(id, report, archive, messages, done); boundary = Boundary(rows)   # усе, що потрібне після точки фіксації, — до неї: після запису черги ніщо не кидає
+        (waiting, gone) = BindUnselected(the deferred edits of q outside selectedBatches, messages, done ? rows : messages, done)   # PL_HELP, фаза 3 (SP_HELP_02_10): за тотожністю рядків, Locate/LocateSpan — запасний шлях
+        gone → report.failed "<edit>: its rows changed in this apply"
+        IF q holds a deferred edit: report.deferred = { applied: deferred edits in done, batches: their distinct batches, wait: len(waiting) }
+        entry = JournalEntry(id, report, archive, messages, done, deferred = deferred edits in done); boundary = Boundary(rows)   # усе, що потрібне після точки фіксації, — до неї: після запису черги ніщо не кидає
         IF some edit applied AND the attachments port: disk = the files the catalog's sections name; frozen = q.keepCache ? FrozenAttachments(messages, api, prefix) : none   # SP_CTX_02_40, фаза 24: читання без побічних дій, до фіксації
         COMMIT, holding the registry's chain, then the alias registry's (inside the queue's: порядок queue → tags → aliases):
             reg = read TagRegistry; aliases = read AliasRegistry          # як вони є тепер, коли очікування ланцюжків скінчилось
-            (reg', dropped) = RebindTags(reg, rows, report)               # SP_CTX_02_14: теги, межі етапів, слот стану, нотатки; lastApply — нижче
+            (reg', dropped) = RebindTags(reg, rows, report)               # SP_CTX_02_14: теги, межі етапів, слот стану, нотатки; lastApply — нижче; пакет, який він читає, — вибір SelectEdits (PL_HELP, фаза 3)
             aliases' = PruneAliases(aliases, rows)
             IF the dispatch was abandoned: RETURN skip "compaction abandoned; the batch stays queued"   # нічого не записано
             IF reg readable: write reg' (failure → registry as it was, report names no dropped notes); IF written: report.notesDropped = dropped
@@ -265,10 +276,11 @@ Processing logic (pseudocode):
             IF disk AND NOT abandoned: attached = CommitAttachments(disk, frozen) on the hostattach chain (failure → decisions as they were)   # SP_CTX_02_40
             IF the dispatch was abandoned: put back the registries written (reg, aliases as read; the attachments' decisions as read); RETURN skip "compaction abandoned; the batch stays queued"
             text = FormatReport(report, archive, compaction) + attached.text   # SP_CTX_01_05: без правок — «not changed», без рядка розміру; AttachText останнім
-            write Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
+            write Queue { edits: waiting, resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,   # PL_HELP, фаза 3: невибрані відкладені правки в їхньому порядку; без них — []
+                          deferredSince: q.deferredSince of the batches in waiting (none → absent), nextBatch: q.nextBatch, applyDeferred and coldSince absent,
                           report: (q.report ? q.report + "\n" : "") + text + " " + COMMAND_NOTE, reportId: id,   # CommandNote, SP_CTX_01_05, фаза 25; спливне повідомлення — text без нього
-                          reportResume: ResumesAfter(q), reportPrompt: q.resumePrompt,   # SP_CTX_02_02: q.resume AND (q.resumeSet OR NOT q.tagsOnly)
-                          optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04); точка фіксації
+                          reportResume: (selected holds an edit without deferred) AND ResumesAfter(q), reportPrompt: q.resumePrompt,   # SP_CTX_02_02: q.resume AND (q.resumeSet OR NOT q.tagsOnly); вибір лише з відкладених — false (SP_HELP_02_10)
+                          optimize: q.optimize, optimizePrompted: q.optimizePrompted, handoff: q.handoff }   # поля чужих кроків — як прочитано (SP_CTX_01_04, KeepOtherSteps); точка фіксації
             IF that write fails: put back the registries written; the failure goes to the failure branch
             IF the dispatch was abandoned during that write: write q back as read; put back the registries written; RETURN skip "compaction abandoned; the batch stays queued"
         after the handler returned, IF the dispatch was not abandoned: lastReported = id; applyDir = <storage>; appliedLine = (id, ApplyLine(report, ratio, apiChars)) when report.applied is not empty, else none   # apiChars = ApiChars(api) прочитаного API-подання, відсутнє при ApiCut (фаза 29, SP_CTX_02_43)   # пам'ять екземпляра для гілки збою; на ланцюжку черги, до запису гілки збою за ним; appliedLine читає LogApply у Flush (SP_CTX_02_43) — обробник сам рядка не пише: у терміналі компактизація ще триває
@@ -285,10 +297,13 @@ Processing logic (pseudocode):
         IF agentId present OR trigger = precompute OR MarkerKind(instructions) absent: pass to next handler   # MarkerKind: MARKER, HANDOFF_MARKER і їхні тексти до фази 25 (SP_CTX_DEC_26)
         IF MarkerKind(instructions) = seed: RETURN skip "seeding failed" at once         # RunHandoff побачить, що засів не взято
         RETURN skip "applying the edits failed" at once; in the background, on the queue's serial chain (after the failed handler, which holds it), read Queue q in the folder of the apply (applyDir; else the current storage);
-            IF q readable AND q.edits empty AND q.reportId = lastReported: write nothing   # застосування дійшло до точки фіксації: пакета вже немає, його звіт стоїть — без пари «applied» + «failed»
+            IF q readable AND len(NonDeferred(q.edits)) = 0 AND q.reportId = lastReported
+               AND no edit of selectedBatches is left in q: write nothing   # застосування дійшло до точки фіксації: пакета вже немає, його звіт стоїть — без пари «applied» + «failed»
+                                                                             # PL_HELP, фаза 3: selectedBatches невідомий (вибору ще не було) — третя частина істинна лише для черги без жодної відкладеної правки
             ELSE write
-            Queue { edits: [], resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
-                    report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed and the batch was dropped. " + COMMAND_NOTE,
+            Queue { edits: the deferred edits of q outside selectedBatches (unknown: every deferred edit), resume: true, resumePrompt: DEFAULT_RESUME, tagsOnly: false,
+                    deferredSince of the batches left, nextBatch as read, applyDeferred and coldSince absent,   # KeepOtherSteps (SP_CTX_01_04)
+                    report: (q.report ? q.report + "\n" : "") + "context-editor: applying the edits failed (<reason>); the conversation was not changed and the batch was dropped." + (batches of selectedBatches went ? " Deferred batches <ids> went with it; <r> deferred edit(s) still wait." : "") + " " + COMMAND_NOTE,
                     reportId: now, reportResume: false, reportPrompt: DEFAULT_RESUME,
                     optimize, optimizePrompted, handoff: as read from the queue file on that chain }
 
@@ -299,10 +314,11 @@ Errors:
 | SKIP_QUEUE_READ | Queue `unreadable` | розмова і черга не змінюються |
 | SKIP_EMPTY | черга порожня | розмова не змінюється |
 | SKIP_HANDOFF | у черзі запит передачі | розмова і черга не змінюються; правки застосує передача |
+| SKIP_NO_APPLICABLE | SelectEdits дав порожній вибір: у черзі лише відкладені правки, а `applyDeferred` не діє (PL_HELP, фаза 3) | `skip "no applicable edits"`; розмова не змінюється; застарілий `applyDeferred` (`coldSince` ≠ `lastRequestAt`) знято разом із `coldSince`, решта черги — як прочитано |
 | SKIP_NONE_APPLIED | жодна правка не застосувалась | звіт пояснює причини |
-| SKIP_FAILED | обробник впав | розмова не змінюється; черга очищена; звіт про збій чекає наступного промпту; якщо застосування вже записало свій звіт (точка фіксації), черга не змінюється |
+| SKIP_FAILED | обробник впав | розмова не змінюється; правки без `deferred` і пакети `selectedBatches` прибрано, інші відкладені правки лишаються; звіт про збій чекає наступного промпту; якщо застосування вже записало свій звіт (точка фіксації), черга не змінюється |
 | SKIP_ABANDONED | хост покинув диспетчеризацію до повернення | розмова і черга не змінюються; реєстр, псевдоніми, межа, доставки й журнал — теж (записані в кроці фіксації реєстри повернуто); медіа-файли й архів, уже записані, лишаються без посилань |
-| SKIP_NOT_ARCHIVED | файл оригіналів не записався | жодна правка не застосовується; пакет очищено; звіт називає кожну правку |
+| SKIP_NOT_ARCHIVED | файл оригіналів не записався | жодна правка не застосовується; пакет очищено (з відкладених — лише пакети вибору); звіт називає кожну правку, а коли в черзі були відкладені правки, додає `Deferred: 0 edit(s) of 0 batch(es) applied; <r> still wait.` |
 
 Справжнє підсумовування для компактизації з MARKER або HANDOFF_MARKER не запускається за жодної гілки обробника: кожна гілка відповідає або списком рядків, або `skip`, а гілка збою відповідає `skip` одразу, не чекаючи запису черги. На цьому стоїть [C_CTX_DEC_09](./context_editor.core.concept.md#C_CTX_DEC_09): команду з міткою запускає лише код того самого модуля, тож обробник завантажений, коли вона приходить. Порядок фіксації: усе, що може чекати довго (ланцюжки реєстру й псевдонімів, читання доставок, запис архіву), іде до неї; потім — реєстр, псевдоніми, черга (точка фіксації), і перед кожним записом обробник перевіряє, чи хост не покинув диспетчеризацію. Покинута до точки фіксації або під час запису черги (Esc, бюджет хука ~10 с, що рахує й очікування ланцюжка) — нічого не зафіксовано: черга повертається такою, як прочитано, реєстри, уже записані в кроці фіксації, — такими, як прочитано, пакет лишається в черзі (гілка збою, яку хост викличе по бюджету, потім очищує його одним звітом про збій). Після точки фіксації обробник нічого не чекає: межу він пише у фоні, доставки й журнал — на своїх ланцюжках, і відповідає одразу. Звіт застосування вважається записаним (lastReported) лише коли обробник повернувся без покинутої диспетчеризації; тоді гілка збою, якщо хост відкине повернений список, нічого не пише: пакета вже немає, звіт застосування лишається, пари «applied» + «failed» немає. Застосування, яке хост покинув, гілка збою завжди записує звітом про збій.
 
@@ -317,6 +333,8 @@ Errors:
 Згадування (PL_FOLD, фаза 2; [SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03), [SP_FOLD_02_09](./context_folds.sp.md#SP_FOLD_02_09)). Записи згадувань першого читання обліку обробник передає в ApplyEdits (`recalls`) і в правило власних пар (DropOwnCalls, InsertDeliveries). У точці фіксації облік пишеться один раз: RecordFolds, коли пакет мав згортки, і PruneRecalls за рядками, які повертає обробник, — так зникають записи повернутих, охоплених і прибраних пар. FOLDS_UNSAVED додається лише тоді, коли не записались згортки. Журнал ефекту правок повернення не рахує ([SP_FOLD_DEC_08](./context_folds.sp.md#SP_FOLD_DEC_08)).
 
 Питання (PL_HELP, фаза 1; [SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)). Записи питань (`questions`) того самого читання обліку йдуть разом із записами згадувань: в ApplyEdits — опцією `questions`, у правило власних пар — тим самим набором пар, що лишаються. Облік у точці фіксації пишеться, коли пакет мав згортки або коли є записи згадувань чи питань і хоч одна правка застосувалась; PruneRecalls прибирає й записи питань, чиїх пар немає серед повернених рядків.
+
+Відкладені пакети (змінено C_HELP: PL_HELP, фаза 3, реалізовано; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10); код — `hooks/batches.ts`). (1) SelectEdits іде до ScreenPinned, ScreenPerson і ApplyEdits, над рядками події (після DropPulled) і API-поданням, прочитаним тепер до перевірок: усі правки черги, поки `applyDeferred` діє (`coldSince` відсутнє або дорівнює LastRequest — пізнішому з `cache.lastRequestAt` реєстру, прочитаного обробником, і пам'яті годинника цього екземпляра); інакше NonDeferred, а без них — порожній вибір; з ними — ще кожен пакет, чий RewriteStart з `keep_cache` не раніший за RewriteStart правок без `deferred`. Форму кешу (CacheShape) він будує лише тоді, коли є що зважувати. (2) Порожній вибір — `skip "no applicable edits"` до будь-якої перебудови; застарілий `applyDeferred` при цьому знято разом із `coldSince`. (3) У точці фіксації черга зберігає невибрані відкладені правки, прив'язані BindUnselected до рядків, які повертає обробник (до вхідних, коли нічого не застосовано), у їхньому порядку, з `deferredSince` їхніх пакетів; правка, чиї рядки змінило застосування або яких уже не знайти, виходить з черги рядком `Not applied` звіту; `applyDeferred` і `coldSince` знімаються (KeepOtherSteps). (4) `reportResume` — false, коли вибір не має правки без `deferred`: мод сам агента не будить, звіт чекає наступного промпту (DeliverReport). (5) Гілка збою й запис відмови архіву прибирають з відкладених лише пакети вибору (`selectedBatches`, пам'ять екземпляра поруч із `lastReported`: її очищає початок обробника, ставить SelectEdits; гілка збою отримує її разом із `lastReported`). (6) Запис журналу `apply` несе `deferred` — число застосованих відкладених правок, коли воно > 0 ([SP_CTX_02_31](./context_editor.telemetry.sp.md#SP_CTX_02_31)). Черга без відкладених правок проходить обробник як до фази 3. Живі прогони S1 (stream-json) і T1 (термінал), хост 2.1.325, sonnet (`.dev_flow/cache/live-test/help-p3/`): застосування з `keep_cache` взяло пакет, що починається після правок без `deferred`, і лишило раніший; застосування без `keep_cache` взяло всі пакети; запис журналу `apply` мав `deferred: 1`; промпт продовження пішов як раніше.
 
 ### 02_10. CollectMedia  {#SP_CTX_02_10}
 
@@ -380,6 +398,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 3 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10), код `hooks/batches.ts`): 02_04 — ApplyEdits отримує вибір SelectEdits, заморожений префікс — над вибором, речення звіту `Deferred: …`; 02_07 — API-подання й записи рядків хоста читаються до перевірок, SelectEdits з LastRequest і `selectedBatches`, порожній вибір — `skip "no applicable edits"` зі зняттям застарілого `applyDeferred` (SKIP_NO_APPLICABLE), BindUnselected і поле `deferred` звіту й журналу у фіксації, черга точки фіксації з невибраними правками й `deferredSince`, `reportResume = false` для вибору лише з відкладених, гілка збою й відмова архіву прибирають лише пакети вибору; живі прогони S1 і T1 |
 | 2026-11-16 | PL_HELP фаза 1 ([SP_HELP_02_05](./context_helper.ask.sp.md#SP_HELP_02_05)): 02_04 — опція `questions`, слід ASK_RETURNED правки повернення пари питання (з записом чи з самої пари), мітка `return of the question to fold(s) <ids>`, речення звіту `Returned <n> question pair(s).`, `drop` пари питання архівує; 02_07 — записи питань ідуть в ApplyEdits і в правило власних пар, облік пишеться й за самих записів питань, PruneRecalls прибирає й їх |
 | 2026-11-14 | PL_FOLD, фаза 3 ([SP_FOLD_02_04](./context_folds.sp.md#SP_FOLD_02_04)): 02_04 — вхід `pinned`, вихід `kept`, FoldSpan на рядках застосування, запис без носія — завжди рядок асистента, крок на обійденому рядку йде перед згортанням, перевірки медіа й архів — лише над згорнутими рядками, текст невдачі медіа промпту називає `keep`; 02_07 — ScreenPinned не відхиляє `collapse` і повертає піни, застосовані правки несуть `kept` |
 | 2026-10-16 | Фаза 41: `run summarize` пише SummarizedWords(SourceOf(call), via, quoted) — відкривач з джерелом ([SP_CTX_02_62](./context_editor.curation.edits.sp.md#SP_CTX_02_62)); REPLACEMENT_OPENERS з головами SUMMARIZED_OF і TAG_SUMMARIZED_OF |

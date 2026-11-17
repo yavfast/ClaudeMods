@@ -164,7 +164,9 @@ const storage = newStorageMemory()
 // and answered without an abandon, and the folder of the apply running now
 // (the failure branch writes there). [SP_CTX_02_43] `line`: the person's
 // line of that report (ApplyLine), which Flush logs once its command returned.
-const applies: { reported?: number; dir?: string; line?: { id: number; text: string } } = {}
+// [SP_HELP_02_10] `selected`: selectedBatches of the apply that ran last
+// (cleared when the handler starts, set by SelectEdits).
+const applies: { reported?: number; dir?: string; line?: { id: number; text: string }; selected?: string[] } = {}
 // [SP_CTX_01_14] The identity of the host process, read once per module
 // instance. [SP_CTX_02_18] [SP_CTX_DEC_10] A boundary counts when this host
 // process wrote it, or this instance in this session (ownBoundary): one left
@@ -907,6 +909,14 @@ function flushIO($: EngineInterface): FlushIO {
     readQueue: async () => {
       const st = await ensureStorage($)
       return 'dir' in st ? stores($, st.dir).queue.read() : unavailable(st)
+    },
+    // [SP_HELP_02_10] the published session's clock: the registry's view and the memory
+    // (no view of the registry yet: this instance's memory, the latest request it saw)
+    lastRequestAt: () => {
+      const session = storage.sessionId
+      if (session === undefined) return undefined
+      const both = clockBefore($, session)
+      return both !== undefined ? both : memoryAt(clockMem, session)
     },
     updateQueue: async change => {
       const dir = await storageDir($)
@@ -1812,6 +1822,10 @@ export const register: Register = on => {
   // stands only when it is used. (One hook: the host takes one unmatched
   // `session.compact` hook per module.)
   on('session.compact', async ($, e, next) => {
+    // [SP_CTX_02_07] [SP_HELP_02_10] before any await: the failure branch of
+    // this dispatch never reads the folder or the selection of an earlier one
+    applies.dir = undefined
+    applies.selected = undefined
     // [SP_CTX_02_57] ProbeMode: the probe's marker is answered with the counts
     if (await isProbe($)) {
       if (e.instructions !== PROBE_MARKER) return next(e)
@@ -1910,7 +1924,6 @@ export const register: Register = on => {
       }
       return done.outcome
     }
-    applies.dir = undefined
     const dir = await storageDir($, true)
     if (!dir) return { skip: modText('storage unavailable') }
     applies.dir = dir
@@ -1969,6 +1982,11 @@ export const register: Register = on => {
           // [SP_FOLD_02_01] the fold ledger on its chain (rank 4, inside the queue's)
           folds: foldPort(s.folds, q),
           debug: text => $.ui.log(text, { to: 'debug' }),
+          // [SP_HELP_02_10] the clock's memory for SelectEdits, and selectedBatches
+          clockMemory: () => memoryAt(clockMem, session),
+          selected: batches => {
+            applies.selected = batches
+          },
         },
         e.messages,
       )
@@ -1992,6 +2010,7 @@ export const register: Register = on => {
       {
         dir: applies.dir ?? publishedDir(storage),
         reported: applies.reported,
+        ...(applies.selected ? { selected: applies.selected } : {}),
         now: () => Date.now(),
         changeQueue: (dir, change) => changeOf(stores($, dir).queue)(change),
       },

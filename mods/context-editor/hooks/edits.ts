@@ -34,7 +34,8 @@ export type Edit =
 // span, then one per `keep` index, in the order of `keep`. `kept`: only on an
 // applied collapse handed on after ApplyEdits (never written to the queue):
 // the rows of its span it left in place, by index on the apply's input rows.
-export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' | 'return'; quoted?: true; region?: FoldRegion; kept?: number[] }
+// [SP_HELP_01_06] `deferred`: the batch of a context_edit call with `defer: true`
+export type QueuedEdit = Edit & { anchors?: string[]; via?: 'tag' | 'return'; quoted?: true; region?: FoldRegion; kept?: number[]; deferred?: string }
 
 // [SP_FOLD_02_03] A return edit: a summarize of a recall pair.
 export function isReturnEdit(e: QueuedEdit): e is Extract<QueuedEdit, { op: 'summarize' }> {
@@ -112,6 +113,9 @@ export type ApplyReport = {
   // report names them in a sentence of their own, the person's line not at all
   // [SP_HELP_02_05] `question`: the return of a question pair; `fold` names its folds
   returned?: { edit: string; fold: string; question?: true }[]
+  // [SP_HELP_02_10] deferred edits were in the queue: how many this apply
+  // took, of how many batches, and how many still wait
+  deferred?: { applied: number; batches: number; wait: number }
 }
 
 // [SP_CTX_01_05] One entry of ApplyReport.produced.
@@ -2792,6 +2796,8 @@ export function formatReport(r: ApplyReport, archive: string, kind: ReportKind, 
   if ((r.ownCallsRemoved ?? 0) > 0 && (kind === 'seed' || r.applied.length)) parts.push(ownCallsText(r.ownCallsRemoved, r.applied.length > 0))
   // [SP_CTX_01_05] [SP_CTX_02_36] the host's deliveries, when the list replaces the conversation
   if (r.deliveries && (kind === 'seed' || r.applied.length)) parts.push(deliveriesText(r.deliveries))
+  // [SP_HELP_02_10] the deferred batches, whenever deferred edits were queued
+  if (r.deferred) parts.push(`Deferred: ${r.deferred.applied} edit(s) of ${r.deferred.batches} batch(es) applied; ${r.deferred.wait} still wait.`)
   // [SP_CTX_02_61] the host rows, when the list replaces the conversation
   if (r.hostLines?.length && (kind === 'seed' || r.applied.length)) parts.push(r.hostLines.map(l => (/[.:]$/.test(l) ? l : `${l}.`)).join(' '))
   // [SP_CTX_01_05] [SP_CTX_02_45] last: the originals a resume loaded twice, when the list replaces the conversation

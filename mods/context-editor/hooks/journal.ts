@@ -17,7 +17,8 @@ export const MAX_JOURNAL = 1000
 
 // [SP_CTX_01_19]
 export type JournalEntry =
-  | { kind: 'apply'; at: number; edits: number; archive: string; compressed: string[] }
+  // [SP_HELP_01_08] `deferred`: the deferred edits the apply took
+  | { kind: 'apply'; at: number; edits: number; archive: string; compressed: string[]; deferred?: number }
   | { kind: 'changed'; at: number; path: string }
   | { kind: 'reread'; at: number; path: string; tool_use_id: string; archive: boolean }
   // [SP_HELP_01_08] a question to the archive, of the agent or of an errand
@@ -40,7 +41,8 @@ function isEntry(raw: unknown): raw is JournalEntry {
         typeof e.archive === 'string' &&
         Array.isArray(e.compressed) &&
         e.compressed.length <= MAX_QUEUE_EDITS &&
-        e.compressed.every(p => typeof p === 'string')
+        e.compressed.every(p => typeof p === 'string') &&
+        (e.deferred === undefined || isCount(e.deferred, 1))
       )
     case 'changed':
       return typeof e.path === 'string'
@@ -104,7 +106,15 @@ function readPaths(rows: readonly SessionMessage[], ids: ReadonlySet<string>): s
 // file_path of every Read call in the pairs the applied summarize and drop
 // edits name or the applied collapse spans hold (the first MAX_QUEUE_EDITS).
 // None when nothing applied. Pure.
-export function applyEntry(at: number, report: Pick<ApplyReport, 'applied'>, archive: string, before: readonly SessionMessage[], edits: readonly QueuedEdit[]): JournalEntry | undefined {
+// [SP_HELP_01_08] `deferred`: how many deferred edits the apply took (0: no field)
+export function applyEntry(
+  at: number,
+  report: Pick<ApplyReport, 'applied'>,
+  archive: string,
+  before: readonly SessionMessage[],
+  edits: readonly QueuedEdit[],
+  deferred = 0,
+): JournalEntry | undefined {
   const labels = new Set(report.applied)
   // [SP_FOLD_DEC_08] a return of a recall compresses nothing: no record of it
   const applied = edits.filter(e => labels.has(describeEdit(e)) && !isReturnEdit(e))
@@ -112,7 +122,7 @@ export function applyEntry(at: number, report: Pick<ApplyReport, 'applied'>, arc
   const ids = new Set<string>()
   for (const e of applied) if (e.op === 'summarize' || e.op === 'drop' || e.op === 'collapse') for (const id of touchedBy(before, e)?.ids ?? []) ids.add(id)
   const compressed = [...new Set(readPaths(before, ids))].slice(0, MAX_QUEUE_EDITS)
-  return { kind: 'apply', at, edits: applied.length, archive, compressed }
+  return { kind: 'apply', at, edits: applied.length, archive, compressed, ...(deferred > 0 ? { deferred } : {}) }
 }
 
 // [SP_CTX_02_31] JournalReread: a Read of a path some application compressed

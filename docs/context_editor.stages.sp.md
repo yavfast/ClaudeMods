@@ -3,7 +3,7 @@
 > **Code:** SP_CTX (дочірній файл набору)
 > **Status:** active
 > **Created:** 2026-10-11
-> **Updated:** 2026-11-14
+> **Updated:** 2026-11-16
 > **Umbrella:** [SP_CTX](./context_editor.sp.md)
 > **Used by:** [курування історії](./context_editor.curation.sp.md) — спирається на [SP_CTX_02_27](#SP_CTX_02_27), [SP_CTX_02_29](#SP_CTX_02_29)
 >
@@ -145,8 +145,8 @@ Input: подія завершення ходу (`agentId?`, `isAborted`, `answe
 Processing logic (pseudocode):
     ON turn completed (main loop, aborted or not), on the registry chain, before TagRegistry.turn += 1 (преамбула 02):
         prompted = false
-        IF storage ready: on the queue chain: q = read Queue; IF ok AND q.optimizePrompted: prompted = true; empty = q.compact AND len(q.edits) = 0; optimizePrompted = false; compact = false; compactEndedAt = (q.compact AND NOT aborted) ? now : absent; write   # кінець ходу стискання знімає запобіжник
-        IF empty AND NOT aborted: toast COMPACT_NOTHING                         # хід стискання нічого не поставив; підсумку хоста мод не запускає
+        IF storage ready: on the queue chain: q = read Queue; IF ok AND q.optimizePrompted: prompted = true; empty = q.compact AND len(NonDeferred(q.edits)) = 0; optimizePrompted = false; compact = false; compactEndedAt = (q.compact AND NOT aborted) ? now : absent; write   # кінець ходу стискання знімає запобіжник
+        IF empty AND NOT aborted: toast COMPACT_NOTHING                         # хід стискання нічого не поставив; підсумку хоста мод не запускає; PL_HELP, фаза 3: відкладені правки не рахуються
         t = ParseTrailers(answer)                                             # SP_FOLD_02_06: до MAX_TRAILERS останніх рядків вставок
         IF aborted OR t has no lines: RETURN
         IF prompted: RETURN                                                   # MARK_IN_OPTIMIZATION: вставки у відповіді ходу стискання не діють
@@ -200,7 +200,9 @@ Errors (жодна не виходить до агента; рядок стан�
 | TRAILER_IGNORED | рядок вставки, який не розпізнано (інше тіло; `note` без тексту чи довший за MAX_NOTE) | рядок стану `context-editor: trailer ignored: <рядок>`; решта сигналів виконується |
 | TRAILER_NOTE_NOT_SAVED | нотатка не записалась: сховище, реєстр, повний реєстр нотаток, рядка відповіді не знайдено | рядок стану `context-editor: trailer note not saved: <причина>` |
 | TRAILER_CLOSE_IGNORED | `close` при недоступному сховищі чи нечитному реєстрі | рядок стану `context-editor: trailer close ignored: <причина>`; область лишається відкритою |
-| COMPACT_NOTHING | кінець ходу стискання `/compact` людини (`compact`), не перерваного, без жодної правки в черзі | спливне повідомлення COMPACT_NOTHING ([SP_CTX_02_42](#SP_CTX_02_42)); `compact` знято разом із запобіжником |
+| COMPACT_NOTHING | кінець ходу стискання `/compact` людини (`compact`), не перерваного, без жодної правки в черзі; з PL_HELP, фази 3 — без жодної правки без `deferred` (NonDeferred) | спливне повідомлення COMPACT_NOTHING ([SP_CTX_02_42](#SP_CTX_02_42)); `compact` знято разом із запобіжником |
+
+Порожній хід стискання (змінено C_HELP: PL_HELP, фаза 3, реалізовано; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)) — за NonDeferred: відкладені правки, що чекають у черзі, хід стискання не наповнюють, тож хід без жодної правки без `deferred` порожній. У фазі 3 такий хід дає COMPACT_NOTHING і за відкладених правок, а пакети чекають далі (Flush їх не застосовує, [SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)); `applyDeferred` і Flush після порожнього ходу з відкладеними правками, без COMPACT_NOTHING, — фаза 4.
 
 Вилучено 2026-10-14 ([SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)): MARK_NO_REPLACEMENTS і MARK_NOT_QUEUED — мітка не ставить замін з тегів і не пише черги.
 
@@ -286,6 +288,8 @@ Errors: відмов немає; реєстр `unreadable` або збій за�
 Purpose: `/compact` людини, коли мод увімкнено ([C_CTX_DEC_23](./context_editor.methods.concept.md#C_CTX_DEC_23), рішення розробника «Агент стискає сам (Recommended)»): без аргументів — не підсумок хоста, а хід стискання всієї розмови (з 2026-10-14 — єдиний хід оптимізації), у якому агент стискає сам; `/compact host` — стандартний підсумок хоста; `/compact <інструкції>` людини і будь-яка `/compact` розширення (MARKER і HANDOFF_MARKER самого мода теж) — до хоста без змін. Автоматична компактизація хоста команди не запускає і цим контрактом не зачіпається ([SP_CTX_DEC_27](./context_editor.decisions-21.sp.md#SP_CTX_DEC_27)).
 
 Хук лише пише запит у чергу і планує Flush ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)): запит — `Queue.optimize` з `Queue.compact` ([SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04)). Далі все йде шляхом ходу стискання (до 2026-10-14 — спільним із міткою оптимізації, [SP_CTX_DEC_37](./context_editor.decisions-21.sp.md#SP_CTX_DEC_37)): Flush спершу застосовує те, що в черзі, потім надсилає рівно один промпт — CompactTurnText замість промпту продовження; DetectOptimize на кінці ходу стискання знімає запобіжник і `compact` і, якщо хід нічого не поставив у чергу, каже людині спливним повідомленням ([SP_CTX_02_30](#SP_CTX_02_30)); DeliverReport віддає COMPACT_ADVICE з промптом людини, якщо хід стискання не почався ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)). Один порядок — спершу застосування, потім один промпт — і жодних паралельних таймерів (рев'ю фази 25: окремий таймер хука змагався з Flush).
+
+Відкладені пакети (змінено C_HELP: PL_HELP, фаза 3, реалізовано; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)). «Те, що в черзі» — Applicable ([SP_CTX_02_06](./context_editor.flush.sp.md#SP_CTX_02_06)): перше застосування, перед ходом стискання, іде лише за правками без `deferred` і вибирає відкладені пакети за SelectEdits без `applyDeferred` ([SP_CTX_02_07](./context_editor.apply.sp.md#SP_CTX_02_07)); черга лише з відкладеними правками команди не запускає, і хід стискання починається одразу. Порожнім хід стискання DetectOptimize рахує за NonDeferred ([SP_CTX_02_30](#SP_CTX_02_30)): у фазі 3 він дає COMPACT_NOTHING і за відкладених правок, які чекають далі. `applyDeferred` і Flush після порожнього ходу з відкладеними правками замість COMPACT_NOTHING — фаза 4.
 
 Логіка — чисті функції `hooks/personcompact.ts` (CompactRoute, RequestCompact, PersonCompact, CompactFailure) за портом PersonCompactIO: сховище й id сесії одним читанням (CONC-01), Update черги в цьому каталозі, ознака покинутого хука (`next.signal`, CONC-02), планування Flush (RequestFlush), спливне повідомлення; зв'язування — хук `command.run` з матчером `{ command: 'compact' }` у `register.ts`. Текст промпту — CompactTurnText у `hooks/stages.ts`. Пам'яті модуля, окремої від Flush, немає: «зайнято» читається з черги і з `FlushState`.
 
@@ -388,6 +392,7 @@ Errors: відмов немає. Рядка немає, коли жодна пр
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 3 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)): 02_30 — порожній хід стискання за NonDeferred (COMPACT_NOTHING і за відкладених правок; `applyDeferred` після нього — фаза 4); 02_42 — перше застосування перед ходом стискання — за Applicable і SelectEdits без `applyDeferred` |
 | 2026-11-15 | Verify PL_FOLD, виправлення ([SP_FOLD_02_05](./context_folds.sp.md#SP_FOLD_02_05)): 02_27 — навичка: блок завдання із запиту людини, закривати завдання до інших викликів ходу нового запиту, 8994 символи; 02_29 — `carrier` CloseStage може бути промптом ходу |
 | 2026-11-15 | PL_FOLD, фаза 6 ([SP_FOLD_02_06](./context_folds.sp.md#SP_FOLD_02_06)): 02_27 — розділ навички «Trailers» замість «Optimization mark», INTRO_TEXT називає три вставки; 02_30 — DetectOptimize виконує вставки (ParseTrailers, CloseAtTurnEnd, нотатка на рядку відповіді), рядки стану TRAILER_IGNORED, TRAILER_NOTE_NOT_SAVED, TRAILER_CLOSE_IGNORED; текст ходу `/compact`: «Trailer lines have no effect in this turn.»; 02_29 — WaitingAdvice для блоку завдання несе TASK_CARD, як звіт закриття (живий прогін фази 6); рев'ю фази 6: INTRO_TEXT «each on its own line» (997), навичка 8981 (заміни `disposable` — від закриття інструментом), рядок стану обрізає невідомий рядок до TRAILER_ECHO, збій читання розмови дає рядок стану |
 | 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_02_05](./context_folds.sp.md#SP_FOLD_02_05)): 02_29 — CloseStage з `keep` над ланцюжком, `kind` у закритому блоці, `Task "…" closed`, TASK_CARD після STAGE_ADVICE для завдання; 02_30 — мітка закриває найглибшу область, друга мітка при блоці, що чекає, лишає охопну область відкритою й подовжує блок, MarkDue з довжиною ланцюжка; 02_27 — навичка: розділ «Stages and tasks» |

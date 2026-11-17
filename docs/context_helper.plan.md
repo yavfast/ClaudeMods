@@ -55,7 +55,7 @@
 
 - [x] [Phase 1 — Помічник і питання до архіву](#PL_HELP_P1)
 - [x] [Phase 2 — Годинник кешу](#PL_HELP_P2)
-- [ ] [Phase 3 — Відкладені пакети в обробнику й черзі](#PL_HELP_P3)
+- [x] [Phase 3 — Відкладені пакети в обробнику й черзі](#PL_HELP_P3)
 - [ ] [Phase 4 — Поле `defer` і видимі відкладені пакети](#PL_HELP_P4)
 - [ ] [Phase 5 — Простій](#PL_HELP_P5)
 - [ ] [Phase 6 — Новий процес](#PL_HELP_P6)
@@ -116,7 +116,7 @@ What to create:
 | Вид `cache` у `JournalEntry` й `isEntry` (невідомий вид робить журнал нечитним), підсумок для `Cache clock checks` | `hooks/journal.ts` | запис `cache` |
 | `carryRegistries` не переносить поле `cache` у нову сесію | `hooks/handoff.ts` | STRUCT-04 |
 
-### Phase 3 — Відкладені пакети в обробнику й черзі (`hooks/batches.ts`) [TODO]  {#PL_HELP_P3}
+### Phase 3 — Відкладені пакети в обробнику й черзі (`hooks/batches.ts`) [DONE]  {#PL_HELP_P3}
 
 **Depends on:** Phase 2 (SelectEdits порівнює `coldSince` з `lastRequestAt`)
 **Implements:** [SP_HELP_01_06](./context_helper.batches.sp.md#SP_HELP_01_06); з [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10) — RewriteStart, SelectEdits і порожній вибір, фіксація, прив'язка невибраних правок, продовження після застосування, гілка збою, NonDeferred і Applicable; [SP_HELP_04_02](./context_helper.sp.md#SP_HELP_04_02) (усі переходи, крім передачі); поле `deferred` запису `apply` з [SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08); інваріанти I6, I12 і I7 у частині вибору лише з відкладених; константа BATCH_PREFIX. Агент відкладених правок ще не ставить: фаза інертна для живих сесій, поки черга не має поля `deferred`
@@ -331,3 +331,4 @@ Items deferred from the current implementation cycle (each with a return trigger
 | 2026-11-16 | Рев'ю 1 (pass with advisories): рядки перевірки перенесено у фази, де є їхній контракт (KeepOtherSteps `b2` → 4, «таймер StartRun» → 6 і 8, «Гаряче перезавантаження» → 7, I2 → 1 і 7); фаза 2 — вид `cache` у журналі й `carryRegistries`; запис `apply` (SP_CTX_02_31, `journal.ts`) у фазах 3 і 5, SP_CTX_02_04 і 02_07 у фазі 1; частина `defer` про простій — у фазі 5, правила C_CTX_03_02 і C_CTX_DEC_03 (простій) — у фазі 5; SKILL.md і EDIT_DESCRIPTION без змін; модулі AreaClosed і умови `cold` у фазі 7; RewriteStart над `cacheShape`/`cacheCost`; холодна гілка StartRun живо у фазі 6 |
 | 2026-11-16 | Фаза 1 `[DONE]`: код, тести (1106), рев'ю з чистим контекстом (pass with advisories, усе виправлено), живий L1 у stream-json і терміналі; перерваний виклик не пише запису питання; мітки матеріалу в цитатах помічника знімаються перевіркою |
 | 2026-11-16 | Фаза 2 `[DONE]`: годинник кешу (`hooks/cacheclock.ts`, хук `turn.step`, вердикт на промпті, перевірка першим кроком, рядки телеметрії, форк і передача), тести (1123), рев'ю з чистим контекстом (pass with advisories, усе виправлено: ConfirmCheck у чистому модулі зі StartCheck, `prev` з початку кроку, `mismatch` лише за межею CACHE_TTL_MS), живі прогони stream-json на sonnet і термінал на opus; попутно сигнал хука в `$.model.complete` (фаза 1) |
+| 2026-11-17 | Фаза 3 `[DONE]`: відкладені пакети в обробнику й черзі (`hooks/batches.ts`: NonDeferred, Applicable, RewriteStart на спільному `withinLookback`, SelectEdits з другим зважуванням після екранів, BindUnselected; поля черги, фіксація, гілка збою з `selectedBatches`, Flush за Applicable, поле `deferred` запису `apply`), тести (1140), рев'ю з чистим контекстом (pass with advisories, 0 must / 0 should / 4 prefer — усе виправлено), живі S1 і T1 (група `help-p3`); хост за ніч оновився до 2.1.326 — тип-перевірка на його типах чиста |

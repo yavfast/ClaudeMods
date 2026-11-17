@@ -28,6 +28,7 @@ import {
   type StateInput,
 } from './edits'
 import { MAX_QUEUE_BYTES, personRefusal, personTagRefusal, resumesAfter, type Queue } from './queue'
+import { nonDeferred } from './batches'
 import { addReturns, isOwnReturn, type Returnable } from './folds'
 import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
@@ -1239,7 +1240,7 @@ export async function queueTagReplacements(io: TagIO): Promise<Replaced> {
   // (the mod's own return edits give way: AddReturns re-adds what fits)
   if (!queued.length || q.edits.filter(e => !isOwnReturn(e)).length + queued.length > MAX_QUEUE_EDITS) return none
   // [SP_FOLD_02_03] AddReturns: the due recalls join the batch of replacements
-  const next: Queue = { ...q, edits: addReturns([...q.edits, ...queued], rows, recalls, pinned), tagsOnly: q.edits.length === 0 ? true : q.tagsOnly }
+  const next: Queue = { ...q, edits: addReturns([...q.edits, ...queued], rows, recalls, pinned), tagsOnly: nonDeferred(q.edits).length === 0 ? true : q.tagsOnly }
   if (bytes(next) > MAX_QUEUE_BYTES) return none
   try {
     await io.writeQueue(next)

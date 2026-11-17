@@ -6,6 +6,7 @@ import { bytes, jsonObject, type Read } from './store'
 import type { Replaced } from './stages'
 import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
 import { addReturns, isOwnReturn, type Returnable } from './folds'
+import { isBatchId } from './batches'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -72,6 +73,16 @@ export type Queue = {
   // moment later; live scenario 8). Flush clears it when it runs, a new
   // request clears it; past that window without a Flush it decides nothing.
   compactEndedAt?: number
+  // [SP_HELP_01_06] the deferred batches. Fields of other steps: the number
+  // of the next batch (absent: 1) and the turn each queued batch was set in
+  // (absent: none). Fields of the batch: `applyDeferred`, the next apply takes
+  // every deferred batch (absent: false), and `coldSince`, the lastRequestAt
+  // it was set on by the idle timer or StartRun; while that is no longer the
+  // last request's time, `applyDeferred` does not hold ([SP_HELP_02_10]).
+  nextBatch?: number
+  deferredSince?: Record<string, number>
+  applyDeferred?: boolean
+  coldSince?: number
 }
 
 export const EMPTY_QUEUE: Queue = {
@@ -101,19 +112,36 @@ export function resumesAfter(q: Pick<Queue, 'resume' | 'resumeSet' | 'tagsOnly'>
 // edits were all refused), and Flush clears them (KeepOtherSteps) so none
 // rides on a later batch.
 export function hasBatchChoices(q: Queue): boolean {
-  return q.resume !== EMPTY_QUEUE.resume || q.resumePrompt !== EMPTY_QUEUE.resumePrompt || q.resumeSet || q.tagsOnly || q.keepCache
+  return (
+    q.resume !== EMPTY_QUEUE.resume ||
+    q.resumePrompt !== EMPTY_QUEUE.resumePrompt ||
+    q.resumeSet ||
+    q.tagsOnly ||
+    q.keepCache ||
+    // [SP_HELP_01_06] the fields of the batch that takes the deferred ones
+    q.applyDeferred === true ||
+    q.coldSince !== undefined
+  )
 }
 
 // [SP_CTX_01_04] The queue once its batch is gone (applied, failed, handed
 // off): the edits and the batch's choices (`resume`, `resumePrompt`,
-// `resumeSet`, `tagsOnly`, `keepCache`) back to their defaults; the fields of
-// other steps (the optimization request, a handoff) and a report not yet
-// delivered stay as read. Every write that ends a batch goes through here, so
-// a new field of Queue is sorted into "batch" or "other step" once.
+// `resumeSet`, `tagsOnly`, `keepCache`, `applyDeferred`, `coldSince`) back to
+// their defaults; the fields of other steps (the optimization request, a
+// handoff, the deferred edits with `deferredSince` and `nextBatch`) and a
+// report not yet delivered stay as read. Every write that ends a batch goes
+// through here, so a new field of Queue is sorted into "batch" or "other
+// step" once. [SP_HELP_01_06] Only the apply that selected a deferred edit,
+// the transcript seed, the document handoff's reset and ObservePassedCompact
+// take one out: they replace `edits` after this.
 export function keepOtherSteps(q: Queue | undefined): Queue {
   if (!q) return { ...EMPTY_QUEUE }
+  const waiting = q.edits.filter(e => e.deferred !== undefined)
   return {
     ...EMPTY_QUEUE,
+    ...(waiting.length ? { edits: waiting } : {}),
+    ...(q.nextBatch !== undefined ? { nextBatch: q.nextBatch } : {}),
+    ...(q.deferredSince !== undefined ? { deferredSince: q.deferredSince } : {}),
     ...(q.report !== undefined ? { report: q.report, reportId: q.reportId } : {}),
     reportResume: q.reportResume,
     reportPrompt: q.reportPrompt,
@@ -163,10 +191,20 @@ export function parseQueue(text: string): Read<Queue> {
     // a file written before phase 25 has no `compact`: the default false
     (typeof q.compact !== 'boolean' || (q.compact && !q.optimize && !q.optimizePrompted)) && 'compact',
     q.compactEndedAt !== undefined && typeof q.compactEndedAt !== 'number' && 'compactEndedAt',
+    // [SP_HELP_01_06]
+    q.nextBatch !== undefined && !(Number.isInteger(q.nextBatch) && q.nextBatch >= 1) && 'nextBatch',
+    q.deferredSince !== undefined && !isSince(q.deferredSince) && 'deferredSince',
+    q.applyDeferred !== undefined && typeof q.applyDeferred !== 'boolean' && 'applyDeferred',
+    q.coldSince !== undefined && typeof q.coldSince !== 'number' && 'coldSince',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
   const badEdit = q.edits.findIndex(e => !isQueuedEdit(e))
   return badEdit >= 0 ? { state: 'unreadable', reason: `bad edit ${badEdit + 1}` } : { state: 'ok', value: q }
+}
+
+// [SP_HELP_01_06] deferredSince: a turn per batch id
+function isSince(v: unknown): boolean {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) && Object.entries(v).every(([b, t]) => isBatchId(b) && typeof t === 'number' && Number.isInteger(t) && t >= 0)
 }
 
 // A continuation text: it goes to the model as a prompt.
@@ -198,7 +236,7 @@ function isQueuedEdit(raw: unknown): boolean {
     if (r.op !== 'summarize' || typeof r.summary !== 'string') return false
     if (typeof checkShape(r.summary.trim() === '' ? { ...r, summary: '-' } : r) === 'string') return false
   } else if (typeof checkShape(raw) === 'string') return false
-  const { op, index, anchors, via, quoted, region } = raw as { op?: unknown; index?: unknown; anchors?: unknown; via?: unknown; quoted?: unknown; region?: unknown }
+  const { op, index, anchors, via, quoted, region, deferred } = raw as { op?: unknown; index?: unknown; anchors?: unknown; via?: unknown; quoted?: unknown; region?: unknown; deferred?: unknown }
   // [SP_CTX_01_03] `via` names who asked for the replacement: only 'tag' is written
   // [SP_CTX_01_30] `quoted`: only true is written; a queue before phase 42 has none
   // [SP_CTX_02_67] a state edit's stamped slot index, when it has one
@@ -208,7 +246,9 @@ function isQueuedEdit(raw: unknown): boolean {
     (via === undefined || via === 'tag' || via === 'return') &&
     (quoted === undefined || quoted === true) &&
     // [SP_FOLD_01_01] `region`: only on a collapse, a name and its kind
-    (region === undefined || (op === 'collapse' && isFoldRegion(region)))
+    (region === undefined || (op === 'collapse' && isFoldRegion(region))) &&
+    // [SP_HELP_01_06] a batch id; never on a return or a tag replacement
+    (deferred === undefined || (isBatchId(deferred) && via === undefined))
   )
 }
 

@@ -3,6 +3,7 @@
 // module asks for the compaction and handles it ([C_CTX_DEC_02], C): a plugin's
 // `$.command.run('compact')` reaches its own handlers. Free of the host:
 // register.ts binds FlushIO to `$`.
+import { applicable } from './batches'
 import { MARKER } from './compaction'
 import { DEFAULT_RESUME, hasBatchChoices, keepOtherSteps, noteOnce, resumeText, type Queue } from './queue'
 import { errorText, modText } from './rows'
@@ -26,6 +27,10 @@ export const CALIB_WAIT_MS = 1000
 export type FlushIO = {
   // the queue of the current session; `unreadable` too when there is no storage
   readQueue: () => Promise<Read<Queue>>
+  // [SP_HELP_02_09] [SP_HELP_02_10] the cache clock's last request (registry
+  // and memory): whether `applyDeferred` holds; absent or unknown: it holds
+  // only without `coldSince`
+  lastRequestAt?: () => number | null | undefined
   // [SP_CTX_02_06] on the queue's serial chain, the Update contract
   // ([SP_CTX_01_07]): `change` sees the queue as it is then; undefined writes
   // nothing. True once written; false for an unreadable queue, no storage or
@@ -122,8 +127,10 @@ export async function enteredOrThrow(entered: Promise<{ drop?: unknown }>): Prom
 
 // [SP_CTX_02_06] Edits, or the request of the person's /compact; a legacy
 // mark's request (`optimize` without `compact`) is no work (OPTIMIZE_LEGACY).
-function hasWork(read: Read<Queue>): boolean {
-  return read.state !== 'unreadable' && (read.value.edits.length > 0 || compactAsked(read.value)) && !read.value.handoff
+// [SP_HELP_02_10] Edits count by Applicable: deferred ones alone, without
+// `applyDeferred` holding, plan nothing.
+function hasWork(read: Read<Queue>, last: number | null | undefined): boolean {
+  return read.state !== 'unreadable' && (applicable(read.value, last).length > 0 || compactAsked(read.value)) && !read.value.handoff
 }
 
 function compactAsked(q: Queue): boolean {
@@ -140,9 +147,9 @@ export function dropLegacy(q: Queue): Queue | undefined {
 // `optimize` is still true. The other way when the prompt was refused.
 // [SP_CTX_DEC_16] A batch still queued (its compaction was abandoned) loses
 // its continuation: the agent's choice in the compression turn decides it.
-export function swapOptimize(q: Queue): Queue | undefined {
+export function swapOptimize(q: Queue, last?: number | null): Queue | undefined {
   if (!q.optimize) return undefined
-  const carried = q.edits.length > 0 ? { resume: false, resumeSet: false } : {}
+  const carried = applicable(q, last).length > 0 ? { resume: false, resumeSet: false } : {}
   return { ...q, ...carried, optimize: false, optimizePrompted: true }
 }
 
@@ -232,12 +239,14 @@ export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: bo
   // [SP_CTX_02_54] passed over: no Flush for the queue; it stays for the brief of /compact
   const passed = await io.compactPassed?.(false).catch(() => false)
   const read = await io.readQueue()
+  const last = io.lastRequestAt?.()
   // [SP_CTX_01_04] [SP_CTX_DEC_16] the turn ended with no edits queued: the
   // choices its calls made (all their edits refused) end with it, so a later
   // batch does not take an old resume_prompt or stop by an old resume false
-  if (read.state === 'ok' && !read.value.edits.length && !read.value.handoff && hasBatchChoices(read.value))
-    await io.updateQueue(clearChoices).catch(() => undefined)
-  const work = !passed && hasWork(read)
+  // [SP_HELP_02_10] counted by Applicable: an applyDeferred that holds leads to an apply
+  if (read.state === 'ok' && !applicable(read.value, last).length && !read.value.handoff && hasBatchChoices(read.value))
+    await io.updateQueue(q => clearChoices(q, last)).catch(() => undefined)
+  const work = !passed && hasWork(read, last)
   // [SP_CTX_02_72] a title due plans a Flush too, passed over or not (no
   // handoff: it carries the title)
   const due = !work && read.state !== 'unreadable' && !read.value.handoff && (await titleDue(io))
@@ -253,8 +262,8 @@ export async function flushAfterTurn(io: FlushIO, state: FlushState, aborted: bo
 
 // The batch's choices back to their defaults while it has no edits (a
 // handoff's edits are its own); else no change.
-function clearChoices(q: Queue): Queue | undefined {
-  return !q.edits.length && !q.handoff && hasBatchChoices(q) ? keepOtherSteps(q) : undefined
+function clearChoices(q: Queue, last: number | null | undefined): Queue | undefined {
+  return !applicable(q, last).length && !q.handoff && hasBatchChoices(q) ? keepOtherSteps(q) : undefined
 }
 
 // [SP_CTX_02_42] Flush for the person's /compact, from the command.run hook
@@ -322,7 +331,10 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
       await io.updateQueue(dropLegacy).catch(() => undefined)
       read.value = { ...read.value, optimize: false }
     }
-    const work = read.value.edits.length > 0 || read.value.optimize
+    // [SP_HELP_02_10] edits by Applicable
+    const last = io.lastRequestAt?.()
+    const pending = applicable(read.value, last).length
+    const work = pending > 0 || read.value.optimize
     // [SP_CTX_02_72] a handoff carries the title: no rename beside it
     const due = !read.value.handoff && (await titleDue(io))
     if (!work && !due) return { outcome: 'nothing-queued', resume: 'none' }
@@ -336,7 +348,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     // [SP_CTX_02_34] the report and the person's line take this
     // conversation's ratio; before the turn check, so this pause never puts
     // the command behind a new turn
-    if (!passed && read.value.edits.length) await calibrateWithin(io)
+    if (!passed && pending) await calibrateWithin(io)
     // PERSON_MOVED: a turn started since planning; no command queued behind it.
     // A turn that runs plans Flush when it ends; one that already ended
     // normally gives no new planning, so plan again now; after an interrupted
@@ -360,7 +372,7 @@ export async function flush(io: FlushIO, state: FlushState, turns0: number): Pro
     let q: Queue | undefined = read.value
     let outcome: FlushOutcome = 'no-command'
     let compacted = false
-    if (read.value.edits.length) {
+    if (pending) {
       const id0 = read.value.reportId
       try {
         // the host queues it until the session is idle; it returns once the handler answered
@@ -508,7 +520,8 @@ async function optimize(
   // the check again right before the swap: the person may have begun a turn during the command
   if (movedSince(io.turns, turns0)) return personFirst(state, q), { optimize: 'person', resume: 'none' }
   // compare-and-set: DeliverReport may have served the request with the person's prompt
-  const swapped = await io.updateQueue(swapOptimize).catch(() => false)
+  const last = io.lastRequestAt?.()
+  const swapped = await io.updateQueue(x => swapOptimize(x, last)).catch(() => false)
   if (!swapped) return personFirst(state, q), { optimize: 'person', resume: 'none' }
   try {
     // the queue's own resume text is not sent: the compression turn decides with its own context_edit

@@ -156,6 +156,14 @@ function positions(rows: readonly SessionMessage[], start: readonly number[]): n
   return pos
 }
 
+// [SP_CTX_02_38] [SP_HELP_02_10] The one lookback rule: the request after
+// an apply reads the cache up to rows[start] (a response start) only when
+// no more than CACHE_LOOKBACK positions, `margin` more to come, lie from
+// there to the end. LookbackStart, CacheCost and RewriteStart read it.
+export function withinLookback(shape: CacheShape, start: number, margin = 0): boolean {
+  return (shape.pos[start] ?? 0) + margin <= CACHE_LOOKBACK
+}
+
 // [SP_CTX_02_38] LookbackStart(rows, api): the first row an edit may start at
 // with the cache kept up to it, were the apply now: the least k such that the
 // ResponseStart of every row from k on (the start FrozenPrefix would keep the
@@ -163,12 +171,12 @@ function positions(rows: readonly SessionMessage[], start: readonly number[]): n
 // end; such a k is a response start itself; rows.length when not even the
 // last row passes. Without the API form only stretch starts qualify.
 export function lookbackStart(shape: CacheShape): number {
-  const { rows, pos } = shape
+  const { rows } = shape
   let k = rows.length
   let least = rows.length
   for (let i = rows.length - 1; i >= 0; i--) {
     least = Math.min(least, responseStart(rows, i, shape.api, shape.responses))
-    if (pos[least]! > CACHE_LOOKBACK) break
+    if (!withinLookback(shape, least)) break
     k = i
   }
   return k
@@ -189,7 +197,7 @@ export function cacheCost(shape: CacheShape, first: number, freed: number, whole
   const { rows } = shape
   const start = responseStart(rows, first, shape.api, shape.responses)
   const positions = shape.pos[start] ?? 0
-  const within = positions + margin <= CACHE_LOOKBACK
+  const within = withinLookback(shape, start, margin)
   const tail = within ? tailTokens(shape, start, ratio, whole) : whole
   return { start, positions, within, rewrite: Math.max(0, tail - freed) }
 }

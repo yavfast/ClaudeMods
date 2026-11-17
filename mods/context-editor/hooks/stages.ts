@@ -47,6 +47,7 @@ import type { HelperSummary, JournalSummary } from './journal'
 import { helperCost } from './helper'
 import { checksLine, clockLine, lastRequest } from './cacheclock'
 import type { Queue } from './queue'
+import { nonDeferred } from './batches'
 import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
 import { afterReminders, applyNoteRequests, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
@@ -1329,7 +1330,8 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
       .changeQueue(read => {
         if (read.state !== 'ok' || !read.value.optimizePrompted) return undefined
         prompted = true
-        if (read.value.compact) compacted = { empty: read.value.edits.length === 0 }
+        // [SP_HELP_02_10] an empty compression turn: no edit without `deferred`
+        if (read.value.compact) compacted = { empty: nonDeferred(read.value.edits).length === 0 }
         // [SP_CTX_02_42] the batch of an ended compression turn waits for its Flush: compactEndedAt
         const { compactEndedAt: _ended, ...rest } = read.value
         return { ...rest, optimizePrompted: false, compact: false, ...(read.value.compact && !e.aborted ? { compactEndedAt: io.now() } : {}) }

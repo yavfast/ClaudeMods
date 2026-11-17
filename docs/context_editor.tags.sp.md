@@ -197,13 +197,15 @@ Processing logic (pseudocode):
         remove the tags of over from the registry; queued −= over; the call's result gets "disposable <target> dropped: its replacement would lose the person's message sent during a tool call" per tag
         queued = [e with via = tag FOR e IN queued]          # фаза 28: текст заміни називає тег агента (`Later, your context_tag disposable tag replaced …`), а не виклик context_edit (SP_CTX_02_04)
         IF queued empty OR len(q.edits) + len(queued) > MAX_QUEUE_EDITS OR the file would exceed MAX_QUEUE_BYTES: RETURN { 0, 0 }
-        IF len(q.edits) == 0: q.tagsOnly = true
+        IF len(NonDeferred(q.edits)) == 0: q.tagsOnly = true             # PL_HELP, фаза 3: відкладені правки пакета не роблять
         q.edits += queued; write Queue (a write failure → RETURN { 0, 0 })
         RETURN { len(queued), freed, resumes: ResumesAfter(q) }
 
 Перевірки `listedKey` рядка 02_03 «межа поточної розмови не змінилась від останнього `context_list`» QueueTagReplacements не робить: індекси замін він бере щойно з Locate на поточній розмові, а не з переліку агента, тож застарілими вони бути не можуть. Ключ заміни — те, за чим RebindTags упізнає заміну тегу в пакеті: `summarize` з `tool_use_id` цілі і `summary = note`; `rewrite` з якорем цілі і `text = note`; `collapse` з якорями обох кінців і `summary = note`. Тег, чия заміна вже стоїть у черзі (закриття етапу інструментом, а потім правка агента при очікуванні в тому самому ході), удруге не ставиться. Відхилені PrepareEdits заміни не повідомляються окремо: тег лишається, а агент бачить його в переліку.
 
 Пакет лише з тегів не продовжує сесію: звіт піде з наступним промптом людини ([SP_CTX_02_08](./context_editor.flush.sp.md#SP_CTX_02_08)). Правка агента в тому самому пакеті знімає `tagsOnly`, а явний вибір продовження агентом у пакеті (`resumeSet`, навіть у виклику `context_edit` без прийнятих правок) діє над `tagsOnly`: ResumesAfter ([SP_CTX_02_02](./context_editor.edits.sp.md#SP_CTX_02_02)).
+
+Відкладені правки (змінено C_HELP: PL_HELP, фаза 3, реалізовано; [SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)). «Черга порожня» для `tagsOnly` рахується за NonDeferred — правками без `deferred`: відкладені пакети, що чекають у черзі, найближчим пакетом не є, тож заміни з тегів поруч із ними — пакет лише з тегів. Межа MAX_QUEUE_EDITS і MAX_QUEUE_BYTES рахує всі правки черги, відкладені теж. Заміни поля `deferred` не мають ([SP_CTX_01_03](./context_editor.structures.sp.md#SP_CTX_01_03)).
 
 Повернення згаданого (PL_FOLD, фаза 2; [SP_FOLD_02_03](./context_folds.sp.md#SP_FOLD_02_03)). `context_tag` викликає MarkDue після кожного закриття, перед замінами; DetectOptimize — коли вставка закрила блок. Тег `disposable` на парі розгортання із записом згадування дає правку повернення з нотаткою тегу (`via: "return"`), а не заміну з `via: "tag"`. Після замін AddReturns додає до пакета правки повернення належних згадувань; діапазонний тег, що охопив пару, окремої правки повернення не лишає. Без замін із тегів черга не змінюється.
 
@@ -418,6 +420,7 @@ Processing logic (pseudocode):
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 3 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)): 02_13 — `tagsOnly` за NonDeferred: відкладені правки в черзі пакета не роблять; межі черги рахують і їх |
 | 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09)): 02_12 — окремий запис годинника кешу (`TagRegistry.cache`, ClockAfter) кроком `clock` кінця кожного основного ходу, зокрема перерваного, після лічильника; крок лічильника без змін |
 | 2026-11-15 | Verify PL_FOLD, виправлення: 02_11 — межі завдання від запиту (TurnPrompt — запит людини, `idle`, `end`, `floor` від `lastClosed` у псевдокоді; рев'ю: перекриття через виклики, `open` у ході, що працював, промпти мода); TAG_DESCRIPTION 2048 символів |
 | 2026-11-15 | PL_FOLD, фаза 6, рев'ю: TAG_DESCRIPTION — заміни `disposable` ставить закриття цим інструментом (не вставка `close`), 2047 символів; легенда `context_list` так само |

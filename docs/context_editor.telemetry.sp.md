@@ -93,11 +93,11 @@ Processing logic (pseudocode):
 Purpose: вести журнал ефекту ([SP_CTX_01_19](./context_editor.records.sp.md#SP_CTX_01_19)): що стиснуло кожне застосування (без оцінки звільненого — її дає виміряний `Last apply`, [SP_CTX_02_28](#SP_CTX_02_28)) і які вже стиснуті відтворювані виводи агент читав знову — сигнал надмірного стискання і матеріал для дослідження впливу змінного контексту на якість завдань ([C_CTX_03_02](./context_editor.methods.concept.md#C_CTX_03_02), «Журнал ефекту»).
 
 Processing logic (pseudocode):
-    FUNCTION JournalApply(id, report, archive, before, edits):             # HandleCompaction (SP_CTX_02_07), коли report.applied непорожній; у фоні
+    FUNCTION JournalApply(id, report, archive, before, edits, deferred = 0):   # HandleCompaction (SP_CTX_02_07), коли report.applied непорожній; у фоні
         j = read Journal; IF unreadable: RETURN                            # не перезаписується
         applied = [e IN edits | EditLabel(e) IN report.applied]
         compressed = distinct input.file_path of every Read call in the pairs of before that applied summarize or drop edits name, or that applied collapse spans hold (≤ MAX_QUEUE_EDITS, first ones kept)
-        j.entries += { kind: apply, at: id, edits: len(applied), archive, compressed }
+        j.entries += { kind: apply, at: id, edits: len(applied), archive, compressed, deferred if deferred > 0 }   # PL_HELP, фаза 3: deferred — застосовані правки з `deferred` (SP_HELP_01_08; живі прогони S1, T1, `.dev_flow/cache/live-test/help-p3/`: `deferred: 1`)
         Trim(j); write Journal                                             # збій запису — без наслідків для застосування
 
     FUNCTION JournalReread(path, tool_use_id):                             # хук викликів (SP_CTX_02_16), після Read без помилки; у фоні
@@ -302,6 +302,7 @@ Errors: відмов немає (чисті функції).
 
 | Date | Change |
 |------|--------|
+| 2026-11-16 | PL_HELP фаза 3 ([SP_HELP_02_10](./context_helper.batches.sp.md#SP_HELP_02_10)): 02_31 — JournalApply пише `deferred` (число застосованих відкладених правок), лише коли воно > 0; живі прогони S1, T1 — `deferred: 1` |
 | 2026-11-16 | PL_HELP фаза 2 ([SP_HELP_02_09](./context_helper.batches.sp.md#SP_HELP_02_09), [SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13)): 02_28 — поле `checks` підсумку журналу, `t.clock` лише в `context_list`, рядки `Cache clock` і `Cache clock checks` і порядок `Cache` → `Cache clock` → `Helper` → `Cache clock checks` → `Host attachments`; 02_31 — JournalCache, запис `cache` після Confirm |
 | 2026-11-16 | PL_HELP фаза 1: 02_28 — поле `helper` підсумку журналу й рядок `Helper` після рядка `Cache` ([SP_HELP_02_13](./context_helper.sp.md#SP_HELP_02_13)); 02_31 — JournalAsk, запис `ask` після кожного питання ([SP_HELP_01_08](./context_helper.sp.md#SP_HELP_01_08)) |
 | 2026-11-15 | PL_FOLD, фаза 5 ([SP_FOLD_02_07](./context_folds.sp.md#SP_FOLD_02_07)): 02_28 — `t.regions` замість `t.stage`, ланцюжок областей у рядку відкритої області (`Open regions, outer to inner: …`), `(task)` у рядку закритого завдання; загублений початок внутрішньої області — початок охопної; 02_37 — підказка ходу називає завдання `close task "…"` |
