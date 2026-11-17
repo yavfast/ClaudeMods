@@ -40,6 +40,7 @@ import { insertDeliveries, type Deliveries } from './deliveries'
 import { REMINDER_PREFIX } from './media'
 import { relocateStageMarks } from './stages'
 import { dropLastApply, EMPTY_REGISTRY, MAX_TAGS, rebindTags, stateInput, stateRow, withTitle, type Tag, type TagRegistry } from './tags'
+import { carriedErrands } from './errands'
 import { carryTitle } from './title'
 import { movedSince, type Turns } from './turns'
 import { apiBlocks, DOCUMENT_FRAME, errorText, isBlankRow, isPlainUserRow, modText, resultsOf, squash, totalChars } from './rows'
@@ -633,6 +634,9 @@ type Run = {
   old: string
   oldDir: string
   q: Queue
+  // [SP_HELP_02_14] the old session's errands, counted when the run starts:
+  // the document way drops them with the registry
+  errands: number
   h: HandoffRequest
   // /clear has made a new session
   cleared: boolean
@@ -657,7 +661,11 @@ function moved(run: Run): boolean {
 function dropped(run: Run): string {
   const own = nonDeferred(run.q.edits).length
   const deferred = run.q.edits.length - own
-  return (own ? ` The ${own} queued edit(s) were not carried over.` : '') + (deferred ? ` ${deferred} deferred edit(s) were dropped with the old conversation.` : '')
+  return (
+    (own ? ` The ${own} queued edit(s) were not carried over.` : '') +
+    (deferred ? ` ${deferred} deferred edit(s) were dropped with the old conversation.` : '') +
+    (run.errands ? ` ${run.errands} errand(s) were dropped with the old conversation.` : '')
+  )
 }
 
 async function updateOld(run: Run, change: (q: Queue) => Queue): Promise<void> {
@@ -889,6 +897,8 @@ export async function carryRegistries(
         // [SP_CTX_01_10] the old session's apply is nothing to measure in the new one;
         // [SP_HELP_02_14] the new session's cache clock starts unknown
         const { reintroduce: _, cache: _c, ...copy } = dropLastApply(out.registry)
+        // [SP_HELP_02_14] the errands go with the registry; a running one's call can reach no errand
+        if (copy.errands) copy.errands = carriedErrands(copy.errands, copy.turn)
         // [SP_CTX_02_67] the registry's copy carries the items the seed's state edits made
         // [SP_CTX_02_74] CarryTitle: the title to show and whether the person chose it
         return withTitle({ ...copy, introduced: false, ...(s.items ? { items: s.items.items, nextItem: s.items.nextItem } : {}) }, carryTitle(copy.title))
@@ -1266,12 +1276,15 @@ export async function runHandoff(io: HandoffIO, mem: HandoffMemory, turns0: numb
       return { ...q, handoff: claimed }
     })
     if (!got.claim) return 'nothing'
+    // [SP_HELP_02_14] an unreadable registry counts none
+    const reg = await io.readTags(oldDir).catch((): Read<TagRegistry> => ({ state: 'unreadable', reason: 'read failed' }))
     run = {
       io,
       mem,
       turns0,
       old,
       oldDir,
+      errands: reg.state === 'ok' ? (reg.value.errands ?? []).length : 0,
       q: got.claim.q,
       h: got.claim.h,
       cleared: false,

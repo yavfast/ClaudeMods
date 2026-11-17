@@ -61,7 +61,7 @@
 | QUESTION_HEAD | 200 | Скільки символів питання бере слід повернення |
 | ERRAND_PREFIX | `e` | Префікс номера доручення |
 | MAX_ERRANDS | 20 | Найбільше доручень у реєстрі |
-| MAX_ERRAND_RESULT | 16000 | Межа тексту результату доручення |
+| MAX_ERRAND_RESULT | 16000 | Межа результату доручення разом з рядком доручення; AskText доручення `ask` обрізається до місця, яке лишає рядок ([§02_07](./context_helper.errands.sp.md#SP_HELP_02_07)) |
 | MAX_SIZE_TOKENS | 10000000 | Найбільше `n` умови `size` |
 | BATCH_PREFIX | `b` | Префікс номера відкладеного пакета |
 | CACHE_TTL_MS | 3600000 | Час життя кешу основної розмови (калібрування [спайку ефективності](./context_editor_efficiency.spike.md), Entry 2) |
@@ -86,6 +86,8 @@ HELP_SYSTEM (англійською, як усі тексти мода для м
     {"status": "answered" | "not_found" | "refused", "answer": "<short answer>", "quotes": [{"text": "<verbatim text from the material>", "row": <the n of the #n row it stands in>}], "reason": "<why, only when refused>"}
     Quote contiguous text exactly as it stands in one row, at most 500 characters per quote, without ellipses or changes; give the quotes that support the answer. The labels "#<n> <role>:", "call:", "result:" and "result (error):" frame the material and are not part of it: quote the text after them. Use "not_found" when the material does not hold the answer.
 
+Де константи доручень у коді (PL_HELP фаза 7): ERRAND_PREFIX, MAX_ERRANDS, MAX_ERRAND_RESULT, MAX_SIZE_TOKENS, STALE_RUNNING_MS, MAX_DELIVERY і тексти `nothing deferred was queued`, `your deferred edits apply after this turn`, `your deferred edits apply now, in this idle` (APPLY_NOTHING, APPLY_AFTER_TURN, APPLY_IN_IDLE), загубленого й переданого виклику (STALE_TEXT, HANDED_OFF_TEXT), ERRAND_PASSED_OVER ([SP_CTX_02_54](./context_editor.bypass.sp.md#SP_CTX_02_54)) — у `hooks/errands.ts`; голова тексту нагадування й питання, яку повторюють тексти дій, — 80 символів (там само); WAKE_RECHECK_MS і WAKE_TEXT — фаза 8, у коді їх ще немає.
+
 Константи SP_CTX і SP_FOLD, які ця специфікація використовує без змін: MAX_RECALL_ROW, MAX_DEPTH, MAX_NOTE, MAX_REMIND, MAX_STAGE_NAME, MAX_SOURCE, CACHE_LOOKBACK, APPLY_MARGIN, MAX_QUEUE_EDITS, MAX_DESCRIPTION.
 
 ## 02. Contracts  {#SP_HELP_02}
@@ -102,13 +104,13 @@ HELP_SYSTEM (англійською, як усі тексти мода для м
 
 ### 02_13. Телеметрія  {#SP_HELP_02_13}
 
-Purpose: агент бачить температуру кешу, відкладені пакети з їхньою ціною, доручення й витрати помічника. Рядки додаються до заголовка `context_list` ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) після рядка Cache у порядку таблиці, кожен — лише коли є що показати, крім першого. «Годинник кешу» й «Відкладені» є лише в `context_list`: годинник (LastRequest на мить переліку, [§01_07](./context_helper.batches.sp.md#SP_HELP_01_07)) і чергу читає лише перелік, а звіт закриття етапу `context_tag` ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) їх не читає; рядки з підсумку журналу («Помічник», «Перевірки годинника») є й у звіті закриття, бо той будує телеметрію з журналом.
+Purpose: агент бачить температуру кешу, відкладені пакети з їхньою ціною, доручення й витрати помічника. Рядки додаються до заголовка `context_list` ([SP_CTX_02_28](./context_editor.telemetry.sp.md#SP_CTX_02_28)) після рядка Cache у порядку таблиці, кожен — лише коли є що показати, крім першого. «Годинник кешу» й «Відкладені» є лише в `context_list`: годинник (LastRequest на мить переліку, [§01_07](./context_helper.batches.sp.md#SP_HELP_01_07)) і чергу читає лише перелік, а звіт закриття етапу `context_tag` ([SP_CTX_02_29](./context_editor.stages.sp.md#SP_CTX_02_29)) їх не читає; рядки з підсумку журналу («Помічник», «Перевірки годинника») є й у звіті закриття, бо той будує телеметрію з журналом. «Доручення» береться з реєстру, який читає сама телеметрія (ErrandsLine; PL_HELP фаза 7, рішення коду), тож він теж є і в `context_list`, і в звіті закриття.
 
 | Рядок | Текст |
 |-------|-------|
 | Годинник кешу | `Cache clock: warm — the last request was <m> min ago; cold in ~<r> min.` · `Cache clock: cold — idle for <h> h <m> min; an apply now rewrites nothing still cached.` · `Cache clock: unknown — no request seen in this session yet.` — `m` округлено вниз, `r` = ⌈(CACHE_TTL_MS − простій) / хв⌉, не менше 1; лише в `context_list` |
 | Відкладені | `Deferred: <k> batch(es), <n> edit(s), the oldest from turn <t>; ` + на теплому `applying them now would rewrite ~<x> tokens of cache; they wait for an apply that starts no later, a cold cache in idle, or a handoff.` · на холодному `the cache is cold: they apply in this idle.` Ціна `x` — CacheCost ([SP_CTX_02_38](./context_editor.telemetry.sp.md#SP_CTX_02_38)) відкладених правок окремо: від найранішого рядка, який вони змінюють, над рядками й API-поданням переліку, без вирахування того, що вони звільнять, — оцінка зверху (DeferredRewrite, `hooks/batches.ts`); жодного їхнього рядка не знайдено — без частини `applying …`; `deferredSince` не називає жодного з пакетів — без частини `, the oldest …`. Варіант вибирає температура годинника переліку (Temperature, [§01_07](./context_helper.batches.sp.md#SP_HELP_01_07)): холодний — без ціни, бо пакети бере IdleRun цього простою ([§02_11](./context_helper.batches.sp.md#SP_HELP_02_11)); теплий чи невідомий (годинника немає) — теплий текст |
-| Доручення | `Errands: <k> (<open> open, <waiting> waiting for delivery); context_helper errand_list lists them.` |
+| Доручення | `Errands: <k> (<open> open, <waiting> waiting for delivery); context_helper errand_list lists them.` — `k` — усі доручення, `waiting` — у стані `fired`, `running` лічиться лише в `k`; без доручень рядка немає. `context_list` лічить реєстр після доставки свого блоку (AfterDelivery, `hooks/errands.ts`), як рядок `Notes` лічить нагадування: доручення, яке цей самий перелік доставляє, вже не `waiting`; `running` тут не вважається загубленим |
 | Помічник | `Helper: <q> question(s), <c> call(s), ~<in>k in / ~<out>k out tokens (~$<cost>); quotes verified <v>, rejected <r>.` — суми записів журналу `ask`; `cost = (in × HELP_PRICE_IN + out × HELP_PRICE_OUT) / 10⁶` |
 | Перевірки годинника | `Cache clock checks: <k>, mismatched <m>.` — коли є записи журналу `cache`; `k` — їх число, `m` — з них з `mismatch = true` (поле `checks` підсумку журналу, [SP_CTX_01_20](./context_editor.records.sp.md#SP_CTX_01_20)) |
 
@@ -121,7 +123,7 @@ Purpose: агент бачить температуру кешу, відклад
 | Що | Спосіб «транскрипт» | Спосіб «документ» |
 |----|---------------------|-------------------|
 | Відкладені правки | засів застосовує їх разом з усією чергою; стара черга — без них (WithoutDeferred, §02_10) | відпадають; речення в результаті передачі (§02_10) |
-| Доручення (`errands`, `nextErrand`) | переносяться з реєстром (CarryRegistries); `running` стає `fired` з текстом `the helper call did not finish: the session was handed off` | відпадають разом з реєстром: спосіб «документ» реєстру не переносить ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), а згортки, про які питали б доручення `ask`, — облік згорток теж; результат передачі додає `<n> errand(s) were dropped with the old conversation.`, коли n > 0 |
+| Доручення (`errands`, `nextErrand`) | переносяться з реєстром (CarryRegistries, CarriedErrands); `running` стає `fired` з текстом `the helper call did not finish: the session was handed off` (рядок доручення — з лічильником ходів копії), `open` і `fired` — як є; спрацьоване доходить у новій сесії з першою безпечною миттю; промпт Deliver передачі блоку не несе | відпадають разом з реєстром: спосіб «документ» реєстру не переносить ([SP_CTX_02_21](./context_editor.handoff.sp.md#SP_CTX_02_21)), а згортки, про які питали б доручення `ask`, — облік згорток теж; результат передачі додає ` <n> errand(s) were dropped with the old conversation.` після речень про правки черги, коли n > 0; `n` — число доручень старого реєстру будь-якого стану, прочитане раз на початку запуску, одразу після захоплення запиту (нечитний реєстр чи збій читання — 0; рішення коду фази 7) |
 | Годинник кешу | не переноситься: нова сесія починає з `lastRequestAt = null` | так само |
 | Записи питань | `questions: []`; засів прибирає пари питань, як пари розгортання | облік не переноситься (SP_FOLD_02_08) |
 
@@ -134,17 +136,19 @@ Purpose: агент бачить температуру кешу, відклад
 | Вхід | Правило | Відмова |
 |------|---------|---------|
 | `context_helper` від субагента | заборонено | DENIED_SUBAGENT |
-| `op` і поля | лише поля своєї операції (§02_02) | BAD_OP |
+| `op` і поля | лише поля своєї операції (§02_02); `wake` до фази 8 не бере жодна операція; тексти — `badHelperOp` ([§02_06](./context_helper.errands.sp.md#SP_HELP_02_06)) | BAD_OP |
 | `folds` | 1..MAX_ASK_FOLDS, без повторів, кожна — в обліку, не `media` | ASK_FOLDS, FOLD_UNKNOWN, ASK_MEDIA |
 | `question` | 1..MAX_QUESTION після обрізання пробілів | ASK_QUESTION |
 | матеріал питання | ≤ HELP_MAX_PARTS частин за всіма згортками | ASK_TOO_BIG |
-| `when`, `n`, `name` | §02_02; `size` — більше за Size у мить постановки | ERRAND_WHEN, ERRAND_N |
+| `when`, `n`, `name` | §02_02; `size` — більше за Size у мить постановки (Size невідомий — без цієї перевірки) | ERRAND_WHEN, ERRAND_N |
 | `action`, `text` | §02_02 | ERRAND_ACTION, ERRAND_TEXT |
-| `ask` і `apply` у дорученні, питання | хост не обходить компактизацію мода | HELPER_PASSED_OVER |
+| `ask` і `apply` у дорученні, питання | хост не обходить компактизацію мода; для `errand_add` — перша перевірка операції, текст ERRAND_PASSED_OVER | HELPER_PASSED_OVER |
 | `id` для `errand_remove` | доручення є | NO_ERRAND |
 | `defer` у `context_edit` | bool (схема й перевірка мода) | `"defer" must be true or false.` (DENIED_DEFER, відмова виклику) |
 | правка над парою розгортання чи питання із записом, ще не поверненою (`summarize`, `drop`, діапазон, що зачіпає її рядки), у виклику з `defer: true` | заборонено: повернення не відкладається (§02_10) | DEFER_RETURN (відхилена правка; решта правок виклику стають у пакет) |
 | `op: 'state'` чи `rewrite` рядка слота стану у виклику з `defer: true` | заборонено: слот змінює лише пакет, що застосовується найближчим (§02_10) | DEFER_STATE (відхилена правка) |
+
+Порядок відмов `errand_add` (PL_HELP фаза 7, [§02_06](./context_helper.errands.sp.md#SP_HELP_02_06)): DENIED_SUBAGENT → BAD_OP → HELPER_PASSED_OVER → ERRAND_WHEN → ERRAND_N → ERRAND_ACTION → ERRAND_TEXT → ASK_QUESTION → ASK_FOLDS → DENIED_STORAGE → FOLD_UNKNOWN, ASK_MEDIA → (ланцюжок реєстру) DENIED_REGISTRY_READ → ERRANDS_FULL → DENIED_REGISTRY_WRITE; DENIED_STORAGE стоїть перед перевірками згорток, як у питанні (§02_03).
 
 ### 03_02. Cross-Structure Invariants  {#SP_HELP_03_02}
 
@@ -169,7 +173,7 @@ Purpose: агент бачить температуру кешу, відклад
 | Розділ | Зміна |
 |--------|-------|
 | [SP_CTX_01_03](./context_editor.structures.sp.md#SP_CTX_01_03), [SP_CTX_01_04](./context_editor.structures.sp.md#SP_CTX_01_04) | поля `deferred`, `nextBatch`, `applyDeferred`, `coldSince`, `deferredSince` (§01_06); правило KeepOtherSteps: правки з `deferred`, `deferredSince`, `nextBatch` — поля іншого кроку, `applyDeferred`, `coldSince` — поля пакета |
-| [SP_CTX §02](./context_editor.sp.md#SP_CTX_02) (преамбула) | порядок кінця ходу: … → лічильник ходів → запис годинника кешу (`clock`) → CheckErrands → Flush → взведення таймера простою → WakeCheck; запис `cache.lastRequestAt` у кінці кожного основного ходу, зокрема перерваного; пам'ять модуля ClockMemory і хук `turn.step` основної розмови, що лише пропускає потік і ставить кінець кроку (фаза 2); таймери простою й повторної перевірки пробудження — з ланцюжка `turn.complete`; виняток — команда StartRun і таймер простою, який вона взводить на теплому кеші: їхній ланцюжок починається в `session.start` (зонд DEC_10: команда з таймера `session.start` хостом прийнята), і такий таймер пробудження не надсилає |
+| [SP_CTX §02](./context_editor.sp.md#SP_CTX_02) (преамбула) | порядок кінця ходу: … → лічильник ходів → запис годинника кешу (`clock`) → CheckErrands → план відновлення (`repair`) → Flush → взведення таймера простою → WakeCheck; запис `cache.lastRequestAt` у кінці кожного основного ходу, зокрема перерваного; пам'ять модуля ClockMemory і хук `turn.step` основної розмови, що лише пропускає потік і ставить кінець кроку (фаза 2); таймери простою й повторної перевірки пробудження — з ланцюжка `turn.complete`; виняток — команда StartRun і таймер простою, який вона взводить на теплому кеші: їхній ланцюжок починається в `session.start` (зонд DEC_10: команда з таймера `session.start` хостом прийнята), і такий таймер пробудження не надсилає |
 | [SP_CTX_01_10](./context_editor.structures.sp.md#SP_CTX_01_10) | поля реєстру `errands`, `nextErrand`, `cache` (§01_05, §01_07) |
 | [SP_CTX_01_12](./context_editor.constants.sp.md#SP_CTX_01_12) | ASK_RETURNED_HEAD — у REPLACEMENT_OPENERS; сьомий інструмент `context_helper` (HELPER_DESCRIPTION, схема §02_02); решта констант — у §01_09 |
 | [SP_CTX_01_19](./context_editor.records.sp.md#SP_CTX_01_19), [SP_CTX_02_31](./context_editor.telemetry.sp.md#SP_CTX_02_31) | записи журналу `ask` (JournalAsk), `cache` (JournalCache); поля `deferred`, `idle` запису `apply` (§01_08) |
@@ -270,18 +274,22 @@ Purpose: агент бачить температуру кешу, відклад
 | Повернення пар | власна правка | `summarize` агента на парі питання; `drop` | ASK_RETURNED з ` by your own edit` і `: <текст агента>`, запис видалено при фіксації; пара й запис прибрані | — |
 | Повернення пар | залежності | пізніший текст агента цитує оригінал правки, ту саму цитату тримає пара питання | влучання лишається: пара питання — не інше джерело | keep |
 | Власні виклики | errand_list | пара `errand_list` | прибрана застосуванням | — |
-| errand_add | відмови | `size` менший за поточний; `cold` з `n`; `remind` без тексту; 21-ше доручення; `apply` при обході | ERRAND_N; ERRAND_WHEN; ERRAND_TEXT; ERRANDS_FULL; HELPER_PASSED_OVER | — |
-| errand_remove | немає доручення | невідомий `id` | NO_ERRAND | — |
-| CheckErrands | події | `turns` 2 після двох ходів; `size` після великого виводу; `closed` з назвою при закритті завдання з цим етапом; `closed` без назви на службовій вставці `optimize` без області; `cold` на вердикті | кожне спрацьовує на своїй події й лише на ній | keep |
-| CheckErrands | `size` до порогів | доручення `size`, розмова нижче порогу м'якого нагадування; перший позначений вивід сесії без тегу `review` у реєстрі; канал нагадування `busy` | спрацьовує на першому позначеному виводі після межі, незалежно від воріт нагадування | keep |
-| CheckErrands | перерваний хід | доручення `turns` 1, хід перервано | не спрацьовує; спрацьовує в кінці наступного завершеного ходу | — |
-| Fire | `ask` у фоні | доручення `ask` спрацювало в кінці ходу | `running`, потім `fired` з AskText доручення; журнал `ask` з `errand` | keep |
-| Fire | `apply` | є відкладений пакет | `applyDeferred`; Flush цього ходу бере пакет | keep |
-| Доставка | один раз | нагадування нотатки й два доручення, наступний виклик інструмента | один блок; реєстр без них; другий виклик — нічого | keep |
-| Доставка | промпт | доручення спрацювало між ходами | блок у прихованому контексті промпту людини | — |
-| Доставка | власний промпт мода | доручення `fired` і нотатка з нагадуванням; Flush надсилає промпт продовження; хост відхиляє | блок у тексті промпту; після відмови доручення `fired`, `remindAt` нотатки на місці | keep |
-| Доставка | межа блоку | три доручення з результатом по 15 000 символів | два в блоці, третє лишається `fired` | — |
-| Доставка | відкинутий промпт | блок на промпті людини, нижчий обробник повертає `{ drop }`; хук кидає виняток | доручення знову `fired`, `remindAt` нотатки на місці | keep |
+| errand_add | відмови | `size` не більший за поточний; `cold` з `n`; `name` з `turns`; `turns` 0; `remind` без тексту; `text` з `apply`; `ask` з невідомою згорткою, зі згорткою `media`, без питання; 21-ше доручення; `apply` і `ask` при обході; `remind` при обході | ERRAND_N з `the request is already ~<cur> tokens, …`; ERRAND_WHEN ×2; ERRAND_N; ERRAND_TEXT; ERRAND_ACTION; FOLD_UNKNOWN, ASK_MEDIA, ASK_QUESTION; ERRANDS_FULL; HELPER_PASSED_OVER ×2; поставлено — `errands.test.ts` «errand_add — відмови» | keep |
+| errand_add | постановка | `turns` 2 на ході 4 з текстом у пробілах; `size` 90 000 при Size 50 000; `closed` з назвою й `ask` | `e1` з `createdTurn` 4, текст обрізано, `nextErrand` 2, результат `Errand e1 set: when 2 turn(s) from now (turn 6) → remind: "…".`; `(now ~50000)`; `region "review" closes → ask the helper about f1: "…"`; реєстр читається назад — «errand_add — постановка» | keep |
+| errand_list, errand_remove | рядки, знято, немає доручення | `open` і `running` доручення; зняти `running`; невідомий `id`; порожній реєстр | `Errands: 2 of 20.` і рядки зі станом, `turns` — `turn <n> (set at turn <t>)`; `running` знято; NO_ERRAND; `No errands.` — «errand_list і errand_remove» | keep |
+| BAD_OP | операції доручень | невідомий `op`; `id` в `errand_list`; `text` в `errand_remove`; `wake` в `errand_add` | тексти `badHelperOp` (§02_06); `wake` — BAD_OP до фази 8 — «BAD_OP» | keep |
+| Реєстр | доручення | погане доручення (`fired` без `result`, `cold` з `n`), повторний `id`, `id` не менший за `nextErrand`, `running` без `firedAt` | реєстр `unreadable` — «Реєстр — доручення» | keep |
+| CheckErrands | події | `turns` 2 після двох ходів; `size` після великого виводу; `closed` з назвою при закритті завдання з цим етапом; `closed` без назви на службовій вставці `optimize` без області; `cold` на вердикті | кожне спрацьовує на своїй події й лише на ній; повторна подія нічого не робить — «CheckErrands — події»; назви закриттів `context_tag`, `close`, `optimize` без області (`[]`) і мітки блоку, закритого в цьому ході (без назв) — `stages.test.ts` «AreaClosed — назви» | keep |
+| CheckErrands | `size` до порогів | доручення `size`, розмова нижче порогу м'якого нагадування; перший позначений вивід сесії без тегу `review` у реєстрі; канал нагадування `busy` | спрацьовує на першому позначеному виводі після межі, незалежно від воріт нагадування; відомий реєстр без умов, що справджуються, — без читання; WantsSize лише за відкритого `size` чи невідомого реєстру — «CheckErrands — воріт немає» | keep |
+| CheckErrands | перерваний хід | доручення `turns` 1, хід перервано | не спрацьовує; спрацьовує в кінці наступного завершеного ходу (крок `errands` AfterTurn лише для завершеного ходу) — «CheckErrands — перерваний хід» | keep |
+| Fire | `ask` у фоні | доручення `ask` спрацювало в кінці ходу; зняте до кінця питання | `running`, потім `fired` з AskText доручення; журнал `ask` з `errand`; пізній результат відкинуто — «Fire — ask у фоні», «ErrandAsk» (перший рядок `Errand <id> asked fold(s) …`, відмова згортки) | keep |
+| Fire | `apply` | є відкладений пакет з `coldSince`; черга без відкладених; вердикт таймера простою | `applyDeferred` без `coldSince`, `… apply after this turn`; черга як була, `nothing deferred was queued`; `… apply now, in this idle` — «Fire — apply» | keep |
+| Доставка | один раз | нагадування нотатки й два доручення, наступний виклик інструмента | один блок, нагадування першим, доручення за `firedAt`; реєстр без них; другий виклик — нічого; збій запису — нічого не доставлено — «Доставка — один раз» | keep |
+| Доставка | промпт | доручення спрацювало між ходами | блок у прихованому контексті промпту людини — «Доставка — промпт» | keep |
+| Доставка | власний промпт мода | доручення `fired` і нотатка з нагадуванням; Flush надсилає промпт продовження; хост відхиляє | блок у тексті промпту; після відмови доручення `fired`, `remindAt` нотатки на місці — «Доставка — власний промпт мода» | keep |
+| Доставка | межа блоку | три доручення з результатом по 15 000 символів | два в блоці, третє лишається `fired` — «Доставка — межа блоку» | keep |
+| Доставка | загублений виклик | доручення `running`, `firedAt` старший за STALE_RUNNING_MS / рівно на межі | доставлено як `fired` з текстом загубленого виклику / нічого — «Доставка — загублений виклик» | keep |
+| Доставка | відкинутий промпт | блок на промпті людини, нижчий обробник повертає `{ drop }`; хук кидає виняток | доручення знову `fired`, `remindAt` нотатки на місці — «Доставка — відкинутий промпт» | keep |
 | WakeCheck | умови | `wake` у простої; другий у тому самому простої; `wake` посеред ходу; фонове `ask` з `wake` завершилось, поки Flush заплановано | один промпт пробудження; другого немає; посеред ходу — звичайна доставка; під час Flush — блок у його промпті чи пробудження в його кінці | keep |
 | WakeCheck | передача | доручення з `wake` спрацювало, `Queue.handoff` є | пробудження немає; блок чекає | keep |
 | WakeCheck | фонове питання | `ask` з `wake` завершилось у простої | пробудження з повторної перевірки WAKE_RECHECK_MS, не з ланцюжка питання; початий хід знімає перевірку | keep |
@@ -329,25 +337,26 @@ Purpose: агент бачить температуру кешу, відклад
 | Запис `apply` | `idle` | команда IdleRun з позначкою на останньому запиті; позначка, яку останній запит минув; команда не IdleRun; збережене `idle: false` | `idle: true`; `skip "idle apply overtaken by a turn"`, позначку знято, журналу немає; без поля; журнал `unreadable` — `batches.test.ts` «Запис apply — idle», «JournalApply — поле deferred» | keep |
 | StartRun | гілки | вердикт `unknown` / `passed`; черга без відкладених; запит передачі; реєстр нечитний; годинник невідомий (null); теплий (запит 30 хв тому); холодний; відмова команди | без позначки, таймера й команди: `not-reached` ×2, `nothing` ×3, `unknown` (рядок `start run: unknown`); `armed` — таймер простою на залишок з `armedBy = start`, черга як була; `started` — позначка `applyDeferred` з `coldSince` = останній запит до таймера, команда з MARKER з `after(0)` без калібрування, хук повертається, щойно команду викликано, а не коли вона скінчилась, рядок людині після її повернення, без промпту, звіт у черзі; рядок стану `context-editor: start apply refused: <помилка>; deferred edits wait`, позначку знято, пакет у черзі — `idle.test.ts`, три тести «StartRun — гілки» | keep |
 | Телеметрія | рядки | теплий, холодний, невідомий годинник; пакети; доручення; помічник; записи `cache` у журналі; телеметрія без читання годинника | тексти й порядок §02_13; без годинника рядка `Cache clock` немає | — |
+| Телеметрія | доручення | `open`, `fired` і `running`; без доручень; перелік, що доставляє `fired` | `Errands: 3 (1 open, 1 waiting for delivery); …`; рядка немає; після доставки — `Errands: 2 (1 open, 0 waiting …)` — `errands.test.ts` «Телеметрія — доручення», «AfterDelivery» | keep |
 | Телеметрія | пакети | два пакети з `deferredSince` і звичайна правка; пакет, чийого рядка немає; черга без відкладених правок чи нечитна; годинник холодний | `Deferred:` між `Cache clock` і `Helper`, `the oldest` — найменший хід, `x` не більший за Whole (оцінка зверху, без звільненого); без частини `applying …`; рядка немає; `… the cache is cold: they apply in this idle.` без ціни | keep |
-| Передача | перенесення | «транскрипт» з відкладеним пакетом і дорученням `running` | пакет застосовано в засіві; доручення `fired`; `questions: []`; годинник null | keep |
-| Передача | документ | відкладений пакет і два доручення | пакет і доручення відпадають; два речення в результаті передачі; число правок черги — за NonDeferred (без невідкладених — без речення про них) | keep |
+| Передача | перенесення | «транскрипт» з відкладеним пакетом і дорученням `running` | пакет застосовано в засіві; доручення `fired` з текстом переданого виклику, `open` — як є, `nextErrand` перенесено; `questions: []`; годинник null — `handoff.test.ts` «Передача — транскрипт з дорученнями», `errands.test.ts` «Передача — перенесення» | keep |
+| Передача | документ | відкладений пакет і два доручення | пакет і доручення відпадають; два речення в результаті передачі (` 2 errand(s) were dropped with the old conversation.`); число правок черги — за NonDeferred (без невідкладених — без речення про них) — `handoff.test.ts` | keep |
 
 ### 05_02. Invariant Checks  {#SP_HELP_05_02}
 
 | Invariant | Verification method | Test |
 |-----------|-------------------|------|
 | I1 | тести VerifyQuotes; у живому прогоні кожна показана цитата знаходиться `grep -F` в архіві | keep |
-| I2 | тести AskText і доручення `ask` | keep |
+| I2 | тести AskText і доручення `ask` (`errands.test.ts` «ErrandAsk»: перший рядок `Errand <id> asked fold(s) <ids> — …` несе те саме речення про чуже прочитання, що й ASKED_HEAD) | keep |
 | I3 | тест: відмова до виклику помічника не пише запису; повернення видаляє запис | — |
-| I4 | тест: повторна подія після спрацювання нічого не робить; збій запису реєстру не доставляє | keep |
+| I4 | тести `errands.test.ts`: «CheckErrands — події» (повторна подія після спрацювання нічого не робить), «Доставка — один раз» (друга мить нічого не доставляє; збій запису реєстру не доставляє), «errand_add — відмови» (21-ше — ERRANDS_FULL), «Реєстр — доручення» (повторний `id` — реєстр нечитний) | keep |
 | I5 | тести WakeCheck | keep |
 | I6 | тести SelectEdits і фіксації; аудит журналу `apply` у живому прогоні | keep |
 | I7 | тест IdleRun «IdleRun — гілки: cold with a deferred batch … applies without any prompt (I7)» (`idle.test.ts`): після застосування промпт не надсилається, звіт лишається в черзі | keep |
 | I8 | тест HandleCompaction: застосування пише реєстр з незмінним полем `cache`; виклик помічника годинника не пише (його порт поля `cache` не має); що `$.model.complete` не дає кроку `turn.step` основної розмови — живий прогін фази 2 (`.dev_flow/cache/live-test/help-l1/out/P2I8.*`: шість кроків на шість відповідей моделі, між кроком виклику й наступним — лише `$.model.complete … answered`) | keep |
 | I9 | тест CacheClock «вердикт один раз»: другий вердикт того самого простою не береться, новий простій після Confirm — береться | keep |
 | I10 | тест: `defer` з тегом `disposable` у тому самому ході — заміни тегу без `deferred` (справжня QueueTagReplacements над чергою з `b1`: `b1`, `deferredSince`, `nextBatch` на місці, `tagsOnly` за NonDeferred); `defer` при згаданому з `due` — без повернень; правка над парою із записом у виклику з `defer` — DEFER_RETURN | keep |
-| I11 | тести доставки власним промптом мода | keep |
+| I11 | тести `errands.test.ts` «Доставка — власний промпт мода» (SubmitWithBlock: блок у кінці тексту, відмова повертає доручення й `remindAt`), «Доставка — промпт» і «Доставка — відкинутий промпт» (DeliverReport: блок у прихованому контексті, `drop` і виняток повертають блок) | keep |
 | I12 | тести KeepOtherSteps і гілки збою | keep |
 | I13 | тести StartRun (`idle.test.ts`): три «StartRun — гілки» (команда лише при `reached`, з відкладеними правками, без передачі й на холодному кеші; позначка до таймера; хук повертається, щойно команду викликано) і «StartRun — межа очікування» (не довше START_WAIT_MS) | keep |
 
@@ -580,3 +589,4 @@ Purpose: агент бачить температуру кешу, відклад
 | 2026-11-17 | Рецензія фази 5 (див. [batches](./context_helper.batches.sp.md)): §05_01 — рядки IdleRun «гілки» (позначка на порожній черзі), «хід під час калібрування» (`/clear`, Flush), «збої портів», «взведення під час нового ходу», «Запис `apply` — `idle`» (пропуск команди, яку хід випередив) |
 | 2026-11-17 | PL_HELP фаза 6 (за кодом, див. [batches](./context_helper.batches.sp.md)): §01_09 — START_WAIT_MS у `hooks/idle.ts`; §05_01 — рядки StartRun «гілки» (результати StartOutcome, нечитний реєстр, хук повертається, щойно команду викликано), «межа очікування» (відмова таймера, рядок `start apply not started (<why>); deferred edits wait`, пізній зворотний виклик), «без продовження» і «IdleRun — таймер StartRun» (WakeCheck — фаза 8) з назвами тестів; §05_02 I13 і §05_04 «Промпт випередив команду StartRun», «Перша сесія на новій версії хоста» — назви тестів |
 | 2026-11-17 | Рецензія фази 6: §05_04 «Промпт випередив команду StartRun» — пропуск обробника за пам'яттю `starting` і тест «Запис apply — StartRun»; §05_01 — тести гілок StartRun доповнено (позначку не записано, синхронний зворотний виклик, таймер відхилено на теплому кеші, причини `nothing`) |
+| 2026-11-17 | PL_HELP фаза 7 (за кодом, див. [errands](./context_helper.errands.sp.md)): §01_09 — MAX_ERRAND_RESULT разом з рядком доручення, де константи й тексти доручень у коді (`hooks/errands.ts`; WAKE_* — фаза 8); §02_13 — рядок «Доручення» з реєстру телеметрії (і в звіті закриття), `waiting` — `fired`, `context_list` лічить після доставки свого блоку (AfterDelivery, як `Notes`; виправлено після звіту поширення); §02_14 — CarriedErrands, Deliver без блоку, число скинутих — зі старого реєстру на початку запуску (нечитний — 0); §03_01 — `wake` — BAD_OP до фази 8, Size невідомий, ERRAND_PASSED_OVER, порядок відмов `errand_add` (DENIED_STORAGE перед FOLD_UNKNOWN і ASK_MEDIA); §05_01 — рядки доручень з назвами тестів (постановка, перелік і зняття, BAD_OP, реєстр, CheckErrands, Fire, ErrandAsk, доставка з загубленим викликом, телеметрія, передача); §05_02 — I2, I4, I11 з назвами тестів |

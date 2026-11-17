@@ -132,6 +132,24 @@ export function withApplyDeferred<Q extends Deferrable>(q: Q, coldSince: number)
   return { ...q, applyDeferred: true, coldSince }
 }
 
+// [SP_HELP_02_07] The mark an `apply` errand set: `applyDeferred` without
+// `coldSince`, so it holds for any last request (DeferredHolds).
+export function errandMarked(q: Deferrable): boolean {
+  return q.applyDeferred === true && q.coldSince === undefined
+}
+
+// [SP_HELP_02_07] [SP_HELP_02_11] [SP_HELP_02_12] IdleRun's and StartRun's
+// mark, which leaves an errand's mark as it is; undefined: no change.
+export function idleMarked<Q extends Deferrable>(q: Q, coldSince: number): Q | undefined {
+  return errandMarked(q) ? undefined : withApplyDeferred(q, coldSince)
+}
+
+// [SP_HELP_02_07] [SP_HELP_02_11] An abandoned or refused own apply removes
+// its own mark only: an errand's mark stays for the next apply.
+export function withoutIdleMark<Q extends Deferrable>(q: Q): Q | undefined {
+  return errandMarked(q) ? undefined : withoutApplyDeferred(q)
+}
+
 // [SP_HELP_02_10] [SP_HELP_02_11] The mark gone (a stale one, a refused or
 // abandoned idle apply); undefined when there is none.
 export function withoutApplyDeferred<Q extends Deferrable>(q: Q): Q | undefined {

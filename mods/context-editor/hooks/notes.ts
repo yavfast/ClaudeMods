@@ -409,15 +409,6 @@ export function rebindNotes(
 
 // ---- [SP_CTX_02_33] NoteReminders
 
-// [SP_CTX_02_33] [PL_AUD_CTX_P11] Whether NoteReminders may find a due
-// reminder: a note with a pending `remindAt`, or a registry not known yet
-// (`peek` without a cached read). Only a write of the registry adds a
-// `remindAt` (context_note), so a known registry without one lets a call skip
-// the registry's chain and its read (CF-22). Pure.
-export function reminderPending(peek: Read<TagRegistry> | undefined): boolean {
-  return !peek || peek.state === 'unreadable' || peek.value.notes.some(n => n.remindAt !== undefined)
-}
-
 // The due reminders of the registry, oldest first, and the registry with
 // their `remindAt` removed; undefined when none is due. Pure.
 export function dueReminders(reg: TagRegistry): { registry: TagRegistry; lines: string[] } | undefined {
@@ -454,26 +445,3 @@ export function withReminderLines<T extends object>(out: T, lines: readonly stri
 export function remindable(f: { agentId?: unknown; denied: boolean; tool: string; tool_use_id?: string }): boolean {
   return !f.agentId && !f.denied && !f.tool.startsWith(OWN_TOOLS) && !!f.tool_use_id
 }
-
-// [SP_CTX_02_33] The registry as it is once this call's due reminders are
-// delivered: what context_list counts before it delivers them.
-export function afterReminders(reg: TagRegistry): TagRegistry {
-  return dueReminders(reg)?.registry ?? reg
-}
-
-// [SP_CTX_02_33] The caller runs it on the registry's chain, after the alias
-// line. A missing or unreadable registry gives nothing; a failed write gives
-// nothing and leaves `remindAt`, so the next call tries again.
-export async function noteReminders(io: Pick<TagIO, 'readTags' | 'writeTags'>): Promise<string[]> {
-  const read = await io.readTags()
-  if (read.state !== 'ok') return []
-  const due = dueReminders(read.value)
-  if (!due) return []
-  try {
-    await io.writeTags(due.registry)
-  } catch {
-    return []
-  }
-  return due.lines
-}
-

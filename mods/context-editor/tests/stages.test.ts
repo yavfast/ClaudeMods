@@ -2032,3 +2032,30 @@ test('contextList — рядок Deferred: the queue\'s deferred batches with th
     expect('result' in plain && plain.result).not.toContain('Deferred:')
   }
 })
+
+// [SP_HELP_05_01] CheckErrands — події: AreaClosed gets the names of the regions a close closed
+test('AreaClosed — назви: context_tag close of a task with its stage names both; a nested open names none; the trailers name the region; a bare optimize without a region names none; a block the tool closed this turn names nothing new', async () => {
+  const r = rows()
+  const seen: [number, readonly string[] | undefined][] = []
+  const push = async (after: number, closed?: readonly string[]) => void seen.push([after, closed])
+  const two = reg({ outer: [{ name: 'T', after: mark(r, 0), openedTurn: 0, kind: 'task' }], stage: { name: 'A', after: mark(r, 3), openedTurn: 0 } })
+  const h = harness(two, r, { markDue: push })
+  await tagCall(h.io, [{ op: 'close', task: true }])
+  expect(seen).toEqual([[0, ['T', 'A']]])
+  seen.length = 0
+  // a nested open closes nothing: no MarkDue, no names
+  const nested = harness(two, r, { markDue: push })
+  await tagCall(nested.io, [{ op: 'open', stage: 'B', nested: true }])
+  expect(seen).toEqual([])
+  const s = detectHarness(okRead(reg({ turn: 6, outer: [T_OPEN], stage: { name: 'S', after: null, openedTurn: 2 } })), undefined, { markDue: push })
+  await detectOptimize(s.io, { aborted: false, answer: `Done.\n${CLOSE}` })
+  expect(seen).toEqual([[1, ['S']]])
+  seen.length = 0
+  const bare = detectHarness(okRead(reg({ turn: 6 })), undefined, { markDue: push })
+  expect(await detectOptimize(bare.io, { aborted: false, answer: `Done.\n${OPTIMIZE_MARK}` })).toBe('waiting')
+  expect(seen).toEqual([[0, []]])
+  seen.length = 0
+  const closedNow = detectHarness(okRead(reg({ turn: 6, lastClosed: { name: 'S', after: null, end: null, turn: 6 } })), undefined, { markDue: push })
+  await detectOptimize(closedNow.io, { aborted: false, answer: `Done.\n${OPTIMIZE_MARK}` })
+  expect(seen).toEqual([[0, undefined]])
+})

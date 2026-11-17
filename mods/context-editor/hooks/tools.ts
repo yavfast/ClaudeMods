@@ -11,6 +11,7 @@ import { MAX_STAGE_NAME, SKILL } from './stages'
 import { MAX_ASK_FOLDS, MAX_RECALL_CHARS } from './folds'
 import { HELP_MAX_PARTS, HELP_PART_CHARS } from './ask'
 import { HELP_MODEL, MAX_QUESTION } from './helper'
+import { MAX_ERRANDS, MAX_SIZE_TOKENS } from './errands'
 import { MAX_STATE_ITEM, MAX_STATE_ITEMS, STATE_KINDS } from './state'
 import { MAX_TAGS } from './tags'
 import { MAX_TITLE } from './title'
@@ -312,18 +313,26 @@ const RECALL_SCHEMA = {
 // [SP_HELP_02_02] At most MAX_DESCRIPTION chars; [PL_HELP_DEC_03] only the
 // operations that work: phase 1 opens "ask"; phase 5 adds the pointer to
 // `defer`, which IdleRun makes true.
-export const HELPER_DESCRIPTION = `Ask the mod's helper about your folds.
+export const HELPER_DESCRIPTION = `Ask the mod's helper about your folds, or set errands the mod runs when a condition on the context holds.
 op "ask": a helper model (${HELP_MODEL}, outside this conversation: no turn, no row) reads the levels of the folds you name (ids from their fold records; up to ${MAX_ASK_FOLDS} folds and ~${(HELP_MAX_PARTS * HELP_PART_CHARS) / 1000}k chars in all) and answers your question. Only quotes the mod finds verbatim in the archive reach you, each marked whose it is; the helper's reading is not your own text, so weigh it as external. It takes seconds and a few cents per ~${HELP_PART_CHARS / 1000}k chars. The pair stays until the region you asked in closes; then the mod returns it. Use ${RECALL} when you need the whole level.
+op "errand_add": when (turns: n turns from now; size: the request, fixed part included, reaches n tokens; cold: the prompt cache expired in an idle of over an hour, seen by the mod's idle timer, or by the next prompt when the timer is gone, and an apply then rewrites the re-warmed cache like any; closed: a region closes, or the one named) → action (remind: your text; ask: the helper answers your question about folds then; apply: apply your deferred edits). The result reaches you with your next tool result or the next prompt.
+op "errand_list"; op "errand_remove" with id.
 To defer an edit batch until the cache is cold, pass defer: true to ${EDIT}.`
 
 const HELPER_SCHEMA = {
   type: 'object',
   properties: {
-    op: { type: 'string', enum: ['ask'], description: 'The operation: "ask".' },
-    folds: { type: 'array', items: { type: 'string' }, description: `The fold ids to ask about, from their fold records, e.g. ["f3"]; 1..${MAX_ASK_FOLDS}.` },
-    question: { type: 'string', description: `Your question about what those folds hold; up to ${MAX_QUESTION} chars.` },
+    op: { type: 'string', enum: ['ask', 'errand_add', 'errand_list', 'errand_remove'], description: 'The operation.' },
+    folds: { type: 'array', items: { type: 'string' }, description: `ask, and errand_add with action "ask": the fold ids, from their fold records, e.g. ["f3"]; 1..${MAX_ASK_FOLDS}.` },
+    question: { type: 'string', description: `ask, and errand_add with action "ask": your question about what those folds hold; up to ${MAX_QUESTION} chars.` },
+    when: { type: 'string', enum: ['turns', 'size', 'cold', 'closed'], description: 'errand_add: the condition.' },
+    n: { type: 'integer', description: `errand_add: turns 1..${MAX_REMIND}; size: tokens above the request's size now, up to ${MAX_SIZE_TOKENS}.` },
+    name: { type: 'string', description: `errand_add with when "closed": the region's name, 1..${MAX_STAGE_NAME} chars; absent: any close.` },
+    action: { type: 'string', enum: ['remind', 'ask', 'apply'], description: 'errand_add: what the mod does when the condition holds.' },
+    text: { type: 'string', description: `errand_add with action "remind": your text, 1..${MAX_NOTE} chars.` },
+    id: { type: 'string', description: `errand_remove: the errand's id, e.g. "e1"; at most ${MAX_ERRANDS} errands are set.` },
   },
-  required: ['op', 'folds', 'question'],
+  required: ['op'],
 }
 
 export const TOOLS: readonly ToolSpec[] = [

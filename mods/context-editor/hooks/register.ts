@@ -32,7 +32,28 @@ import { contextHandoff, handleSeed, handoffAfterTurn, handoffCommand, newHandof
 import { contextEdit, hasMediaFrom, needsApi, deliverReport, EMPTY_QUEUE, MAX_QUEUE_BYTES, parseQueue, settledQueue, withoutReport, type EditArgs, type Queue, type QueueIO } from './queue'
 import { queueStatus } from './batches'
 import { adviceFor, adviseWaiting, blockName, calibrateBeforeApply, closedSpan, contextList, recallScope, detectOptimize, endWaiting, guideText, introFor, measure, RULES_FILE, SKILL, tagCallIO, withIntroduced, type BlockHost, type DetectIO, type ListArgs, type ListIO, type UsageInfo } from './stages'
-import { contextNote, noteReminders, reminderPending, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
+import { contextNote, remindable, remindsAfter, withReminderLines, type NoteArgs } from './notes'
+import {
+  badHelperOp,
+  checkErrands,
+  claimDelivery,
+  deliveryPending,
+  errandAdd,
+  errandList,
+  errandRemove,
+  errandRoom,
+  finishAsk,
+  markApply,
+  outputSize,
+  restoreBlock,
+  submitWithBlock,
+  wantsSize,
+  type BlockPort,
+  type CheckIO,
+  type Errand,
+  type ErrandEvent,
+  type ErrandIO,
+} from './errands'
 import { errorText, modText, REPAIR_MARKER } from './rows'
 import {
   cleanLedger,
@@ -132,7 +153,7 @@ import {
 } from './store'
 import { newAnchorMemory, observeAppend, parseDeliveries, pruneDeliveries, recordDelivery, type Deliveries, type QueuedDelivery } from './deliveries'
 import { contextRecall, emptyFolds, foldPort, ledgerWork, markDue, parseFolds, returnables, type FoldLedger, type RecallArgs, type RecallIO, type Returnable } from './folds'
-import { contextAsk, type AskIO, type HelperArgs } from './ask'
+import { contextAsk, errandAsk, HELPER_SUBAGENT, type AskEntry, type AskIO, type HelperArgs } from './ask'
 import { failureReason } from './helper'
 import type { CompleteRequest, CompleteResult } from './helper'
 import { closeWindow, emptyHostRows, keepHostRows, newHostMemory, observeHostRow, openWindow, parseHostRows, recordHostRow, type HostRowRecord, type HostRows } from './hostrows'
@@ -403,12 +424,129 @@ async function recallsNow($: EngineInterface, dir: string, within?: Held): Promi
 
 // [SP_FOLD_02_03] MarkDue on the ledger's chain once a region closed; `after`:
 // how many regions are still open.
-async function markDueNow($: EngineInterface, dir: string, after: number): Promise<void> {
+// [SP_HELP_02_07] `closed`: the names of the regions closed now; AreaClosed
+// of the errands follows, one chain after the other.
+async function markDueNow($: EngineInterface, dir: string, after: number, closed?: readonly string[]): Promise<void> {
   // [ERR-01] a failure only leaves the recalls not due: they return by the agent's own edit
   await renewOf(stores($, dir).folds)(ledger => {
     const next = markDue(ledger, after)
     return next === ledger ? undefined : next
   }).catch(quietFailure($, 'MarkDue'))
+  if (closed) await errandsOn($, dir, { kind: 'closed', names: closed })
+}
+
+// [SP_HELP_02_07] Size: context.tokens of the plain usage (1–3 ms, no
+// breakdown); undefined without a measure.
+async function sizeNow($: EngineInterface): Promise<number | undefined> {
+  const u = await $.session.usage().catch(() => undefined)
+  return u?.context.tokens ?? undefined
+}
+
+// [SP_HELP_02_07] CheckErrands bound to the storage `dir`: the registry's
+// view for the gate, the queue's mark of an `apply` errand, the registry's
+// change on its chain, the background question of an `ask` errand.
+function checkIO($: EngineInterface, dir: string): CheckIO {
+  const s = stores($, dir)
+  return {
+    peek: () => s.tags.peek(),
+    readTags: () => s.tags.read(),
+    markApply: () => markApply(updateOf(s.queue)),
+    updateTags: async change => void (await updateOf(s.tags)(change)),
+    ask: errand => askErrand($, dir, errand),
+    now: () => Date.now(),
+    debug: text => $.ui.log(modText(text), { to: 'debug' }),
+  }
+}
+
+// [SP_HELP_02_07] CheckErrands on an event in `dir`; never rejects.
+function errandsOn($: EngineInterface, dir: string, ev: ErrandEvent): Promise<unknown> {
+  return checkErrands(checkIO($, dir), ev).catch(quietFailure($, 'CheckErrands'))
+}
+
+// [SP_HELP_02_07] TurnEnd and BigOutput read Size only when an open `size`
+// errand may fire (the registry's view; unknown: read it). `extra`: the
+// marked output's chars.
+async function sizeErrands($: EngineInterface, dir: string, kind: 'turn' | 'output', extra = 0): Promise<unknown> {
+  const view = stores($, dir).tags.peek()
+  if (!wantsSize(view) && kind === 'output') return
+  const size = wantsSize(view) ? await sizeNow($) : undefined
+  if (kind === 'output') {
+    if (size === undefined) return
+    const ratio = view?.value.charsPerToken
+    return errandsOn($, dir, { kind: 'output', size: outputSize(size, extra, ratio) })
+  }
+  return errandsOn($, dir, { kind: 'turn', ...(size !== undefined ? { size } : {}) })
+}
+
+// [SP_HELP_02_07] The question of a fired `ask` errand, outside every chain
+// and every hook's wait; its end on the registry's chain (FinishAsk). The
+// errand's line is ~120 chars: the question's text keeps that much room.
+function askErrand($: EngineInterface, dir: string, errand: Errand): void {
+  if (errand.action.kind !== 'ask') return
+  const act = errand.action
+  void (async () => {
+    const cwd = await projectRoot($).catch(() => undefined)
+    const at: { dir?: string } = { dir }
+    const r = recallIO($, snapshot($), cwd, at)
+    const io = {
+      passedOver: r.passedOver,
+      readArchive: r.readArchive,
+      readLedger: () => stores($, dir).folds.read(),
+      helper: { complete: (req: CompleteRequest) => completeOn($, req) },
+      journal: (entry: AskEntry) => onJournal($, j => journalAsk(j, entry), dir),
+      now: () => Date.now(),
+      ...(cwd ? { cwd } : {}),
+    }
+    const text = await errandAsk(io, { id: errand.id, folds: act.folds, question: act.question }, errandRoom(errand)).catch(err => `the helper call failed: ${errorText(err)}`)
+    await updateOf(stores($, dir).tags)(reg => finishAsk(reg, errand.id, text))
+  })().catch(quietFailure($, 'errand question'))
+}
+
+// [SP_HELP_02_08] DeliveryBlock of the current session's storage: claimed on
+// the registry's chain (a known registry with nothing to deliver takes no
+// chain), put back there in the folder the claim took.
+function blockPort($: EngineInterface, given?: string): BlockPort {
+  let dir = given
+  return {
+    claim: async () => {
+      dir ??= await storageDir($).catch(() => undefined)
+      if (!dir) return undefined
+      const tags = stores($, dir).tags
+      if (!deliveryPending(tags.peek())) return undefined
+      const io = tagIO($, dir)
+      const debug = (text: string) => $.ui.log(modText(text), { to: 'debug' })
+      // [ERR-01] a failure delivers nothing and leaves a debug line; the next moment tries again
+      return tags
+        .onChain(() => claimDelivery({ readTags: io.readTags, writeTags: io.writeTags, now: () => Date.now(), debug }))
+        .catch(err => (debug(`delivery not claimed: ${errorText(err)}`), undefined))
+    },
+    restore: async claimed => {
+      if (!dir) return
+      await updateOf(stores($, dir).tags)(reg => restoreBlock(reg, claimed)).catch(quietFailure($, 'delivery put back'))
+    },
+  }
+}
+
+// [SP_HELP_02_06] The errand operations bound to the host: the storage taken
+// once per call ([CONC-01]).
+function errandIO($: EngineInterface): ErrandIO {
+  let dir: string | undefined
+  const tags = () => stores($, need(dir)).tags
+  return {
+    passedOver: () => isPassed(caps),
+    storageDown: async () => {
+      const st = await ensureStorage($)
+      if ('reason' in st) return st.reason
+      dir = st.dir
+      return undefined
+    },
+    storageRefusal,
+    readLedger: () => stores($, need(dir)).folds.read(),
+    size: () => sizeNow($),
+    readTags: () => tags().read(),
+    writeTags: reg => tags().write(reg),
+    onRegistry: work => tags().onChain(work),
+  }
 }
 
 // [SP_FOLD_02_02] Recall bound to the host: the ledger's read-modify-write on
@@ -972,7 +1110,8 @@ function flushIO($: EngineInterface): FlushIO {
     // a timer the host refuses at once throws here, to the planner
     after: (ms, fn) => void $.clock.after(ms, fn),
     // A refused prompt resolves with `drop`; Flush treats it as a failure.
-    submit: text => enteredOrThrow($.prompt.submit({ text })),
+    // [SP_HELP_02_08] the block at the end of the text; a refused prompt puts it back
+    submit: text => submitWithBlock(blockPort($), t => enteredOrThrow($.prompt.submit({ text: t })), text),
     removeDelivered: delivered => removeDelivered($, delivered),
     status: text => $.ui.status(text),
     toast: text => $.ui.toast(text),
@@ -997,7 +1136,12 @@ function idleIO($: EngineInterface): IdleIO {
     readQueue: dir => stores($, dir).queue.read(),
     updateQueue: (dir, change) => updateOf(stores($, dir).queue)(change),
     flushPlanned: () => isPlanned(flushState, Date.now()),
-    coldVerdict: dir => coldVerdictAt($, dir),
+    // [SP_HELP_02_07] a new verdict of the idle timer: the `cold` errands, then IdleRun goes on
+    coldVerdict: async dir => {
+      const cold = await coldVerdictAt($, dir)
+      if (cold) await errandsOn($, dir, { kind: 'cold', idle: true })
+      return cold
+    },
     after: (ms, fn) => $.clock.after(ms, fn),
     debug: text => $.ui.log(text, { to: 'debug' }),
   }
@@ -1081,13 +1225,11 @@ function usageInfo($: EngineInterface): Promise<UsageInfo> {
 // registry's chain, called once the tool's own work left every chain; none
 // for a subagent or a refused call, nor after context_edit and
 // context_handoff (remindsAfter).
+// [SP_HELP_02_08] DeliveryBlock: the note reminders and the fired errands.
 async function dueLines($: EngineInterface): Promise<string[]> {
-  const dir = await storageDir($).catch(() => undefined)
-  if (!dir) return []
-  const tags = stores($, dir).tags
-  // [PL_AUD_CTX_P11] a known registry without a pending reminder: no chain, no read
-  if (!reminderPending(tags.peek())) return []
-  return tags.onChain(() => noteReminders(tagIO($, dir))).catch((): string[] => [])
+  // [PL_AUD_CTX_P11] a known registry with nothing to deliver: no chain, no read
+  const got = await blockPort($).claim().catch(() => undefined)
+  return got?.lines ?? []
 }
 
 async function remindAfter<T extends object>($: EngineInterface, tool: string, agentId: unknown, out: T): Promise<T> {
@@ -1179,7 +1321,7 @@ function detectIO($: EngineInterface, dir: string | undefined, snap: Snapshot = 
     status: text => $.ui.status(text),
     toast: text => $.ui.toast(text),
     now: () => Date.now(),
-    markDue: after => markDueNow($, need(dir), after),
+    markDue: (after, closed) => markDueNow($, need(dir), after, closed),
   }
 }
 
@@ -1654,7 +1796,7 @@ export const register: Register = on => {
           }),
         deliveries: () => deliveredNow($, need(dir), held),
         // [SP_FOLD_02_03] the closed stage's recalls are due, and join the replacements
-        markDue: after => markDueNow($, need(dir), after),
+        markDue: (after, closed) => markDueNow($, need(dir), after, closed),
         recalls: () => recallsNow($, need(dir), queueHeld ?? held),
       },
       work =>
@@ -1691,10 +1833,21 @@ export const register: Register = on => {
   // [SP_HELP_02_02] [SP_HELP_02_03] The helper's tool: a question to the
   // archive of the named folds. A regex, as for context_recall. No reminder
   // goes with it: the result is the helper's reading.
+  // [SP_HELP_02_06] The errand operations carry the block after their result;
+  // `ask` none (its pair returns as a trace, which would take the block with it).
   on('tool.call', { tool: /^mcp__context-editor__context_helper$/ }, async ($, e, next) => {
-    const cwd = e.agentId ? undefined : await projectRoot($).catch(() => undefined)
-    const out = await contextAsk(askIO($, snapshot($), cwd, next.signal), { ...(e as unknown as HelperArgs), agentId: e.agentId }, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
-    return 'deny' in out ? deny(out.deny) : { result: out.result }
+    const args = { ...(e as unknown as HelperArgs), agentId: e.agentId }
+    if (e.agentId) return deny(HELPER_SUBAGENT)
+    if (args.op === 'ask') {
+      const cwd = await projectRoot($).catch(() => undefined)
+      const out = await contextAsk(askIO($, snapshot($), cwd, next.signal), args, typeof e.tool_use_id === 'string' ? e.tool_use_id : undefined)
+      return 'deny' in out ? deny(out.deny) : { result: out.result }
+    }
+    const bad = badHelperOp(args)
+    if (bad) return deny(bad)
+    const io = errandIO($)
+    const out = args.op === 'errand_add' ? await errandAdd(io, args) : args.op === 'errand_list' ? await errandList(io) : await errandRemove(io, (args as Record<string, unknown>).id)
+    return remindAfter($, String(e.tool), e.agentId, 'deny' in out ? deny(out.deny) : { result: out.result })
   }).catch(($, e, next) => (next.called ? next(e) : deny(`helper failed: ${next.error.kind}`)))
 
   // [SP_HELP_02_09] The cache clock: every step of the main conversation is a
@@ -1852,6 +2005,8 @@ export const register: Register = on => {
         countTurn: dir => stores($, dir).tags.onChain(() => countTurn(tagIO($, dir))),
         // [SP_HELP_02_09] the clock's memory into the registry, an aborted turn too
         clock: dir => writeClock($, dir).catch(quietFailure($, 'cache clock at the turn end')),
+        // [SP_HELP_02_07] TurnEnd: `turns`, and `size` with the request's size
+        errands: dir => sizeErrands($, dir, 'turn'),
         repair: () => repairAtTurnEnd(repairIO($), repairMem),
         flush: aborted => flushAfterTurn(flushIO($), flushState, aborted),
         // [SP_HELP_02_11] the idle timer after Flush was planned
@@ -2093,6 +2248,8 @@ export const register: Register = on => {
           .then(dir => chainOf($, 'aliases')(() => markAlias(aliasIO($, dir), facts)))
           .catch(() => undefined)
       : undefined
+    // [SP_HELP_02_07] BigOutput: the `size` errands before any gate of the hint
+    if (marked) await storageNow($).then(dir => (dir ? sizeErrands($, dir, 'output', facts.size) : undefined)).catch(() => undefined)
     const hint = marked ? await hintFor($).catch(() => undefined) : undefined
     lines.push(...callLines(marked, alias, hint))
     lines.push(...(await dueLines($)))
@@ -2166,8 +2323,12 @@ export const register: Register = on => {
       settle: async done => void (await updateOf(s.queue)(q => settledQueue(q, done))),
       // [SP_CTX_02_37] the turn channel, between turns only
       suggestion: () => suggestionFor($, dir),
-      // [SP_HELP_02_09] ColdVerdict, between turns only
-      cold: () => coldVerdictAt($, dir),
+      // [SP_HELP_02_09] ColdVerdict, between turns only; [SP_HELP_02_07] a new one fires the `cold` errands
+      cold: async () => {
+        if (await coldVerdictAt($, dir)) await errandsOn($, dir, { kind: 'cold', idle: false })
+      },
+      // [SP_HELP_02_08] the block in the prompt's hidden context
+      block: blockPort($, dir),
     })
   }).catch(($, e, next) => next(e))
 }

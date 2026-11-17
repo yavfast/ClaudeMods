@@ -3,7 +3,7 @@
 // IDLE_SLACK_MS; when it fires in an idle the prompt cache outlived, the
 // deferred batches apply through the mod's own compaction, with no turn and
 // no prompt. Pure: register.ts binds IdleIO to `$`.
-import { withApplyDeferred, withoutApplyDeferred } from './batches'
+import { errandMarked, idleMarked, withoutApplyDeferred, withoutIdleMark } from './batches'
 import { CACHE_TTL_MS, temperature } from './cacheclock'
 import { MARKER } from './compaction'
 import { appliedSince, calibrateWithin, type FlushIO } from './flush'
@@ -166,7 +166,7 @@ async function idleSteps(io: IdleIO, mem: IdleMemory): Promise<IdleOutcome> {
   // nothing to apply: a mark left on an empty queue goes, no command runs
   // (plugin-hooks 89); the edits of a waiting handoff belong to it
   if (!q.edits.length) {
-    if (q.applyDeferred || q.coldSince !== undefined) await clearMark(io, dir)
+    if (q.applyDeferred || q.coldSince !== undefined) await clearMark(io, dir, true)
     return 'nothing'
   }
   if (q.handoff || !(q.applyDeferred || q.edits.some(e => e.deferred !== undefined))) return 'nothing'
@@ -182,12 +182,14 @@ async function idleSteps(io: IdleIO, mem: IdleMemory): Promise<IdleOutcome> {
   }
   // the mark ties the apply to this idle: a request before the command moves
   // the last request on, and the handler skips the command (the turn's own
-  // Flush serves the queue)
-  const marked = await io.updateQueue(dir, x => (x.edits.length ? withApplyDeferred(x, last!) : undefined)).catch(err => {
+  // Flush serves the queue). [SP_HELP_02_07] An `apply` errand's mark stays
+  // as it is: it holds for any last request
+  const held = errandMarked(q)
+  const marked = await io.updateQueue(dir, x => (x.edits.length ? idleMarked(x, last!) : undefined)).catch(err => {
     io.debug?.(modText(`idle apply not marked: ${errorText(err)}`))
     return false
   })
-  if (!marked) return 'not-marked'
+  if (!marked && !held) return 'not-marked'
   // [SP_CTX_02_34] as Flush: the report takes this conversation's ratio
   await calibrateWithin(io)
   if (movedSince(io.turns, armedTurns) || !(await sameSession(io, session)) || io.flushPlanned?.()) {
@@ -220,8 +222,10 @@ async function sameSession(io: IdleIO, session: string | undefined): Promise<boo
 
 // The idle mark gone on the queue's chain; a failure leaves a mark the
 // handler drops as stale once the last request moves ([SP_HELP_02_10]).
-async function clearMark(io: IdleIO, dir: string): Promise<void> {
-  await io.updateQueue(dir, withoutApplyDeferred).catch(err => io.debug?.(modText(`idle mark not cleared: ${errorText(err)}`)))
+// [SP_HELP_02_07] An `apply` errand's mark stays, unless `all` (a queue with
+// no edit left).
+async function clearMark(io: IdleIO, dir: string, all = false): Promise<void> {
+  await io.updateQueue(dir, all ? withoutApplyDeferred : withoutIdleMark).catch(err => io.debug?.(modText(`idle mark not cleared: ${errorText(err)}`)))
 }
 
 // [SP_HELP_01_09] The longest wait of the session.start hook for StartRun's
@@ -283,11 +287,12 @@ async function startBranch(io: StartIO, mem: IdleMemory): Promise<StartOutcome |
   if (temp === 'warm') return armIdle(io, mem, await io.sessionId(), 'start', idleDelay(last, now)) ? 'armed' : 'not-armed'
   // the mark ties the apply to this cold cache; the reads and the write come
   // before the timer, so the command queues before the session.start chain ends
-  const marked = await io.updateQueue(dir, x => (x.edits.some(e => e.deferred !== undefined) ? withApplyDeferred(x, last!) : undefined)).catch(err => {
+  const held = errandMarked(q)
+  const marked = await io.updateQueue(dir, x => (x.edits.some(e => e.deferred !== undefined) ? idleMarked(x, last!) : undefined)).catch(err => {
     io.debug?.(modText(`start apply not marked: ${errorText(err)}`))
     return false
   })
-  if (!marked) return 'not-marked'
+  if (!marked && !held) return 'not-marked'
   const id0 = q.reportId
   type Wait = 'waiting' | 'started' | 'ended'
   let state: Wait = 'waiting'

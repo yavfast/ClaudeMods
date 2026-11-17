@@ -176,7 +176,7 @@ Input:
 | name | string | no | для `when: 'closed'`; 1..MAX_STAGE_NAME після обрізання |
 | action | `'remind' \| 'ask' \| 'apply'` | для `errand_add` | — |
 | text | string | для `action: 'remind'` | 1..MAX_NOTE |
-| wake | bool | no | лише `errand_add`; за замовчуванням false |
+| wake | bool | no | лише `errand_add`; за замовчуванням false; до фази 8 PL_HELP поле відхиляється як BAD_OP і в схемі його немає |
 | id | string | для `errand_remove` | ідентифікатор доручення |
 
 Output: результат інструмента — текст операції (§02_03, §02_06). Відмова — `context-editor: <причина>`, як в інших інструментах мода.

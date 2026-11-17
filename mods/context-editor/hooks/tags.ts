@@ -34,6 +34,7 @@ import type { QueuedDelivery } from './deliveries'
 import { badItemFields, type StateItem } from './state'
 import { isTitleState, titleOp, type TitleError, type TitleState } from './title'
 import { isCacheClock, type CacheClock } from './cacheclock'
+import { badErrandFields, type Errand } from './errands'
 import {
   blockName,
   carrierRow,
@@ -124,6 +125,10 @@ export type TagRegistry = {
   title?: TitleState
   // [SP_HELP_01_07] the main conversation's cache clock; absent: never written
   cache?: CacheClock
+  // [SP_HELP_01_05] the agent's conditional errands and the number of the
+  // next one; absent: none yet, the next is 1
+  errands?: Errand[]
+  nextErrand?: number
 }
 
 // [SP_CTX_01_10] TagRegistry.hint: `marks` — AliasRegistry.next at the last
@@ -257,6 +262,7 @@ export function parseRegistry(text: string): Read<TagRegistry> {
     reg.hint !== undefined && !isHintState(reg.hint) && 'hint',
     reg.title !== undefined && !isTitleState(reg.title) && 'title',
     reg.cache !== undefined && !isCacheClock(reg.cache) && 'cache',
+    badErrandFields(reg.errands, reg.nextErrand),
     reg.charsPerToken !== undefined && !(typeof reg.charsPerToken === 'number' && reg.charsPerToken >= CALIB_MIN && reg.charsPerToken <= CALIB_MAX) && 'charsPerToken',
   ].filter(Boolean)
   if (bad.length) return { state: 'unreadable', reason: `bad field(s): ${bad.join(', ')}` }
@@ -410,7 +416,9 @@ export type TagIO = {
   deliveries?: () => Promise<readonly QueuedDelivery[]>
   // [SP_FOLD_02_03] MarkDue once a close of this call is written: on the fold
   // ledger's chain; its failure only leaves the recalls not due
-  markDue?: (after: number) => Promise<void>
+  // [SP_HELP_02_07] `closed`: the names of the regions the closes of this
+  // call closed, for AreaClosed
+  markDue?: (after: number, closed?: readonly string[]) => Promise<void>
   // [SP_FOLD_02_03] the recalls not yet returned, of the fold ledger as it is
   // now; none when absent or unreadable
   recalls?: () => Promise<readonly Returnable[]>
@@ -444,7 +452,7 @@ export type TagError =
 // [SP_CTX_02_11] A stage event of the batch, in request order: an open with
 // its text, or a close with its block and the length of the chain it left
 // open ([SP_FOLD_02_03] MarkDue).
-export type StageEvent = { open: string } | { close: ClosedBlock; depth: number }
+export type StageEvent = { open: string } | { close: ClosedBlock; depth: number; names: string[] }
 
 export type TagOutcome = {
   registry: TagRegistry
@@ -541,7 +549,7 @@ export function applyTagRequests(
       const closed = closeStage(stages, rows, late ? prompt : carrier, keep)!
       stages = closed.registry
       closedFloor = startOf(rows, closed.block.end)
-      out.events.push({ close: closed.block, depth: closed.depth })
+      out.events.push({ close: closed.block, depth: closed.depth, names: closed.names })
       out.changed = true
       return
     }
@@ -592,7 +600,7 @@ export function applyTagRequests(
       if (closed) {
         stages = closed.registry
         closedFloor = startOf(rows, closed.block.end)
-        out.events.push({ close: closed.block, depth: closed.depth })
+        out.events.push({ close: closed.block, depth: closed.depth, names: closed.names })
       }
       openRefused = false
       const name = (named as string).trim()
@@ -759,7 +767,7 @@ export async function contextTag(
   // [SP_FOLD_02_03] MarkDue of the closes, before the replacements are queued
   // (the port logs its own failure): the shortest chain any close left marks
   // every recall the others would
-  if (closes.length) await io.markDue?.(Math.min(...closes.map(e => e.depth))).catch(() => undefined)
+  if (closes.length) await io.markDue?.(Math.min(...closes.map(e => e.depth)), closes.flatMap(e => e.names)).catch(() => undefined)
   let replaced: Replaced | undefined
   // [SP_CTX_02_13] a close by the tool, or the end of the waiting block
   if (closes.length || step.waited) replaced = await (io.replace ?? (() => queueTagReplacements(io)))().catch(() => undefined)

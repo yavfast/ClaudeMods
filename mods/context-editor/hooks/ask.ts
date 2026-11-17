@@ -183,9 +183,9 @@ export function askedLine(folds: readonly string[]): string {
 
 // [SP_HELP_02_03] AskText: the lines in order; over MAX_ASK_RESULT the quote
 // lines go from the end with one line of how many went. Lines 1–3 are never cut.
-export function askText(folds: readonly string[], answers: readonly PartAnswer[]): string {
+export function askText(folds: readonly string[], answers: readonly PartAnswer[], first = askedLine(folds), limit = MAX_ASK_RESULT): string {
   const many = answers.length > 1
-  const head = [askedLine(folds)]
+  const head = [first]
   for (const a of answers) {
     const { part, result } = a
     const where = part.parts > 1 ? ` part ${part.index} of ${part.parts}` : ''
@@ -209,7 +209,7 @@ export function askText(folds: readonly string[], answers: readonly PartAnswer[]
     [...head, ...(shown.length ? ['Verified quotes:', ...shown] : []), ...(hidden ? [`… ${hidden} more verified quote(s) not shown.`] : []), ...tail].join('\n')
   let shown = quotes
   let text = join(shown, 0)
-  while (text.length > MAX_ASK_RESULT && shown.length) {
+  while (text.length > limit && shown.length) {
     shown = shown.slice(0, -1)
     text = join(shown, quotes.length - shown.length)
   }
@@ -262,6 +262,9 @@ export const HELPER_PASSED_OVER =
   "this host passes over the mod's compaction hook: the question's pair could never be returned; open the original with Read at the path in the fold record."
 export const HELPER_SUBAGENT = "a subagent cannot use the mod's helper; only the main conversation's folds and errands are kept."
 export const ASK_UNRECORDED = ' The question was not recorded: its pair goes with your next apply.'
+// [SP_HELP_02_07] An errand's question on a host that passes over the compaction
+export const ERRAND_ASK_PASSED_OVER =
+  "this host passes over the mod's compaction hook, so the helper is not asked there; open the original with Read at the path in the fold record."
 
 // [SP_HELP_02_03] What Ask needs from the host; register.ts binds it.
 export type AskIO = Pick<RecallIO, 'passedOver' | 'storageDown' | 'storageRefusal' | 'rows' | 'region' | 'readArchive' | 'onLedger' | 'live' | 'note' | 'cwd'> & {
@@ -280,6 +283,117 @@ export type AskIO = Pick<RecallIO, 'passedOver' | 'storageDown' | 'storageRefusa
 // spec; the ledger and the archives are read once, outside every chain; the
 // parts are asked at once; the record is written on the ledger's chain with
 // QUESTIONS_FULL checked again. Nothing is queued and no apply runs.
+// [SP_HELP_02_03] The fields of a question: ASK_QUESTION, then ASK_FOLDS.
+export function askFields(args: { folds?: unknown; question?: unknown }): { question: string; folds: string[] } | { deny: string; code: 'ASK_QUESTION' | 'ASK_FOLDS' } {
+  const question = typeof args.question === 'string' ? args.question.trim() : ''
+  if (!question || question.length > MAX_QUESTION) return { code: 'ASK_QUESTION', deny: `"question" is a text of 1..${MAX_QUESTION} chars (ASK_QUESTION)` }
+  const folds = args.folds
+  if (!Array.isArray(folds) || !folds.length || folds.length > MAX_ASK_FOLDS || !folds.every(f => typeof f === 'string') || new Set(folds).size !== folds.length)
+    return { code: 'ASK_FOLDS', deny: `"folds" is a list of 1..${MAX_ASK_FOLDS} distinct fold ids, e.g. ["f3"] (ASK_FOLDS)` }
+  return { question, folds: folds as string[] }
+}
+
+// [SP_HELP_02_03] The folds of a question in the ledger: FOLD_UNKNOWN, ASK_MEDIA.
+export function foldsOf(ledger: Read<FoldLedger>, ids: readonly string[]): FoldEntry[] | { deny: string; code: 'FOLD_UNKNOWN' | 'ASK_MEDIA' } {
+  const no = (code: 'FOLD_UNKNOWN' | 'ASK_MEDIA', deny: string) => ({ code, deny: `${deny} (${code})` })
+  if (ledger.state === 'unreadable') return no('FOLD_UNKNOWN', `the fold ledger cannot be read (${ledger.reason}); the originals are at the paths in the fold records: open them with Read`)
+  const entries: FoldEntry[] = []
+  for (const id of ids) {
+    const f = FOLD_ID.test(id) ? ledger.value.folds.find(x => x.id === id) : undefined
+    if (!f) return no('FOLD_UNKNOWN', `no fold ${oneLine(id, 40)} in the fold ledger; its original is at the path in the fold record: open it with Read`)
+    entries.push(f)
+  }
+  const media = entries.find(f => f.kind === 'media')
+  return media ? no('ASK_MEDIA', `fold ${media.id} folded media; the helper reads text only; use ${RECALL_TOOL}`) : entries
+}
+
+type Material = { part: Part; level: SessionMessage[] }[]
+
+// [SP_HELP_02_03] The levels of the folds read once per archive and split
+// into parts: ARCHIVE_UNREADABLE, ASK_TOO_BIG.
+async function materialOf(
+  io: Pick<AskIO, 'readArchive' | 'cwd'>,
+  entries: readonly FoldEntry[],
+): Promise<Material | { deny: string; code: 'ARCHIVE_UNREADABLE' | 'ASK_TOO_BIG' }> {
+  const archives = new Map<string, Promise<string | undefined>>()
+  const levels: { fold: FoldEntry; level: SessionMessage[] }[] = []
+  for (const f of entries) {
+    if (!archives.has(f.archive)) archives.set(f.archive, io.readArchive(f.archive).catch(() => undefined))
+    const text = await archives.get(f.archive)!
+    const level = text === undefined ? undefined : levelOf(text, f)
+    if (!level)
+      return { code: 'ARCHIVE_UNREADABLE', deny: `the archive of fold ${f.id} cannot be read (${f.archive}, element ${f.entry}); the fold record stays the description of what it held (ARCHIVE_UNREADABLE)` }
+    levels.push({ fold: f, level })
+  }
+  const parts = levels.flatMap(({ fold, level }) => splitLevel(fold.id, level.map((r, n) => levelRowText(r, n, io.cwd))).map(part => ({ part, level })))
+  if (parts.length > HELP_MAX_PARTS) {
+    const chars = parts.reduce((n, p) => n + p.part.text.length, 0)
+    return {
+      code: 'ASK_TOO_BIG',
+      deny: `the material of ${entries.map(f => f.id).join(', ')} (~${chars} chars) needs ${parts.length} parts, over the limit of ${HELP_MAX_PARTS}; ask about fewer folds, or open a part with ${RECALL_TOOL} from/count (ASK_TOO_BIG)`,
+    }
+  }
+  return parts
+}
+
+// [SP_HELP_02_03] The parts asked at once; only an answered reply's quotes are checked.
+async function answersOf(io: Pick<AskIO, 'helper' | 'cwd'>, question: string, parts: Material): Promise<{ answers: PartAnswer[]; results: HelperResult[] }> {
+  const results = await Promise.all(parts.map(p => helperCall(io.helper, question, p.part.text)))
+  const answers: PartAnswer[] = parts.map(({ part, level }, i) => {
+    const result = results[i]!
+    if (result.status !== 'answered' || !result.reply) return { part, result, verified: [], rejected: 0 }
+    const fragments = level.slice(part.from, part.to + 1).flatMap((r, k) => fragmentsOf(r, part.from + k, level, io.cwd))
+    return { part, result, ...verifyQuotes(result.reply.quotes, part, fragments) }
+  })
+  return { answers, results }
+}
+
+// [SP_HELP_01_08] The journal's entry of a question.
+function askEntry(at: number, ids: string[], parts: number, results: readonly HelperResult[], answers: readonly PartAnswer[], errand?: string): AskEntry {
+  return {
+    kind: 'ask',
+    at,
+    folds: ids,
+    parts,
+    calls: results.reduce((n, r) => n + r.calls, 0),
+    in: results.reduce((n, r) => n + r.in, 0),
+    out: results.reduce((n, r) => n + r.out, 0),
+    verified: answers.reduce((n, a) => n + a.verified.length, 0),
+    rejected: answers.reduce((n, a) => n + a.rejected, 0),
+    status: askStatus(results),
+    ...(errand ? { errand } : {}),
+  }
+}
+
+// [SP_HELP_02_07] The first line of an errand's question.
+export function errandAskedLine(id: string, folds: readonly string[]): string {
+  return askedLine(folds).replace(ASKED_HEAD, `Errand ${id} asked `)
+}
+
+// [SP_HELP_02_07] The question of a fired `ask` errand, in the background:
+// the steps of Ask without a pair (no record, no call id); a refusal gives
+// its text. `limit`: what the result may hold after the errand's line. The
+// journal's entry names the errand.
+export async function errandAsk(
+  io: Pick<AskIO, 'passedOver' | 'readLedger' | 'readArchive' | 'helper' | 'journal' | 'now' | 'cwd'>,
+  errand: { id: string; folds: string[]; question: string },
+  limit: number,
+): Promise<string> {
+  if (io.passedOver()) return ERRAND_ASK_PASSED_OVER
+  const read = await io.readLedger().catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) }))
+  const entries = foldsOf(read, errand.folds)
+  if ('deny' in entries) return entries.deny
+  const parts = await materialOf(io, entries)
+  if ('deny' in parts) return parts.deny
+  const { answers, results } = await answersOf(io, errand.question, parts)
+  io.journal(askEntry(io.now(), errand.folds, parts.length, results, answers, errand.id))
+  return askText(errand.folds, answers, errandAskedLine(errand.id, errand.folds), limit)
+}
+
+// [SP_HELP_02_02] [SP_HELP_02_03] Ask: the refusals in the order of the
+// spec; the ledger and the archives are read once, outside every chain; the
+// parts are asked at once; the record is written on the ledger's chain with
+// QUESTIONS_FULL checked again. Nothing is queued and no apply runs.
 export async function contextAsk(io: AskIO, args: HelperArgs, callId: string | undefined): Promise<{ result: string } | { deny: string; code: AskDeny }> {
   const no = (code: AskDeny, deny: string) => ({ code, deny: `${deny} (${code})` })
   if (args.agentId) return { code: 'DENIED_SUBAGENT', deny: HELPER_SUBAGENT }
@@ -287,50 +401,21 @@ export async function contextAsk(io: AskIO, args: HelperArgs, callId: string | u
   if (args.op !== 'ask' || other.length)
     return no('BAD_OP', `${args.op === 'ask' ? `"ask" takes no ${other.map(f => `"${f}"`).join(', ')}; it` : '"op" is "ask"; it'} takes "folds" (fold ids from their records) and "question"`)
   if (io.passedOver()) return { code: 'HELPER_PASSED_OVER', deny: HELPER_PASSED_OVER }
-  const question = typeof args.question === 'string' ? args.question.trim() : ''
-  if (!question || question.length > MAX_QUESTION) return no('ASK_QUESTION', `"question" is a text of 1..${MAX_QUESTION} chars`)
-  const folds = args.folds
-  if (!Array.isArray(folds) || !folds.length || folds.length > MAX_ASK_FOLDS || !folds.every(f => typeof f === 'string') || new Set(folds).size !== folds.length)
-    return no('ASK_FOLDS', `"folds" is a list of 1..${MAX_ASK_FOLDS} distinct fold ids, e.g. ["f3"]`)
-  const ids = folds as string[]
+  const fields = askFields(args)
+  if ('deny' in fields) return fields
+  const { question, folds: ids } = fields
   const down = await io.storageDown()
   if (down !== undefined) return { code: 'DENIED_STORAGE', deny: io.storageRefusal(down) }
   const read = await io.readLedger().catch((err): Read<FoldLedger> => ({ state: 'unreadable', reason: errorText(err) }))
-  if (read.state === 'unreadable') return no('FOLD_UNKNOWN', `the fold ledger cannot be read (${read.reason}); the originals are at the paths in the fold records: open them with Read`)
+  const entries = foldsOf(read, ids)
+  if ('deny' in entries) return entries
   const rows = await io.rows()
-  const entries: FoldEntry[] = []
-  for (const id of ids) {
-    const f = FOLD_ID.test(id) ? read.value.folds.find(x => x.id === id) : undefined
-    if (!f) return no('FOLD_UNKNOWN', `no fold ${oneLine(id, 40)} in the fold ledger; its original is at the path in the fold record: open it with Read`)
-    entries.push(f)
-  }
-  const media = entries.find(f => f.kind === 'media')
-  if (media) return no('ASK_MEDIA', `fold ${media.id} folded media; the helper reads text only; use ${RECALL_TOOL}`)
-  const waiting = pruneRecalls(read.value, rows, io.live()).questions.length
+  const waiting = pruneRecalls((read as { value: FoldLedger }).value, rows, io.live()).questions.length
   if (waiting >= MAX_QUESTIONS) return no('QUESTIONS_FULL', `${waiting} questions wait for their regions to close; summarize or drop an answered question pair first`)
-  const archives = new Map<string, Promise<string | undefined>>()
-  const levels: { fold: FoldEntry; level: SessionMessage[] }[] = []
-  for (const f of entries) {
-    if (!archives.has(f.archive)) archives.set(f.archive, io.readArchive(f.archive).catch(() => undefined))
-    const text = await archives.get(f.archive)!
-    const level = text === undefined ? undefined : levelOf(text, f)
-    if (!level) return no('ARCHIVE_UNREADABLE', `the archive of fold ${f.id} cannot be read (${f.archive}, element ${f.entry}); the fold record stays the description of what it held`)
-    levels.push({ fold: f, level })
-  }
-  const parts = levels.flatMap(({ fold, level }) => splitLevel(fold.id, level.map((r, n) => levelRowText(r, n, io.cwd))).map(part => ({ part, level })))
-  if (parts.length > HELP_MAX_PARTS) {
-    const chars = parts.reduce((n, p) => n + p.part.text.length, 0)
-    return no('ASK_TOO_BIG', `the material of ${ids.join(', ')} (~${chars} chars) needs ${parts.length} parts, over the limit of ${HELP_MAX_PARTS}; ask about fewer folds, or open a part with ${RECALL_TOOL} from/count`)
-  }
+  const parts = await materialOf(io, entries)
+  if ('deny' in parts) return parts
   const region = await io.region()
-  const results = await Promise.all(parts.map(p => helperCall(io.helper, question, p.part.text)))
-  const answers: PartAnswer[] = parts.map(({ part, level }, i) => {
-    const result = results[i]!
-    // only an answered reply's quotes are checked ([SP_HELP_02_03])
-    if (result.status !== 'answered' || !result.reply) return { part, result, verified: [], rejected: 0 }
-    const fragments = level.slice(part.from, part.to + 1).flatMap((r, k) => fragmentsOf(r, part.from + k, level, io.cwd))
-    return { part, result, ...verifyQuotes(result.reply.quotes, part, fragments) }
-  })
+  const { answers, results } = await answersOf(io, question, parts)
   let text = askText(ids, answers)
   const verified = answers.reduce((n, a) => n + a.verified.length, 0)
   const rejected = answers.reduce((n, a) => n + a.rejected, 0)
@@ -364,17 +449,6 @@ export async function contextAsk(io: AskIO, args: HelperArgs, callId: string | u
     if (written) io.note(callId)
     else text += ASK_UNRECORDED
   } else if (!cut) text += ASK_UNRECORDED
-  io.journal({
-    kind: 'ask',
-    at: io.now(),
-    folds: ids,
-    parts: parts.length,
-    calls: results.reduce((n, r) => n + r.calls, 0),
-    in: results.reduce((n, r) => n + r.in, 0),
-    out: results.reduce((n, r) => n + r.out, 0),
-    verified,
-    rejected,
-    status: askStatus(results),
-  })
+  io.journal(askEntry(io.now(), ids, parts.length, results, answers))
   return { result: text }
 }

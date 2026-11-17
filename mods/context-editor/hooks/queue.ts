@@ -7,6 +7,7 @@ import type { Replaced } from './stages'
 import { detachNote, hostRecord, type HostRowRecord } from './hostrows'
 import { addReturns, isOwnReturn, type Returnable } from './folds'
 import { BATCH_PREFIX, isBatchId, nonDeferred } from './batches'
+import type { BlockPort } from './errands'
 
 // [SP_CTX_01_12]
 export const DEFAULT_RESUME = 'Continue the task from where you stopped.'
@@ -701,6 +702,9 @@ export type DeliverIO<R> = {
   // [SP_HELP_02_09] ColdVerdict of the cache clock on the registry's chain;
   // asked only between turns; absent: none
   cold?: () => Promise<unknown>
+  // [SP_HELP_02_08] DeliveryBlock: claimed before the prompt enters, put back
+  // when it is dropped or its entry throws; absent: none
+  block?: BlockPort
 }
 
 // [SP_CTX_02_08] [SP_CTX_02_27] The person's prompt (or another plugin's)
@@ -740,8 +744,18 @@ export async function deliverReport<R extends { drop?: unknown }>(io: DeliverIO<
   }
   // the person took the turn between turns: the loop guard is no longer needed
   const tookOver = !!q?.optimizePrompted && !io.inTurn()
-  const entered = await io.enter(context)
-  if (entered.drop !== undefined) return entered
+  // [SP_HELP_02_08] the block goes last; a failed claim delivers nothing
+  const block = io.block ? await io.block.claim().catch(() => undefined) : undefined
+  if (block) context.push(...block.lines)
+  const putBack = () => (block ? io.block!.restore(block.claimed).catch(() => undefined) : undefined)
+  let entered: R
+  try {
+    entered = await io.enter(context)
+  } catch (err) {
+    await putBack()
+    throw err
+  }
+  if (entered.drop !== undefined) return await putBack(), entered
   // INTRO_NOT_RECORDED: the intro comes again with the next prompt
   if (intro) await io.markIntroduced().catch(() => undefined)
   if (q && (q.report || q.optimize || tookOver))

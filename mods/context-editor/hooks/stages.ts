@@ -6,6 +6,7 @@
 // tags.ts imports the mark functions from here and this module imports the
 // tag functions from tags.ts: the cycle holds functions only, no top-level
 // value of one module reads the other's.
+import { afterDelivery, errandsLine } from './errands'
 import type { SessionMessage } from 'claude-code'
 import { aliasesById, type AliasRegistry } from './aliases'
 import { personText } from './deliveries'
@@ -50,7 +51,7 @@ import type { Queue } from './queue'
 import { deferredRewrite, deferredView, firstRowOf, nonDeferred, type DeferredView } from './batches'
 import type { Change, Read } from './store'
 import { activeReviews, dropLastApply, EMPTY_REGISTRY, isActive, queueTagReplacements, registryFull, resolveTarget, REVIEW_GROUPS, reviewGroup, stateRow, tagLabels, tagsFullLine, type ReviewGroup, type Tag, type TagIO, type TagRegistry } from './tags'
-import { afterReminders, applyNoteRequests, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
+import { applyNoteRequests, blockNotes, noteLabels, noteLines, notesHint, rowNotes, withReminderLines, type NoteLine } from './notes'
 import { answerRow, OPTIMIZE_MARK, parseTrailers } from './trailers'
 
 // ---- [SP_CTX_01_12] constants
@@ -202,19 +203,20 @@ export function turnWorked(rows: readonly SessionMessage[], p: number, carrier: 
 // row of the call, or the prompt of its turn for a task that ends before the
 // turn's request (context_tag). `keep` defaults to the deepest region alone.
 // Undefined when nothing closes (NO_STAGE). `depth`: the length of the chain
-// left. The caller writes the registry. Pure.
+// left; `names`: the regions it closed, outer to inner ([SP_HELP_02_07]
+// AreaClosed). The caller writes the registry. Pure.
 export function closeStage<R extends StageFields>(
   reg: R,
   rows: readonly SessionMessage[],
   carrier: number,
   keep = chainOf(reg).length - 1,
-): { registry: R; block: ClosedBlock; depth: number } | undefined {
+): { registry: R; block: ClosedBlock; depth: number; names: string[] } | undefined {
   const chain = chainOf(reg)
   const at = Math.max(0, keep)
   const outermost = chain[at]
   if (!outermost) return undefined
   const block: ClosedBlock = { name: outermost.name, after: outermost.after, end: markBefore(rows, carrier), turn: reg.turn, ...(isTask(outermost) ? { kind: 'task' as const } : {}) }
-  return { registry: { ...withChain(reg, chain.slice(0, at)), lastClosed: block }, block, depth: at }
+  return { registry: { ...withChain(reg, chain.slice(0, at)), lastClosed: block }, block, depth: at, names: chain.slice(at).map(s => s.name) }
 }
 
 // [SP_CTX_01_18] context_tag and DetectOptimize write null in the place of a
@@ -414,6 +416,8 @@ export type Telemetry = {
   chars?: number
   // [SP_CTX_01_21] the notes of the registry and how many wait for a reminder
   notes: { count: number; reminders: number }
+  // [SP_HELP_02_13] the errands' line of the registry; absent: none
+  errands?: string
   // [SP_CTX_02_28] the measured change of the request since the last apply,
   // shown once after the first model response after it
   measuredFreed?: number
@@ -631,6 +635,8 @@ export async function telemetry(
   t.state = slot === undefined ? 'none' : slot < 0 ? 'lost' : { row: slot }
   t.disposable = reg.tags.filter(tag => tag.kind === 'disposable' && resolveTarget(rows, tag.target, ix)).length
   t.notes = { count: reg.notes.length, reminders: reg.notes.filter(n => n.remindAt !== undefined).length }
+  const errands = errandsLine(reg)
+  if (errands) t.errands = errands
   // [SP_CTX_02_28] phase 30 (CF-34): the automatic rules add nothing to a full registry
   const full = registryFull(reg)
   if (full) t.tagsFull = full
@@ -700,6 +706,7 @@ export function telemetryText(t: Telemetry): string {
   // [SP_HELP_02_13] after the Cache line: the clock, the helper, the clock's checks
   if (t.clock) lines.push(clockLine(t.clock.last, t.clock.now))
   if (t.deferred) lines.push(deferredLine(t.deferred, t.clock ? temperature(t.clock.last, t.clock.now) : 'unknown'))
+  if (t.errands) lines.push(t.errands)
   const summary = t.journal && !('unreadable' in t.journal) ? t.journal : undefined
   if (summary?.helper) lines.push(helperLine(summary.helper))
   if (summary?.checks) lines.push(checksLine(summary.checks))
@@ -897,7 +904,7 @@ export async function contextList(io: ListIO, args: ListArgs): Promise<{ result:
     // [SP_CTX_02_33] counted as if this call's due reminders were delivered;
     // they are delivered only once the listing is built (a failure keeps them)
     const update = dir ? io.updateTags(dir) : undefined
-    const t = await telemetry(rows, tagged.reg && afterReminders(tagged.reg), io.usage, update, dir ? await io.journal(dir) : undefined, io.api)
+    const t = await telemetry(rows, tagged.reg && afterDelivery(tagged.reg), io.usage, update, dir ? await io.journal(dir) : undefined, io.api)
     const left = dir && io.hostAttach ? await io.hostAttach(dir).catch(() => undefined) : undefined
     if (left) t.hostAttach = left
     // [SP_HELP_02_09] the later of the registry's time and the memory's
@@ -1294,12 +1301,12 @@ export function markClose(reg: TagRegistry, rows: readonly SessionMessage[]): Ta
 // waiting ends first, as when the tool closes a region ([SP_CTX_DEC_37]);
 // nothing is queued. `depth`: the length of the chain left. Undefined when no
 // region is open. Lost starts become null. Pure.
-export function closeAtTurnEnd<R extends TagRegistry>(reg: R, rows: readonly SessionMessage[], count: number): { registry: R; depth: number } | undefined {
+export function closeAtTurnEnd<R extends TagRegistry>(reg: R, rows: readonly SessionMessage[], count: number): { registry: R; depth: number; names: string[] } | undefined {
   const r = normalizeLost(reg, rows)
   const chain = chainOf(r)
   if (!chain.length || count < 1) return undefined
   const closed = closeStage(endWaiting(r)?.registry ?? r, rows, rows.length, Math.max(0, chain.length - count))!
-  return { registry: closed.registry, depth: closed.depth }
+  return { registry: closed.registry, depth: closed.depth, names: closed.names }
 }
 
 // What DetectOptimize needs from the host; register.ts binds it to `$`.
@@ -1320,7 +1327,9 @@ export type DetectIO = {
   now: () => number
   // [SP_FOLD_02_03] MarkDue once the mark closed the block: on the fold
   // ledger's chain; its failure only leaves the recalls not due
-  markDue?: (after: number) => Promise<void>
+  // [SP_HELP_02_07] `closed`: the names of the regions this close closed
+  // (none: a block with no region) for AreaClosed; undefined: no new close
+  markDue?: (after: number, closed?: readonly string[]) => Promise<void>
 }
 
 // [SP_FOLD_02_06] how much of an unknown trailer line the person's status line repeats
@@ -1409,11 +1418,14 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   let regWhy: string | undefined
   // [SP_FOLD_02_03] the length of the chain the mark or the closes left; undefined: nothing closed
   let depth: number | undefined
+  // [SP_HELP_02_07] the regions closed now, for AreaClosed; undefined: no new close
+  let names: string[] | undefined
   const notSaved: string[] = []
   try {
     const rows = await io.rows()
     await io.changeTags(read => {
       depth = undefined
+      names = undefined
       notSaved.length = 0
       if (read.state === 'unreadable') {
         regWhy = 'the tag registry is unreadable'
@@ -1421,13 +1433,18 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
       }
       let next = read.value
       if (marks) {
+        const before = chainOf(next)
+        // a block the tool closed in this turn is only marked: it closed before
+        const fresh = !(next.lastClosed && next.lastClosed.turn === next.turn)
         next = markClose(next, rows)
         depth = chainOf(next).length
+        if (fresh) names = before.slice(depth).map(s => s.name)
       } else if (closes) {
         const closed = closeAtTurnEnd(next, rows, closes)
         if (closed) {
           next = closed.registry
           depth = closed.depth
+          names = closed.names
         }
       }
       // [SP_CTX_02_32] the notes go on the row of the final answer
@@ -1449,7 +1466,7 @@ export async function detectOptimize(io: DetectIO, e: { aborted: boolean; answer
   said.push(...notSaved.map(why => `trailer note not saved: ${why}`))
   say()
   // [SP_FOLD_02_03] the recalls of the closed block are due (the port logs its own failure)
-  if (depth !== undefined) await io.markDue?.(depth).catch(() => undefined)
+  if (depth !== undefined) await io.markDue?.(depth, names).catch(() => undefined)
   // [SP_CTX_DEC_37] nothing queued: the mark's block waits for the agent's move to the next stage
   return marks ? 'waiting' : (markOut ?? 'trailers')
 }

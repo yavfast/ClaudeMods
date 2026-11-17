@@ -1,9 +1,9 @@
 import type { SessionMessage } from 'claude-code'
+import { afterDelivery, claimDelivery, deliveryPending } from '../hooks/errands'
 import { expect, test } from 'claude-code/testing'
 import { applyEdits, describeEdit, dropOwnCalls, fingerprint, formatReport, listRows, mergeCallRows, NO_REFS, prepare, producedRows, type QueuedEdit, type RefResolver } from '../hooks/edits'
 import { EMPTY_QUEUE, type Queue } from '../hooks/queue'
 import {
-  afterReminders,
   applyNoteRequests,
   blockNotes,
   contextNote,
@@ -13,9 +13,7 @@ import {
   MAX_REMIND,
   noteLabels,
   noteLines,
-  noteReminders,
   rebindNotes,
-  reminderPending,
   remindable,
   remindsAfter,
   withReminderLines,
@@ -198,18 +196,22 @@ test('parseRegistry reads notes and nextNote and refuses bad ones', async () => 
   }
 })
 
-// ---- [SP_CTX_02_33] NoteReminders
+// ---- [SP_CTX_02_33] NoteReminders: the reminders' part of DeliveryBlock ([SP_HELP_02_08])
+
+async function claimLines(io: { readTags: TagIO['readTags']; writeTags: TagIO['writeTags'] }): Promise<string[]> {
+  return (await claimDelivery({ readTags: io.readTags, writeTags: io.writeTags, now: () => 0 }))?.lines ?? []
+}
 
 test('NoteReminders — доставка один раз: remindAt 9; turn 8 nothing; turn 9 the line, remindAt removed; once more nothing', async () => {
   const start = (turn: number) => reg({ turn, notes: [note('n1', { tool_use_id: 'a' }, { createdTurn: 7, remindAt: 9, text: 'check the fix' })], nextNote: 2 })
   const early = harness(start(8))
-  expect(await noteReminders(early.io)).toEqual([])
+  expect(await claimLines(early.io)).toEqual([])
   expect(early.log.writes).toBe(0)
   const due = harness(start(9))
-  expect(await noteReminders(due.io)).toEqual(['[context-editor] reminder from your note n1 (set 2 turn(s) ago): check the fix'])
+  expect(await claimLines(due.io)).toEqual(['[context-editor] reminder from your note n1 (set 2 turn(s) ago): check the fix'])
   expect(due.log.tags.notes[0]!.remindAt).toBeUndefined()
   expect(due.log.tags.notes[0]!.text).toBe('check the fix')
-  expect(await noteReminders(due.io)).toEqual([])
+  expect(await claimLines(due.io)).toEqual([])
 })
 
 test('NoteReminders — не для власних інструментів: own tools, denied calls and subagents get no reminder', async () => {
@@ -228,17 +230,17 @@ test('NoteReminders — збій запису: no line; remindAt stays; the next
       h.log.tags = r
     },
   })
-  expect(await noteReminders(h.io)).toEqual([])
+  expect(await claimLines(h.io)).toEqual([])
   expect(h.log.tags.notes[0]!.remindAt).toBe(9)
   fail = false
-  expect((await noteReminders(h.io)).length).toBe(1)
+  expect((await claimLines(h.io)).length).toBe(1)
   // missing or unreadable registry: nothing, and nothing written
   const due = reg({ turn: 9, notes: [note('n1', { tool_use_id: 'a' }, { remindAt: 9 })], nextNote: 2 })
   const missing = harness(reg(), rows(), { readTags: async () => missingRead(due) })
-  expect(await noteReminders(missing.io)).toEqual([])
+  expect(await claimLines(missing.io)).toEqual([])
   expect(missing.log.writes).toBe(0)
   const unreadable = harness(reg(), rows(), { readTags: async () => unreadableRead('bad json') })
-  expect(await noteReminders(unreadable.io)).toEqual([])
+  expect(await claimLines(unreadable.io)).toEqual([])
   expect(unreadable.log.writes).toBe(0)
 })
 
@@ -449,7 +451,7 @@ test('NoteReminders — не з context_edit і context_handoff: their calls go 
 // [SP_CTX_02_33] review round 40: the listing counts as if delivered, and delivers only once built
 test('afterReminders — the registry the listing counts: due reminders taken as delivered, the rest pending', async () => {
   const g = reg({ turn: 5, notes: [note('n1', { tool_use_id: 'a' }, { remindAt: 5 }), note('n2', { tool_use_id: 'b' }, { remindAt: 9 })], nextNote: 3 })
-  const counted = afterReminders(g)
+  const counted = afterDelivery(g)
   expect(counted.notes.map(n => n.remindAt)).toEqual([undefined, 9])
   expect(g.notes[0]!.remindAt).toBe(5)
   expect(telemetryText(await telemetry(rows(), counted, async () => ({ context: { window: 1000 } })))).toContain('Notes: 2 (1 with a reminder pending)')
@@ -459,9 +461,9 @@ test('afterReminders — the registry the listing counts: due reminders taken as
 
 test('ReminderPending — ворота в пам\'яті: a known registry without a pending remindAt skips; one with a pending remindAt, an unknown one (no cached read) or an unreadable one goes to NoteReminders', async () => {
   const note = { id: 'n1', target: { tool_use_id: 'a' }, text: 'x', createdTurn: 0 }
-  expect(reminderPending(okRead(reg({ notes: [note] })))).toBe(false)
-  expect(reminderPending(missingRead(reg()))).toBe(false)
-  expect(reminderPending(okRead(reg({ notes: [{ ...note, remindAt: 3 }] })))).toBe(true)
-  expect(reminderPending(undefined)).toBe(true)
-  expect(reminderPending(unreadableRead('x'))).toBe(true)
+  expect(deliveryPending(okRead(reg({ notes: [note] })))).toBe(false)
+  expect(deliveryPending(missingRead(reg()))).toBe(false)
+  expect(deliveryPending(okRead(reg({ notes: [{ ...note, remindAt: 3 }] })))).toBe(true)
+  expect(deliveryPending(undefined)).toBe(true)
+  expect(deliveryPending(unreadableRead('x'))).toBe(true)
 })

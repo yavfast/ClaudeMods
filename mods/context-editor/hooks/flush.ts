@@ -177,6 +177,9 @@ export type TurnEndIO = {
   // [SP_HELP_02_09] the cache clock's memory into the registry in `dir`, an
   // aborted turn too; absent: none
   clock?: (dir: string) => Promise<unknown>
+  // [SP_HELP_02_07] CheckErrands on TurnEnd in `dir`, a completed turn only,
+  // before Flush (an `apply` errand's mark reaches this turn's Flush); absent: none
+  errands?: (dir: string) => Promise<unknown>
   // [SP_CTX_02_46] the repair after a switch in the process (/resume): its
   // timer, from the turn end; absent: none
   repair?: () => Promise<unknown>
@@ -208,6 +211,7 @@ export async function afterTurn(io: TurnEndIO, e: { aborted: boolean; answer?: u
     await step(() => io.detect(dir, { aborted: e.aborted, answer }))
     if (!e.aborted && dir) await step(() => io.countTurn(dir))
     if (io.clock && dir) await step(() => io.clock!(dir))
+    if (io.errands && !e.aborted && dir) await step(() => io.errands!(dir))
     if (io.repair) await step(io.repair)
     await step(() => io.flush(e.aborted))
     if (io.idle) await step(() => io.idle!(e.aborted))

@@ -1,4 +1,5 @@
 import type { SessionMessage } from 'claude-code'
+import { HANDED_OFF_TEXT } from '../hooks/errands'
 import { HANDOFF_COMMAND_PASSED_OVER, HANDOFF_PASSED_OVER } from '../hooks/capabilities'
 import { expect, test } from 'claude-code/testing'
 import { handleCompaction, HANDOFF_MARKER, type CompactionIO } from '../hooks/compaction'
@@ -2380,6 +2381,20 @@ test('Передача — транскрипт з відкладеним пак
   expect([oldQueue().edits, oldQueue().deferredSince, oldQueue().nextBatch]).toEqual([[], undefined, 2])
 })
 
+// [SP_HELP_05_01] Передача — перенесення (у частині доручень), [SP_HELP_02_14]
+test('Передача — транскрипт з дорученнями: the errands go with the registry; a running one becomes fired with HANDED_OFF_TEXT', async () => {
+  const { io, s } = host({ edits: [{ op: 'drop', tool_use_id: 'b' }] })
+  const running = { id: 'e1', when: { kind: 'cold' as const }, action: { kind: 'ask' as const, folds: ['f1'], question: 'q' }, wake: false, createdTurn: 1, state: 'running' as const, firedAt: 5 }
+  const open = { id: 'e2', when: { kind: 'turns' as const, n: 3 }, action: { kind: 'remind' as const, text: 'look' }, wake: false, createdTurn: 1, state: 'open' as const }
+  s.tags.set('/s/old', { ...EMPTY_REGISTRY, turn: 4, errands: [running, open], nextErrand: 3 })
+  expect(await runHandoff(io, s.mem, 0)).toBe('transcript')
+  const carried = s.tags.get('/s/new')!
+  expect(carried.nextErrand).toBe(3)
+  expect(carried.errands![0]).toMatchObject({ id: 'e1', state: 'fired' })
+  expect(carried.errands![0]!.result!.endsWith(HANDED_OFF_TEXT)).toBe(true)
+  expect(carried.errands![1]).toEqual(open)
+})
+
 // [SP_HELP_05_01] Передача — документ (у частині відкладених)
 test('Передача — документ з відкладеним пакетом: the deferred edit drops with the old conversation, its own sentence; the queued count is by NonDeferred', async () => {
   const { io, s, oldQueue } = host({ h: { mode: 'document', document: 'my handoff' }, edits: [{ op: 'drop', tool_use_id: 'a' }, { op: 'drop', tool_use_id: 'b' }] })
@@ -2395,4 +2410,10 @@ test('Передача — документ з відкладеним пакет
   expect(await runHandoff(only.io, only.s.mem, 0)).toBe('document')
   expect(only.s.submitted[0]).not.toContain('queued edit(s) were not carried over')
   expect(only.s.submitted[0]).toContain(' 1 deferred edit(s) were dropped with the old conversation.')
+  // [SP_HELP_02_14] the errands drop with the registry: their own sentence
+  const errands = host({ h: { mode: 'document', document: 'my handoff' }, edits: [{ op: 'drop', tool_use_id: 'a' }] })
+  const e = (n: number) => ({ id: `e${n}`, when: { kind: 'cold' as const }, action: { kind: 'apply' as const }, wake: false, createdTurn: 0, state: 'open' as const })
+  errands.s.tags.set('/s/old', { ...EMPTY_REGISTRY, errands: [e(1), e(2)], nextErrand: 3 })
+  expect(await runHandoff(errands.io, errands.s.mem, 0)).toBe('document')
+  expect(errands.s.submitted[0]).toContain(' 2 errand(s) were dropped with the old conversation.')
 })

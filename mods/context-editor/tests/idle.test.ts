@@ -562,3 +562,33 @@ test('IdleRun — таймер StartRun: armed warm at the start, it fires on a 
   expect(log.lines).toEqual(['applied 1'])
   expect(log.submits).toBe(0)
 })
+
+// [SP_HELP_02_07] [SP_HELP_02_11] An `apply` errand's mark (applyDeferred, no coldSince) outlives IdleRun's own
+test('IdleRun — позначка доручення: kept as it is (no coldSince added); refused or moved, it stays for the next apply', async () => {
+  const marked = () => q0([sum('c1', 'b1')], { deferredSince: { b1: 1 }, nextBatch: 2, applyDeferred: true })
+  const ok = fake({ queue: marked() })
+  armIdle(ok.io, ok.mem, 's1', 'turn', WHOLE)
+  expect(await idleRun(ok.io, ok.mem)).toBe('applied')
+  expect(ok.log.compact[0]!.queue.applyDeferred).toBe(true)
+  expect(ok.log.compact[0]!.queue.coldSince).toBeUndefined()
+  const refused = fake({ queue: marked() })
+  refused.io.compact = async () => {
+    throw new Error('interrupted')
+  }
+  armIdle(refused.io, refused.mem, 's1', 'turn', WHOLE)
+  expect(await idleRun(refused.io, refused.mem)).toBe('refused')
+  expect([refused.state.queue.applyDeferred, refused.state.queue.coldSince]).toEqual([true, undefined])
+  const moved = fake({ queue: marked() })
+  armIdle(moved.io, moved.mem, 's1', 'turn', WHOLE)
+  moved.io.calibrate = async () => void turnStarted(moved.turns)
+  expect(await idleRun(moved.io, moved.mem)).toBe('moved')
+  expect([moved.state.queue.applyDeferred, moved.state.queue.coldSince]).toEqual([true, undefined])
+  // IdleRun's own mark still goes when refused
+  const own = fake()
+  own.io.compact = async () => {
+    throw new Error('interrupted')
+  }
+  armIdle(own.io, own.mem, 's1', 'turn', WHOLE)
+  await idleRun(own.io, own.mem)
+  expect(own.state.queue.applyDeferred).toBeUndefined()
+})
