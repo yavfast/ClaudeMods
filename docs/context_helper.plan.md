@@ -1,9 +1,9 @@
 # Implementation Plan: Помічник мода  {#PL_HELP}
 
 > **Code:** PL_HELP
-> **Status:** active
+> **Status:** completed
 > **Created:** 2026-11-16
-> **Updated:** 2026-11-16
+> **Updated:** 2026-11-17
 >
 > **Concept:** [C_HELP](./context_helper.concept.md)
 > **Specification:** [SP_HELP](./context_helper.sp.md) (парасолька й дочірні [ask](./context_helper.ask.sp.md), [errands](./context_helper.errands.sp.md), [batches](./context_helper.batches.sp.md))
@@ -61,7 +61,7 @@
 - [x] [Phase 6 — Новий процес](#PL_HELP_P6)
 - [x] [Phase 7 — Доручення з умовою й доставка](#PL_HELP_P7)
 - [x] [Phase 8 — Пробудження](#PL_HELP_P8)
-- [ ] [Phase 9 — Живий прогін і передача знань](#PL_HELP_P9)
+- [x] [Phase 9 — Живий прогін і передача знань](#PL_HELP_P9)
 
 ## Phases
 
@@ -224,7 +224,7 @@ What to create:
 | WakeCheck у кінці ходу, у кінці Flush без промпту, в IdleRun з `armedBy = turn`; таймер повторної перевірки WAKE_RECHECK_MS з ланцюжка `turn.complete`, знятий MovedSince | `hooks/flush.ts`, `hooks/idle.ts`, `hooks/register.ts` | точки виклику |
 | Поле `wake` у схемі й описі `context_helper`, речення результату `errand_add` | `hooks/tools.ts`, `hooks/errands.ts` | відкриття агенту |
 
-### Phase 9 — Живий прогін і передача знань [TODO]  {#PL_HELP_P9}
+### Phase 9 — Живий прогін і передача знань [DONE]  {#PL_HELP_P9}
 
 **Depends on:** Phases 1–8
 **Implements:** [SP_HELP_05_03](./context_helper.sp.md#SP_HELP_05_03) (L1–L8 разом), [SP_HELP_06_01](./context_helper.sp.md#SP_HELP_06_01) (перевірка оборотності)
@@ -237,6 +237,8 @@ What to do:
 | Оборотність: вимкнути реєстрацію `context_helper`, поле `defer` і таймер простою в робочій копії; черга з відкладеними правками без `defer` застосовується як звичайна | тимчасова гілка, без коміту | [SP_HELP_06_01](./context_helper.sp.md#SP_HELP_06_01) |
 | Документи: `README.md` (інструменти, механізми), `CLAUDE.md` (модулі `helper`, `ask`, `cacheclock`, `batches`, `idle`, `errands`, події `turn.step`), статуси SP_HELP і PL_HELP, `docs/_index.md` | `README.md`, `CLAUDE.md`, `docs/` | propagate |
 | Навички: факти живих прогонів | `.dev_flow/skills/claude-code/plugin-hooks*.md`, `.dev_flow/skills/context-editing/helper-evidence.md` | Required Knowledge, skill (update) |
+
+**Result (2026-11-17):** живий прогін на керованому моді (хост 2.1.326, sonnet; `.dev_flow/cache/live-test/help-p9/`). L3 у терміналі: застосування в простої (`idle timer fired: applied`, журнал `apply` з `deferred` 1 і `idle`), рядок мода людині, звіт з наступним промптом, запис `cache` з `mismatch: false`. L4: доручення `cold` + `remind` + `wake` у терміналі й у stream-json — `idle timer fired: nothing`, `wake check: woke`, рівно один хід пробудження (`papaya`), іншого за хвилину немає. L8 після простою понад годину: термінал з промптом одразу й через 15 с, stream-json з `--resume` — `start run: started`, одна компактизація до першого промпту, рядок мода людині, звіт з першим промптом; перший запит без дублікатів — ремонт не запланувався, бо NeedsRepair не знайшов повторів. Відкат: тимчасова збірка без `context_helper`, з ігнорованим `defer` і без таймера простою — 6 інструментів, виклик з `defer` застосовано в кінці ходу разом з пакетом, відкладеним ще справжнім кодом; без коміту. I1: 4 цитати з потокових журналів фаз 1–9 знайдено в архівах; I6: 17 застосувань з відкладеними правками (фази 3–9, разом із цим прогоном) — кожне з дозволеною причиною: 6 з правками агента, 7 StartRun, 2 порожні ходи стискання `/compact` людини, 2 простій (причини зіставлено вручну за маркерами журналів налагодження, `audit.py`). L1, L3, L5 — і в терміналі, і в stream-json (фази 1, 5, 4 і цей прогін); L2 і L6 — лише в stream-json (фази 7 і 4): `unobserved` у терміналі — не запускали, бо прогін фази 9 віддано довгим сценаріям L3, L4, L8 при тижневому ліміті на межі; їхні шляхи в моді — ті самі хуки, що в stream-json, а відмінність термінала (рядки компактизації минають `session.append`) покривають L5 і L8 у терміналі; L7 — `unobserved` (керовані налаштування цієї машини вантажать мод для кожної сесії), гілки покривають тести фаз 1, 4, 5, 6, 7.
 
 ## Backlog
 
@@ -337,3 +339,4 @@ Items deferred from the current implementation cycle (each with a return trigger
 | 2026-11-17 | Фаза 6 `[DONE]`: StartRun (`hooks/idle.ts`, StartIO, START_WAIT_MS) з хука `session.start` після PrepareStorage, вердиктів і плану ремонту: вердикт `compact` = `reached` з кешу версії хоста; теплий кеш — таймер простою на залишок (`armedBy` start); холодний — позначка `applyDeferred` до таймера, команда з `$.clock.after(0)`, хук чекає лише її запуску (≤ START_WAIT_MS); без калібрування й без промптів; відмова й межа очікування знімають позначку. Рецензія: пропуск обробником команди StartRun, яку випередив перший хід (пам'ять `starting`, `skip "start apply overtaken by a turn"`), причини `start run: nothing (…)`, тести гілок. Живий прогін (2.1.326, sonnet): stream-json теплий і холодний `--resume`, термінал холодний, одноразові `-p --resume` json і text — `.dev_flow/cache/live-test/help-p6/`; таймер StartRun, що спрацьовує без ходу, — L8 у фазі 9 |
 | 2026-11-17 | Фаза 7 `[DONE]`: доручення з умовою (`hooks/errands.ts`): реєстр `errands`/`nextErrand`; `context_helper` операції `errand_add`, `errand_list`, `errand_remove` (`wake` — BAD_OP до фази 8); CheckErrands на TurnEnd (після годинника, до Flush, лише завершені ходи), BigOutput, AreaClosed (назви закритих областей; позначка вже закритого цим ходом блоку подій не дає), ColdVerdict (промпт і таймер простою); Fire: `remind`, `apply` (позначка черги без `coldSince`, що переживає власні IdleRun і StartRun), `ask` у фоні (ErrandAsk на кроках Ask, FinishAsk); DeliveryBlock (нагадування нотаток + доручення ≤ MAX_DELIVERY) з результатом інструмента (не `ask` і не `context_recall`), у прихованому контексті промпту й у тексті промптів Flush і ходу стискання, з поверненням при відмові; передача (CarriedErrands; речення «документа»); рядок `Errands:`; мертві NoteReminders/ReminderPending/AfterReminders прибрано (їхні тести — на DeliveryBlock). Відхилення від «What to create» — рядки таблиці фази виправлено. 1205 тестів, tsc, validate; живий прогін `.dev_flow/cache/live-test/help-p7/` (L2 з перевіреною цитатою людини, доставка з промптом і власним промптом мода, L6). Рецензія: pass with advisories 0 must / 5 should / 5 prefer — виправлено. Не спостережено наживо: блок у промпті людини посеред ходу, гілка `cold` таймера простою з `apply now, in this idle` (фаза 9), блок у промпті ходу стискання |
 | 2026-11-17 | Фаза 8 `[DONE]`: пробудження (`hooks/errands.ts`): поле `wake` в `errand_add` (ERRAND_WAKE, речення WAKE_SET, схема й опис `context_helper`); WakeCheck (WAKE_TEXT у `hooks/rows.ts`) — звіт, що чекає, WAKE_TEXT, WaitingAdvice і блок з дорученнями з `wake` першими; одне пробудження на простій (`wokeAt`), ворота кешу реєстру, OwnCompaction; виклики — останній крок кінця завершеного ходу, кінець Flush без промпту (не Flush `/compact` людини, не після відмови), кінець IdleRun, взведеного ходом (не `moved`/`unknown`/`rearmed`); повторна перевірка WAKE_RECHECK_MS з ланцюжка `turn.complete`, прив'язана до сесії. Рев'ю: fail (1 must — пробудження з Flush `/compact` людини, I5) → виправлено разом із 3 should і 3 prefer; повторний живий прогін S2 знайшов, що запланований ремонт у OwnCompaction блокує пробудження в першому ході процесу — рахується лише команда ремонту. Живий прогін (2.1.326, stream-json, sonnet; `.dev_flow/cache/live-test/help-p8/`): `turns`+`remind`+`wake` з порожньою чергою — один промпт пробудження, другого за 45 с немає; з правкою — блок у промпті продовження, пробудження немає; `closed`+`ask`+`wake` — питання завершилося до кінця ходу, будить кінець ходу. Наживо не спостерігалися: шлях повторної перевірки, пробудження з IdleRun (L4 — фаза 9), відхилений промпт пробудження |
+| 2026-11-17 | Фаза 9 `[DONE]`: довгий живий прогін L3, L4, L8 (термінал і stream-json), перевірка відкату тимчасовою збіркою, аудити I1 і I6; README, CLAUDE.md, навичка HelperEvidence; SP_HELP — active, план — completed |

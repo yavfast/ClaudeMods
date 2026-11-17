@@ -28,6 +28,6 @@ skills:
     skill: HelperEvidence
     topics: [helper, delegation, subagents, digests, observation-masking, tool-output, archive-questions, recall, structured-output, model.complete, model.classify, model.fork, agent.spawn, tool.call, clock, idle, conditions, prompt-cache, sonnet]
     source: research
-    updated: 2026-11-16
-    written_against: 'препринти й документація, відкриті 2026-11-16; живі зонди — Claude Code 2.1.325, stream-json і термінал'
+    updated: 2026-11-17
+    written_against: 'препринти й документація, відкриті 2026-11-16; живі зонди — Claude Code 2.1.325, stream-json і термінал; реалізація PL_HELP — керований мод, 2.1.325–2.1.326'
     promotion: candidate

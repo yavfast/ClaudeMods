@@ -23,12 +23,12 @@ The parent file [`../active_context.md`](../active_context.md) is a thin dashboa
 
 ## Active Tasks
 
-- [task_20261116_141010_helper-concept](task_20261116_141010_helper-concept.md) — `9a12e9ac` — `implement` — Концепт помічника мода C_HELP: питання до архіву, умови від агента, холодний кеш
 - [task_C_CTX](task_C_CTX.md) — `bd80217a, 8e44a3be, a3902d56, decd4bc6, d5614704, 4118db51, 4cdf50ec, 355660b2, af2d71e6, a477d71d` — `plan` — Редактор контексту агента: фази PL_CTX 1–48 закомічені, відкрите — backlog PL_CTX
 - [task_20261010_083402_stage-cleanup](task_20261010_083402_stage-cleanup.md) — `decd4bc6, d5614704, 355660b2` — `verify` — Динамічна оптимізація частини контексту за етапами; практика на реальних задачах (P1–P25)
 
 ## Recently Completed
 
+- [task_20261116_141010_helper-concept](task_20261116_141010_helper-concept.md) — `9a12e9ac` — `done` 2026-11-17 — Помічник мода: C_HELP і SP_HELP active, PL_HELP completed (фази 1–9: питання до архіву з перевіреними цитатами, годинник кешу, відкладені пакети з простоєм і новим процесом, доручення з умовою, пробудження; живий прогін понад годину)
 - [task_20261116_123729_helper](task_20261116_123729_helper.md) — `9a12e9ac` — `done` 2026-11-16 — Спайк: субагент-помічник для context-editor (`docs/context_helper.spike.md`, навичка `helper-evidence`)
 - [task_20261116_102446_supervisor](task_20261116_102446_supervisor.md) — `9a12e9ac` — `done` 2026-11-16 — Спайк: субагент-наглядач за головним контекстом (`docs/context_supervisor.spike.md`, навичка `supervisor-evidence`)
 - [task_C_FOLD](task_C_FOLD.md) — `90e21609, 85408971` — `done` 2026-11-15 — Згортки й пам'ять завдань: PL_FOLD фази 1–6 (облік згорток, розгортання з поверненням, згортка зі словами людини, вкладені області й завдання, вставки)

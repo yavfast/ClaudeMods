@@ -2,8 +2,8 @@
 
 > **Task ID:** `task_20261116_141010_helper-concept`
 > **Created:** 2026-11-16 14:10
-> **Last updated:** 2026-11-17 13:23
-> **Status:** `in-progress`
+> **Last updated:** 2026-11-17 14:54
+> **Status:** `done`
 > **Contributors:** `claude-session-9a12e9ac`
 > **Autonomy:** `full` — "Продовжуй автономно виконання всіх фаз згідно плану." (з 19:33, для решти фаз PL_HELP; до того — `checkpoints`)
 
@@ -11,8 +11,8 @@
 
 | Field | Value |
 |-------|-------|
-| **Document** | `spec` — Помічник мода: концепт `docs/context_helper.concept.md` (active), специфікація `docs/context_helper.sp.md` + `ask`, `errands`, `batches` (draft) |
-| **Pipeline phase** | `implement` — PL_HELP фаза 1 |
+| **Document** | `spec` — Помічник мода: концепт `docs/context_helper.concept.md` (active), специфікація `docs/context_helper.sp.md` + `ask`, `errands`, `batches` (active), план `docs/context_helper.plan.md` (completed) |
+| **Pipeline phase** | `done` — PL_HELP completed (фази 1–9) |
 | **Role style** | `n/a` |
 | **Traceable ID** | `C_HELP`, `SP_HELP`, `PL_HELP` |
 
@@ -26,7 +26,7 @@
 ## Subtasks
 
 ### Subtask: concept — помічник
-> Author: `claude-session-9a12e9ac` — Created: 14:10 — Last updated: 18:34 — Status: `in-progress`
+> Author: `claude-session-9a12e9ac` — Created: 14:10 — Last updated: 2026-11-17 14:54 — Status: `done`
 
 **Goal:** написати концепт за трьома механізмами зі спайку помічника.
 
@@ -95,9 +95,12 @@
   - [x] Код і тести (WakeCheck, OwnCompaction, повторна перевірка з прив'язкою до сесії; виклики з кінця ходу, Flush, IdleRun; `wake` в `errand_add`).
   - [x] Живий прогін у stream-json (`.dev_flow/cache/live-test/help-p8/`): пробудження в кінці ходу, блок у промпті продовження з правкою, питання з `wake`.
   - [x] Документи «Змінює» (агент поширення + мої виправлення); рецензія (fail: 1 must / 3 should / 4 prefer — виправлено); план [DONE]; коміт.
-- [ ] Фаза 9 PL_HELP — живий прогін L1–L8 (L3, L4, L8 — одним прогоном понад годину) і передача знань.
+- [x] Фаза 9 PL_HELP — живий прогін L1–L8 (L3, L4, L8 — одним прогоном понад годину) і передача знань.
+  - [x] Відкат: тимчасова збірка без `context_helper`, з ігнорованим `defer` і без таймера простою (без коміту; робоче дерево відновлено).
+  - [x] Довгий прогін понад годину (`.dev_flow/cache/live-test/help-p9/`): L3 у терміналі, L4 у терміналі й stream-json, L8 у терміналі (промпт одразу й через 15 с) і stream-json; аудити I1 і I6.
+  - [x] README, CLAUDE.md, навички HelperEvidence і plugin-hooks (31, 89); SP_HELP — active, PL_HELP — completed; рецензія; коміт.
 
-**Next:** фаза 9 PL_HELP (живий прогін L1–L8 і передача знань) — phases/implement.md § Implementation Workflow; автономно, push після останньої фази
+**Next:** — (задачу завершено)
 
 ## Activity
 
@@ -122,3 +125,4 @@
 - 2026-11-17 11:31 — Фаза 5: рішення делеговані (автономія) — обробник пропускає команду IdleRun, яку хід випередив (SKIP_IDLE_OVERTAKEN: правки ходу застосує його Flush з обіцяним промптом продовження, а не IdleRun без промпту); IdleRun не запускає команди при запланованому Flush і на порожній черзі (позначку знято); перевзведення на теплому кеші наживо `unobserved` (недосяжне без запиту поза ходом), команда з вкладеного таймера перевірена зондом N1.
 - 2026-11-17 12:54 — Фаза 7: рішення делеговані (автономія): рядок і тексти доручень у `errands.ts`, не в `rows.ts`; блок доставки не йде з `ask` і `context_recall` (їхні пари повертаються слідом); `wake` — BAD_OP до фази 8; позначка доручення `apply` без `coldSince` переживає власні IdleRun і StartRun; `apply` без вердикту черги лишається `open`; перший промпт сесії закріплено — у живому L2 обмеження людини дано другим промптом.
 - 2026-11-17 13:23 — Фаза 8: рішення делеговані (автономія): перерваний хід WakeCheck не запускає; промпт пробудження несе звіт, що чекає, і WaitingAdvice, як промпт продовження; відхилений промпт пробудження лишає простою одну спробу; ERRAND_WAKE для не булевого `wake`. Рецензія знайшла must (I5): Flush, запланований `/compact` людини, міг будити агента з ланцюжка `command.run` — виправлено (`wakesAfter`, `compactSession`); також IdleRun будить лише після прогону, що не пішов (`moved`/`unknown`/`rearmed`), і ставить повторну перевірку для `cold`+`ask`; перевірка прив'язана до сесії; OwnCompaction рахує команду ремонту (запланований ремонт — ні: повторний живий прогін S2 показав, що він блокував пробудження в першому ході кожного процесу); блок пробудження бере доручення з `wake` першими.
+- 2026-11-17 14:54 — Фаза 9: перезапуск сесії VS Code зупинив фонові драйвери довгого прогону; сесії в screen уціліли, драйвери перезапущено від'єднаними (`setsid`), S4 у stream-json — заново як S4b. Усі сценарії пройшли; L2 і L6 у терміналі та L7 — `unobserved` (причини в плані). Розробник: `/dev-flow commit & push` — коміт і push. Status done.

@@ -1,7 +1,7 @@
 # Помічник мода — Specification: відкладені пакети — поля черги, годинник кешу, відкладені пакети, простій, новий процес
 
 > **Code:** SP_HELP (дочірній файл набору)
-> **Status:** draft
+> **Status:** active
 > **Created:** 2026-11-16
 > **Updated:** 2026-11-17
 > **Umbrella:** [SP_HELP](./context_helper.sp.md)

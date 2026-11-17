@@ -1,7 +1,7 @@
 # Помічник мода — Specification: питання до архіву — відповідь помічника, матеріал, перевірена цитата, запис питання, виклик помічника, інструмент `context_helper`, Ask, VerifyQuotes, повернення пар питань
 
 > **Code:** SP_HELP (дочірній файл набору)
-> **Status:** draft
+> **Status:** active
 > **Created:** 2026-11-16
 > **Updated:** 2026-11-17
 > **Umbrella:** [SP_HELP](./context_helper.sp.md)
